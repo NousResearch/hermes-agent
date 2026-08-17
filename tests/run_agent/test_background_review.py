@@ -125,6 +125,158 @@ def test_background_review_fork_opts_out_of_session_finalization(monkeypatch):
     assert seen.get("at_run_time") is False
 
 
+def test_background_review_skipped_in_delegation_subagent(monkeypatch):
+    """The automatic post-turn review must NOT fire inside a delegation
+    subagent (``_delegate_depth > 0``).
+
+    Regression for #85859: the fork inherits the subagent's live model, so in
+    a delegation subagent running a premium model it replayed the whole
+    conversation at premium rates. Subagents are already barred from writing
+    shared MEMORY.md, so there is nothing for the review to persist here.
+    """
+    forks = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            forks.append(kwargs)
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._delegate_depth = 1  # this agent IS a delegation subagent
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        review_skills=True,
+    )
+
+    assert forks == [], "no review fork should be spawned inside a subagent"
+
+
+def test_background_review_runs_at_top_level(monkeypatch):
+    """Sibling guard for the subagent skip: at ``_delegate_depth == 0`` the
+    review still fires exactly as before (the cost guard is subagent-only)."""
+    forks = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            forks.append(kwargs)
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._delegate_depth = 0  # top-level agent
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert len(forks) == 1, "top-level review must still spawn the fork"
+
+
+def test_background_review_disabled_skips_automatic_spawn(monkeypatch):
+    """``auxiliary.background_review.enabled: false`` must skip automatic
+    post-turn forks while leaving ``/refine`` (focus set) working (#87250)."""
+    from unittest.mock import patch
+
+    forks = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            forks.append(kwargs)
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._delegate_depth = 0
+    cfg = {"auxiliary": {"background_review": {"enabled": False}}}
+
+    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+        assert forks == [], "automatic review must not spawn when disabled"
+
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+            focus="save the deploy workflow",
+        )
+        assert len(forks) == 1, "/refine must still run when enabled=false"
+
+
+def test_background_review_explicit_focus_runs_even_in_subagent(monkeypatch):
+    """An explicit ``/refine`` (``focus`` set) is a deliberate user request and
+    is honored regardless of depth — only the automatic post-turn review is
+    suppressed in subagents."""
+    forks = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            forks.append(kwargs)
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._delegate_depth = 2
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_skills=True,
+        focus="save the deploy workflow as a skill",
+    )
+
+    assert len(forks) == 1, "explicit focus review must run even in a subagent"
+
+
 def test_background_review_registers_on_active_children_for_interrupt(monkeypatch):
     """The review fork must be added to the parent's ``_active_children`` so
     ``AIAgent.interrupt()`` (which fans out to that list) can reach it, and

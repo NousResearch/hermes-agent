@@ -18,10 +18,11 @@ import {
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseLoadingIndicator, StreamStallIndicator } from '@/components/assistant-ui/thread/status'
-import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
+import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { formatElapsed } from '@/components/chat/activity-timer'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -29,7 +30,6 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
-import { formatAgo } from '@/lib/time'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
@@ -105,6 +105,10 @@ export const AssistantMessage: FC<{
   // tool-heavy turn doesn't grow a copy/refresh bar per paragraph (see
   // ChatMessage.interim).
   const isInterim = useAuiState(s => s.message.metadata?.custom?.interim === true)
+
+  // Whole-turn wall-clock seconds (set once at completion — referentially
+  // stable across the 30 Hz delta stream, so this adds no per-token renders).
+  const turnDurationS = useAuiState(s => s.message.metadata?.custom?.durationS as number | undefined)
 
   // The thinking/stall indicator belongs to the TAIL of the thread, period. A
   // stale pending bubble mid-transcript (a turn that ended without its settle
@@ -222,8 +226,14 @@ export const AssistantMessage: FC<{
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
+      <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
       {hasVisibleText && !isInterim && (
-        <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
+        <AssistantFooter
+          durationS={turnDurationS}
+          getMessageText={getMessageText}
+          messageId={messageId}
+          onBranchInNewChat={onBranchInNewChat}
+        />
       )}
       {/* Last thing in the turn — under the action bar, the way Cursor ends a
           turn on its summary rather than burying it above the controls. */}
@@ -262,7 +272,6 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
         }
         data-slot="aui_msg-actions"
       >
-        <MessageAge />
         {onBranchInNewChat && (
           <TooltipIconButton
             onClick={() => {
@@ -364,42 +373,35 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   )
 }
 
-const MessageAge: FC = () => {
+const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ durationS, ...props }) => {
   const { t } = useI18n()
-  const createdAt = useAuiState(s => s.message.createdAt)
-  const date = createdAt ? new Date(createdAt) : null
 
-  if (!date || Number.isNaN(date.getTime())) {
-    return null
-  }
-
-  // Compact "2h ago" (shared util) with the absolute time on hover.
   return (
-    <span
-      className="px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground"
-      title={formatMessageTimestamp(date, t.assistant.thread) || undefined}
-    >
-      {formatAgo(date.getTime(), t.agents)}
-    </span>
+    <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
+      {durationS !== undefined && (
+        <span
+          className="select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
+          data-slot="aui_turn-duration"
+          title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
+        >
+          ⏱ {formatElapsed(durationS)}
+        </span>
+      )}
+      <BranchPickerPrimitive.Root
+        className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
+        hideWhenSingleBranch
+      >
+        <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+          <Codicon name="chevron-left" size="0.875rem" />
+        </BranchPickerPrimitive.Previous>
+        <span className="tabular-nums">
+          <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+        </span>
+        <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+          <Codicon name="chevron-right" size="0.875rem" />
+        </BranchPickerPrimitive.Next>
+      </BranchPickerPrimitive.Root>
+      <AssistantActionBar {...props} />
+    </div>
   )
 }
-
-const AssistantFooter: FC<MessageActionProps> = props => (
-  <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
-    <BranchPickerPrimitive.Root
-      className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
-      hideWhenSingleBranch
-    >
-      <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
-        <Codicon name="chevron-left" size="0.875rem" />
-      </BranchPickerPrimitive.Previous>
-      <span className="tabular-nums">
-        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
-      </span>
-      <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
-        <Codicon name="chevron-right" size="0.875rem" />
-      </BranchPickerPrimitive.Next>
-    </BranchPickerPrimitive.Root>
-    <AssistantActionBar {...props} />
-  </div>
-)

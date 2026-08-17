@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -262,6 +263,31 @@ def _is_cron_approval_context() -> bool:
         return is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""))
     except Exception:
         return env_var_enabled("HERMES_CRON_SESSION")
+
+
+def _is_single_query_approval_context() -> bool:
+    """True when the current approval decision is from a single-query (-q) session.
+
+    ``hermes chat -q "..."`` runs one turn and exits with no user waiting to
+    answer approval prompts, but it still exports ``HERMES_INTERACTIVE=1`` so
+    interactive sudo password prompts can be driven from stdin. Without an
+    explicit marker, ``_is_interactive_cli()`` would report True and the gate
+    would wait the full approval timeout for a human who never comes — failing
+    closed after 300s and forcing the agent to work around the block (often
+    via ``execute_code``, which also auto-approves in non-gateway mode). An
+    explicit ``single_query_mode`` config makes that path deterministic.
+
+    Prefer the session ContextVar so a gateway/API turn spawned concurrently
+    cannot taint unrelated CLI work in the same process (single-query is a
+    CLI-only construct; interactivity is decided in cli.py). Falls back to the
+    legacy process env var for CLI/tests that don't engage the session context.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        return is_truthy_value(get_session_env("HERMES_SINGLE_QUERY_SESSION", ""))
+    except Exception:
+        return env_var_enabled("HERMES_SINGLE_QUERY_SESSION")
 
 
 def _is_gateway_approval_context() -> bool:
@@ -2562,11 +2588,13 @@ def _denial_breaker_addendum(session_key: str) -> str:
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("event", "data", "result", "reason", "acknowledged")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
-        self.data = data          # command, description, pattern_keys, …
+        self.data = dict(data)
+        self.data.setdefault("request_id", uuid.uuid4().hex)
+        self.acknowledged = False
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
@@ -2605,7 +2633,8 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             request_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2623,7 +2652,12 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
-        if resolve_all:
+        if request_id:
+            targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
+            if not targets:
+                return 0
+            queue[:] = [entry for entry in queue if entry not in targets]
+        elif resolve_all:
             targets = list(queue)
             queue.clear()
         else:
@@ -2639,10 +2673,42 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
+def list_gateway_approvals(session_key: str) -> list[dict]:
+    """Return replay-safe snapshots of unresolved approvals for one session."""
+    with _lock:
+        return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
+
+
+def ack_gateway_approval(session_key: str, request_id: str) -> bool:
+    """Record that a client received a particular pending approval request."""
+    with _lock:
+        for entry in _gateway_queues.get(session_key, []):
+            if entry.data.get("request_id") == request_id:
+                entry.acknowledged = True
+                return True
+    return False
+
+
 def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
         return bool(_gateway_queues.get(session_key))
+
+
+def get_pending_gateway_approval(session_key: str) -> dict | None:
+    """Return a copy of the oldest unresolved gateway approval for a session.
+
+    Reconnectable clients use this to restore an approval prompt whose original
+    notification was sent while their transport was detached.  The queue remains
+    authoritative: this is a read-only snapshot, not a claim on the approval.
+    """
+    if not session_key:
+        return None
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return None
+        return dict(queue[0].data)
 
 
 def submit_pending(session_key: str, approval: dict):
@@ -3110,6 +3176,19 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _get_single_query_approval_mode() -> str:
+    """Read the single-query (-q) approval mode from config. Returns 'deny' or 'approve'."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+        mode = str(cfg_get(config, "approvals", "single_query_mode", default="deny")).lower().strip()
+        if mode in {"approve", "off", "allow", "yes"}:
+            return "approve"
+        return "deny"
+    except Exception:
+        return "deny"
+
+
 def _strip_shell_comments(command: str) -> str:
     """Strip shell-style comments from a command before LLM assessment.
 
@@ -3271,6 +3350,7 @@ def _run_approval_gate(
     display_target: str,
     approval_callback=None,
     cron_deny_message: str,
+    single_query_deny_message: str,
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
@@ -3300,6 +3380,8 @@ def _run_approval_gate(
             ``tools.terminal_tool.set_approval_callback`` is used.
         cron_deny_message: Message returned when a cron job hits this gate
             under ``cron_mode: deny``.
+        single_query_deny_message: Message returned when a single-query
+            (-q) session hits this gate under ``single_query_mode: deny``.
         autoapprove_log_prefix: Log line prefix for the non-interactive
             auto-approve warning (identifies command vs plugin origin).
         fail_closed_when_no_human: When True, a non-interactive non-gateway
@@ -3330,7 +3412,34 @@ def _run_approval_gate(
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
 
+    # Single-query (-q) sessions export HERMES_INTERACTIVE=1 but have no user
+    # to answer approval prompts — an unanswered prompt just waits the full
+    # timeout then fails closed. Treat them as a deterministic non-interactive
+    # context governed by approvals.single_query_mode (mirrors cron below).
+    if _is_single_query_approval_context():
+        is_cli = False
+        is_gateway = False
+
     if not is_cli and not is_gateway:
+        # Single-query (-q) sessions: respect single_query_mode config
+        if _is_single_query_approval_context():
+            if _get_single_query_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": single_query_deny_message,
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+            # single_query_mode: approve — auto-approve. Unlike cron, this must
+            # return here rather than fall through: the plugin-escalation
+            # fail_closed branch below would otherwise block the very action
+            # single_query_mode: approve just authorized.
+            logger.warning(
+                "%s (pattern: %s): %s — single-query auto-approve "
+                "(approvals.single_query_mode: approve).",
+                autoapprove_log_prefix, pattern_key, description,
+            )
+            return {"approved": True, "message": None}
         # Cron sessions: respect cron_mode config
         if _is_cron_approval_context():
             if _get_cron_approval_mode() == "deny":
@@ -3600,6 +3709,13 @@ def check_dangerous_command(command: str, env_type: str,
             "To allow dangerous commands in cron jobs, set "
             "approvals.cron_mode: approve in config.yaml."
         ),
+        single_query_deny_message=(
+            f"BLOCKED: Command flagged as dangerous ({description}) but "
+            "single-query mode (-q) runs without a user present to approve "
+            "it. Find an alternative approach that avoids this command. "
+            "To allow dangerous commands in single-query mode, set "
+            "approvals.single_query_mode: approve in config.yaml."
+        ),
         autoapprove_log_prefix=(
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
         ),
@@ -3679,6 +3795,13 @@ def request_tool_approval(
             "but cron jobs run without a user present to approve it. Find an "
             "alternative approach. To allow flagged actions in cron jobs, set "
             "approvals.cron_mode: approve in config.yaml."
+        ),
+        single_query_deny_message=(
+            f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
+            "but single-query mode (-q) runs without a user present to "
+            "approve it. Find an alternative approach. To allow flagged "
+            "actions in single-query mode, set "
+            "approvals.single_query_mode: approve in config.yaml."
         ),
         autoapprove_log_prefix=(
             f"plugin-escalated tool call '{tool_name}' in "
@@ -3930,7 +4053,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     # Notify the user (bridges sync agent thread → async gateway)
     try:
-        notify_cb(approval_data)
+        notify_cb(dict(entry.data))
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()
@@ -4076,9 +4199,88 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
+    # Single-query (-q) sessions export HERMES_INTERACTIVE=1 but have no user
+    # to answer approval prompts — an unanswered prompt just waits the full
+    # timeout then fails closed. Treat them as a deterministic non-interactive
+    # context governed by approvals.single_query_mode (mirrors cron below).
+    if _is_single_query_approval_context():
+        is_cli = False
+        is_gateway = False
+        # HERMES_EXEC_ASK routes through the gateway decision loop (no human
+        # either here) — ignore it so single_query_mode actually takes effect.
+        is_ask = False
+
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
+        # Single-query (-q) sessions: respect single_query_mode config
+        if _is_single_query_approval_context():
+            if _get_single_query_approval_mode() == "deny":
+                is_dangerous, _pk, description = detect_dangerous_command(command)
+                if is_dangerous:
+                    return {
+                        "approved": False,
+                        "message": (
+                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            "but single-query mode (-q) runs without a user "
+                            "present to approve it. Find an alternative approach "
+                            "that avoids this command. To allow dangerous "
+                            "commands in single-query mode, set "
+                            "approvals.single_query_mode: approve in config.yaml."
+                        ),
+                        "pattern_key": _pk,
+                        "description": description,
+                    }
+                # Also run tirith check in single-query-deny mode so content-level
+                # threats (homograph URLs, pipe-to-interpreter, terminal
+                # injection, etc.) are caught even when they do not match
+                # the pattern-based detection above.
+                try:
+                    from tools.tirith_security import check_command_security
+                    _sq_tirith = check_command_security(command)
+                    if _sq_tirith.get("action") in ("block", "warn"):
+                        _sq_desc = _format_tirith_description(_sq_tirith)
+                        return {
+                            "approved": False,
+                            "message": (
+                                f"BLOCKED: {_sq_desc} "
+                                "but single-query mode (-q) runs without a user "
+                                "present to approve it. Find an alternative "
+                                "approach that avoids this command. To allow "
+                                "dangerous commands in single-query mode, set "
+                                "approvals.single_query_mode: approve in config.yaml."
+                            ),
+                        }
+                except ImportError:
+                    # Tirith not installed. Honour security.tirith_fail_open:
+                    # the default (True) allows as before, but when an operator
+                    # has explicitly opted into fail-closed the command cannot
+                    # be silently allowed — and a single-query session has no
+                    # user to approve it, so fail-closed means block (mirrors
+                    # the cron branch below, see #20733).
+                    _sq_fail_open = True  # safe default if config is unreadable
+                    try:
+                        from hermes_cli.config import load_config_readonly as _load_cfg
+                        _sec = (_load_cfg() or {}).get("security", {}) or {}
+                        if _sec.get("tirith_enabled", True):
+                            _sq_fail_open = _sec.get("tirith_fail_open", True)
+                    except Exception:
+                        pass
+                    if not _sq_fail_open:
+                        return {
+                            "approved": False,
+                            "message": (
+                                "BLOCKED: the Tirith security scanner could not be "
+                                "imported and security.tirith_fail_open is false, "
+                                "so this command cannot be silently allowed — and "
+                                "single-query mode (-q) runs without a user "
+                                "present to approve it. Find an alternative "
+                                "approach, install tirith, or set "
+                                "approvals.single_query_mode: approve in config.yaml."
+                            ),
+                        }
+                    # else: tirith_fail_open is True — allow as before
+            # single_query_mode: approve — fall through to auto-approve below.
         # Cron sessions: respect cron_mode config
         if _is_cron_approval_context():
             if _get_cron_approval_mode() == "deny":
@@ -4621,6 +4823,27 @@ def check_execute_code_guard(code: str, env_type: str,
 
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
+
+    # Single-query (-q): no user is present to approve arbitrary code. Mirrors
+    # the cron branch below so the -q escape-hatch no longer auto-approves.
+    if _is_single_query_approval_context():
+        if _get_single_query_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: execute_code runs arbitrary local Python "
+                    "(including subprocess calls that bypass shell-string "
+                    "approval checks). Single-query mode (-q) runs without a "
+                    "user present to approve it. Use normal tools instead, or "
+                    "set approvals.single_query_mode: approve only if this "
+                    "single-query run is intentionally trusted."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
+        return {"approved": True, "message": None}
 
     # Cron: no user is present to approve arbitrary code.
     if _is_cron_approval_context():

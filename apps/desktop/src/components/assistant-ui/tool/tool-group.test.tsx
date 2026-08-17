@@ -2,12 +2,17 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $displayTimestamps } from '@/store/display-timestamps'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 import { clearDismissedToolRows } from '@/store/tool-dismiss'
 import { $toolDisclosureStates } from '@/store/tool-view'
 
 import { Thread } from '../thread'
+import { formatTimelineRange } from '../thread/timestamp'
+
+// Timeline timestamps render only when `display.timestamps` is enabled.
+$displayTimestamps.set(true)
 
 // A run of tool calls collapses to a one-line summary once it has settled, but
 // a run with anything still pending always renders its rows. That rule is what
@@ -103,7 +108,7 @@ function groupedPendingMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 function pendingOnlyMessage(): ThreadMessage {
@@ -128,7 +133,7 @@ function pendingOnlyMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 function completedOnlyMessage(): ThreadMessage {
@@ -142,6 +147,8 @@ function completedOnlyMessage(): ThreadMessage {
         toolName: 'read_file',
         args: { path: '/etc/hosts' },
         argsText: JSON.stringify({ path: '/etc/hosts' }),
+        timestamp: createdAt.getTime() / 1000 + 10.125,
+        completedAt: createdAt.getTime() / 1000 + 12.875,
         result: { content: '127.0.0.1 localhost' }
       }
     ],
@@ -154,7 +161,7 @@ function completedOnlyMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 function failedOnlyMessage(): ThreadMessage {
@@ -181,7 +188,7 @@ function failedOnlyMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // Two settled activity calls in a row, so the run earns a summary line and
@@ -197,6 +204,8 @@ function settledRunMessage(): ThreadMessage {
         toolName: 'read_file',
         args: { path: '/repo/src/wiring.tsx' },
         argsText: JSON.stringify({ path: '/repo/src/wiring.tsx' }),
+        timestamp: createdAt.getTime() / 1000 + 20,
+        completedAt: createdAt.getTime() / 1000 + 21,
         result: { content: 'export const Wiring = () => null' }
       },
       {
@@ -205,6 +214,8 @@ function settledRunMessage(): ThreadMessage {
         toolName: 'terminal',
         args: { command: 'ls -la' },
         argsText: JSON.stringify({ command: 'ls -la' }),
+        timestamp: createdAt.getTime() / 1000 + 22,
+        completedAt: createdAt.getTime() / 1000 + 23.5,
         result: { exit_code: 0, stdout: 'wiring.tsx' }
       }
     ],
@@ -217,7 +228,7 @@ function settledRunMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // Activity, an edit, then more activity — all adjacent, so assistant-ui hands
@@ -278,7 +289,7 @@ function editBetweenRunsMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // A finished turn that left a call without a result — interrupted, or the
@@ -313,7 +324,7 @@ function abandonedRunMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // The gap between one sequential call finishing and the next arriving: the
@@ -350,7 +361,7 @@ function betweenSequentialCallsMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 // Still streaming, but the agent has moved past its first run and left both of
@@ -392,7 +403,7 @@ function movedOnMessage(): ThreadMessage {
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 function GroupHarness({ message }: { message: ThreadMessage }) {
@@ -651,5 +662,35 @@ describe('flat tool list approval surfacing', () => {
     })
 
     expect(screen.queryByLabelText('Dismiss')).toBeNull()
+  })
+})
+
+describe('tool lifecycle timestamps', () => {
+  it('shows the precise call and completion times on a settled tool row', async () => {
+    const { container } = render(<GroupHarness message={completedOnlyMessage()} />)
+
+    await screen.findByText(/Read/)
+
+    const timestamps = Array.from(container.querySelectorAll('[data-slot="timeline-timestamp"]')).map(node =>
+      node.textContent?.trim()
+    )
+
+    const startedAt = createdAt.getTime() / 1000 + 10.125
+
+    expect(timestamps).toContain(formatTimelineRange(startedAt, createdAt.getTime() / 1000 + 12.875))
+  })
+
+  it('shows the full lifecycle range when settled calls are collapsed', async () => {
+    const { container } = render(<GroupHarness message={settledRunMessage()} />)
+
+    await waitFor(() => expect(container.querySelector('[data-tool-summary]')).toBeTruthy())
+
+    const timestamps = Array.from(container.querySelectorAll('[data-slot="timeline-timestamp"]')).map(node =>
+      node.textContent?.trim()
+    )
+
+    expect(timestamps).toContain(
+      formatTimelineRange(createdAt.getTime() / 1000 + 20, createdAt.getTime() / 1000 + 23.5)
+    )
   })
 })

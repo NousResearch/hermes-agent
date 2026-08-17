@@ -8,16 +8,22 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-08-02T17:24:01.616235358Z"
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
+setuptools = false
+h2 = false
 vercel = false
+pillow = false
+unpaddedbase64 = false
+defusedxml = false
 aiohttp = false
 cryptography = false
+mcp = false
+python-olm = false
 nemo-relay = false
 huggingface-hub = false
-h2 = false
 
 [manifest]
 overrides = [
@@ -1563,7 +1569,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.20.1"
+version = "0.20.2"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },

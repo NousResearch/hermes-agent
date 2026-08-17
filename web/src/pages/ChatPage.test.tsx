@@ -57,6 +57,18 @@ class FakeTerminal {
     return { dispose() {} };
   }
 
+  onScroll() {
+    return { dispose() {} };
+  }
+
+  get buffer() {
+    // Minimal active-buffer surface for the resume follow-scroll pin
+    // (isViewportPinnedToBottom reads viewportY/baseY).
+    return { active: { baseY: 0, viewportY: 0 } };
+  }
+
+  scrollToBottom() {}
+
   open() {}
 
   paste() {}
@@ -146,6 +158,25 @@ type CloseEventLike = {
 let container: HTMLDivElement;
 let root: Root;
 
+// jsdom runs without an origin here (per-file @vitest-environment jsdom on a
+// node-default config), so localStorage is undefined. Stub it so components
+// that persist UI state (side panel collapse) can be exercised.
+const localStorageMock = (() => {
+  let store: Record<string, string> = {};
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = String(value);
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+  };
+})();
+
 async function render(ui: ReactNode) {
   container = document.createElement("div");
   document.body.append(container);
@@ -208,6 +239,8 @@ beforeEach(() => {
     },
   });
   sessionStorage.clear();
+  vi.stubGlobal("localStorage", localStorageMock);
+  localStorageMock.clear();
 });
 
 afterEach(async () => {
@@ -235,6 +268,54 @@ describe("ChatPage", () => {
     });
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
+  });
+});
+
+describe("ChatPage side panel collapse", () => {
+  async function renderChat() {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+  }
+
+  it("collapses the desktop side panel and persists the choice", async () => {
+    localStorage.clear();
+    await renderChat();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    const collapseButton = container.querySelector(
+      '[aria-label="Collapse chat side panel"]',
+    );
+    expect(collapseButton).not.toBeNull();
+
+    await act(async () => {
+      collapseButton!.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("1");
+    expect(
+      container.querySelector('[aria-label="Collapse chat side panel"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Show chat side panel"]'),
+    ).not.toBeNull();
+
+    // Reopening restores the panel and clears the persisted flag.
+    await act(async () => {
+      container
+        .querySelector('[aria-label="Show chat side panel"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("0");
+    expect(
+      container.querySelector('[aria-label="Collapse chat side panel"]'),
+    ).not.toBeNull();
   });
 });
 

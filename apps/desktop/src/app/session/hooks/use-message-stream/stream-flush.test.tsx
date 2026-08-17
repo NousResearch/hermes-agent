@@ -86,7 +86,7 @@ describe('stream delta delivery', () => {
       await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS)
     })
 
-    expect(states.get(SID)?.messages.at(-1)?.parts).toEqual([{ type: 'text', text: 'first and the rest' }])
+    expect(states.get(SID)?.messages.at(-1)?.parts).toMatchObject([{ type: 'text', text: 'first and the rest' }])
     // The flush must not have depended on a frame: this mock parks every rAF
     // callback, yet the text arrived. runFlush still registers its
     // adaptive-floor measurement callback here; that one is allowed to wait

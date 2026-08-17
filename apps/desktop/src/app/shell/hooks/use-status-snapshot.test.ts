@@ -31,6 +31,7 @@ async function flushAsync() {
 
 beforeEach(() => {
   vi.useFakeTimers()
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true)
   vi.mocked(getStatus)
     .mockReset()
     .mockResolvedValue({} as never)
@@ -38,10 +39,34 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.useRealTimers()
 })
 
 describe('useStatusSnapshot', () => {
+  it('pauses status RPCs while visible but unfocused, then catches up on focus', async () => {
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    expect(getStatus).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(getStatus).not.toHaveBeenCalled()
+
+    vi.mocked(document.hasFocus).mockReturnValue(true)
+    window.dispatchEvent(new Event('focus'))
+    await flushAsync()
+
+    expect(getStatus).toHaveBeenCalledOnce()
+    expect(requestGateway).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps the last authoritative readiness through a transient RPC failure', async () => {
     let refresh = 0
 

@@ -163,6 +163,28 @@ test('cancelAndWait drains only the requested scope', async () => {
   assert.equal(await second, 'second')
 })
 
+test('cancelAndWait force-cleans pending resources before awaiting rollback', async () => {
+  const coordinator = createBootstrapCoordinator()
+  const gate = deferred()
+  let cleaned = 0
+
+  const pending = coordinator.start('scope', 'x', async lease => {
+    lease.onForceCleanup(async () => {
+      cleaned++
+    })
+    await gate.promise
+    lease.assertCurrent()
+  })
+
+  await Promise.resolve()
+  const drain = coordinator.cancelAndWait('scope')
+  await Promise.resolve()
+  gate.resolve()
+  await drain
+  await assert.rejects(pending, (error: any) => error.kind === 'superseded')
+  assert.equal(cleaned, 1)
+})
+
 test('a generation started during cancelAndWait cannot run before the drain completes', async () => {
   const coordinator = createBootstrapCoordinator()
   const oldGate = deferred()

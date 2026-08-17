@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  stageGetWindows,
   stageGetWindowsInto,
   stageNodePtyInto,
   classifyNativeBinary
@@ -390,7 +391,7 @@ test('win32 staging skips the darwin binding the tarball bundles on every platfo
       ]
     })
 
-    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32' })
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' })
 
     assert.ok(existsSync(join(destRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node')))
     assert.ok(!existsSync(join(destRoot, 'lib', 'binding', 'napi-9-darwin-unknown-arm64')))
@@ -410,7 +411,7 @@ test('win32 staging rejects a binding dir that claims win32 but holds a foreign 
     })
 
     assert.throws(
-      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32' }),
+      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' }),
       /expected win32, got darwin/
     )
   } finally {
@@ -418,7 +419,7 @@ test('win32 staging rejects a binding dir that claims win32 but holds a foreign 
   }
 })
 
-test('win32 staging fails when only foreign bindings exist', () => {
+test('win32-x64 staging fails when only foreign bindings exist', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
     const srcRoot = join(tmp, 'get-windows')
@@ -429,9 +430,31 @@ test('win32 staging fails when only foreign bindings exist', () => {
     })
 
     assert.throws(
-      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32' }),
-      /no win32 prebuilt binding/
+      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' }),
+      /no win32-x64 prebuilt binding/
     )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('win32-arm64 staging omits incompatible bindings and keeps the fail-soft JS surface', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot, {
+      bindings: [
+        { dir: 'napi-9-darwin-unknown-arm64', platform: 'darwin' },
+        { dir: 'napi-9-win32-unknown-x64', platform: 'win32' }
+      ]
+    })
+
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'arm64' })
+
+    assert.ok(existsSync(join(destRoot, 'lib', 'windows.js')))
+    assert.ok(!existsSync(join(destRoot, 'lib', 'binding')))
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
@@ -456,7 +479,7 @@ test('win32 staging self-heals through the rebuild hook when the binding is miss
       )
     }
 
-    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', rebuild })
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64', rebuild })
 
     assert.equal(calls, 1)
     assert.ok(
@@ -476,7 +499,12 @@ test('win32 staging reports the recovery steps when the rebuild hook produces no
     makeFakeGetWindows(srcRoot, { bindings: [] })
 
     assert.throws(
-      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', rebuild: () => {} }),
+      () =>
+        stageGetWindowsInto(srcRoot, destRoot, {
+          platform: 'win32',
+          arch: 'x64',
+          rebuild: () => {}
+        }),
       /npm rebuild get-windows/
     )
   } finally {
@@ -518,4 +546,37 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+// ─── stageGetWindows (optionalDependency gate) ──────────────────────
+//
+// get-windows is an optionalDependency: on Linux its node-pre-gyp install
+// script fails because no prebuilt exists. Windows ARM64 has the same package
+// state: its prebuilt URL returns 404 and npm may omit the optional dependency.
+// Staging skips those unsupported targets, but supported native targets remain
+// a hard failure when the package is missing.
+
+test('linux staging skips when get-windows is absent (optional dep skipped by npm)', () => {
+  assert.equal(stageGetWindows({ platform: 'linux', resolveRoot: () => null }), undefined)
+})
+
+test('darwin staging fails when get-windows is absent', () => {
+  assert.throws(
+    () => stageGetWindows({ platform: 'darwin', arch: 'arm64', resolveRoot: () => null }),
+    /get-windows is not installed/
+  )
+})
+
+test('win32-arm64 staging skips when get-windows is absent after its optional install fails', () => {
+  assert.equal(
+    stageGetWindows({ platform: 'win32', arch: 'arm64', resolveRoot: () => null }),
+    undefined
+  )
+})
+
+test('win32-x64 staging fails when get-windows is absent', () => {
+  assert.throws(
+    () => stageGetWindows({ platform: 'win32', arch: 'x64', resolveRoot: () => null }),
+    /get-windows is not installed/
+  )
 })

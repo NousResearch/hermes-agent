@@ -449,7 +449,7 @@ export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[
 }
 
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
-  [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => b.started_at - a.started_at)
+  [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => sessionRecency(b) - sessionRecency(a))
 
 /**
  * The lane a live session belongs to WITHIN a known repo root, by path — the
@@ -563,11 +563,39 @@ export function overlayRepoLanes(
         (placed.isMain
           ? lanes.find(g => g.isMain && g.label.toLowerCase() === placed.label.toLowerCase())
           : undefined) ??
+        // Non-git backend heuristic (`project_tree._place_by_heuristic`): one
+        // isMain lane keyed by the folder path itself (id === path, label =
+        // basename) — not `::branch::<name>`. Live placement always emits
+        // `::branch::main` / label "main", so id+label miss and used to FORK a
+        // phantom second main lane with the same sessions. Prefer the existing
+        // path-keyed main lane when present.
+        (placed.isMain && placedKey
+          ? lanes.find(
+              g =>
+                g.isMain && pathKey(g.path) === placedKey && !g.id.includes('::branch::') && !g.id.includes('::kanban')
+            )
+          : undefined) ??
         (!placed.isMain && placedKey ? lanes.find(g => pathKey(g.path) === placedKey) : undefined)
 
       if (!lane) {
         lane = { ...placed, sessions: [] }
         lanes.push(lane)
+      }
+    }
+
+    // Evict the session from any OTHER lane the backend snapshot may have
+    // placed it in (e.g. a turn that moved the session's cwd from main to a
+    // new worktree — the overlay places it into the worktree lane, but without
+    // this eviction the stale main-lane entry persists and the session appears
+    // under both groups until the next backend tree refresh).
+    for (const g of lanes) {
+      if (g !== lane) {
+        const idx = g.sessions.findIndex(s => s.id === session.id)
+
+        if (idx >= 0) {
+          g.sessions = [...g.sessions.slice(0, idx), ...g.sessions.slice(idx + 1)]
+          changed = true
+        }
       }
     }
 

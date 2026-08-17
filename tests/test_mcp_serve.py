@@ -272,6 +272,19 @@ class TestImports:
 
 
 class TestHelpers:
+    def test_load_session_messages_closes_database_on_error(self, monkeypatch):
+        import mcp_serve
+
+        db = MagicMock()
+        db.get_messages.side_effect = RuntimeError("read failed")
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: db)
+
+        messages, error = mcp_serve._load_session_messages("s1")
+
+        assert messages is None
+        assert "read failed" in error
+        db.close.assert_called_once()
+
     def test_get_sessions_dir(self, tmp_path):
         from mcp_serve import _get_sessions_dir
         result = _get_sessions_dir()

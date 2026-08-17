@@ -2904,6 +2904,12 @@ class SessionStore:
         Values must be small and JSON-serializable — they are written into
         the routing index (state.db gateway_routing table + the legacy
         sessions.json mirror) so they survive gateway restarts.
+
+        Metadata writes are internal bookkeeping and deliberately do NOT
+        advance ``updated_at``: it is the user-activity clock that drives
+        idle/daily reset policy and the restart-resume freshness gate
+        (#85709), and a background write must not make an idle session look
+        fresh.
         """
         with self._lock:
             self._ensure_loaded_locked()
@@ -2911,7 +2917,6 @@ class SessionStore:
             if entry is None:
                 return False
             entry.metadata[key] = value
-            entry.updated_at = _now()
             self._save()
             return True
 
@@ -3386,7 +3391,10 @@ class SessionStore:
                 target_session_id,
             ):
                 return None
-            entry.updated_at = _now()
+            # Compression repoint is store bookkeeping, not user activity —
+            # leave ``updated_at`` alone so a background compression on an
+            # idle session cannot make it look fresh to reset policy or the
+            # restart-resume freshness gate (#85709).
             self._save()
             return entry
 
@@ -3596,8 +3604,18 @@ class SessionStore:
                 from hermes_state import CompressionSessionClosedError
 
                 if isinstance(exc, CompressionSessionClosedError):
-                    child = self._db.find_live_compression_child(session_id)
-                    child_id = str(child["id"]) if child and child.get("id") else ""
+                    # Resolve the full continuation chain via the canonical
+                    # transitive API — a depth-1 live-child lookup misses
+                    # lineages with >=2 compression hops (root -> mid -> tip).
+                    # ``get_compression_tip`` returns the input id when no
+                    # continuation exists; adopt only a different, still-live
+                    # tip, otherwise fail closed as before.
+                    child_id = ""
+                    tip = self._db.get_compression_tip(session_id)
+                    if tip and tip != session_id:
+                        tip_row = self._db.get_session(tip)
+                        if tip_row is not None and tip_row.get("ended_at") is None:
+                            child_id = str(tip)
                     if child_id:
                         try:
                             self._append_transcript_message(child_id, msg)

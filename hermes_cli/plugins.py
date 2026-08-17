@@ -52,7 +52,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
+from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Type, Union)
 
 from hermes_constants import (
     get_hermes_home,
@@ -3483,6 +3483,14 @@ class PluginManager:
         # symmetric force-reload lands.
         self._ownership_ledger: Dict[str, List[PluginRegistration]] = {}
         self._registration_order: List[PluginRegistration] = []
+        # Deferred platform plugins whose client tools were registered at
+        # discovery time (see _register_deferred_platform_tools). Keyed by
+        # plugin id: the already-imported package module, so materializing the
+        # adapter later doesn't re-execute it, and the tool names it
+        # contributed, so `hermes plugins list` still attributes them once the
+        # full plugin loads.
+        self._predeclared_modules: Dict[str, types.ModuleType] = {}
+        self._predeclared_tools: Dict[str, List[str]] = {}
 
     # -----------------------------------------------------------------------
     # Registration ledger internals
@@ -3746,6 +3754,8 @@ class PluginManager:
             self._system_prompt_sections.clear()
             self._approval_transports.clear()
             self._slack_action_handlers.clear()
+            self._predeclared_modules.clear()
+            self._predeclared_tools.clear()
             self._context_engine = None
             self._discovered = False
         else:
@@ -4536,6 +4546,131 @@ class PluginManager:
                 exc_info=True,
             )
             self._load_plugin(manifest)
+            return
+
+        self._register_deferred_platform_tools(manifest, loaded)
+
+    def _register_deferred_platform_tools(
+        self, manifest: PluginManifest, loaded: LoadedPlugin
+    ) -> None:
+        """Register a deferred platform's *client* tools without its adapter.
+
+        A platform plugin can ship two independent things: an inbound adapter
+        (heavy — it imports the platform SDK) and outbound client tools the
+        agent calls like any other tool. Deferring the plugin defers both, so
+        in a CLI/TUI process the client tools never register at all:
+        ``resolve_toolset()`` returns ``[]``, the toolset is missing from the
+        ``hermes tools`` checklist, and even an explicit ``platform_toolsets``
+        entry is dropped because the key is unknown. The same tools work in
+        gateway/web processes only because those materialize every platform at
+        startup (issue #78050).
+
+        Client tools that live in a dedicated ``tools`` submodule can be
+        registered at discovery time instead: importing ``<plugin>/tools.py``
+        does not import the adapter, so the SDK stays unloaded and startup
+        stays cheap. A plugin taking this path must therefore keep its package
+        ``__init__`` import-light and pull the adapter in from inside
+        ``register()`` (as ``plugins/platforms/a2a`` does).
+
+        Opting in is explicit: the manifest must declare ``provides_tools``
+        (the field the plugin list and web server already read to name a
+        plugin's tools, per #78538). Keying off the mere presence of a
+        ``tools.py`` would opt a plugin in by accident — a platform is free to
+        put internal helpers there — and would leave the contract invisible to
+        anyone reading the manifest. ``tools.py`` remains where the code is
+        imported from; ``provides_tools`` is what asks for it. A platform that
+        does not declare the field is untouched and stays fully deferred.
+        """
+        if not manifest.provides_tools:
+            return
+
+        lookup_key = manifest.key or manifest.name
+        plugin_dir = Path(manifest.path) if manifest.path else None
+        if plugin_dir is None or not (plugin_dir / "tools.py").is_file():
+            # Declared but undeliverable. Staying quiet here reproduces the
+            # exact symptom this path exists to fix — tools the manifest
+            # promises, silently absent from the session (#78050) — so say so.
+            logger.warning(
+                "Plugin '%s' declares provides_tools %s but has no tools.py; "
+                "those tools will not be available in CLI/TUI sessions.",
+                lookup_key,
+                list(manifest.provides_tools),
+            )
+            return
+
+        # Snapshotted outside the try so the failure path can tell which tools
+        # a partially-successful register_tools() left behind.
+        before = set(self._plugin_tool_names)
+        try:
+            module = self._load_directory_module(manifest)
+            # Record the module even if nothing below registers: the package
+            # body has already run, so materializing the adapter later must
+            # reuse it rather than execute it a second time.
+            loaded.module = module
+            self._predeclared_modules[lookup_key] = module
+
+            tools_module = importlib.import_module(f"{module.__name__}.tools")
+            register_tools = getattr(tools_module, "register_tools", None)
+            if register_tools is None:
+                logger.warning(
+                    "Plugin '%s' declares provides_tools %s but its tools.py "
+                    "has no register_tools(ctx); those tools will not be "
+                    "available in CLI/TUI sessions.",
+                    lookup_key,
+                    list(manifest.provides_tools),
+                )
+                return
+
+            register_tools(PluginContext(manifest, self))
+            registered = [
+                t for t in self._plugin_tool_names if t not in before
+            ]
+
+            loaded.tools_registered = registered
+            self._predeclared_tools[lookup_key] = registered
+            logger.debug(
+                "Deferred platform '%s': pre-registered %d client tool(s) %s",
+                lookup_key,
+                len(registered),
+                registered,
+            )
+        except Exception as exc:
+            # A register_tools() that registered some tools and THEN raised
+            # leaves those tools live in the registry. Credit them, or
+            # `hermes plugins list` under-reports what the process is actually
+            # carrying — and _load_plugin's own diff would miss them later
+            # too, since they are already in its "before" snapshot.
+            partial = [t for t in self._plugin_tool_names if t not in before]
+            if partial:
+                loaded.tools_registered = partial
+                self._predeclared_tools[lookup_key] = partial
+
+            # Never let a client-tool import break discovery — the platform
+            # stays deferred and behaves exactly as it did before. But a
+            # broken tools.py produces the #78050 symptom itself (declared
+            # tools missing from the session), so this has to be visible
+            # without turning on debug logging to find it.
+            #
+            # Where it failed is the first thing an operator needs: nothing
+            # registered points at the import or the module body, a partial
+            # run points at one tool's definition, and a full run that still
+            # raised points past the registrations entirely.
+            declared = len(manifest.provides_tools)
+            if not partial:
+                scope = f"before registering any of its {declared} declared tool(s)"
+            elif len(partial) >= declared:
+                scope = f"after registering all {declared} declared tool(s)"
+            else:
+                scope = f"after registering {len(partial)} of {declared} declared tool(s)"
+            logger.warning(
+                "Plugin '%s': client-tool pre-registration failed %s (%s).%s",
+                lookup_key,
+                scope,
+                exc,
+                "" if len(partial) >= declared else
+                " The remainder will be missing from CLI/TUI sessions.",
+                exc_info=_PLUGINS_DEBUG,
+            )
 
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
         """Surface declared pip dependencies (#64165).
@@ -4664,7 +4799,13 @@ class PluginManager:
                 policy_lease.dispose,
             )
         try:
-            if manifest.source in {"user", "project", "bundled"}:
+            # A deferred platform whose client tools were already registered at
+            # discovery time has its package imported too — reuse it so the
+            # module body doesn't execute twice (#78050).
+            preloaded = self._predeclared_modules.pop(plugin_key, None)
+            if preloaded is not None:
+                module = preloaded
+            elif manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(
                     manifest, module_name=_module_name
                 )
@@ -4686,10 +4827,20 @@ class PluginManager:
                     for registration in self._registration_order[registration_start:]
                     if registration.plugin_key == plugin_key and registration.active
                 ]
-                loaded.tools_registered = [
+                # Tools this plugin already contributed at discovery time were
+                # registered before ``registration_start``, so the ledger slice
+                # above cannot see them and `hermes plugins list` would
+                # under-report once the deferred adapter materializes (#78050).
+                # Credit them back to the plugin that actually registered them.
+                _predeclared = [
+                    t for t in self._predeclared_tools.pop(plugin_key, [])
+                    if t in self._plugin_tool_names
+                ]
+                loaded.tools_registered = _predeclared + [
                     registration.key
                     for registration in registrations
                     if registration.kind == "tool"
+                    and registration.key not in _predeclared
                 ]
                 loaded.hooks_registered = [
                     registration.key
@@ -4742,6 +4893,16 @@ class PluginManager:
                 "Failed to load plugin '%s': %s",
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,
             )
+        # A materialization that did NOT succeed has already had its
+        # discovery-time pre-registrations disposed: the failure path above
+        # sweeps the whole ownership ledger for this plugin key, not just the
+        # ``registration_start:`` slice, so nothing this plugin registered
+        # survives it. There is no live tool left to credit — attribution and
+        # the registry agree at zero. Only the success path pops
+        # _predeclared_tools, so drop the entry here rather than let the
+        # bookkeeping outlive the load attempt (#78050).
+        if not loaded.enabled:
+            self._predeclared_tools.pop(plugin_key, None)
         self._plugins[manifest.key or manifest.name] = loaded
 
     def _load_portable_plugin(
@@ -5898,6 +6059,7 @@ class _PreToolCallDirective:
     action: Optional[str] = None
     message: Optional[str] = None
     rule_key: Optional[str] = None
+    modified_args: Optional[Dict[str, Any]] = None
 
 
 def set_thread_tool_whitelist(
@@ -5970,8 +6132,23 @@ def _get_pre_tool_call_directive_details(
         middleware_trace=list(middleware_trace or []),
     )
 
+    block_msg: Optional[str] = None
+    modified_args: Optional[Dict[str, Any]] = None
+
     for result in hook_results:
         if not isinstance(result, dict):
+            continue
+        # "modify" action — transform tool_input before dispatch.
+        # Processed before the block/approve gate so modify directives
+        # are visible even when a later hook blocks. Hooks accumulate:
+        # each modify directive shallow-merges its keys into one
+        # accumulated dict built from the original args on first hit.
+        if result.get("action") == "modify":
+            partial = result.get("args")
+            if isinstance(partial, dict) and partial:
+                if modified_args is None:
+                    modified_args = dict(args) if isinstance(args, dict) else {}
+                modified_args.update(partial)
             continue
         action = result.get("action")
         if action not in ("block", "approve"):
@@ -5986,9 +6163,12 @@ def _get_pre_tool_call_directive_details(
         rule_key = rule_key.strip() if isinstance(rule_key, str) else None
         if not rule_key:
             rule_key = None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key)
+        return _PreToolCallDirective(
+            action=action, message=message, rule_key=rule_key,
+            modified_args=modified_args,
+        )
 
-    return _PreToolCallDirective()
+    return _PreToolCallDirective(modified_args=modified_args)
 
 
 def get_pre_tool_call_directive(
@@ -6070,6 +6250,29 @@ def resolve_pre_tool_block(
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
     )
+    return _resolve_block_from_details(
+        details, tool_name,
+        turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
+    )
+
+
+def _resolve_block_from_details(
+    details: "_PreToolCallDirective",
+    tool_name: str,
+    *,
+    turn_id: str = "",
+    tool_call_id: str = "",
+    session_id: str = "",
+) -> Optional[str]:
+    """Resolve a fetched directive to a final block message (or ``None``).
+
+    Shared by :func:`resolve_pre_tool_block` and
+    :func:`_dispatch_pre_tool_call_hooks` so the security-critical
+    fail-closed approval logic lives in exactly ONE place: ``block``
+    blocks with its message; an ``approve`` directive whose gate errors,
+    denies, or times out is fail-closed to a block; anything else
+    proceeds.
+    """
     if details.action == "block":
         return details.message
     if details.action == "approve":
@@ -6111,6 +6314,46 @@ def resolve_pre_tool_block(
                 or f"BLOCKED: plugin approval required for {tool_name}"
             )
     return None
+
+
+def _dispatch_pre_tool_call_hooks(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Invoke ``pre_tool_call`` hooks once and process all response types.
+
+    Returns a ``(block_message, modified_args)`` tuple:
+    - ``block_message`` — the first block/approve directive's resolved message
+      (or ``None`` when the call may proceed).  Shares the exact fail-closed
+      approval-gate logic of :func:`resolve_pre_tool_block` via
+      :func:`_resolve_block_from_details`, including the observability
+      context set around the human-approval gate.
+    - ``modified_args`` — merged args from ``modify`` directives
+      (or ``None`` when no hook requested modification).
+
+    This is the single invocation point for ``pre_tool_call`` hooks.
+    Callers that only need block detection should keep using
+    :func:`get_pre_tool_call_block_message` or
+    :func:`resolve_pre_tool_block` for backward compat.
+    Callers that also need input transformation should call this
+    function and apply ``modified_args`` if not ``None``.
+    """
+    details = _get_pre_tool_call_directive_details(
+        tool_name, args, task_id=task_id, session_id=session_id,
+        tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=middleware_trace,
+    )
+    block_msg = _resolve_block_from_details(
+        details, tool_name,
+        turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
+    )
+    return (block_msg, details.modified_args)
 
 
 def get_pre_verify_continue_message(

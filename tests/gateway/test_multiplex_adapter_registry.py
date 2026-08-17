@@ -409,7 +409,7 @@ class TestSecondaryProfileConfigHandling:
             GatewayRunner._adapter_listener_claim(photon, primary): "default"
         }
 
-        async def _connect(adapter, platform):
+        async def _connect(adapter, platform, **_kw):
             adapter.connected = True
             return True
 
@@ -468,7 +468,7 @@ class TestSecondaryProfileConfigHandling:
         adapters = iter((failed, later))
         claimed = {}
 
-        async def _connect(adapter, platform):
+        async def _connect(adapter, platform, **_kw):
             return adapter.should_connect
 
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)

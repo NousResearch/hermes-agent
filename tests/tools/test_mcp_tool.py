@@ -768,6 +768,58 @@ class TestDiscoverAndRegister:
             for record in caplog.records
         )
 
+    def test_native_tool_wins_over_generated_utility_on_collision(self, caplog):
+        """A server-native tool named `read_resource` must survive its collision
+        with the generated `read_resource` utility (#87112).
+
+        Before the fix the collision handler treated the pair as ambiguous and
+        skipped BOTH, so the server's own tool vanished on every boot. The
+        generated utility is only sugar for servers that lack such a tool, so
+        the native tool wins and the utility is dropped.
+        """
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = _make_mock_server(
+            "srv",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("read_resource", "Native read-resource tool"),
+                _make_mcp_tool("safe_tool"),
+            ],
+        )
+        # Resources enabled (default) so the read_resource utility is generated
+        # and collides; prompts disabled to keep the candidate set focused.
+        config = {"tools": {"prompts": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+            registered = _register_server_tools("srv", server, config)
+
+        # The native tool is registered (before the fix it was dropped) and it
+        # is the server's tool, not the utility stub.
+        assert "mcp__srv__read_resource" in registered
+        entry = registry.get_entry("mcp__srv__read_resource")
+        assert entry is not None
+        assert entry.description == "Native read-resource tool"
+        assert "mcp__srv__safe_tool" in registered
+
+        # The collision was resolved in favour of the native tool, not skipped
+        # as ambiguous.
+        assert not any(
+            "name normalization collision" in record.message
+            and "mcp__srv__read_resource" in record.message
+            for record in caplog.records
+        )
+        assert any(
+            record.levelno == logging.INFO
+            and "keeping the native tool and dropping the utility" in record.message
+            and "read_resource" in record.message
+            for record in caplog.records
+        )
+
 # ---------------------------------------------------------------------------
 # MCPServerTask (run / start / shutdown)
 # ---------------------------------------------------------------------------

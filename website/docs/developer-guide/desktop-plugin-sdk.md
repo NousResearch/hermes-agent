@@ -39,7 +39,8 @@ module and never touches app internals (they are lint-fenced out of a bundled
 plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 
 - **`host.state.*`** — readonly views over the app's live state (nanostore
-  atoms): active session, cwd, gateway status, model, profile, viewport.
+  atoms): active session, per-session turn-busy, cwd, gateway socket status,
+  model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
   restart the gateway, subscribe to the gateway event stream.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
@@ -374,12 +375,27 @@ components.
 
 ```ts
 host.state.activeSessionId  // ReadableAtom<string | null>
+host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assistant payload
+host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
+host.state.busyBySession    // ReadableAtom<Record<string, boolean>>  runtime id → mid-turn
+host.state.focusedSessionId // ReadableAtom<string | null>  (runtime id of the FOCUSED session — tile-aware; prefer for session.* RPC)
+host.state.focusedStoredSessionId // ReadableAtom<string | null>  (durable id — navigation / session-list matching)
+host.state.focusedUsage     // ReadableAtom<UsageStats | null>  (live streamed usage of the focused session, no RPC needed)
 host.state.cwd              // ReadableAtom<string>
-host.state.gateway          // ReadableAtom<string>  ('idle' | 'connecting' | 'open' | …)
+host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'connecting' | 'open' | …)
 host.state.model            // ReadableAtom<string>
 host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
+```
 
+`host.state.gateway` is the WebSocket connection, not whether a chat turn is
+running. A session can be mid-turn while the socket is `open`; another session
+can be idle at the same time. Disable composer or plugin actions from the
+**focused session's** turn-busy (`host.state.busyBySession[sessionId]`, or that
+session's `view.$busy`) — never from `gateway`, and never from a process-global
+busy flag.
+
+```ts
 host.notify({ kind, message, title?, detail?, action? })  // toast; returns id
 host.notifyError(error, fallbackMessage)                   // toast an error
 ctx.os.notify({ title, body?, silent? })   // native OS notification (attributed to your plugin)
@@ -395,16 +411,51 @@ host.onEvent(type, fn)                     // gateway event stream ('*' = all); 
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
-host.request<T>(method, params?)           // gateway JSON-RPC — the real power
+host.profileRoutes()                       // [{ profile, targetProfile, connectionId, mode }]
+host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
+host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
+host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
-cron, kanban, …). Profile-shaped plugins get first-class methods too:
+cron, kanban, …). `host.requestProfile` accepts a descriptor from
+`host.profileRoutes()` and routes that RPC through its exact registry source and
+profile without changing the active chat or gateway. The profile-only overload is
+retained only for the sole-local/legacy topology; registry-aware plugins should pass
+the descriptor so two sources exposing the same profile name cannot collide.
+
+`host.profileRoutes()` inventories every registered source in the current connection
+registry. Connect-on-demand SSH sources expose a credential-free `default` seed
+route without opening a tunnel, so a plugin can be the first caller that dials them;
+an SSH `remoteProfile` remains the route's backend `targetProfile`. `connectionId`
+is the registry routing identity;
+pair it with `profile` for keys and persistence. Endpoint, token, SSH host/key, and
+other raw connection fields never cross the plugin IPC boundary. `profile` is the
+source-local route used
+for requests; `targetProfile` is the backend Hermes profile served by that route.
+They differ when a route explicitly maps to another backend profile (for example an
+SSH `remoteProfile` override or a legacy per-profile URL alias). This distinction
+preserves backend identity without exposing connection secrets.
+
+Profile-shaped plugins get first-class methods too:
 `profiles.list` (each profile + its most recent conversation as
 `last_session`; pass `include_sessions: false` to skip the per-profile DB
 probe) and `profiles.create` (`name`, `description`, `clone_from`,
 `clone_all`, `no_skills`, `soul`, optional `model` + `provider` pin) — the
 ws twins of the dashboard's `/api/profiles` REST routes.
+`host.state.busy` is the focused chat's live turn (thinking and streaming).
+`host.state.awaitingResponse` stays true from send until the first assistant
+payload. Both follow the chat the user is actually looking at — the focused
+session tile when one holds focus, else the primary workspace chat (the same
+signal the statusbar's busy pulse reads). Subscribe in a component:
+
+```javascript
+const busy = useValue(host.state.busy)
+```
+
+For token-level detail, listen with `host.onEvent` (`message.start`,
+`message.delta`, `message.complete`).
+
 `host.onEvent` streams live gateway events (message deltas,
 session lifecycle, tool activity). Listeners are isolated — a throw in your
 listener can't affect app dispatch. Every `host` door is async-safe: a sync throw

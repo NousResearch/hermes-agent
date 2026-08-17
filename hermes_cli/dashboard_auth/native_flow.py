@@ -37,6 +37,15 @@ Wire shape (all gateway-side state lives in this module):
      ``Authorization: Bearer <access_token>`` (via the existing ``token_auth``
      seam) and mints ws-tickets the same way — no cookies anywhere.
 
+Password providers ride the same broker with step 2 swapped: there is no
+upstream IDP, so ``/auth/native/authorize`` sends the system browser to the
+interactive ``/login`` form (broker_state in the PKCE cookie) and a successful
+``/auth/password-login`` plays the role of the upstream callback — it calls
+:func:`complete_pending` and bounces the browser to the loopback redirect.
+Steps 4–5 are identical. The point of brokering a password login at all is
+that the system browser can autofill from the OS password manager (macOS
+Passwords, etc.), which no embedded desktop webview can.
+
 Security properties this module guarantees:
 
   * **PKCE binding (RFC 7636).** A gateway code is redeemable only by the client

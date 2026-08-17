@@ -58,6 +58,7 @@ import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-shar
 import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
+import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isHudWindow } from '@/store/windows'
 
@@ -184,7 +185,13 @@ registry.registerMany([
     // NO minHeight: a tool panel drags all the way down to its collapsed
     // header (the sash floors it at COLLAPSED_ZONE_PX and folds the zone to
     // its rail there). A real floor left a sliver of unusable terminal.
-    data: { placement: 'bottom', height: '20vh', maxHeight: '80vh', revealOnPreset: true },
+    data: {
+      placement: 'bottom',
+      height: '20vh',
+      maxHeight: '80vh',
+      revealOnPreset: true,
+      lifecycleKeepAlive: true
+    },
     render: () => <WiredPane part="terminal" />
   },
   {
@@ -420,6 +427,9 @@ $layoutTree.subscribe(tree => {
 // Mirror sidebar pins into the backend keep-flag so the auto-archive sweep
 // never hides a pinned chat (and pre-existing pins migrate transparently).
 watchSessionPins()
+
+// Release unread-write guards once a list page confirms the value we wrote.
+watchUnreadWriteGuard()
 
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.
@@ -766,7 +776,10 @@ export function ContribController() {
                 className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
                 style={{
                   right:
-                    'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 4 * var(--titlebar-control-size, 24px) + 0.5rem))'
+                    // Five static cluster buttons: four systemTools plus the
+                    // always-present right-sidebar toggle (titlebar-controls.tsx).
+                    // Keep in sync with wiring.tsx's SYSTEM_TOOL_COUNT.
+                    'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 5 * var(--titlebar-control-size, 24px) + 0.5rem))'
                 }}
               />
             </div>

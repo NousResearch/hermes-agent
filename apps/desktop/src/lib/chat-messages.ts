@@ -8,13 +8,22 @@ import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
 import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
-export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number]
+export interface TimelinePartMetadata {
+  /** Unix seconds when this visible activity segment began. Fractional values
+   * preserve the millisecond precision available on live gateway events. */
+  timestamp?: number
+  /** Unix seconds when this segment stopped or handed off to the next one. */
+  completedAt?: number
+}
+
+export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
 
 export type ChatMessage = {
   id: string
   role: SessionMessage['role']
   parts: ChatMessagePart[]
   timestamp?: number
+  completedAt?: number
   pending?: boolean
   error?: string
   branchGroupId?: string
@@ -23,6 +32,10 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** Whole-turn wall-clock seconds (message.start → message.complete),
+   *  stamped by the desktop when it watched the turn run. Absent for
+   *  messages hydrated from history — the backend doesn't persist it. */
+  durationS?: number
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
@@ -32,6 +45,9 @@ export type ChatMessage = {
 }
 
 export type GatewayEventPayload = {
+  /** Unix seconds supplied by tests/newer gateways; the desktop falls back to
+   * its local receipt clock when older gateways omit it. */
+  timestamp?: number
   text?: string
   rendered?: string
   status?: string
@@ -59,6 +75,7 @@ export type GatewayEventPayload = {
   approval_mode?: string
   yolo?: boolean
   running?: boolean
+  turn_started_at?: number | null
   cwd?: string
   branch?: string
   terminal_backend?: string
@@ -73,6 +90,7 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  multi_select?: boolean
   // mcp.setup.request (setup_mcp tool — inline MCP consent card)
   server?: string
   action?: string
@@ -130,12 +148,12 @@ export type GatewayEventPayload = {
   failure_reason?: string
 }
 
-export function textPart(text: string): ChatMessagePart {
-  return { type: 'text', text }
+export function textPart(text: string, timestamp?: number): ChatMessagePart {
+  return { type: 'text', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-export function reasoningPart(text: string): ChatMessagePart {
-  return { type: 'reasoning', text }
+export function reasoningPart(text: string, timestamp?: number): ChatMessagePart {
+  return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
 const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
@@ -166,8 +184,8 @@ export function renderMediaTags(text: string): string {
     .replace(/\n{3,}/g, '\n\n')
 }
 
-export function assistantTextPart(text: string): ChatMessagePart {
-  return textPart(renderMediaTags(text))
+export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
+  return textPart(renderMediaTags(text), timestamp)
 }
 
 export function chatMessageText(message: ChatMessage): string {
@@ -243,8 +261,27 @@ const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
  * - Keeps all other part types (tool-call, image, etc.).
  * - Appends the final text as a new text part.
  */
-export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
+export function mergeFinalAssistantText(
+  parts: ChatMessagePart[],
+  finalText: string,
+  fallbackTimestamp?: number
+): ChatMessagePart[] {
   const dedupeReference = normalizeWs(finalText)
+
+  const streamedText = normalizeWs(
+    parts
+      .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
+      .map(part => part.text)
+      .join('')
+  )
+
+  // An authoritative final that is exactly the concatenation of streamed text
+  // confirms the content without erasing text↔reasoning activity boundaries.
+  if (streamedText && streamedText === dedupeReference) {
+    return parts
+  }
+
+  const previousText = parts.findLast(part => part.type === 'text')
 
   const kept = parts.filter(part => {
     if (part.type === 'text') {
@@ -267,7 +304,17 @@ export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: str
     return !(r && dedupeReference.startsWith(r))
   })
 
-  return finalText ? [...kept, assistantTextPart(finalText)] : kept
+  if (!finalText) {
+    return kept
+  }
+
+  const finalPart = assistantTextPart(finalText, previousText?.timestamp ?? fallbackTimestamp)
+
+  if (previousText?.completedAt !== undefined) {
+    finalPart.completedAt = previousText.completedAt
+  }
+
+  return [...kept, finalPart]
 }
 
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
@@ -406,54 +453,75 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   return content
 }
 
-const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
+const STREAM_PART: Record<'reasoning' | 'text', (text: string, timestamp?: number) => ChatMessagePart> = {
   reasoning: reasoningPart,
   text: textPart
 }
 
-// Coalesce a streaming delta into the most recent same-type part within the
-// current segment, where a segment is bounded by any non-streaming part (a
-// tool call, image, …). The opposite streaming channel (text <-> reasoning) is
-// transparent, so a reasoning burst between two content deltas can't shred one
-// sentence into text / Thinking / text — the fragmentation models that
-// interleave reasoning_content + content otherwise produce. Tool calls still
-// open a fresh part, preserving narration order across steps.
+function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
+  return parts.map(part =>
+    (part.type === 'text' || part.type === 'reasoning') && part.completedAt === undefined
+      ? ({ ...part, completedAt } as ChatMessagePart)
+      : part
+  )
+}
+
+/** Seal every still-open visible activity when the assistant turn stops. */
+export function completeOpenTimelineParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
+  return parts.map(part =>
+    part.timestamp !== undefined && part.completedAt === undefined
+      ? ({ ...part, completedAt } as ChatMessagePart)
+      : part
+  )
+}
+
+// Coalesce only adjacent deltas of the same channel. Switching between text
+// and reasoning is a real timeline boundary and must remain visible even when
+// both channels arrive inside one batched renderer flush.
 function appendStreamPart(
   parts: ChatMessagePart[],
   type: 'reasoning' | 'text',
-  delta: string
+  delta: string,
+  timestamp?: number
 ): { index: number; parts: ChatMessagePart[] } {
   const next = [...parts]
 
-  for (let i = next.length - 1; i >= 0; i--) {
-    const part = next[i]
+  const tailIndex = next.length - 1
+  const tail = next[tailIndex]
 
-    if (part.type === type) {
-      next[i] = { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
+  if (tail?.type === type && tail.completedAt === undefined) {
+    next[tailIndex] = { ...tail, text: `${tail.text}${delta}` } as ChatMessagePart
 
-      return { index: i, parts: next }
-    }
-
-    if (part.type !== 'text' && part.type !== 'reasoning') {
-      break
-    }
+    return { index: tailIndex, parts: next }
   }
 
-  next.push(STREAM_PART[type](delta))
+  if (
+    timestamp !== undefined &&
+    (tail?.type === 'text' || tail?.type === 'reasoning') &&
+    tail.completedAt === undefined
+  ) {
+    next[tailIndex] = { ...tail, completedAt: timestamp } as ChatMessagePart
+  }
+
+  next.push(STREAM_PART[type](delta, timestamp))
 
   return { index: next.length - 1, parts: next }
 }
 
-export function appendTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  return appendStreamPart(parts, 'text', delta).parts
+export function appendTextPart(parts: ChatMessagePart[], delta: string, timestamp?: number): ChatMessagePart[] {
+  return appendStreamPart(parts, 'text', delta, timestamp).parts
 }
 
-export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  return appendStreamPart(parts, 'reasoning', delta).parts
+export function appendReasoningPart(parts: ChatMessagePart[], delta: string, timestamp?: number): ChatMessagePart[] {
+  return appendStreamPart(parts, 'reasoning', delta, timestamp).parts
 }
 
-export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  const { index, parts: next } = appendStreamPart(parts, 'text', delta)
+export function appendAssistantTextPart(
+  parts: ChatMessagePart[],
+  delta: string,
+  timestamp?: number
+): ChatMessagePart[] {
+  const { index, parts: next } = appendStreamPart(parts, 'text', delta, timestamp)
   const part = next[index]
 
   if (part?.type !== 'text') {
@@ -674,11 +742,14 @@ function toolResult(
 export function upsertToolPart(
   parts: ChatMessagePart[],
   payload: GatewayEventPayload | undefined,
-  phase: 'running' | 'complete'
+  phase: 'running' | 'complete',
+  occurredAt = Date.now() / 1000
 ): ChatMessagePart[] {
   const stableId = toolId(payload)
   const name = payload?.name || 'tool'
-  const next = [...parts]
+  // A completion can be the first tool event observed after reconnect, so it
+  // also constitutes a text/reasoning -> tool boundary when no start arrived.
+  const next = completeOpenStreamParts(parts, occurredAt)
 
   const index = findToolPartIndex(next, name, stableId, payload, phase)
 
@@ -698,7 +769,12 @@ export function upsertToolPart(
     toolName: name,
     args: args as never,
     argsText: JSON.stringify(args),
-    ...(phase === 'complete' && { result: toolResult(payload, prevResult, prevArgs), isError: Boolean(payload?.error) })
+    timestamp: prev?.timestamp ?? occurredAt,
+    ...(phase === 'complete' && {
+      completedAt: occurredAt,
+      result: toolResult(payload, prevResult, prevArgs),
+      isError: Boolean(payload?.error)
+    })
   } satisfies ChatMessagePart
 
   if (index === -1) {
@@ -708,6 +784,47 @@ export function upsertToolPart(
   next[index] = { ...next[index], ...base }
 
   return next
+}
+
+/**
+ * Turn-settle reconciliation: close every tool-call part that never received
+ * its completion event. A `tool.complete` lost to a degraded websocket
+ * (reconnect, profile swap, hidden window) leaves the part without a `result`,
+ * which renders as a permanently spinning tool row even though the turn itself
+ * completed. A settled session cannot have tools still running, so an open
+ * part at settle time is a lost event, not live work. Pending messages are
+ * left alone, and no-op calls return the input array unchanged.
+ */
+export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
+  let changed = false
+
+  const next = messages.map(message => {
+    if (message.role !== 'assistant' || message.pending) {
+      return message
+    }
+
+    let partChanged = false
+
+    const parts = message.parts.map(part => {
+      if (part.type !== 'tool-call' || Object.hasOwn(part, 'result')) {
+        return part
+      }
+
+      partChanged = true
+
+      return { ...part, result: {} }
+    })
+
+    if (!partChanged) {
+      return message
+    }
+
+    changed = true
+
+    return { ...message, parts }
+  })
+
+  return changed ? next : messages
 }
 
 function recordFromUnknown(value: unknown): Record<string, unknown> | null {
@@ -784,7 +901,7 @@ function parseStoredToolResult(content: unknown): unknown {
   }
 }
 
-function toolPartFromStoredCall(call: unknown, fallbackIndex: number): ChatMessagePart {
+function toolPartFromStoredCall(call: unknown, fallbackIndex: number, timestamp?: number): ChatMessagePart {
   const row = recordFromUnknown(call) ?? {}
   const fn = recordFromUnknown(row.function)
   const id = String(row.id || row.tool_call_id || `stored-tool-${fallbackIndex}`)
@@ -800,7 +917,8 @@ function toolPartFromStoredCall(call: unknown, fallbackIndex: number): ChatMessa
     toolCallId: id,
     toolName,
     args: args as never,
-    argsText: Object.keys(args).length ? JSON.stringify(args) : ''
+    argsText: Object.keys(args).length ? JSON.stringify(args) : '',
+    ...(timestamp !== undefined ? { timestamp } : {})
   }
 }
 
@@ -830,6 +948,7 @@ function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMess
     const existing = parts[partIndex]
     parts[partIndex] = {
       ...existing,
+      completedAt: toolMessage.timestamp,
       result: parseStoredToolResult(content),
       isError: false
     } as ChatMessagePart
@@ -860,6 +979,7 @@ function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: Ses
   const existing = next[partIndex]
   next[partIndex] = {
     ...existing,
+    completedAt: toolMessage.timestamp,
     result: parseStoredToolResult(content),
     isError: false
   } as ChatMessagePart
@@ -883,6 +1003,8 @@ function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: numbe
     toolName: name,
     args: args as never,
     argsText: Object.keys(args).length ? JSON.stringify(args) : '',
+    timestamp: toolMessage.timestamp,
+    completedAt: toolMessage.timestamp,
     result: context ? { context } : {},
     isError: false
   }
@@ -935,6 +1057,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     pendingToolTimestamp = undefined
   }
 
+  const earliestTimestamp = (...values: (number | undefined)[]) => {
+    const timestamps = values.filter((value): value is number => value !== undefined)
+
+    return timestamps.length ? Math.min(...timestamps) : undefined
+  }
+
   const appendPartsToActiveAssistant = (parts: ChatMessagePart[], timestamp?: number): boolean => {
     if (activeAssistantIndex === null) {
       return false
@@ -949,7 +1077,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     active.parts = [...active.parts, ...parts]
-    active.timestamp = timestamp ?? active.timestamp
+    active.timestamp = earliestTimestamp(active.timestamp, timestamp, ...parts.map(part => part.timestamp))
 
     return true
   }
@@ -1026,15 +1154,21 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
 
     if (reasoning && message.role === 'assistant') {
-      parts.push(reasoningPart(reasoning))
+      parts.push(reasoningPart(reasoning, message.timestamp))
     }
 
     if (displayContent) {
-      parts.push(displayRole === 'assistant' ? assistantTextPart(displayContent) : textPart(displayContent))
+      parts.push(
+        displayRole === 'assistant'
+          ? assistantTextPart(displayContent, message.timestamp)
+          : textPart(displayContent, message.timestamp)
+      )
     }
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
-      parts.push(...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex)))
+      parts.push(
+        ...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp))
+      )
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {
@@ -1075,7 +1209,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
         activeAssistant.parts = [...activeAssistant.parts, ...parts]
-        activeAssistant.timestamp = message.timestamp ?? activeAssistant.timestamp
+        activeAssistant.timestamp = earliestTimestamp(
+          activeAssistant.timestamp,
+          message.timestamp,
+          ...parts.map(part => part.timestamp)
+        )
 
         return
       }
@@ -1093,7 +1231,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
-      timestamp: message.timestamp,
+      timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
@@ -1114,10 +1252,131 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   )
 }
 
+const validTimelineBoundary = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0
+
+const earliestBoundary = (...values: (number | undefined)[]) => {
+  const valid = values.filter(validTimelineBoundary)
+
+  return valid.length ? Math.min(...valid) : undefined
+}
+
+const latestBoundary = (...values: (number | undefined)[]) => {
+  const valid = values.filter(validTimelineBoundary)
+
+  return valid.length ? Math.max(...valid) : undefined
+}
+
+const normalizedTimelineText = (message: ChatMessage) => chatMessageText(message).replace(/\s+/g, ' ').trim()
+
+const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage) => {
+  if (stored.id === local.id) {
+    return true
+  }
+
+  const localToolIds = new Set(
+    local.parts
+      .filter(part => part.type === 'tool-call')
+      .map(part => (part.type === 'tool-call' ? part.toolCallId : ''))
+  )
+
+  const toolMatch = stored.parts.some(part => part.type === 'tool-call' && localToolIds.has(part.toolCallId))
+
+  if (toolMatch) {
+    return true
+  }
+
+  const storedText = normalizedTimelineText(stored)
+
+  return Boolean(storedText) && storedText === normalizedTimelineText(local)
+}
+
+const timelinePartMatch = (stored: ChatMessagePart, local: ChatMessagePart) => {
+  if (stored.type !== local.type) {
+    return false
+  }
+
+  if (stored.type === 'tool-call' && local.type === 'tool-call') {
+    return stored.toolCallId === local.toolCallId
+  }
+
+  if ((stored.type === 'text' || stored.type === 'reasoning') && local.type === stored.type) {
+    return stored.text.replace(/\s+/g, ' ').trim() === local.text.replace(/\s+/g, ' ').trim()
+  }
+
+  return false
+}
+
+/** Keep richer live timing when durable hydration has only one timestamp per row. */
+export function reconcileLocalAssistantTimeline(
+  nextMessages: ChatMessage[],
+  currentMessages: ChatMessage[]
+): ChatMessage[] {
+  const localAssistants = currentMessages.filter(message => message.role === 'assistant' && !message.hidden)
+  const matches = new Map<number, ChatMessage>()
+  let localCursor = localAssistants.length - 1
+
+  for (let nextIndex = nextMessages.length - 1; nextIndex >= 0; nextIndex -= 1) {
+    const message = nextMessages[nextIndex]
+
+    if (message.role !== 'assistant' || message.hidden) {
+      continue
+    }
+
+    for (let localIndex = localCursor; localIndex >= 0; localIndex -= 1) {
+      const local = localAssistants[localIndex]
+
+      if (assistantTimelineMatch(message, local)) {
+        matches.set(nextIndex, local)
+        localCursor = localIndex - 1
+
+        break
+      }
+    }
+  }
+
+  return nextMessages.map((message, messageIndex) => {
+    const local = matches.get(messageIndex)
+
+    if (!local) {
+      return message
+    }
+
+    const unusedLocalParts = new Set(local.parts.map((_, index) => index))
+
+    const parts = message.parts.map(part => {
+      const localIndex = local.parts.findIndex(
+        (candidate, index) => unusedLocalParts.has(index) && timelinePartMatch(part, candidate)
+      )
+
+      if (localIndex === -1) {
+        return part
+      }
+
+      unusedLocalParts.delete(localIndex)
+      const localPart = local.parts[localIndex]
+
+      return {
+        ...part,
+        completedAt: latestBoundary(part.completedAt, localPart.completedAt),
+        timestamp: earliestBoundary(part.timestamp, localPart.timestamp)
+      } as ChatMessagePart
+    })
+
+    return {
+      ...message,
+      completedAt: latestBoundary(message.completedAt, local.completedAt, ...parts.map(part => part.completedAt)),
+      parts,
+      timestamp: earliestBoundary(message.timestamp, local.timestamp, ...parts.map(part => part.timestamp))
+    }
+  })
+}
+
 export function preserveLocalAssistantErrors(
   nextMessages: ChatMessage[],
   currentMessages: ChatMessage[]
 ): ChatMessage[] {
+  nextMessages = reconcileLocalAssistantTimeline(nextMessages, currentMessages)
   const localById = new Map(currentMessages.map(message => [message.id, message]))
 
   const mergedNextMessages = nextMessages.map(message => {

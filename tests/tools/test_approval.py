@@ -1311,6 +1311,64 @@ class TestApprovalTimeoutIsNotConsent:
         ]
         assert hook_calls[-1][1]["choice"] == "notify_failed"
 
+    def test_pending_approval_is_replayable_and_acknowledged(self, monkeypatch):
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=2)
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        result_holder = {}
+
+        thread = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result", mod.check_all_command_guards("rm -rf .git", "local")
+            )
+        )
+        thread.start()
+        for _ in range(200):
+            if notified:
+                break
+            time.sleep(0.005)
+
+        request_id = notified[0]["request_id"]
+        assert request_id
+        assert mod.list_gateway_approvals(self.SESSION_KEY) == [notified[0]]
+        assert mod.ack_gateway_approval(self.SESSION_KEY, request_id) is True
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "once", request_id=request_id
+        ) == 1
+        thread.join(timeout=5)
+        assert result_holder["result"]["approved"] is True
+
+    def test_stale_request_id_cannot_resolve_current_approval(self, monkeypatch):
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=2)
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        result_holder = {}
+        thread = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result", mod.check_all_command_guards("rm -rf .git", "local")
+            )
+        )
+        thread.start()
+        for _ in range(200):
+            if notified:
+                break
+            time.sleep(0.005)
+
+        request_id = notified[0]["request_id"]
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "once", request_id="stale-request"
+        ) == 0
+        assert mod.list_gateway_approvals(self.SESSION_KEY)
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "deny", request_id=request_id
+        ) == 1
+        thread.join(timeout=5)
+        assert result_holder["result"]["approved"] is False
+
 class TestTirithImportErrorFailOpenPolicy:
     """Regression guard for #20733.
 

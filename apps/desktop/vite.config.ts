@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import fs from 'fs'
+import { createRequire } from 'module'
 
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
@@ -25,14 +26,19 @@ const fsAllow = [
   )
 ]
 
-// React lives at the npm-hoist root (../../node_modules/react) under npm
-// workspaces, but under pnpm it is linked into apps/desktop/node_modules.
-// Resolve whichever layout is present so the alias works under both.
-const reactRoot = () => {
-  const hoisted = path.resolve(__dirname, '../../node_modules/react')
-  const local = path.resolve(__dirname, 'node_modules/react')
-  return fs.existsSync(hoisted) ? hoisted : local
-}
+// React refuses to run when `react` and `react-dom` come from two different
+// installed copies ("Minified React error #527" — a blank window, since it
+// throws before the first paint). Both packages are pinned to one version in
+// this workspace's package.json, but npm hoists whatever *it* considers
+// compatible to the monorepo root: a root dependency whose react peer is a
+// loose range (e.g. `^18 || ^19`) pulls the newest react up there, while
+// react-dom stays at the pinned one. `^19.2.7` accepts `19.2.8`, so npm never
+// warns. Resolving from this workspace instead of a hardcoded root path yields
+// the versions declared here — npm nests a copy under the workspace exactly
+// when the hoisted one differs, so the pair can only ever match.
+const requireFromApp = createRequire(path.join(__dirname, 'vite.config.ts'))
+const reactDir = path.dirname(requireFromApp.resolve('react/package.json'))
+const reactDomDir = path.dirname(requireFromApp.resolve('react-dom/package.json'))
 
 // The dev-only render/state churn counters (src/debug) must be imported
 // STATICALLY above react-dom — react-dom captures the devtools hook at module
@@ -156,10 +162,10 @@ export default defineConfig(({ command }) => ({
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
       '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),
       '@hermes/shared': path.resolve(__dirname, '../shared/src'),
-      react: reactRoot(),
-      'react-dom': path.resolve(path.dirname(reactRoot()), 'react-dom'),
-      'react/jsx-dev-runtime': path.resolve(path.dirname(reactRoot()), 'react/jsx-dev-runtime.js'),
-      'react/jsx-runtime': path.resolve(path.dirname(reactRoot()), 'react/jsx-runtime.js')
+      react: reactDir,
+      'react-dom': reactDomDir,
+      'react/jsx-dev-runtime': path.join(reactDir, 'jsx-dev-runtime.js'),
+      'react/jsx-runtime': path.join(reactDir, 'jsx-runtime.js')
     },
     dedupe: ['react', 'react-dom', 'react-router']
   },

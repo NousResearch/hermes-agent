@@ -1066,7 +1066,7 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, Linear, generic HMAC-SHA256)."""
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -1091,6 +1091,18 @@ class WebhookAdapter(BasePlatformAdapter):
                 timestamp=svix_timestamp,
                 signature_header=svix_signature,
             )
+
+        # Linear: linear-signature = <hex HMAC-SHA256 of the raw body, keyed
+        # by the webhook signing key>. Linear's documented scheme signs the
+        # body only (no timestamp binding), so this mirrors it exactly;
+        # without this branch every Linear delivery to a secret-configured
+        # route was rejected as unrecognized (#87348).
+        linear_sig = _header("linear-signature")
+        if linear_sig:
+            expected_linear = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return _hmac_str_equal(linear_sig, expected_linear)
 
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
         gh_sig = request.headers.get("X-Hub-Signature-256", "")

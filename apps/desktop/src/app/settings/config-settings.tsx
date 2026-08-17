@@ -18,6 +18,7 @@ import {
   refreshDataUrlReadMaxMb,
   setDataUrlReadMaxMb
 } from '@/store/data-url-read-max'
+import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
@@ -28,7 +29,14 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
-import { enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntries, setNested } from './helpers'
+import {
+  clearsEnabledToolsets,
+  enumOptionsFor,
+  getNested,
+  isExternalMemoryProvider,
+  sectionFieldEntries,
+  setNested
+} from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
@@ -69,6 +77,7 @@ export function ConfigSettings({
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
+  const disableF12 = useStore($disableF12)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -183,6 +192,15 @@ export function ConfigSettings({
   }, [config, onConfigSaved, saveVersion])
 
   const updateConfig = (next: HermesConfigRecord) => {
+    // Guard the single most destructive config edit: clearing the entire
+    // "Enabled Toolsets" list silently disables memory, terminal, web search,
+    // delegation, and most tools, and a stray select-all + Backspace can do it.
+    // Auto-save is debounced with no undo, so confirm a non-empty → empty
+    // transition before applying it. Every other edit passes through untouched.
+    if (config && clearsEnabledToolsets(config, next) && !window.confirm(c.toolsetsWipeConfirm)) {
+      return
+    }
+
     saveVersionRef.current += 1
     setConfig(next)
     setSaveVersion(saveVersionRef.current)
@@ -312,6 +330,12 @@ export function ConfigSettings({
             description={c.keepAwakeDesc}
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
+          />
+          <ToggleRow
+            checked={disableF12}
+            description={c.disableF12Desc}
+            label={c.disableF12Title}
+            onChange={setDisableF12}
           />
           <QuickEntrySettings />
         </>

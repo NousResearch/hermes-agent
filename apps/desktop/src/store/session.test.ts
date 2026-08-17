@@ -4,6 +4,17 @@ import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
+const setUnreadRemote = vi.fn<(id: string, unread: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+  Promise.resolve({ ok: true })
+)
+
+vi.mock('@/hermes', () => ({
+  // Opening a session now PATCHes its persisted unread flag (clearUnreadOnOpen
+  // -> markSessionUnread); keep the REST mutation minimal for the suite.
+  setApiRequestProfile: () => {},
+  setSessionUnreadRemote: (id: string, unread: boolean, profile?: null | string) => setUnreadRemote(id, unread, profile)
+}))
+
 import {
   $activeSessionId,
   $connection,
@@ -267,6 +278,81 @@ describe('mergeSessionPage', () => {
     expect(merged.map(s => s.id)).toEqual(['tip-5'])
     expect(merged[0]?.last_active).toBe(9_000)
   })
+
+  it('sorts survivors by last_active so they interleave with incoming instead of forming a stale block', () => {
+    // Repro of #47203: two survivors (B and C) have different last_active
+    // timestamps. B settled more recently than C. Without sorting, survivors
+    // are prepended in their old order from `previous`, which may be stale.
+    // With sorting, B (more recent) should appear before C.
+    const previous = [
+      session({ id: 'c', last_active: 100 }),
+      session({ id: 'b', last_active: 200 }),
+      session({ id: 'a', last_active: 300 })
+    ]
+
+    // Server returns A (fresh page, order=recent), omits B and C (min_messages=1)
+    const incoming = [session({ id: 'a', last_active: 300, message_count: 2 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['b', 'c'])
+
+    // B (last_active 200) should come before C (last_active 100)
+    expect(merged.map(s => s.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('places a very recent survivor in correct position among incoming sessions', () => {
+    // A survivor with last_active between two incoming sessions should be
+    // interleaved, not prepended as a block.
+    const previous = [session({ id: 'survivor', last_active: 150 }), session({ id: 'old', last_active: 50 })]
+
+    const incoming = [session({ id: 'newest', last_active: 200 }), session({ id: 'older', last_active: 100 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['survivor'])
+
+    // survivor (150) should be between newest (200) and older (100)
+    expect(merged.map(s => s.id)).toEqual(['newest', 'survivor', 'older'])
+  })
+
+  it('keeps a survivor whose optimistic last_active outranks the whole page on top', () => {
+    // touchSessionActivity stamps last_active on user-send before the server
+    // sees the message; that bump must place the survivor by its FRESH time.
+    const previous = [session({ id: 'typing', last_active: 900 }), session({ id: 'settled', last_active: 100 })]
+
+    const incoming = [session({ id: 'settled', last_active: 100, message_count: 3 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['typing'])
+
+    expect(merged.map(s => s.id)).toEqual(['typing', 'settled'])
+  })
+
+  it('falls back to started_at for survivors that have no last_active yet', () => {
+    // A brand-new session (no persisted message) carries last_active 0; the
+    // backend's effective-recency key falls back to started_at, so we must
+    // too, or a fresh draft sinks to the very bottom of the sidebar.
+    const previous = [
+      session({ id: 'draft', last_active: 0, started_at: 500 }),
+      session({ id: 'other', last_active: 400 })
+    ]
+
+    const incoming = [session({ id: 'other', last_active: 400, message_count: 2 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['draft'])
+
+    expect(merged.map(s => s.id)).toEqual(['draft', 'other'])
+  })
+
+  it('interleaves against the title-preserving merged rows, not the raw incoming page', () => {
+    // The optimistic last_active carried onto an incoming row must count for
+    // its position in the interleave: previous knows 'bumped' was touched at
+    // 300 even though the server page still reports 100.
+    const previous = [session({ id: 'survivor', last_active: 200 }), session({ id: 'bumped', last_active: 300 })]
+
+    const incoming = [session({ id: 'bumped', last_active: 100, message_count: 2 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['survivor'])
+
+    expect(merged.map(s => s.id)).toEqual(['bumped', 'survivor'])
+    expect(merged[0]?.last_active).toBe(300)
+  })
 })
 
 describe('touchSessionActivity', () => {
@@ -476,12 +562,15 @@ describe('unread finished sessions', () => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $sessions.set([])
+    setUnreadRemote.mockClear()
   })
 
   afterEach(() => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $sessions.set([])
   })
 
   it('marks a session unread when its turn finishes in the background', () => {
@@ -530,6 +619,114 @@ describe('unread finished sessions', () => {
 
     setSelectedStoredSessionId('s1')
     expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('clears the whole conversation family when any row is opened', () => {
+    $sessions.set([
+      session({ id: 'parent', _lineage_root_id: null }),
+      session({ id: 'child', _lineage_root_id: 'parent' }),
+      session({ id: 'root', _lineage_root_id: null })
+    ])
+    $selectedStoredSessionId.set('other')
+
+    // Parent and child both finish in the background.
+    for (const storedId of ['parent', 'child']) {
+      const working = makeState({ busy: true, storedSessionId: storedId })
+      publishSessionState(`rt-${storedId}`, working)
+      publishSessionState(`rt-${storedId}`, { ...working, busy: false })
+    }
+
+    expect($unreadFinishedSessionIds.get().sort()).toEqual(['child', 'parent'])
+
+    // Opening the CHILD clears the PARENT's dot too (same family).
+    setSelectedStoredSessionId('child')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    $sessions.set([])
+  })
+
+  it('does NOT re-light a completion that settled before the user read it', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    $selectedStoredSessionId.set('other')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    // User reads the session at t=2s, then the same completion re-asserts at
+    // t=3s — the re-assert is the same settled state, so it must not re-light.
+    vi.setSystemTime(2_000_000)
+    setSelectedStoredSessionId('s1')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    vi.setSystemTime(3_000_000)
+    publishSessionState('rt1', { ...working, busy: false })
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    vi.useRealTimers()
+  })
+
+  it('re-lights when a NEW turn settles after the read baseline', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    $selectedStoredSessionId.set('other')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    // User reads s1 at t=2s, then moves on to another session.
+    vi.setSystemTime(2_000_000)
+    setSelectedStoredSessionId('s1')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+    setSelectedStoredSessionId('other')
+
+    // A NEW turn starts (busy again) and finishes at t=4s — genuinely new
+    // completion after the read baseline, so it re-lights.
+    vi.setSystemTime(3_000_000)
+    publishSessionState('rt1', { ...working, busy: true })
+
+    vi.setSystemTime(4_000_000)
+    publishSessionState('rt1', { ...working, busy: false })
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+
+    vi.useRealTimers()
+  })
+
+  it('openSession marks read before any focus short-circuit', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    $selectedStoredSessionId.set('s1')
+    $unreadFinishedSessionIds.set(['s1'])
+
+    // A no-op navigate — openSession with 'in-place' against the already
+    // selected session hits focusOpenSession and returns without loading.
+    const { openSession } = await import('@/app/open-session')
+    openSession('s1', () => {}, 'in-place')
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    vi.useRealTimers()
+  })
+
+  it('clears a persisted unread row when the session is opened', async () => {
+    $sessions.set([session({ id: 's1', unread: true })])
+
+    setSelectedStoredSessionId('s1')
+
+    // The optimistic flip is synchronous; the PATCH is fire-and-forget.
+    expect($sessions.get().find(s => s.id === 's1')?.unread).toBe(false)
+
+    await Promise.resolve()
+    expect(setUnreadRemote).toHaveBeenCalledWith('s1', false, undefined)
+  })
+
+  it('does not PATCH a read row when it is opened', async () => {
+    $sessions.set([session({ id: 's1', unread: false })])
+
+    setSelectedStoredSessionId('s1')
+
+    await Promise.resolve()
+    expect(setUnreadRemote).not.toHaveBeenCalled()
   })
 })
 

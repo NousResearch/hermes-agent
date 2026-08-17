@@ -145,6 +145,111 @@ _EXIT_CODE_HINTS: dict[int, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Masked-success detection (exit 0 that probably isn't a success)
+# ---------------------------------------------------------------------------
+#
+# `cargo build 2>&1 | tail -20` exits with tail's 0 even when the build
+# failed: bash (without pipefail) reports the LAST pipeline command's status.
+# Likewise `cargo build || echo "BUILD FAILED"` exits with echo's 0. The
+# model treats exit_code 0 as a strong success signal, so it can conclude a
+# build passed while the visible output says it failed. OpenCode's answer is
+# prompt-side only ("do NOT pipe through head/tail"); this adds a cheap
+# result-side backstop for when the model pipes anyway.
+#
+# Deliberately conservative — BOTH must hold:
+#   1. the command's shape can mask an upstream status (a top-level pipe into
+#      a passthrough/truncation consumer, or a `|| <cheap fallback>`), and
+#   2. the output contains a strong, tool-specific failure shape (rustc /
+#      pytest / gcc / npm / tracebacks), not a generic "error" substring.
+# Search/read-only pipelines (`grep ... | head`) are excluded: their output
+# legitimately CONTAINS error text without anything having failed.
+#
+# The note is advisory metadata only — exit_code itself is never modified.
+
+# Consumers whose exit status says nothing about the upstream command.
+_PASSTHROUGH_CONSUMERS = r"(?:tail|head|cat|tee|less|more|wc|sort|uniq)"
+
+# Top-level `... | tail -20` (not `||`); consumer must be the LAST segment.
+_MASKING_PIPE_RE = re.compile(
+    r"(?<!\|)\|(?!\|)\s*" + _PASSTHROUGH_CONSUMERS + r"\b[^|]*$"
+)
+
+# `cmd || echo ...` / `cmd || true` — fallback swallows the failure status.
+_MASKING_OR_RE = re.compile(r"\|\|\s*(?:echo\b|printf\b|true\b|:\s|:$)")
+
+# Read/search/content-producing heads whose piped output legitimately
+# contains failure text (search results, log reads, echoed strings) —
+# nothing upstream can meaningfully "fail" in the masked sense.
+_READONLY_HEADS = frozenset({
+    "grep", "rg", "ag", "find", "ls", "cat", "head", "tail", "jq", "awk",
+    "sed", "strings", "zcat", "journalctl", "dmesg", "echo", "printf",
+})
+
+# Strong failure shapes. Keyed to specific tools so that error-mentioning
+# *content* (diffs, logs being read, commit messages) rarely matches.
+_FAILURE_SHAPES = re.compile(
+    r"(?:"
+    r"error\[E\d+\]"                          # rustc
+    r"|error: could not compile"              # cargo
+    r"|error: aborting due to"                # rustc summary
+    r"|Traceback \(most recent call last\)"   # python
+    r"|(?m:^(?:=+ )?\d+ failed)"              # pytest summary
+    r"|(?m:^FAILED (?:\S+::|\S+\.py))"        # pytest per-test lines
+    r"|compilation terminated\."              # gcc/clang
+    r"|npm ERR!"                              # npm
+    r"|BUILD FAILED|Build FAILED"             # gradle/msbuild/echoed fallbacks
+    r"|FAILED: "                              # ninja
+    r"|(?m:^make(?:\[\d+\])?: \*\*\*)"        # make
+    r")"
+)
+
+
+def _first_token(command: str) -> str:
+    for tok in (command or "").strip().split():
+        # Skip env-var assignments and common wrappers.
+        if "=" in tok and not tok.startswith(("=", "./", "/")):
+            continue
+        return tok.rsplit("/", 1)[-1]
+    return ""
+
+
+def annotate_masked_success(command: str, output: str) -> Optional[str]:
+    """Return a warning note when an exit-0 result likely masks a failure.
+
+    Fires only for exit_code == 0 results (caller gates on that) whose
+    command shape can swallow an upstream failure status AND whose output
+    carries a strong tool-specific failure shape. Returns None otherwise.
+    Never modifies the exit code — advisory only.
+    """
+    cmd = command or ""
+    window = (output or "")[:_SCAN_CHARS]
+    if not cmd or not window:
+        return None
+    if _first_token(cmd) in _READONLY_HEADS:
+        return None
+    if not _FAILURE_SHAPES.search(window):
+        return None
+    if _MASKING_PIPE_RE.search(cmd):
+        return (
+            "exit_code 0 here is the status of the last pipeline command "
+            "(tail/head/cat/...), NOT of the command before the pipe — and "
+            "the output contains failure indicators. Treat this run as "
+            "FAILED until proven otherwise: re-run the command WITHOUT the "
+            "pipe (output is auto-truncated and the full text is saved to a "
+            "file, so piping through tail/head is never needed) to get the "
+            "real exit code."
+        )
+    if _MASKING_OR_RE.search(cmd):
+        return (
+            "exit_code 0 here is the status of the `||` fallback (echo/true), "
+            "NOT of the command before it — and the output contains failure "
+            "indicators. Treat this run as FAILED until proven otherwise: "
+            "re-run the command bare to get its real exit code."
+        )
+    return None
+
+
 def annotate_failure(command: str, exit_code: int, output: str) -> Optional[str]:
     """Return one short recovery hint for a failed command, or None.
 

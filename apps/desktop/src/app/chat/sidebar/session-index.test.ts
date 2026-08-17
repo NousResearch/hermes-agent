@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { buildSessionByAnyId } from './session-index'
+import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -44,5 +44,54 @@ describe('buildSessionByAnyId', () => {
     const index = buildSessionByAnyId([row('root')], [], [row('tip', { _lineage_root_id: 'root' })])
 
     expect(index.get('root')?.id).toBe('root')
+  })
+})
+
+describe('resolvePinnedSessions', () => {
+  it('resolves local pin ids in their hand-picked order', () => {
+    const sessions = [row('a'), row('b'), row('c')]
+    const index = buildSessionByAnyId(sessions, [], [])
+
+    expect(resolvePinnedSessions(['c', 'a'], index, sessions).map(s => s.id)).toEqual(['c', 'a'])
+  })
+
+  it('falls back to the server pinned flag when localStorage is cold (#85969)', () => {
+    // Backend says pinned=1 but the local pin set is empty (cold localStorage
+    // after a reload, pin from another client, clobbered persist). Every other
+    // list filters the row out as pinned, so if the Pinned section can't
+    // resolve it the session vanishes from the sidebar entirely.
+    const sessions = [row('a', { pinned: true }), row('b', { pinned: false })]
+    const index = buildSessionByAnyId(sessions, [], [])
+
+    expect(resolvePinnedSessions([], index, sessions).map(s => s.id)).toEqual(['a'])
+  })
+
+  it('does not duplicate a session held both locally and server-side', () => {
+    const sessions = [row('a', { pinned: true })]
+    const index = buildSessionByAnyId(sessions, [], [])
+
+    expect(resolvePinnedSessions(['a'], index, sessions).map(s => s.id)).toEqual(['a'])
+  })
+
+  it('does not duplicate a server-pinned row whose pin is stored on the lineage root', () => {
+    const sessions = [row('tip', { _lineage_root_id: 'root', pinned: true })]
+    const index = buildSessionByAnyId(sessions, [], [])
+
+    expect(resolvePinnedSessions(['root'], index, sessions).map(s => s.id)).toEqual(['tip'])
+  })
+
+  it('keeps locally pinned rows ahead of server-only fallback pins', () => {
+    const sessions = [row('server-pin', { pinned: true }), row('local-pin')]
+    const index = buildSessionByAnyId(sessions, [], [])
+
+    expect(resolvePinnedSessions(['local-pin'], index, sessions).map(s => s.id)).toEqual(['local-pin', 'server-pin'])
+  })
+
+  it('ignores rows from a backend that predates the pinned flag', () => {
+    // `pinned` undefined means "no opinion", never "pinned".
+    const sessions = [row('a')]
+    const index = buildSessionByAnyId(sessions, [], [])
+
+    expect(resolvePinnedSessions([], index, sessions)).toEqual([])
   })
 })

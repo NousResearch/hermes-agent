@@ -23,7 +23,20 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from agent.secret_sources import bitwarden as bw
+# NOTE: the Bitwarden backend (``agent.secret_sources.bitwarden``) pulls in
+# ``cryptography`` at module-import time.  On Windows the resulting
+# ``cryptography._rust.pyd`` is mapped into the running process — and when
+# that process is ``hermes update``, the self-lock preflight detects the
+# loaded native module and defers (#86781).  Keep the backend import lazy:
+# this module is registered parse-time from ``hermes_cli.main`` and must not
+# touch ``bw`` until a handler actually runs.
+#
+# ``_BWS_VERSION`` is duplicated here (as a plain string) so ``register_cli``
+# can render the ``install --help`` text without importing the backend.
+# ``agent.secret_sources.bitwarden._BWS_VERSION`` is the source of truth;
+# bump both together when pinning a new bws release.
+_BWS_VERSION = "2.0.0"
+
 from hermes_cli.config import (
     get_env_path,
     load_config,
@@ -31,6 +44,28 @@ from hermes_cli.config import (
     save_env_value,
 )
 from hermes_cli.secret_prompt import masked_secret_prompt
+
+
+def _load_bw():
+    """Import ``agent.secret_sources.bitwarden`` on first use (crypto payload)."""
+    from agent.secret_sources import bitwarden as _bw
+
+    return _bw
+
+
+def __getattr__(name: str):
+    """PEP 562 module-level lazy resolver.
+
+    Existing callers (and upstream tests) monkeypatch attributes on
+    ``hermes_cli.secrets_cli.bw`` directly.  Resolving that attribute at
+    module-import time would re-import ``cryptography`` eagerly — the very
+    self-lock we are preventing (#86781).  Defer the backend import until
+    the first actual attribute access, so ``import hermes_cli.secrets_cli``
+    stays crypto-free while ``secrets_cli.bw.find_bws`` still resolves.
+    """
+    if name == "bw":
+        return _load_bw()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +138,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
 
     install = sub.add_parser(
         "install",
-        help=f"Download and verify the pinned bws binary (v{bw._BWS_VERSION})",
+        help=f"Download and verify the pinned bws binary (v{_BWS_VERSION})",
     )
     install.add_argument(
         "--force",
@@ -119,6 +154,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    bw = _load_bw()
     console = Console()
     console.print(
         Panel.fit(
@@ -308,6 +344,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    bw = _load_bw()
     console = Console()
     cfg = load_config()
     bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
@@ -373,6 +410,7 @@ def cmd_token(args: argparse.Namespace) -> int:
     token, probes Bitwarden with it (unless ``--no-verify``), and only then
     persists it to .env — so a bad paste never bricks the working token.
     """
+    bw = _load_bw()
     console = Console()
     cfg = load_config()
     bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
@@ -448,6 +486,7 @@ def cmd_token(args: argparse.Namespace) -> int:
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
+    bw = _load_bw()
     console = Console()
     cfg = load_config()
     bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
@@ -538,6 +577,7 @@ def cmd_disable(args: argparse.Namespace) -> int:
 
 
 def cmd_install(args: argparse.Namespace) -> int:
+    bw = _load_bw()
     console = Console()
     try:
         path = bw.install_bws(force=bool(args.force))

@@ -390,14 +390,38 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
   patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
 }
 
+/** Credential warning delivered passively (session create/activate/resume
+ *  runtime info, stream heartbeats) — e.g. right after switching to a
+ *  profile that has no provider configured. Popping the blocking onboarding
+ *  overlay here punishes merely LOOKING at an unconfigured profile, so the
+ *  warning is deferred instead: stashed until the user actually tries to
+ *  chat, where the submit path consumes it and opens onboarding before the
+ *  doomed send. The latest warning wins; a session event without a warning
+ *  clears the stash (the profile became configured, or the user switched
+ *  back to a healthy one). */
+let pendingCredentialWarning: null | string = null
+
 export function requestDesktopOnboardingForCredentialWarning(reason: null | string | undefined) {
   const warning = reason?.trim()
 
   if (!warning || !isProviderSetupErrorMessage(warning)) {
+    pendingCredentialWarning = null
+
     return
   }
 
-  requestDesktopOnboarding(warning)
+  pendingCredentialWarning = warning
+}
+
+/** Submit-time gate: returns the deferred credential warning (and clears it)
+ *  so the caller can open onboarding instead of sending a prompt that the
+ *  gateway already said will fail. Null when the active profile is healthy. */
+export function consumePendingCredentialWarning(): null | string {
+  const warning = pendingCredentialWarning
+
+  pendingCredentialWarning = null
+
+  return warning
 }
 
 // Open the onboarding provider selector on demand from an already-configured

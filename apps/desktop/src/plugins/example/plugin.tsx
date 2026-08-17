@@ -39,10 +39,11 @@ const $events = atom(0)
 function ClickCounter() {
   const count = useValue($clicks)
   const events = useValue($events)
+  const busy = useValue(host.state.busy)
   const gateway = useValue(host.state.gateway)
 
   return (
-    <Tip label={`Example plugin — gateway ${gateway}, ${events} events heard`}>
+    <Tip label={`Example plugin: gateway ${gateway}, ${busy ? 'working' : 'idle'}, ${events} events heard`}>
       <button
         className={cn(
           'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors',

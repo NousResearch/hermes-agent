@@ -471,6 +471,7 @@ def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
+    load_external_secrets: bool = True,
 ) -> list[Path]:
     """Load Hermes environment files with user config taking precedence.
 
@@ -479,6 +480,9 @@ def load_hermes_dotenv(
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
+    - callers that only maintain the installation can set
+      ``load_external_secrets=False`` to avoid loading optional secret-manager
+      dependencies into the process that replaces that same environment.
     """
     loaded: list[Path] = []
 
@@ -517,7 +521,21 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    _apply_external_secret_sources(home_path)
+    # External secret sources are skipped in two updater situations:
+    # 1. ``load_external_secrets=False`` — the caller is an ``update``
+    #    invocation that must not import optional secret-manager libraries
+    #    (Bitwarden → cryptography → ``_rust.pyd``) into the process that
+    #    replaces that same environment on Windows (#73381, #86735).
+    # 2. A fresh ``hermes update`` retry just completed a deferred dependency
+    #    install before importing this module.  Do not remap native
+    #    secret-source dependencies in that same updater process or the
+    #    self-lock preflight will recreate the marker and exit 2 again.
+    # Dotenv and managed env still load in both cases; only external source
+    # resolution is unnecessary for the updater.
+    from hermes_cli import _early_recovery
+
+    if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
+        _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
     # config.yaml is the documented source of truth for terminal.* settings,
@@ -635,6 +653,23 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # marked applied either — the re-parse is a cheap fast_safe_load and
         # leaving the home unmarked lets a process pick up a config change
         # on its next load_hermes_dotenv() call instead of never.
+        return
+
+    # Defer the registry import until we know a secrets source is enabled —
+    # agent.secret_sources.bitwarden eagerly loads cryptography._rust.pyd,
+    # which causes the Windows updater to self-lock before its preflight
+    # (the updater itself maps the .pyd before the dependency sync runs).
+    # A config with no enabled sources costs one dict scan; a config with
+    # enabled sources pays the crypto load exactly once, on demand.
+    # NOTE: only keys that smell like a real secret source trigger the import —
+    # a generic dict entry must not force crypto load on every hermes launch.
+    # We whitelist by *shape* (source dict with enabled flag) rather than
+    # hardcoding names, so plugin/test sources pass through unknown keys.
+    any_enabled = any(
+        isinstance(v, dict) and v.get("enabled") is True
+        for v in cfg.values()
+    )
+    if not any_enabled:
         return
 
     try:

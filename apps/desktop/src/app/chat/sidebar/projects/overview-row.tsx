@@ -158,7 +158,11 @@ export function ProjectOverviewRow({
   )
 
   return (
-    <div className={cn(dragging && 'relative z-10')} ref={ref} style={style}>
+    // Tag each project sibling with its id so a custom skin can target one
+    // project in the overview — the parallel to the entered-project wrapper's
+    // `data-sessions-project` (index.tsx), which only fires once you've drilled
+    // in. Here it's present on every row of the list.
+    <div className={cn(dragging && 'relative z-10')} data-sessions-project={project.id} ref={ref} style={style}>
       {/* Home has no per-project actions, so it gets no right-click menu. */}
       {project.isNoProject ? (
         shell

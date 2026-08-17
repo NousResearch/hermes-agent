@@ -228,6 +228,19 @@ By default the app starts and manages its own **local** backend. You can instead
 
 Connection modes are configured **per profile** — a per-profile override can point one profile at a remote or cloud backend while others stay local (**Use default gateway** removes an override).
 
+### Settings → Connections: the multi-connection registry
+
+Alongside the per-profile connection mode above, **Settings → Connections** manages a named registry of every agent source the app knows about — the local runtime, any number of remote gateways (LAN, Tailscale, internet), Hermes Cloud instances, and SSH hosts — all persisted together in one place. You can jump there from the plug button at the right end of the sidebar profile rail (**Connect another Hermes gateway…**) or via **⌘K → Connections**. The full guide, including the union agent roster, `@name-device` handles, fleet-wide updates, and the plugin SDK surface, is at [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md).
+
+- **Every connection needs a unique name** (a device name such as "Homelab" or "Work laptop"). When the same profile name exists on several registered sources, surfaces disambiguate it as `@profile-device` (e.g. `@research-homelab`).
+- **Add / edit / remove / test** connections from the panel. The local entry is managed by the app and cannot be removed. **Test** probes the connection's own HTTP and WebSocket legs directly.
+- Existing settings are **imported automatically** the first time you run a build with the registry: your current global connection and any per-profile overrides become named entries. The legacy settings file is left untouched, so older builds keep working.
+- Cloud entries come from the Hermes Cloud sign-in/discovery flow above, not from a hand-typed URL.
+- Tokens are stored encrypted with the OS keyring (with the same explicit plain-text opt-in as Settings → Gateway on keyring-less Linux).
+
+Side-by-side routing is live: each registered source dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** in the Connections panel dispatches `hermes update` to every eligible source at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
+
+
 :::info The remote backend is a running `hermes serve` process
 "Remote backend" means a **`hermes serve`** server running on the remote machine — that is the process the desktop app connects to. Nothing in this section works unless that backend is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes serve` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a *separate* long-running process you start independently — see the note after the setup steps.
 :::

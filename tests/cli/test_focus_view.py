@@ -323,10 +323,13 @@ class TestModelFacingMessagesUnchanged:
 
     @pytest.mark.parametrize("dispatch_mode", ["sequential", "concurrent"])
     def test_model_facing_messages_identical_with_focus_on_vs_off(self, dispatch_mode):
-        # Focus ON == the existing tool_progress "off" suppression path.
-        focus_on = _run_fake_turn(FOCUS_TOOL_PROGRESS_MODE, dispatch_mode)
-        # Focus OFF == the default noisy display mode.
-        focus_off = _run_fake_turn("all", dispatch_mode)
+        # Creation timestamps are durable metadata, so hold the clock steady
+        # while comparing otherwise identical turns.
+        with patch("agent.message_metadata.wall_time", return_value=1_700_000_000.0):
+            # Focus ON == the existing tool_progress "off" suppression path.
+            focus_on = _run_fake_turn(FOCUS_TOOL_PROGRESS_MODE, dispatch_mode)
+            # Focus OFF == the default noisy display mode.
+            focus_off = _run_fake_turn("all", dispatch_mode)
 
         assert focus_on == focus_off, (
             "focus view altered the model-facing messages — display-only "

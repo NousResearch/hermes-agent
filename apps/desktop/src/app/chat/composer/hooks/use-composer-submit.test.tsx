@@ -79,7 +79,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     vi.restoreAllMocks()
   })
 
-  it('steers a plain-text follow-up instead of queueing or stopping', async () => {
+  it('treats a payload mid-turn as send (steer), not stop', async () => {
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
       busy: true,
       text: 'change course'
@@ -199,7 +199,13 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
 
   const parkClarify = (sessionId: string) => {
     $clarifyRequests.set({
-      [sessionId]: { requestId: `req-${sessionId}`, question: 'which one?', choices: ['a', 'b'], sessionId }
+      [sessionId]: {
+        requestId: `req-${sessionId}`,
+        question: 'which one?',
+        choices: ['a', 'b'],
+        multiSelect: false,
+        sessionId
+      }
     })
     $gateway.set({ request: gatewayRequest } as unknown as ReturnType<typeof $gateway.get>)
   }

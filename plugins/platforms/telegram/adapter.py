@@ -657,6 +657,9 @@ class TelegramAdapter(BasePlatformAdapter):
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
+    # Cap on inbound events held across a disconnect/reconnect window.
+    # Bounds memory during extended outages; oldest events are dropped first.
+    HELD_INBOUND_MAX = 64
     _GENERAL_TOPIC_THREAD_ID = "1"
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
@@ -789,6 +792,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._drop_delayed_deliveries = False
+        # Inbound events held across disconnect. PTB advances the polling offset
+        # before our enqueue/flush drop-guard runs, so Telegram will not
+        # redeliver — destroying the event is silent permanent loss. Hold and
+        # redispatch on reconnect instead (see _hold_inbound_event).
+        self._held_inbound_events: List[MessageEvent] = []
+        self._held_inbound_redispatch_task: Optional[asyncio.Task] = None
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_conflict_recovery_generation: Optional[int] = None
@@ -911,6 +920,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
         super()._mark_connected()
+        # Drain anything held while we were down. PTB will not redeliver —
+        # these events exist only in our hold queue now.
+        self._schedule_held_inbound_redispatch()
 
     def _mark_disconnected(self) -> None:
         self._drop_delayed_deliveries = True
@@ -919,15 +931,228 @@ class TelegramAdapter(BasePlatformAdapter):
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._drop_delayed_deliveries = True
         super()._set_fatal_error(code, message, retryable=retryable)
+        # Permanent fatal: no reconnect will drain. Discard the hold queue now
+        # and refuse further holds (teardown salvage / late enqueue must not
+        # re-populate a queue that can never drain — review #83878).
+        if not retryable:
+            held = getattr(self, "_held_inbound_events", None)
+            n = len(held) if held else 0
+            if held:
+                held.clear()
+            if n:
+                logger.warning(
+                    "[Telegram] Non-retryable fatal (%s); discarding %d held inbound message(s)",
+                    code,
+                    n,
+                )
+
+    def _is_permanent_fatal(self) -> bool:
+        """True after non-retryable fatal — holds must discard, not queue."""
+        if not getattr(self, "_fatal_error_code", None):
+            return False
+        return not bool(getattr(self, "_fatal_error_retryable", True))
 
     def _should_drop_delayed_delivery(self) -> bool:
-        """True once teardown/fatal-error started — delayed flushes must drop.
+        """True once teardown/fatal-error started — delayed flushes must not dispatch.
 
         Buffered text/photo/media-group flushes sit behind an asyncio.sleep().
         If disconnect wins the race, dispatching them spawns an agent on a
         torn-down session, producing stale/duplicate deliveries.
+
+        Callers must NOT destroy the event when this returns True: PTB has
+        already advanced the polling offset, so Telegram will never redeliver.
+        Use ``_hold_inbound_event`` and redispatch on reconnect (unless
+        permanent fatal, which discards explicitly).
         """
         return bool(getattr(self, "_drop_delayed_deliveries", False))
+
+    def _schedule_held_inbound_redispatch(self) -> None:
+        """Ensure a tracked drain runs when held events exist and delivery is live.
+
+        Drain triggers:
+        - ``_mark_connected`` after reconnect
+        - any hold created while already connected (e.g. cancel-after-pop)
+        - end of a drain pass if more events arrived mid-drain
+
+        No-ops while disconnected/tearing down or after permanent fatal.
+        """
+        if self._is_permanent_fatal():
+            return
+        if self._should_drop_delayed_delivery():
+            return
+        held = getattr(self, "_held_inbound_events", None)
+        if not held:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        prior = getattr(self, "_held_inbound_redispatch_task", None)
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        # Already draining on another task — that pass schedules a follow-up
+        # if anything remains. Do not stack duplicate tasks.
+        if prior is not None and not prior.done() and prior is not current:
+            return
+        self._held_inbound_redispatch_task = loop.create_task(
+            self._redispatch_held_inbound(
+                prior=None if prior is current else prior
+            )
+        )
+
+    def _hold_inbound_event(
+        self,
+        event: "MessageEvent",
+        *,
+        where: str,
+        schedule: bool = True,
+    ) -> None:
+        """Preserve an inbound event that cannot be dispatched right now.
+
+        The disconnect drop-guard (#55971) correctly prevents dispatch into a
+        torn-down session. Destroying the event is wrong: by the time we reach
+        enqueue/flush, python-telegram-bot has already acked the update and
+        advanced the offset — silent permanent loss, no log, no error.
+
+        Hold the event and redispatch from ``_mark_connected`` (or immediately
+        if already connected). Cap the queue so a long outage cannot grow
+        without bound. Dedup by object identity so salvage-after-hold never
+        double-queues the same event. Permanent fatal discards explicitly.
+
+        ``schedule=False`` when the caller is already inside a drain and will
+        decide follow-up policy (avoids poison-event tight loops).
+        """
+        if self._is_permanent_fatal():
+            logger.warning(
+                "[Telegram] Discarding inbound under non-retryable fatal (%s, %d chars)",
+                where,
+                len(getattr(event, "text", None) or ""),
+            )
+            return
+
+        held = getattr(self, "_held_inbound_events", None)
+        if held is None:
+            self._held_inbound_events = []
+            held = self._held_inbound_events
+        for existing in held:
+            if existing is event:
+                return
+
+        max_n = int(getattr(self, "HELD_INBOUND_MAX", 64) or 64)
+        while len(held) >= max_n:
+            dropped = held.pop(0)
+            logger.warning(
+                "[Telegram] Held-inbound queue full (%d); dropping oldest (%d chars)",
+                max_n,
+                len(getattr(dropped, "text", None) or ""),
+            )
+        held.append(event)
+        logger.warning(
+            "[Telegram] Holding inbound (%s, %d chars, queue=%d)%s",
+            where,
+            len(getattr(event, "text", None) or ""),
+            len(held),
+            " - will redispatch on reconnect"
+            if self._should_drop_delayed_delivery()
+            else (" - scheduling redispatch" if schedule else ""),
+        )
+        # Connected cancel-after-pop (and any other live-path hold) must not
+        # orphan the event waiting for a future reconnect that may never come.
+        if schedule and not self._should_drop_delayed_delivery():
+            self._schedule_held_inbound_redispatch()
+
+    async def _redispatch_held_inbound(
+        self, prior: Optional[asyncio.Task] = None
+    ) -> None:
+        """Drain the hold queue after reconnect or a connected-path hold.
+
+        ``prior`` is the previous redispatch task, if any — awaited here so
+        ``_mark_connected`` stays synchronous while teardown can still
+        cancel+await the single tracked task via
+        ``_cancel_pending_delivery_tasks``.
+        """
+        if prior is not None and prior is not asyncio.current_task() and not prior.done():
+            prior.cancel()
+            try:
+                await prior
+            except asyncio.CancelledError:
+                pass
+
+        if self._is_permanent_fatal():
+            held = getattr(self, "_held_inbound_events", None)
+            if held:
+                n = len(held)
+                held.clear()
+                logger.warning(
+                    "[Telegram] Redispatch aborted; discarded %d held inbound under non-retryable fatal",
+                    n,
+                )
+            return
+
+        held = getattr(self, "_held_inbound_events", None)
+        if not held:
+            return
+        # Take ownership atomically so a concurrent hold during drain appends
+        # to a fresh list and is picked up by a follow-up schedule.
+        events = list(held)
+        held.clear()
+        logger.warning(
+            "[Telegram] Redispatching %d held inbound message(s)",
+            len(events),
+        )
+        allow_followup_schedule = True
+        try:
+            for idx, event in enumerate(events):
+                if self._is_permanent_fatal() or self._should_drop_delayed_delivery():
+                    # Disconnect/fatal mid-drain — re-hold current + remainder
+                    # (hold itself discards under permanent fatal).
+                    self._hold_inbound_event(
+                        event, where="redispatch-interrupted", schedule=False
+                    )
+                    for rest in events[idx + 1 :]:
+                        self._hold_inbound_event(
+                            rest, where="redispatch-interrupted", schedule=False
+                        )
+                    return
+                try:
+                    await self.handle_message(event)
+                except asyncio.CancelledError:
+                    self._hold_inbound_event(
+                        event, where="redispatch-cancelled", schedule=False
+                    )
+                    for rest in events[idx + 1 :]:
+                        self._hold_inbound_event(
+                            rest, where="redispatch-cancelled", schedule=False
+                        )
+                    raise
+                except Exception:
+                    # Retryable failure: keep current + remainder. Do not
+                    # immediately reschedule — a poison event would tight-loop.
+                    # Next mark_connected or a later connected-path hold drains.
+                    logger.exception(
+                        "[Telegram] Failed to redispatch held inbound (%d chars); re-holding",
+                        len(getattr(event, "text", None) or ""),
+                    )
+                    self._hold_inbound_event(
+                        event, where="redispatch-failed", schedule=False
+                    )
+                    for rest in events[idx + 1 :]:
+                        self._hold_inbound_event(
+                            rest, where="redispatch-failed", schedule=False
+                        )
+                    allow_followup_schedule = False
+                    return
+        finally:
+            # Events arrived mid-drain while still connected need another pass.
+            if (
+                allow_followup_schedule
+                and getattr(self, "_held_inbound_events", None)
+                and not self._should_drop_delayed_delivery()
+                and not self._is_permanent_fatal()
+            ):
+                self._schedule_held_inbound_redispatch()
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1212,22 +1437,44 @@ class TelegramAdapter(BasePlatformAdapter):
                     pass
 
         if authorized is None:
+            # Resolve through the runner's full auth chain (platform + group
+            # allowlists, pairing store, allow-all flags). Prefer the
+            # platform-bound callback registered via set_authorization_check:
+            # it routes to GatewayRunner._is_user_authorized AND survives
+            # multiplex handler wrapping, whereas the bound-handler __self__
+            # lookup is None when the primary handler is a profile closure —
+            # which silently dropped the chat allowlist and default-denied
+            # allowlisted group members under multiplex_profiles (#87132). Fall
+            # back to the bound handler for setups without a registered callback.
             runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
             auth_fn = getattr(runner, "_is_user_authorized", None)
-            if callable(auth_fn):
-                # Only make an early decision via the runner when an allowlist
-                # actually exists; otherwise unknown DMs must reach the pairing
-                # flow rather than being default-denied here.
+            has_callback = getattr(self, "_authorization_check", None) is not None
+            if has_callback or callable(auth_fn):
+                # Only make an early decision when an allowlist actually exists;
+                # otherwise unknown DMs must reach the pairing flow rather than
+                # being default-denied here.
                 if not self._telegram_auth_env_configured():
                     return True
-                try:
-                    authorized = bool(auth_fn(source))
-                except Exception:
-                    logger.debug(
-                        "[Telegram] Falling back to env-only auth for user %s",
+                decision = (
+                    self._is_sender_authorized(
                         user_id,
-                        exc_info=True,
+                        chat_type=source.chat_type,
+                        chat_id=source.chat_id,
                     )
+                    if has_callback
+                    else None
+                )
+                if decision is not None:
+                    authorized = decision
+                elif callable(auth_fn):
+                    try:
+                        authorized = bool(auth_fn(source))
+                    except Exception:
+                        logger.debug(
+                            "[Telegram] Falling back to env-only auth for user %s",
+                            user_id,
+                            exc_info=True,
+                        )
 
         if authorized is None:
             allowed_csv = _scoped_gate_env("TELEGRAM_ALLOWED_USERS").strip()
@@ -1317,9 +1564,13 @@ class TelegramAdapter(BasePlatformAdapter):
         Messages topics can opt in with explicit ``direct_messages_topic_id``
         metadata. Hermes-created private-chat topic lanes are marked with
         ``telegram_dm_topic_reply_fallback``. Live replies send the private
-        topic thread id together with a reply anchor; synthetic/resumed sends
-        without an anchor use ``direct_messages_topic_id`` when metadata has it.
-        ``message_thread_id`` alone can render outside the visible lane.
+        topic thread id together with a reply anchor. Synthetic/resumed sends
+        without an anchor (loop wakeups, background-process notifications,
+        queued follow-ups after a gateway restart) prefer the Hermes topic's
+        ``message_thread_id`` so they stay in the active topic lane (#87051);
+        ``direct_messages_topic_id`` is only used when no topic thread
+        resolves, since the native DM-topic id does not match the Hermes
+        topic lane and can render the message in a different chat lane.
 
         When ``reply_to_mode`` is ``"off"``, the reply anchor is suppressed for
         DM topic fallback sends while preserving the ``message_thread_id`` so
@@ -1331,6 +1582,15 @@ class TelegramAdapter(BasePlatformAdapter):
             if reply_to_message_id is None:
                 reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
             if reply_to_message_id is None:
+                # Anchor-less synthetic sends (loop wakeups, watch
+                # notifications, restart-resumed follow-ups) must stay in the
+                # active topic lane: prefer the Hermes topic thread id when it
+                # resolves (#87051). Routing via direct_messages_topic_id here
+                # sent these to a different lane than the topic the session
+                # runs in.
+                thread_message_id = cls._message_thread_id_for_send(thread_id)
+                if thread_message_id is not None:
+                    return {"message_thread_id": thread_message_id}
                 direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
                 if direct_topic_id is not None:
                     return {
@@ -4111,16 +4371,45 @@ class TelegramAdapter(BasePlatformAdapter):
                     kwargs["limits"] = _pool_limits
                 return kwargs
 
-            disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
+            disable_fallback = (
+                os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "")
+                .strip()
+                .lower()
+                in {"1", "true", "yes", "on"}
+            )
             fallback_ips = self._fallback_ips()
-            if not fallback_ips:
-                logger.warning("[%s] Discovering Telegram API fallback IPs via DNS-over-HTTPS…", self.name)
-                fallback_ips = await discover_fallback_ips()
-                logger.info(
-                    "[%s] Auto-discovered Telegram fallback IPs: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
+            if disable_fallback:
+                fallback_ips = []
+            if not fallback_ips and not disable_fallback:
+                discovery_timeout = self._env_float_clamped(
+                    "HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT",
+                    5.0,
+                    min_value=0.0,
                 )
+                logger.warning(
+                    "[%s] Discovering Telegram API fallback IPs via DNS-over-HTTPS…",
+                    self.name,
+                )
+                try:
+                    fallback_ips = await _await_with_thread_deadline(
+                        discover_fallback_ips(),
+                        timeout=discovery_timeout,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Telegram fallback-IP discovery failed after %.0fs; "
+                        "continuing with the plain api.telegram.org path: %s",
+                        self.name,
+                        discovery_timeout,
+                        _redact_telegram_error_text(exc),
+                    )
+                    fallback_ips = []
+                else:
+                    logger.info(
+                        "[%s] Auto-discovered Telegram fallback IPs: %s",
+                        self.name,
+                        ", ".join(fallback_ips),
+                    )
 
             proxy_targets = ["api.telegram.org", *fallback_ips]
             proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
@@ -4565,11 +4854,37 @@ class TelegramAdapter(BasePlatformAdapter):
             collect(task)
         collect(getattr(self, "_polling_error_task", None))
         collect(getattr(self, "_polling_progress_verifier_task", None))
+        # Hold-queue redispatch must be cancellable+awaitable on teardown so it
+        # cannot dispatch handle_message into a torn-down session (same lifecycle
+        # rule teknium called out on #72037 for shielded flush dispatch).
+        collect(getattr(self, "_held_inbound_redispatch_task", None))
 
         for task in pending_tasks:
             task.cancel()
         if awaitable_tasks:
             await asyncio.gather(*awaitable_tasks, return_exceptions=True)
+
+        # Salvage buffered inbound events before clearing maps — unless permanent
+        # fatal, where no reconnect can drain and hold would re-orphan them
+        # (#83878). Discard pending sources explicitly in that case.
+        if self._is_permanent_fatal():
+            n_pending = (
+                len(self._pending_text_batches)
+                + len(self._pending_photo_batches)
+                + len(self._media_group_events)
+            )
+            if n_pending:
+                logger.warning(
+                    "[Telegram] Non-retryable fatal teardown; discarding %d pending inbound batch(es)",
+                    n_pending,
+                )
+        else:
+            for event in list(self._pending_text_batches.values()):
+                self._hold_inbound_event(event, where="text-batch-teardown")
+            for event in list(self._pending_photo_batches.values()):
+                self._hold_inbound_event(event, where="photo-batch-teardown")
+            for event in list(self._media_group_events.values()):
+                self._hold_inbound_event(event, where="media-group-teardown")
 
         self._media_group_tasks.clear()
         self._media_group_events.clear()
@@ -4581,6 +4896,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_error_task = None
         if getattr(self, "_polling_progress_verifier_task", None) is not current_task:
             self._polling_progress_verifier_task = None
+        if getattr(self, "_held_inbound_redispatch_task", None) is not current_task:
+            self._held_inbound_redispatch_task = None
 
     async def _await_disconnect_step(self, awaitable, timeout: float, step: str) -> bool:
         """Await one disconnect step; detach on timeout so teardown advances.
@@ -9317,7 +9634,7 @@ class TelegramAdapter(BasePlatformAdapter):
         dispatching the combined message.
         """
         if self._should_drop_delayed_delivery():
-            logger.debug("[Telegram] Dropping text batch enqueue after disconnect started")
+            self._hold_inbound_event(event, where="text-enqueue")
             return
 
         key = self._text_batch_key(event)
@@ -9351,6 +9668,7 @@ class TelegramAdapter(BasePlatformAdapter):
         split point, since a continuation chunk is almost certain.
         """
         current_task = asyncio.current_task()
+        event = None
         try:
             # Adaptive delay tiers:
             #  - last chunk ≥ _SPLIT_THRESHOLD: a continuation is almost
@@ -9380,13 +9698,20 @@ class TelegramAdapter(BasePlatformAdapter):
             if not event:
                 return
             if self._should_drop_delayed_delivery():
-                logger.debug("[Telegram] Dropping text batch flush after disconnect started")
+                self._hold_inbound_event(event, where="text-flush")
+                event = None
                 return
             logger.info(
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
             await self.handle_message(event)
+            event = None
+        except asyncio.CancelledError:
+            # Cancelled after pop but before durable dispatch — hold, don't lose.
+            if event is not None:
+                self._hold_inbound_event(event, where="text-flush-cancelled")
+            raise
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
@@ -9411,16 +9736,23 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _flush_photo_batch(self, batch_key: str) -> None:
         """Send a buffered photo burst/album as a single MessageEvent."""
         current_task = asyncio.current_task()
+        event = None
         try:
             await asyncio.sleep(self._media_batch_delay_seconds)
             event = self._pending_photo_batches.pop(batch_key, None)
             if not event:
                 return
             if self._should_drop_delayed_delivery():
-                logger.debug("[Telegram] Dropping photo batch flush after disconnect started")
+                self._hold_inbound_event(event, where="photo-flush")
+                event = None
                 return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
             await self.handle_message(event)
+            event = None
+        except asyncio.CancelledError:
+            if event is not None:
+                self._hold_inbound_event(event, where="photo-flush-cancelled")
+            raise
         finally:
             if self._pending_photo_batch_tasks.get(batch_key) is current_task:
                 self._pending_photo_batch_tasks.pop(batch_key, None)
@@ -9428,7 +9760,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
         if self._should_drop_delayed_delivery():
-            logger.debug("[Telegram] Dropping photo batch enqueue after disconnect started")
+            self._hold_inbound_event(event, where="photo-enqueue")
             return
 
         existing = self._pending_photo_batches.get(batch_key)
@@ -9755,7 +10087,7 @@ class TelegramAdapter(BasePlatformAdapter):
         attachments into a single MessageEvent.
         """
         if self._should_drop_delayed_delivery():
-            logger.debug("[Telegram] Dropping media group enqueue after disconnect started")
+            self._hold_inbound_event(event, where="media-group-enqueue")
             return
 
         existing = self._media_group_events.get(media_group_id)
@@ -9777,16 +10109,23 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _flush_media_group_event(self, media_group_id: str) -> None:
         current_task = asyncio.current_task()
+        event = None
         try:
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
             event = self._media_group_events.pop(media_group_id, None)
-            if event is not None:
-                if self._should_drop_delayed_delivery():
-                    logger.debug("[Telegram] Dropping media group flush after disconnect started")
-                    return
-                await self.handle_message(event)
+            if event is None:
+                return
+            if self._should_drop_delayed_delivery():
+                self._hold_inbound_event(event, where="media-group-flush")
+                event = None
+                return
+            await self.handle_message(event)
+            event = None
         except asyncio.CancelledError:
-            return
+            # Cancelled after pop but before durable dispatch — hold, don't lose.
+            if event is not None:
+                self._hold_inbound_event(event, where="media-group-flush-cancelled")
+            raise
         finally:
             if self._media_group_tasks.get(media_group_id) is current_task:
                 self._media_group_tasks.pop(media_group_id, None)

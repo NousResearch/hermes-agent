@@ -4,6 +4,7 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import { matchesQuery } from '@/hooks/use-media-query'
+import { connectionScopedAtom } from '@/lib/connection-scoped'
 import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
 
@@ -90,13 +91,23 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
   return typeof override === 'number' ? override : SIDEBAR_DEFAULT_WIDTH
 })
 
-export const $pinnedSessionIds = persistentAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray)
-export const $sidebarSessionOrderIds = persistentAtom(
+// Pins and the manual session order are CONNECTION-scoped, not global: they
+// are lists of session ids owned by one gateway's state.db, and multiple
+// windows in this app can be connected to different gateways while sharing
+// one localStorage area. A global key here is how one gateway's pins bleed
+// into another window's sidebar (#77318). The local connection keeps the
+// bare legacy key; remote connections get their own namespaced keys.
+export const $pinnedSessionIds = connectionScopedAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray)
+export const $sidebarSessionOrderIds = connectionScopedAtom(
   SIDEBAR_SESSION_ORDER_STORAGE_KEY,
   [] as string[],
   Codecs.stringArray
 )
-export const $sidebarSessionOrderManual = persistentAtom(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, false, Codecs.bool)
+export const $sidebarSessionOrderManual = connectionScopedAtom(
+  SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY,
+  false,
+  Codecs.bool
+)
 export const $sidebarWorkspaceOrderIds = persistentAtom(
   SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY,
   [] as string[],

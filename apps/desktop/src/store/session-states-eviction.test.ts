@@ -8,8 +8,8 @@ import { $sessionStates, $sessionTiles, closeSessionTile, publishSessionState } 
  * The closed-tile leak: gateway events keep publishing for sessions whose
  * surface is gone, and every parked transcript taxes every later publish (map
  * spread + the status projections run per entry per message delta). A settled
- * state nothing references must leave the map; everything a surface still
- * needs must stay.
+ * state nothing references must release its transcript; lightweight status
+ * stays so sidebar projections remain available.
  */
 
 const state = (storedId: string, patch: Partial<ReturnType<typeof createClientSessionState>> = {}) => ({
@@ -28,13 +28,14 @@ beforeEach(() => {
 })
 
 describe('publish-time eviction', () => {
-  it('evicts a settling session no surface references, keeping its unread dot', () => {
+  it('releases an unreferenced settled transcript while keeping status and its unread dot', () => {
     publishSessionState('rt-1', state('stored-1', { busy: true }))
     expect($sessionStates.get()['rt-1']).toBeDefined()
 
     publishSessionState('rt-1', state('stored-1', { busy: false }))
 
-    expect($sessionStates.get()['rt-1']).toBeUndefined()
+    expect($sessionStates.get()['rt-1']?.messages).toEqual([])
+    expect($sessionStates.get()['rt-1']).toMatchObject({ storedSessionId: 'stored-1', busy: false })
     // The settle transition still fired: the sidebar's unread marker landed.
     expect($unreadFinishedSessionIds.get()).toContain('stored-1')
   })
@@ -100,8 +101,9 @@ describe('closeSessionTile eviction', () => {
 
     expect($sessionStates.get()['rt-1']).toBeDefined()
 
-    // ... and its settle publish is what evicts it.
+    // ... and its settle publish releases only the heavy transcript.
     publishSessionState('rt-1', state('stored-1', { busy: false }))
-    expect($sessionStates.get()['rt-1']).toBeUndefined()
+    expect($sessionStates.get()['rt-1']?.messages).toEqual([])
+    expect($sessionStates.get()['rt-1']).toMatchObject({ storedSessionId: 'stored-1', busy: false })
   })
 })

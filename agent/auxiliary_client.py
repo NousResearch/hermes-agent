@@ -1283,7 +1283,7 @@ def _to_openai_base_url(base_url: str) -> str:
         # ZAI uses /api/anthropic for the Coding Plan's Anthropic wire.  The
         # matching OpenAI-wire endpoint is /api/coding/paas/v4; /api/paas/v4
         # is the independently billed general API.
-        if "open.bigmodel.cn" in url or "bigmodel" in url or "api.z.ai" in url:
+        if base_url_host_matches(url, "open.bigmodel.cn") or base_url_host_matches(url, "api.z.ai"):
             rewritten = url[: -len("/anthropic")] + "/coding/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
@@ -1297,7 +1297,7 @@ def _to_openai_base_url(base_url: str) -> str:
             url,
         )
         return url
-    if "api.kimi.com" in url and url.endswith("/coding"):
+    if base_url_host_matches(url, "api.kimi.com") and url.endswith("/coding"):
         # Kimi Code uses /coding/v1/messages for Anthropic SDK (appends /v1/messages)
         # but /coding/v1/chat/completions for OpenAI SDK (appends /chat/completions)
         # Without /v1 here, OpenAI SDK hits /coding/chat/completions — a 404.
@@ -1627,14 +1627,18 @@ class _CodexCompletionsAdapter:
                 or base_url_host_matches(_host_src, "models.github.ai")
             )
             if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
-                # Scope by the owning turn's session so two unrelated sessions
-                # with the same instructions/tools (e.g. compression, MoA,
-                # flush_memories firing back-to-back on different sessions)
-                # don't bucket-share a prompt cache slot (#78941). The main
-                # transport (agent/transports/codex.py::build_kwargs) does the
-                # same; this adapter had no session handle before
-                # set_runtime_main() started threading one through.
-                _scope = _cache_scope_from_session_id(_runtime_main_value("session_id"))
+                # Scope by the owning turn's conversation so two unrelated
+                # sessions with the same instructions/tools (e.g. compression,
+                # MoA, flush_memories firing back-to-back on different
+                # sessions) don't bucket-share a prompt cache slot (#78941).
+                # Prefer the rotation-stable logical scope threaded through
+                # set_runtime_main() (compression-lineage root, #79017) and
+                # fall back to the physical session id, mirroring the main
+                # transport (agent/transports/codex.py::build_kwargs).
+                _scope = _cache_scope_from_session_id(
+                    _runtime_main_value("cache_scope")
+                    or _runtime_main_value("session_id")
+                )
                 _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"), _scope)
                 if _cache_key:
                     resp_kwargs["prompt_cache_key"] = _cache_key
@@ -2209,7 +2213,15 @@ class _BedrockCompletionsAdapter:
             model=model,
             messages=messages,
             tools=kwargs.get("tools"),
-            max_tokens=int(max_tokens) if max_tokens else 4096,
+            # Omitted/None caller cap → None: build_converse_kwargs then omits
+            # inferenceConfig.maxTokens so Bedrock uses the model's maximum
+            # allowed output, matching the no-cap-by-default policy every
+            # other aux wire already follows (#10809: vision descriptions
+            # stayed capped at the shim's old hardcoded 4096 on Bedrock).
+            # Truthiness (not `is None`) is deliberate — it matches the
+            # sibling Anthropic shim's reading of max_tokens above, so a
+            # nonsense explicit 0 is treated as "no cap" on both wires.
+            max_tokens=int(max_tokens) if max_tokens else None,
             temperature=kwargs.get("temperature"),
             top_p=kwargs.get("top_p"),
             stop_sequences=stop,
@@ -3377,11 +3389,17 @@ def set_runtime_main(
     api_mode: str = "",
     auth_mode: str = "",
     session_id: str = "",
+    cache_scope: str = "",
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
     Context-local state prevents concurrent gateway sessions from overwriting
     one another while retaining compatibility mirrors for legacy readers.
+
+    ``cache_scope`` is the rotation-stable logical cache scope (compression-
+    lineage root — agent/prompt_cache_scope.py) resolved once per turn by
+    turn_context; auxiliary Responses calls prefer it over ``session_id``
+    for prompt_cache_key derivation (#79017).
     """
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
@@ -3399,6 +3417,7 @@ def set_runtime_main(
         "api_mode": (api_mode or "").strip(),
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
+        "cache_scope": (cache_scope or "").strip(),
     }
     # Publish authoritative context before updating locked compatibility
     # mirrors; concurrent sessions never read those mirrors at runtime.
@@ -6464,6 +6483,17 @@ def resolve_provider_client(
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = _scoped_key_env(custom_key_env)
+            # Auxiliary tasks resolve named custom providers here rather than
+            # through _resolve_named_custom_runtime, so key_cmd has to be
+            # honoured on both paths at matching precedence: otherwise the main
+            # agent turn works while every auxiliary call (title generation,
+            # compression, vision, embedding) 401s on the placeholder below.
+            custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
+            if custom_key_cmd:
+                from agent.command_token_source import build_command_token_provider
+                custom_key = build_command_token_provider(
+                    custom_key_cmd, custom_entry.get("name") or provider
+                ) or custom_key
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(
@@ -7523,17 +7553,71 @@ def _force_close_async_httpx(client: Any) -> None:
         pass
 
 
-def _close_cached_client(client: Any) -> None:
-    """Apply the canonical best-effort close policy to one cached client."""
+def _schedule_async_close(close_result: Any, client: Any) -> None:
+    """Finish an async close without leaking an unawaited coroutine."""
+    async def _await_close() -> None:
+        try:
+            await close_result
+        except Exception:
+            pass
+        finally:
+            _force_close_async_httpx(client)
+
+    runner = _await_close()
+    try:
+        import asyncio as _aio
+
+        try:
+            loop = _aio.get_running_loop()
+        except RuntimeError:
+            _aio.run(runner)
+        else:
+            task = loop.create_task(runner)
+
+            def _consume(completed_task) -> None:
+                try:
+                    completed_task.exception()
+                except BaseException:
+                    pass
+
+            task.add_done_callback(_consume)
+            runner = None
+    except Exception:
+        if runner is not None:
+            try:
+                runner.close()
+            except Exception:
+                pass
+        _force_close_async_httpx(client)
+
+
+def _close_cached_client(client: Any, *, close_async: bool = False) -> None:
+    """Close one cached client, awaiting async transports only when safe."""
     if client is None:
         return
-    _force_close_async_httpx(client)
+    close_fn = getattr(client, "close", None)
+    if not callable(close_fn):
+        _force_close_async_httpx(client)
+        return
     try:
-        close_fn = getattr(client, "close", None)
-        if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
-            close_fn()
+        close_result = close_fn()
     except Exception:
-        pass
+        _force_close_async_httpx(client)
+        return
+    if inspect.isawaitable(close_result):
+        if close_async:
+            _schedule_async_close(close_result, client)
+        else:
+            # Do not await a client owned by another live event loop.
+            # Closing the coroutine avoids an unawaited-coroutine warning;
+            # the transport is still neutered for safe eventual GC.
+            try:
+                close_result.close()
+            except Exception:
+                pass
+            _force_close_async_httpx(client)
+        return
+    _force_close_async_httpx(client)
 
 
 def shutdown_cached_clients() -> None:
@@ -7541,14 +7625,34 @@ def shutdown_cached_clients() -> None:
 
     Call this during CLI shutdown, *before* the event loop is closed, to
     avoid ``AsyncHttpxClientWrapper.__del__`` raising on a dead loop.
+
+    Snapshot and clear the cache under the lock, then close transports outside
+    it. Async transport shutdown may block while an owner loop drains; holding
+    the global cache lock during that wait stalls unrelated auxiliary callers
+    and can turn teardown into a process-wide lock convoy.
     """
     with _client_cache_lock:
-        for key, entry in list(_client_cache.items()):
-            client = entry[0]
-            if client is None:
-                continue
-            _close_cached_client(client)
+        clients = [
+            (entry[0], entry[2])
+            for entry in _client_cache.values()
+            if entry[0] is not None
+        ]
         _client_cache.clear()
+    try:
+        import asyncio as _aio
+
+        running_loop = _aio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+    for client, owner_loop in clients:
+        # A live foreign loop owns its async transport. Calling its coroutine
+        # on this thread can bind/close sockets from the wrong loop; neuter it
+        # and let that owner finish teardown. Closed loops are safe to drain
+        # locally, and the current loop can await its own client.
+        close_async = owner_loop is not None and (
+            owner_loop.is_closed() or owner_loop is running_loop
+        )
+        _close_cached_client(client, close_async=close_async)
 
 
 def cleanup_stale_async_clients() -> None:
@@ -7559,15 +7663,18 @@ def cleanup_stale_async_clients() -> None:
     This is defense-in-depth — the primary fix is ``neuter_async_httpx_del``
     which disables ``__del__`` entirely.
     """
+    stale_clients = []
     with _client_cache_lock:
         stale_keys = []
         for key, entry in _client_cache.items():
             client, _default, cached_loop = entry
             if cached_loop is not None and cached_loop.is_closed():
-                _force_close_async_httpx(client)
                 stale_keys.append(key)
+                stale_clients.append(client)
         for key in stale_keys:
             del _client_cache[key]
+    for client in stale_clients:
+        _close_cached_client(client, close_async=True)
 
 
 def _is_openrouter_client(client: Any) -> bool:
@@ -7660,7 +7767,12 @@ def _get_cached_client(
                     effective = _compat_model(cached_client, model, cached_default)
                     return cached_client, effective
                 # Stale — evict and fall through to create a new client.
-                _force_close_async_httpx(cached_client)
+                # Only a client whose owner loop is closed may be awaited from
+                # this thread; a live foreign loop remains force-neutered.
+                owner_loop_closed = (
+                    cached_loop is not None and cached_loop.is_closed()
+                )
+                _close_cached_client(cached_client, close_async=owner_loop_closed)
                 del _client_cache[cache_key]
             else:
                 effective = _compat_model(cached_client, model, cached_default)
@@ -7710,7 +7822,7 @@ def _get_cached_client(
                 client, default_model, _ = _client_cache[cache_key]
                 # This concurrently built loser was never exposed to a caller,
                 # so it is safe to close immediately.
-                _close_cached_client(built_client)
+                _close_cached_client(built_client, close_async=async_mode)
     return client, model or default_model
 
 

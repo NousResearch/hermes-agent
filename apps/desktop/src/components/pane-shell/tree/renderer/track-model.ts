@@ -59,6 +59,10 @@ interface PaneChrome extends PaneSizing {
   /** Spawn corner for `placement: 'floating'` (default `'top-right'`). The
    *  pane also TRACKS that corner's edges when the window resizes. */
   anchor?: FloatingAnchor
+  /** Keep this pane mounted when hidden even after the zone's bounded hot
+   *  cache fills. Reserved for stateful resources whose lifetime must not track
+   *  tab visibility (for example terminal PTYs). */
+  lifecycleKeepAlive?: boolean
   /** No Close in the tab menu — the one surface the app can't lose (the
    *  main workspace). Session tiles share `placement: 'main'` but close. */
   uncloseable?: boolean

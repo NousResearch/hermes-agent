@@ -440,6 +440,13 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
+            # Directories are not scripts. Docker Desktop writes
+            # ``fpath=(~/.docker/completions …)`` into ``~/.zshrc``; the
+            # walk then treats that dir as a referenced script and used
+            # to fail-closed, blocking ``source ~/.zshrc`` (#86753).
+            # Devices/sockets stay fail-closed.
+            if stat.S_ISDIR(metadata.st_mode):
+                return None, False
             return None, True
         # Sniff a small prefix first: files that are clearly compiled
         # binaries (executable magic, or NUL bytes in the head) are never

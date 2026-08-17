@@ -111,6 +111,43 @@ class TestHermesTokenStorage:
             f"token parent dir mode {oct(parent_mode)} != 0o700 — siblings can traverse"
         )
 
+    def test_client_info_with_secret_uses_client_secret_post(self, tmp_path, monkeypatch):
+        from mcp.shared.auth import OAuthClientInformationFull
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("supabase")
+        client_info = OAuthClientInformationFull.model_validate({
+            "client_id": "client-id",
+            "client_secret": "secret",
+            "redirect_uris": ["http://127.0.0.1:12345/callback"],
+        })
+
+        asyncio.run(storage.set_client_info(client_info))
+        loaded = asyncio.run(storage.get_client_info())
+
+        assert loaded is not None
+        assert loaded.token_endpoint_auth_method == "client_secret_post"
+        client_path = tmp_path / "mcp-tokens" / "supabase.client.json"
+        assert json.loads(client_path.read_text())["token_endpoint_auth_method"] == "client_secret_post"
+
+    def test_client_info_with_secret_and_none_method_is_coerced(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        client_path = token_dir / "supabase.client.json"
+        client_path.write_text(json.dumps({
+            "client_id": "client-id",
+            "client_secret": "secret",
+            "redirect_uris": ["http://127.0.0.1:12345/callback"],
+            "token_endpoint_auth_method": "none",
+        }))
+
+        loaded = asyncio.run(HermesTokenStorage("supabase").get_client_info())
+
+        assert loaded is not None
+        assert loaded.token_endpoint_auth_method == "client_secret_post"
+        assert json.loads(client_path.read_text())["token_endpoint_auth_method"] == "client_secret_post"
+
 
     def test_corrupt_tokens_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -146,6 +183,143 @@ class TestBuildOAuthAuth:
         })
         assert provider is not None
         assert provider.context.client_metadata.scope == "read write admin"
+
+    @pytest.mark.asyncio
+    async def test_token_exchange_includes_secret_for_dcr_secret_client(self, tmp_path, monkeypatch):
+        from mcp.shared.auth import OAuthClientInformationFull
+        from urllib.parse import parse_qs
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+        redirect_uris = provider.context.client_metadata.redirect_uris
+        assert redirect_uris is not None
+        provider.context.client_info = OAuthClientInformationFull.model_validate({
+            "client_id": "client-id",
+            "client_secret": "secret",
+            "redirect_uris": [str(redirect_uris[0])],
+            "token_endpoint_auth_method": "none",
+        })
+
+        request = await provider._exchange_token_authorization_code("auth-code", "verifier")
+        body = parse_qs(request.content.decode())
+
+        assert body["client_id"] == ["client-id"]
+        assert body["client_secret"] == ["secret"]
+        assert provider.context.client_info is not None
+        assert provider.context.client_info.token_endpoint_auth_method == "client_secret_post"
+
+    @pytest.mark.asyncio
+    async def test_token_response_accepts_201_created(self, tmp_path, monkeypatch):
+        import httpx
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+        response = httpx.Response(201, json={
+            "access_token": "access-token",
+            "token_type": "Bearer",
+            "refresh_token": "refresh-token",
+        })
+
+        await provider._handle_token_response(response)
+
+        tokens = provider.context.current_tokens
+        assert tokens is not None
+        assert tokens.access_token == "access-token"
+        token_path = tmp_path / "mcp-tokens" / "supabase.json"
+        assert token_path.exists()
+        assert json.loads(token_path.read_text())["access_token"] == "access-token"
+
+    @pytest.mark.asyncio
+    async def test_malformed_201_token_response_does_not_expose_body(
+        self, tmp_path, monkeypatch
+    ):
+        import httpx
+        from mcp.client.auth.oauth2 import OAuthTokenError
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+
+        with pytest.raises(OAuthTokenError, match="^Invalid token response$") as exc_info:
+            await provider._handle_token_response(
+                httpx.Response(
+                    201,
+                    content=b'{"access_token": {"secret": "access-secret"}}',
+                )
+            )
+
+        assert "access-secret" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_token_read_error_does_not_expose_body(self, tmp_path, monkeypatch):
+        import httpx
+        from mcp.client.auth.oauth2 import OAuthTokenError
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+
+        class _ReadErrorResponse:
+            status_code = 201
+
+            async def aread(self):
+                raise httpx.ReadError("access-secret refresh-secret")
+
+        with pytest.raises(OAuthTokenError, match="^Invalid token response$") as exc_info:
+            await provider._handle_token_response(_ReadErrorResponse())
+
+        assert "access-secret" not in str(exc_info.value)
+        assert "refresh-secret" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_malformed_201_refresh_response_clears_tokens(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+        import httpx
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+        provider.context.current_tokens = object()
+
+        response = httpx.Response(
+            201, content=b'{"refresh_token": "refresh-secret"}'
+        )
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            result = await provider._handle_refresh_response(response)
+
+        assert result is False
+        assert provider.context.current_tokens is None
+        assert "refresh-secret" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_refresh_read_error_clears_tokens(self, tmp_path, monkeypatch):
+        import httpx
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        assert provider is not None
+        provider.context.current_tokens = object()
+
+        class _ReadErrorResponse:
+            status_code = 201
+
+            async def aread(self):
+                raise httpx.ReadError("body read failed")
+
+        result = await provider._handle_refresh_response(_ReadErrorResponse())
+
+        assert result is False
+        assert provider.context.current_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -729,7 +903,7 @@ def test_build_oauth_auth_preserves_server_url_path():
             captured.update(kwargs)
 
     with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
-         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "HermesOAuthClientProvider", _FakeProvider), \
          patch.object(mcp_oauth, "_is_interactive", return_value=True), \
          patch.object(mcp_oauth, "_maybe_preregister_client"), \
          patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:

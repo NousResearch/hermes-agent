@@ -115,6 +115,28 @@ class ToolsSpec:
 
 
 @dataclass
+class SuggestSpec:
+    """Composer-suggestion metadata (desktop "brand pill" triggers).
+
+    Optional. When present, UI surfaces (currently the desktop composer)
+    may suggest installing this entry when the user's draft contains one
+    of the keywords as a completed whole word, or pastes a link whose
+    hostname ends with one of the host suffixes. Purely advisory — the
+    install itself always flows through the ordinary validated paths.
+
+    NOTE: GitHub is intentionally NOT in the catalog and must not be
+    suggested here: its hosted MCP requires a per-host OAuth app (generic
+    DCR 404s), and the bundled github/* skills (gh CLI) are the far more
+    capable integration. Point users at the skills instead.
+    """
+
+    # Lowercase whole-word/phrase triggers matched against the draft.
+    keywords: List[str] = field(default_factory=list)
+    # Hostname suffixes ("atlassian.net") matched against pasted links.
+    hosts: List[str] = field(default_factory=list)
+
+
+@dataclass
 class CatalogEntry:
     name: str
     description: str
@@ -124,6 +146,7 @@ class CatalogEntry:
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
     post_install: str = ""
+    suggest: Optional[SuggestSpec] = None
     manifest_path: Path = field(default_factory=Path)
 
 
@@ -259,6 +282,36 @@ def _parse_manifest(path: Path) -> CatalogEntry:
             )
     tools_spec = ToolsSpec(default_enabled=default_enabled)
 
+    suggest: Optional[SuggestSpec] = None
+    suggest_raw = data.get("suggest")
+    if suggest_raw is not None:
+        if not isinstance(suggest_raw, dict):
+            raise CatalogError(f"{path}: 'suggest' must be a mapping")
+        kw_raw = suggest_raw.get("keywords") or []
+        hosts_raw = suggest_raw.get("hosts") or []
+        if not isinstance(kw_raw, list) or not all(
+            isinstance(k, str) and k.strip() for k in kw_raw
+        ):
+            raise CatalogError(
+                f"{path}: suggest.keywords must be a list of non-empty strings"
+            )
+        if not isinstance(hosts_raw, list) or not all(
+            isinstance(h, str) and h.strip() for h in hosts_raw
+        ):
+            raise CatalogError(
+                f"{path}: suggest.hosts must be a list of non-empty strings"
+            )
+        if not kw_raw and not hosts_raw:
+            raise CatalogError(
+                f"{path}: 'suggest' requires at least one keyword or host"
+            )
+        # Normalize: matching is case-insensitive whole-word / host-suffix,
+        # so store lowercase and let UIs match without re-normalizing.
+        suggest = SuggestSpec(
+            keywords=[k.strip().lower() for k in kw_raw],
+            hosts=[h.strip().lower().lstrip(".") for h in hosts_raw],
+        )
+
     install: Optional[InstallSpec] = None
     install_raw = data.get("install")
     if install_raw is not None:
@@ -290,6 +343,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         tools=tools_spec,
         install=install,
         post_install=str(data.get("post_install") or ""),
+        suggest=suggest,
         manifest_path=path,
     )
 

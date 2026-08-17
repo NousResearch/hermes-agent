@@ -2,7 +2,7 @@
 
 [project]
 name = "hermes-agent"
-version = "0.20.1"
+version = "0.20.2"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -386,7 +386,27 @@ exclude-newer = "14 days"
 # request-smuggling) fix in 4.4.1, published 2026-08-03. Remove after 2026-08-17.
 # aiohttp, cryptography: same shape — the advisory fixes are newer than the
 # 14-day window, so the resolver cannot see them without an exception.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false }
+#
+# defusedxml, python-olm, unpaddedbase64: the OPPOSITE shape (#80387, #79434,
+# #78227 family). These are ancient, effectively frozen releases (2021-2023)
+# whose upload dates are frequently absent from mirror indexes and stale uv
+# HTTP caches. uv treats a missing upload date as "newer than the cutoff" and
+# excludes the package, bricking [youtube]/[wecom]/[matrix] resolution
+# ("there are no versions of defusedxml"). Exempting them carries zero aging
+# risk — their newest releases are years old — and unbricks resolvers that
+# cannot see upload dates.
+#
+# setuptools, pillow, mcp: exact-pinned bricks (#78227, #75992, #76020). uv
+# applies exclude-newer to build-system.requires and core deps too; when a
+# resolver cannot see an upload date (old uv, mirror index, stale HTTP cache)
+# it filters the pinned version and the package cannot even BUILD
+# ("No solution found when resolving: setuptools==83.0.0"). These deps are
+# exact-pinned (==X.Y.Z), so exclude-newer adds zero float protection for
+# them — the version cannot move without a reviewed pin bump — while the
+# cutoff can still brick installs. Exempting exact pins is pure brick-risk
+# removal at no supply-chain cost. Guarded by
+# tests/test_packaging_metadata.py::test_build_system_requires_exempt_from_exclude_newer.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
@@ -424,6 +444,10 @@ hermes_cli = ["observability/schemas/*.json", "data/*.json"]
 # topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
 # in gateway/status_phrases.py and gateway/run.py.
 gateway = ["assets/**/*"]
+# Bundled plugin discovery reads these manifests at runtime. Keep them in
+# sealed wheels with the plugin Python modules; without this declaration the
+# wheel contains adapters but discovery finds zero bundled plugins.
+plugins = ["**/plugin.yaml", "**/plugin.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

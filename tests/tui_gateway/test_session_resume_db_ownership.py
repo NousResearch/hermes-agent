@@ -28,6 +28,7 @@ Pinned here, in both directions:
 
 from __future__ import annotations
 
+import threading
 import types
 
 import pytest
@@ -194,6 +195,50 @@ def test_resume_closes_profile_db_on_deferred_cold_resume(profile_dbs, monkeypat
     assert resp["result"]["session_key"] == "s1"
     assert resp["result"]["status"] == "idle"
     assert profile_dbs[0].closed == 1
+
+
+def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeypatch):
+    """Incremental hydration owns the profile handle until its read completes."""
+    history_started = threading.Event()
+    release_history = threading.Event()
+    close_completed = threading.Event()
+
+    class _BlockingDB(_RecordingDB):
+        def close(self):
+            super().close()
+            close_completed.set()
+
+        def get_resume_conversations(self, _target):
+            history_started.set()
+            assert release_history.wait(timeout=2.0)
+            assert self.closed == 0
+            return ([], [])
+
+    def _factory(db_path=None, **kwargs):
+        db = _BlockingDB(db_path=db_path, **kwargs)
+        db.rows["s1"] = {"id": "s1", "cwd": "", "message_count": 0}
+        profile_dbs.append(db)
+        return db
+
+    monkeypatch.setattr("hermes_state.SessionDB", _factory)
+    monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
+
+    try:
+        resp = _resume(
+            session_id="s1", profile="work", defer_history=True
+        )
+        sid = resp["result"]["session_id"]
+        db = profile_dbs[0]
+        assert history_started.wait(timeout=1.0)
+        assert db.closed == 0
+
+        release_history.set()
+        assert server._sessions[sid]["resume_history_ready"].wait(timeout=1.0)
+        assert close_completed.wait(timeout=1.0)
+        assert db.closed == 1
+    finally:
+        release_history.set()
 
 
 def test_resume_keeps_profile_db_open_after_ownership_transfer(profile_dbs, monkeypatch):

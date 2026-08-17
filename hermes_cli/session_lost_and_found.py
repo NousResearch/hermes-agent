@@ -47,7 +47,7 @@ KNOWN_SOURCES = frozenset({
 # Historical physical layouts of the sessions table. Columns are only ever
 # appended (ALTER TABLE ADD COLUMN), so an older record is a strict prefix of
 # the current column order.
-SESSIONS_LAYOUT_NFIELDS = frozenset({54, 52})
+SESSIONS_LAYOUT_NFIELDS = frozenset({55, 54, 52})
 SESSIONS_LEGACY_MINIMAL_NFIELD = 14
 SESSION_MODEL_USAGE_NFIELD = 18
 

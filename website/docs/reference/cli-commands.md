@@ -1422,6 +1422,9 @@ Subcommands:
 | `install` | Run the upstream cua-driver installer (macOS, Windows, and Linux). |
 | `install --upgrade` | Re-run the installer even if cua-driver is already on PATH. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
 | `status` | Print whether `cua-driver` is on `$PATH` and which version is installed. |
+| `doctor [--include CHECK] [--skip CHECK] [--json]` | Run cua-driver's health report and show its platform checks. |
+| `permissions status [--json]` | Report macOS Accessibility and Screen Recording grants. |
+| `permissions grant` | Ask macOS to grant Accessibility and Screen Recording to Cua Driver. |
 
 `hermes computer-use install` is the stable entry point for installing the
 [cua-driver](https://github.com/trycua/cua) binary used by the
@@ -1429,6 +1432,24 @@ Subcommands:
 `hermes tools` invokes when you first enable Computer Use, so it's safe
 to use for re-running the install if the toolset toggle didn't trigger
 it (for example, on returning-user setups).
+
+If cua-driver is already present, Hermes checks its version and runtime
+manifest. A compatible 0.20.0 or newer installation is left in place. An old or
+incomplete standard installation is repaired with the current upstream
+installer. Hermes never replaces a custom binary selected through
+`HERMES_CUA_DRIVER_CMD`; update that binary directly or remove the override.
+`hermes computer-use status` reports when repair is required.
+
+The built-in `computer_use` toolset is the recommended Hermes integration.
+Registering raw Cua MCP tools is an alternative when you need Cua's low-level
+tool vocabulary. `cua-driver skills install` detects Hermes and links Cua's
+skill pack into the Hermes skills directory automatically.
+
+Permission mode, capability-manifest approval, and the existing-profile grant
+belong to runtime launch. In bounded mode Hermes passes Cua's canonical
+`--capability-manifest` and `--approve-capability-manifest` flags. Every MCP
+transport owns a private lifecycle session inside its runtime. Public session
+names label cursor and session state; they do not own or share the runtime.
 
 `hermes update` automatically re-runs the upstream installer at the end
 of the update if cua-driver is on PATH, so most users will not need to
@@ -1467,7 +1488,7 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `list` | List recent sessions. |
-| `browse` | Interactive session picker with search and resume. |
+| `browse` | Interactive session picker with search and resume. Each row shows a lifecycle status tag (`done` / `intr` / `err` / `empty`, derived from the session's final message) and its message count. Press `d` on a highlighted row (while the search filter is empty) to delete that session after a y/N confirmation; while a filter is active, `d` types into the search instead. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |
 | `prune` | Delete sessions matching filters: time bounds `--older-than`/`--newer-than`/`--before`/`--after` (durations like `5h`/`2d`, bare days, or ISO timestamps); attributes `--source`, `--title`, `--model`, `--provider`, `--branch`, `--end-reason`, `--user`, `--chat-id`, `--chat-type`, `--cwd`; numeric bounds `--min/--max-messages`, `--min/--max-tokens`, `--min/--max-cost`, `--min/--max-tool-calls`; plus `--include-archived`, `--dry-run`, `--yes`. Default: older than 90 days. |

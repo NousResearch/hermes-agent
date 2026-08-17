@@ -35,7 +35,7 @@ def _captured_context_cwd(agent):
 
     def fake_context_files(
         cwd=None, skip_soul=False, context_length=None,
-        allow_install_tree_fallback=False,
+        allow_install_tree_fallback=False, home_override=None,
     ):
         captured["cwd"] = cwd
         return ""
@@ -114,6 +114,70 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestNamedProfileHintIntegration:
+    """The same defect through the REAL resolution chain (#72894).
+
+    ``TestNamedProfileHint`` mocks ``get_hermes_home``,
+    ``get_default_hermes_root`` and ``_resolve_active_profile_name``, so it
+    validates template rendering but not the relationship that causes the bug:
+    ``_resolve_active_profile_name`` returns a named profile *only* when the
+    active home is already ``<root>/profiles/<name>``, which is exactly why
+    appending that suffix again doubled it. Drive it with a real
+    ``HERMES_HOME`` and no resolver mocks.
+    """
+
+    def test_real_hermes_home_under_profiles_renders_correct_paths(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / ".hermes"
+        profile_home = root / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        # Sanity-check the real chain before asserting on the prompt.
+        from agent.file_safety import _resolve_active_profile_name
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        assert _resolve_active_profile_name() == "coder"
+        assert get_hermes_home() == profile_home
+        assert get_default_hermes_root() == root
+
+        agent = _make_agent(valid_tool_names=["read_file"])
+        with patch("agent.coding_context._coding_mode", return_value="off"):
+            prompt = "\n\n".join(_prompt_parts(agent).values())
+
+        assert "Active Hermes profile: coder." in prompt
+        assert f"reads and writes {profile_home}/." in prompt
+        # The doubled form must not appear anywhere.
+        assert f"{profile_home}/profiles/coder" not in prompt
+        # Default-profile pointers belong at the root, not inside the profile.
+        assert f"The default profile's data lives at {root}/skills/" in prompt
+        assert f"{profile_home}/skills/" not in prompt
+
+    def test_real_default_home_renders_default_branch(self, tmp_path, monkeypatch):
+        """HERMES_HOME at the root resolves to the default profile, unchanged."""
+        root = tmp_path / ".hermes"
+        root.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        from agent.file_safety import _resolve_active_profile_name
+
+        assert _resolve_active_profile_name() == "default"
+
+        agent = _make_agent(valid_tool_names=["read_file"])
+        with patch("agent.coding_context._coding_mode", return_value="off"):
+            prompt = "\n\n".join(_prompt_parts(agent).values())
+
+        assert "Active Hermes profile: default." in prompt
+        assert f"under {root}/profiles/<name>/." in prompt
 
 
 def test_build_system_prompt_records_stable_prefix():

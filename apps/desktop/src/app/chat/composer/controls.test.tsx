@@ -66,13 +66,19 @@ describe('ComposerControls shortcut tooltips', () => {
     await expectShortcutTooltip('Send', '↵')
   })
 
-  it('shows Enter for Steer', async () => {
+  it('keeps Send (not Steer) while a turn is running if there is a payload', async () => {
     renderControls({ busy: true, busyAction: 'steer' })
 
-    await expectShortcutTooltip('Steer the current run', '↵')
+    await expectShortcutTooltip('Send', '↵')
   })
 
-  it('shows Ctrl+Enter for Queue', async () => {
+  it('shows Stop only when the composer is empty mid-turn', async () => {
+    renderControls({ busy: true, busyAction: 'stop', canSubmit: true, hasComposerPayload: false })
+
+    await expectShortcutTooltip('Stop', '↵')
+  })
+
+  it('shows Ctrl+Enter for Queue as the secondary mid-turn action', async () => {
     renderControls({ busy: true, busyAction: 'queue' })
 
     await expectShortcutTooltip('Queue message', 'Ctrl+↵')

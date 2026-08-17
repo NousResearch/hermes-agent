@@ -33,9 +33,10 @@
 
 set -u
 
+ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
-NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0
+NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
@@ -48,6 +49,7 @@ while [ $# -gt 0 ]; do
     --no-marker-cleanup) NO_MARKER_CLEANUP=1; shift ;;
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
+    --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
@@ -68,6 +70,38 @@ FINAL_MSG="update did not complete"
 DONE_NOTE=""  # set when the update succeeded but the app will NOT reopen itself
 
 log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1" | tee -a "$LOG" 2>/dev/null; }
+
+# Keep a durable signal breadcrumb.  A detached hand-off used to leave only the
+# generic FINAL_MSG when it was terminated while the updater child was running,
+# which erased the one fact needed to diagnose the failure.
+TERM_TEARDOWN_IGNORED=0
+on_signal() {
+  local sig="$1" pgid="unknown"
+  pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')"
+  # Electron sends one final TERM to the detached hand-off process group while
+  # quitting, even after the orchestrator has been re-parented to PID 1.  That
+  # TERM is teardown noise, not a user cancellation.  Ignore it once only when
+  # the originating desktop PID is already gone; a later TERM still stops us.
+  if [ "$sig" = "TERM" ] && [ "$HANDOFF_DAEMONIZED" -eq 1 ] \
+      && [ "$TERM_TEARDOWN_IGNORED" -eq 0 ] && ! kill -0 "$DESKTOP_PID" 2>/dev/null; then
+    TERM_TEARDOWN_IGNORED=1
+    log "SIGNAL: TERM ignored after desktop teardown pid=$$ ppid=$PPID pgid=${pgid:-unknown} desktopPid=$DESKTOP_PID"
+    return 0
+  fi
+  log "SIGNAL: $sig pid=$$ ppid=$PPID pgid=${pgid:-unknown}"
+  FINAL_MSG="Update hand-off was interrupted by $sig (pid $$)."
+  case "$sig" in
+    HUP) FINAL_CODE=129 ;;
+    INT) FINAL_CODE=130 ;;
+    QUIT) FINAL_CODE=131 ;;
+    TERM) FINAL_CODE=143 ;;
+  esac
+  exit "$FINAL_CODE"
+}
+trap 'on_signal HUP' HUP
+trap 'on_signal INT' INT
+trap 'on_signal QUIT' QUIT
+trap 'on_signal TERM' TERM
 
 # ── shim ────────────────────────────────────────────────────────────────────
 json_escape() { # minimal JSON string escape: \ " and control whitespace
@@ -145,17 +179,29 @@ start_ui() {
   { [ -f "$html" ] && [ -n "$py" ] && [ -n "$browser" ]; } || { log "shim: no renderer; skipping UI"; return; }
 
   publish "running" ""
-  "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" > "$LOG_DIR/desktop-update-ui-port" 2>>"$LOG" &
+  # The Desktop's final teardown targets the updater process group.  Put both
+  # UI processes in their own sessions so neither the HTTP server nor a Chrome
+  # renderer becomes collateral damage (Chrome surfaces that renderer death as
+  # an "Aw, Snap!" page with error code 15 even while /progress still returns
+  # HTTP 200).  The Python wrapper immediately execs the real process, so $!
+  # remains the PID that stop_ui can terminate.
+  # TERM/HUP stay IGNORED in the server (SIG_IGN survives execv): a stray
+  # teardown TERM killed the shim ~1s into `hermes update` (2026-08-14 16:44,
+  # window showed ERR_CONNECTION_REFUSED for the whole run; upstream #66753).
+  # stop_ui ends the server with SIGKILL instead — it is stateless HTTP.
+  "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); os.execv(sys.argv[1], sys.argv[1:])' \
+    "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" > "$LOG_DIR/desktop-update-ui-port" 2>>"$LOG" &
   UI_SERVER_PID=$!
   for i in $(seq 1 10); do
     port="$(tr -cd '0-9' < "$LOG_DIR/desktop-update-ui-port" 2>/dev/null)"
     [ -n "$port" ] && break
     sleep 0.2
   done
-  [ -n "$port" ] || { kill "$UI_SERVER_PID" 2>/dev/null; UI_SERVER_PID=""; return; }
+  [ -n "$port" ] || { kill -9 "$UI_SERVER_PID" 2>/dev/null; UI_SERVER_PID=""; return; }
 
   # Throwaway profile: new window/process we own; user's browser untouched.
-  "$browser" --app="http://127.0.0.1:$port/" --user-data-dir="${TMPDIR:-/tmp}/hermes-update-ui-$$" \
+  "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])' \
+    "$browser" --app="http://127.0.0.1:$port/" --user-data-dir="${TMPDIR:-/tmp}/hermes-update-ui-$$" \
     --no-first-run --no-default-browser-check --window-size=280,320 >/dev/null 2>&1 &
   UI_BROWSER_PID=$!
   log "shim: app window on 127.0.0.1:$port"
@@ -163,7 +209,8 @@ start_ui() {
 
 stop_ui() { # error state leaves the window up for the user to read
   if [ -n "$UI_SERVER_PID" ]; then
-    { kill "$UI_SERVER_PID" && wait "$UI_SERVER_PID"; } 2>/dev/null
+    # The server ignores TERM/HUP (see start_ui) — KILL is its off switch.
+    { kill -9 "$UI_SERVER_PID" && wait "$UI_SERVER_PID"; } 2>/dev/null
   fi
   if [ "${1:-}" != "leave-window" ] && [ -n "$UI_BROWSER_PID" ]; then
     { kill "$UI_BROWSER_PID" && wait "$UI_BROWSER_PID"; } 2>/dev/null
@@ -367,9 +414,42 @@ if [ "$SELF_TEST_UI" -eq 1 ]; then
 fi
 
 # ── the actual job ──────────────────────────────────────────────────────────
+# Electron's macOS quit teardown sends SIGTERM to its still-parented updater
+# child on this machine. `detached + unref` gives the child a process group but
+# does not re-parent it before `before-quit` runs, so the hand-off consistently
+# died two seconds after starting `hermes update`. Re-exec through a one-shot
+# setsid child and let this direct Electron child exit first. The real
+# orchestrator is then owned by launchd (PPID 1) and is outside Electron's quit
+# teardown, while retaining the same marker/result protocol.
+if [ "$HANDOFF_DAEMONIZED" -ne 1 ]; then
+  # This launcher is disposable. In particular it must not run finish() on
+  # EXIT: that would publish a false failure and relaunch Hermes while the
+  # re-parented orchestrator is only just starting.
+  trap - EXIT HUP INT QUIT TERM
+  # --daemonized must precede ORIGINAL_ARGS, not follow it: ORIGINAL_ARGS may
+  # contain a `--` separator (Linux relaunch args), and anything appended
+  # after that point is swallowed into RELAUNCH_ARGS instead of being parsed
+  # as a flag. Appending here previously left HANDOFF_DAEMONIZED unset on
+  # every re-exec, causing this block to re-fire forever (self-exec loop,
+  # unbounded argv growth) whenever relaunch args were present.
+  /usr/bin/nohup /usr/bin/python3 -c '
+import os, sys
+env = os.environ.copy()
+os.setsid()
+os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:]], env)
+' "$SCRIPT_DIR/posix.sh" --daemonized "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
+  exit 0
+fi
+
+# Electron terminates the entire detached updater process group during quit,
+# including the loopback status server.  Arm TERM immunity before `start_ui`
+# so the shim server and the later `hermes update` subprocess both inherit
+# SIG_IGN.  The orchestrator restores its normal TERM handler after the update
+# command has returned; the already-running server keeps the inherited setting
+# until normal cleanup closes it.
+trap '' TERM
 log "hand-off start: root=$INSTALL_ROOT branch=$BRANCH desktopPid=$DESKTOP_PID pid=$$"
 rm -f "$RESULT" 2>/dev/null || true
-start_ui
 
 # Marker claim: same cross-process lock contract as windows.ps1 /
 # update_lock.py (the `hermes update` child adopts it via process ancestry).
@@ -383,6 +463,13 @@ if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null; then
     log "$FINAL_MSG"; exit "$FINAL_CODE"
   fi
 fi
+
+# Do not create Chrome until Electron has fully left.  During its 2.5s quit
+# dwell/before-quit teardown macOS can terminate descendants of the hand-off;
+# a Chrome renderer reports that SIGTERM as "Aw, Snap!" error code 15.  The
+# update marker above prevents a second click during this short UI-less gap.
+sleep 1
+start_ui
 
 HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
 [ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }
@@ -411,6 +498,7 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi
+trap 'on_signal TERM' TERM
 
 # Truthful completion: `hermes update` calls a GUI build failure non-fatal
 # (exit 0). For a Desktop-driven update that would relaunch the OLD build

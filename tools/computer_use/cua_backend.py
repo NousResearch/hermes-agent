@@ -240,6 +240,113 @@ def _cua_telemetry_disabled() -> bool:
     return not bool(_computer_use_cfg().get("cua_telemetry", False))
 
 
+def _cua_configured_permission_mode() -> str:
+    """The user-configured cua-driver permission mode.
+
+    Reads ``computer_use.permission_mode`` (default ``standard``).  Only
+    ``standard`` and ``bounded`` are honored here — ``unrestricted`` is
+    deliberately NOT a config value: it stays tied to the explicit
+    per-session Hermes YOLO toggle so a stale config line can never
+    silently bypass approvals. Unknown values fall closed to ``standard``.
+    """
+    raw = str(_computer_use_cfg().get("permission_mode", "standard") or "").strip().lower()
+    return raw if raw in {"standard", "bounded"} else "standard"
+
+
+def _cua_capability_manifest() -> Optional[str]:
+    """Path of the reviewed capability manifest for bounded mode, or None.
+
+    Reads ``computer_use.capability_manifest``.  Existence is validated by
+    ``_EmbeddedCuaDaemon`` so a missing file fails loudly at session start
+    instead of silently degrading the authorization story.
+    """
+    raw = _computer_use_cfg().get("capability_manifest")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()
+
+
+def _cua_grant_existing_profile() -> bool:
+    """True when the user pre-authorized existing-profile browser attachment.
+
+    Reads ``computer_use.grant_existing_profile`` (default False). This is
+    cua-driver's trusted-launcher grant. Hermes passes
+    ``--grant existing-profile`` when it launches the standard-mode runtime.
+    On macOS it also selects a private socket so the newly configured
+    CuaDriver.app runtime cannot collide with an already-running default
+    daemon. The setting never applies to bounded mode, where the reviewed
+    capability manifest owns authorization.
+
+    It DOES apply to unrestricted mode. An approval bypass (``--yolo``,
+    ``-z``) is consent to skip prompts, not consent to read an existing
+    browser profile's live pages, cookies, and storage, so the host-side
+    floor in ``CuaTypedBrowserRoute.prepare`` enforces this key even when the
+    private unrestricted daemon would answer the prepare.
+    """
+    return bool(_computer_use_cfg().get("grant_existing_profile", False))
+
+
+def _manifest_is_mode_independent(path: str) -> bool:
+    """True when this capability manifest may accompany any permission mode.
+
+    cua-driver splits manifests by schema version (session_manifest.rs):
+
+    * v1/v2 are "legacy" — they must declare ``mode: bounded`` (or
+      ``autonomous``), so handing one to an unrestricted runtime aborts
+      startup with "legacy capability manifest mode must be bounded".
+    * v3 must NOT declare a mode. It is the mode-independent ceiling that
+      "can narrow a profile but never widen it", and the driver accepts it
+      alongside ``--permission-mode unrestricted``.
+
+    Unreadable or unparseable manifests return False: forwarding one to a
+    non-bounded runtime would turn a working session into a hard startup
+    failure, and bounded forwards unconditionally anyway so the driver stays
+    the authority on validity there.
+    """
+    try:
+        import yaml
+
+        with open(path, "r", encoding="utf-8") as handle:
+            parsed = yaml.safe_load(handle)
+    except Exception:
+        logger.debug("could not read capability manifest %s", path, exc_info=True)
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    version = parsed.get("version")
+    return isinstance(version, int) and not isinstance(version, bool) and version >= 3
+
+
+def _standard_runtime_launch_args(
+    args: List[str],
+    *,
+    grant_existing_profile: bool,
+    platform: str,
+    socket_path: Optional[str] = None,
+) -> Tuple[List[str], Optional[str]]:
+    """Return MCP args and any private runtime socket owned by this transport.
+
+    Windows and Linux run the standard runtime in the MCP process, so the
+    launch grant can be passed directly. macOS proxies through CuaDriver.app;
+    a grant must therefore launch a fresh app daemon on a private socket
+    instead of trying to reconfigure the default daemon.
+
+    ``platform`` is explicit so this policy can be tested as a pure function
+    on every CI host.
+    """
+    result = list(args)
+    if not grant_existing_profile:
+        return result, None
+    result.extend(["--grant", "existing-profile"])
+    if platform != "darwin":
+        return result, None
+    private_socket = socket_path or os.path.join(
+        tempfile.gettempdir(), f"hermes-cua-standard-{uuid.uuid4().hex[:12]}.sock"
+    )
+    result.extend(["--socket", private_socket])
+    return result, private_socket
+
+
 def _computer_use_max_image_dimension() -> Optional[int]:
     """Longest-edge cap for cua-driver screenshots, or None to leave unset.
 
@@ -266,6 +373,67 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
     return env
+
+
+def _linux_session_locked() -> Optional[bool]:
+    """Best-effort: is the graphical session locked? (Linux only.)
+
+    A locked KDE/GNOME session freezes app renderers and half-disables the
+    AX tree, so window discovery legitimately returns nothing — but a bare
+    empty result reads as a driver bug (live QA, Aug 2026: every capture
+    came back 0x0 with no hint). True/False when loginctl answers, None
+    when unavailable (non-Linux, no systemd-logind, probe failure).
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        proc = subprocess.run(
+            ["loginctl", "list-sessions", "--no-legend"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        if proc.returncode != 0:
+            return None
+        any_seat = False
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 2 or "seat" not in line:
+                continue
+            any_seat = True
+            probe = subprocess.run(
+                ["loginctl", "show-session", parts[0], "-p", "LockedHint"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            if "LockedHint=no" in probe.stdout:
+                return False
+        return True if any_seat else None
+    except Exception:
+        return None
+
+
+def _empty_discovery_reason() -> str:
+    """One-line diagnosis for 'window discovery found nothing'."""
+    locked = _linux_session_locked()
+    if locked is True:
+        return (
+            "the desktop session is LOCKED (loginctl LockedHint=yes) — "
+            "unlock the screen; a locked compositor hides windows and "
+            "freezes app renderers"
+        )
+    if sys.platform == "linux" and not os.environ.get("DISPLAY"):
+        return "no DISPLAY is set — X11/XWayland is not reachable from this process"
+    if sys.platform == "darwin":
+        # Headless Mac / asleep panel: ScreenCaptureKit has 0 shareable
+        # displays while TCC grants look fine (#67165, #52925 lineage).
+        return (
+            "window discovery returned no windows; on macOS this usually "
+            "means no shareable display (headless Mac or panel asleep) — "
+            "wake the display or attach a monitor/HDMI dummy, then run "
+            "`hermes computer-use doctor`"
+        )
+    return (
+        "window discovery returned no windows; run `hermes computer-use "
+        "doctor` (display reachability, AX capability)"
+    )
 
 
 def _z_index_uninformative(windows: List[Dict[str, Any]]) -> bool:
@@ -381,19 +549,69 @@ def _wsl_windows_path_to_posix(path: str) -> str:
 
 
 class _EmbeddedCuaDaemon:
-    """Private host-owned daemon used for an explicit unrestricted session.
+    """Private host-owned daemon for a non-standard permission mode.
 
     Cua Driver permission mode is immutable after daemon startup.  Reusing the
     machine-wide daemon would therefore let one Hermes session's YOLO choice
     affect another session.  A private embedded daemon gives the requesting
-    session its own socket, process, and launch-time risk acknowledgement.
+    session its own socket, process, and launch-time authorization:
+
+    * ``unrestricted`` — explicit Hermes YOLO; launch-time risk
+      acknowledgement via ``--dangerously-bypass-approvals``.
+    * ``bounded`` — a user-reviewed capability manifest
+      (``computer_use.capability_manifest`` in config.yaml) approved at
+      launch via ``--approve-capability-manifest``.  The manifest, not a
+      runtime prompt, is the authorization boundary; calls outside it fail
+      closed inside cua-driver.
+
+    The manifest is a ceiling, not a mode.  cua-driver accepts it alongside
+    any permission mode and it "can narrow a profile but never widen it", so
+    a configured manifest is forwarded here even when YOLO selected
+    ``unrestricted`` — that pairing is what bounds an approval-bypassed run
+    to declared scope.  It stays mandatory for ``bounded`` and optional
+    everywhere else.
     """
 
     _START_TIMEOUT_SECONDS = 15.0
 
-    def __init__(self, driver_cmd: str, permission_mode: str) -> None:
-        if permission_mode != "unrestricted":
-            raise ValueError("embedded permission override supports unrestricted only")
+    def __init__(
+        self,
+        driver_cmd: str,
+        permission_mode: str,
+        capability_manifest: Optional[str] = None,
+    ) -> None:
+        if permission_mode not in {"unrestricted", "bounded"}:
+            raise ValueError(
+                "embedded permission override supports unrestricted or bounded only"
+            )
+        self.capability_manifest: Optional[str] = None
+        manifest = str(capability_manifest or "").strip()
+        if not manifest and permission_mode == "bounded":
+            raise ValueError(
+                "bounded permission mode requires computer_use.capability_manifest"
+            )
+        if manifest:
+            manifest = os.path.abspath(os.path.expanduser(manifest))
+            if not os.path.isfile(manifest):
+                raise ValueError(
+                    f"capability manifest not found: {manifest}"
+                )
+            self.capability_manifest = manifest
+        # bounded always forwards — the driver validates it there. Any other
+        # mode only accepts a v3 (mode-independent) manifest; forwarding a
+        # legacy one would abort startup instead of bounding the run.
+        self.manifest_applies = bool(self.capability_manifest) and (
+            permission_mode == "bounded"
+            or _manifest_is_mode_independent(str(self.capability_manifest))
+        )
+        if self.capability_manifest and not self.manifest_applies:
+            logger.warning(
+                "computer_use.capability_manifest is a legacy (v1/v2) manifest, "
+                "which cua-driver only accepts in bounded mode — it will NOT "
+                "bound this %s session. Migrate the manifest to version 3 to "
+                "keep a ceiling on approval-bypassed runs.",
+                permission_mode,
+            )
         self.permission_mode = permission_mode
         self._driver_cmd = driver_cmd
         self._command = driver_cmd
@@ -411,8 +629,9 @@ class _EmbeddedCuaDaemon:
 
     def child_env(self) -> Dict[str, str]:
         env = cua_driver_child_env()
-        env["CUA_DRIVER_PERMISSION_MODE"] = "unrestricted"
-        env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
+        env["CUA_DRIVER_PERMISSION_MODE"] = self.permission_mode
+        if self.permission_mode == "unrestricted":
+            env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env
 
     def _drain_stderr(self, process: Any) -> None:
@@ -447,9 +666,24 @@ class _EmbeddedCuaDaemon:
             self.socket_path,
             "--no-permissions-gate",
             "--permission-mode",
-            "unrestricted",
-            "--dangerously-bypass-approvals",
+            self.permission_mode,
         ]
+        if self.permission_mode == "unrestricted":
+            command.append("--dangerously-bypass-approvals")
+        # A v3 manifest is a ceiling, not a mode: cua-driver accepts it
+        # alongside any permission mode and it "can narrow a profile but never
+        # widen it". Attaching it to unrestricted is what bounds an
+        # approval-bypassed run to declared scope, so pass it whenever it
+        # applies — not only for bounded, which used to drop it for every
+        # other mode.
+        if self.manifest_applies:
+            command.extend(
+                [
+                    "--capability-manifest",
+                    str(self.capability_manifest),
+                    "--approve-capability-manifest",
+                ]
+            )
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -758,6 +992,136 @@ def cua_driver_binary_available() -> bool:
     return resolve_cua_driver_cmd() is not None
 
 
+_CUA_DRIVER_RUNTIME_CONTRACT_MIN = (0, 20, 0)
+_CUA_DRIVER_RUNTIME_CONTRACT_ARGS = {
+    "mcp": {"--socket", "--grant"},
+    "serve": {
+        "--socket",
+        "--permission-mode",
+        "--capability-manifest",
+        "--approve-capability-manifest",
+        "--embedded",
+    },
+    "stop": {"--socket"},
+}
+
+
+def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> Dict[str, Any]:
+    """Report whether a local driver can host Hermes' 0.20 integration."""
+    resolved = binary or resolve_cua_driver_cmd()
+    if not resolved:
+        return {
+            "ready": False,
+            "binary": None,
+            "version": None,
+            "reason": "cua-driver is not installed",
+        }
+
+    try:
+        from tools.environments.local import _sanitize_subprocess_env
+
+        result = subprocess.run(
+            [resolved, "manifest"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15.0 if sys.platform == "win32" else 5.0,
+            stdin=subprocess.DEVNULL,
+            env=_sanitize_subprocess_env(cua_driver_child_env()),
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": None,
+            "reason": f"manifest check failed: {exc}",
+        }
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "manifest command failed").strip()
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": None,
+            "reason": detail.splitlines()[-1][:200],
+        }
+
+    try:
+        manifest = json.loads(result.stdout or "")
+    except (TypeError, ValueError):
+        manifest = None
+    if not isinstance(manifest, dict):
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": None,
+            "reason": "driver manifest is missing or invalid",
+        }
+
+    raw_version = str(manifest.get("binary_version") or "").strip()
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", raw_version)
+    if not match:
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": raw_version or None,
+            "reason": "driver manifest does not report a semantic version",
+        }
+    version = tuple(int(part) for part in match.groups())
+    if version < _CUA_DRIVER_RUNTIME_CONTRACT_MIN:
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": raw_version,
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+
+    invocation = manifest.get("mcp_invocation")
+    invocation_args = invocation.get("args") if isinstance(invocation, dict) else None
+    if not (
+        isinstance(invocation_args, list)
+        and invocation_args
+        and all(isinstance(arg, str) for arg in invocation_args)
+    ):
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": raw_version,
+            "reason": "driver manifest does not provide an MCP launch command",
+        }
+
+    advertised: Dict[str, set[str]] = {}
+    for command in manifest.get("subcommands") or []:
+        if not isinstance(command, dict) or not isinstance(command.get("name"), str):
+            continue
+        advertised[command["name"]] = {
+            arg["name"]
+            for arg in command.get("args") or []
+            if isinstance(arg, dict) and isinstance(arg.get("name"), str)
+        }
+
+    missing = []
+    for command, required_args in _CUA_DRIVER_RUNTIME_CONTRACT_ARGS.items():
+        for arg in sorted(required_args - advertised.get(command, set())):
+            missing.append(f"{command} {arg}")
+    if missing:
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": raw_version,
+            "reason": "driver manifest is missing: " + ", ".join(missing),
+        }
+
+    return {
+        "ready": True,
+        "binary": resolved,
+        "version": raw_version,
+        "reason": "",
+    }
+
+
 def cua_driver_update_check(*, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """Run ``cua-driver check-update --json`` and return its parsed state.
 
@@ -826,6 +1190,52 @@ def cua_driver_update_nudge() -> Optional[str]:
 
 
 _update_checked = False
+
+# One auto-repair attempt per process. The runtime-contract gate in
+# ``CuaDriverBackend.start()`` fails closed on an incompatible driver; when
+# the incompatibility is something a reinstall fixes (old version, missing
+# manifest verbs) we run the standard install/repair path once instead of
+# telling the user to do it by hand. Guarded so a failing installer can't
+# loop — the second start() in the same process goes straight to the error.
+_contract_repair_attempted = False
+
+
+def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Try one automatic driver repair for a failed runtime contract.
+
+    Returns the post-repair contract state (or the original state when no
+    repair was attempted / the repair failed). Never raises. An explicit
+    ``HERMES_CUA_DRIVER_CMD`` override is authoritative even when broken, and
+    a missing binary means installation was never requested — both are left
+    for the caller's error message.
+    """
+    global _contract_repair_attempted
+    if contract.get("ready"):
+        return contract
+    if _contract_repair_attempted:
+        return contract
+    if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+        return contract
+    if not contract.get("binary"):
+        return contract
+    _contract_repair_attempted = True
+    logger.info(
+        "computer_use: installed cua-driver is not usable (%s); "
+        "attempting automatic repair",
+        contract.get("reason") or "runtime contract is incomplete",
+    )
+    try:
+        from hermes_cli.tools_config import install_cua_driver
+
+        if not install_cua_driver(upgrade=False, show_installer_progress=False):
+            return contract
+    except Exception as exc:
+        logger.warning("computer_use: automatic cua-driver repair failed: %s", exc)
+        return contract
+    try:
+        return cua_driver_runtime_contract_status()
+    except Exception:
+        return contract
 
 
 def _maybe_nudge_update() -> None:
@@ -1125,6 +1535,12 @@ class _CuaDriverSession:
         # Used to revive a logical ended-session rejection without
         # recursive call_tool re-entry or backend-owned state (#71166).
         self._declared_session_id: Optional[str] = None
+        # A macOS standard-mode launch grant belongs to the app daemon that
+        # receives it. Select and own a private endpoint so an existing
+        # default daemon cannot reject or silently miss the requested grant.
+        self._owned_standard_runtime_socket: Optional[str] = None
+        self._transport_generation = 0
+        self._transport_reset_callback: Optional[Any] = None
 
     def _require_started(self) -> None:
         if not self._started:
@@ -1166,6 +1582,13 @@ class _CuaDriverSession:
                 child_env = self._embedded_daemon.child_env()
             else:
                 command, args = _resolve_mcp_invocation(driver_cmd)
+                args, owned_socket = _standard_runtime_launch_args(
+                    args,
+                    grant_existing_profile=_cua_grant_existing_profile(),
+                    platform=sys.platform,
+                    socket_path=self._owned_standard_runtime_socket,
+                )
+                self._owned_standard_runtime_socket = owned_socket
                 child_env = cua_driver_child_env()
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
@@ -1274,8 +1697,17 @@ class _CuaDriverSession:
         with self._lock:
             if self._started:
                 return
+            # A previous transport may have died without taking down its
+            # private app daemon. Stop that exact endpoint before relaunching
+            # with --grant; grants cannot modify an already-running runtime.
+            if self._owned_standard_runtime_socket is not None:
+                self._stop_owned_standard_runtime_locked()
             self._bridge.start()
-            self._start_lifecycle_locked()
+            try:
+                self._start_lifecycle_locked()
+            except Exception:
+                self._stop_owned_standard_runtime_locked()
+                raise
             self._started = True
 
     def _start_lifecycle_locked(self) -> None:
@@ -1314,13 +1746,59 @@ class _CuaDriverSession:
             raise RuntimeError(
                 f"cua-driver session setup failed: {self._setup_error}"
             ) from self._setup_error
+        self._transport_generation += 1
+        if self._transport_generation > 1:
+            self._notify_transport_reset()
 
     def stop(self) -> None:
         with self._lock:
             if not self._started:
+                self._stop_owned_standard_runtime_locked()
                 return
             self._started = False
             self._stop_lifecycle_locked()
+            self._stop_owned_standard_runtime_locked()
+
+    def set_transport_reset_callback(self, callback: Any) -> None:
+        """Register a synchronous cache invalidation hook for transport swaps."""
+        self._transport_reset_callback = callback
+
+    def _notify_transport_reset(self) -> None:
+        callback = getattr(self, "_transport_reset_callback", None)
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception as exc:
+            logger.debug("cua-driver transport reset callback failed: %s", exc)
+
+    def _stop_owned_standard_runtime_locked(self) -> None:
+        """Stop the exact private macOS app daemon launched for a grant."""
+        socket_path = getattr(self, "_owned_standard_runtime_socket", None)
+        if not socket_path:
+            return
+        self._owned_standard_runtime_socket = None
+        driver_command = resolve_cua_driver_cmd()
+        if driver_command:
+            from tools.environments.local import _sanitize_subprocess_env
+
+            try:
+                subprocess.run(
+                    [driver_command, "stop", "--socket", socket_path],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=3.0,
+                    creationflags=windows_hide_flags(),
+                    env=_sanitize_subprocess_env(cua_driver_child_env()),
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if os.path.exists(socket_path):
+            try:
+                os.remove(socket_path)
+            except OSError:
+                pass
 
     def _stop_lifecycle_locked(self) -> None:
         """Signal shutdown + wait for the lifecycle coroutine to unwind.
@@ -1473,6 +1951,22 @@ class _CuaDriverSession:
             timeout=timeout,
         )
 
+    def _restore_declared_session_after_transport_reset(self, timeout: float) -> None:
+        """Re-attach the public label inside a replacement private lifecycle."""
+        session_id = getattr(self, "_declared_session_id", None)
+        if not session_id:
+            return
+        result = self._bridge.run(
+            self._call_tool_async("start_session", {"session": session_id}),
+            timeout=timeout,
+        )
+        if result.get("isError") is True:
+            logger.warning(
+                "cua-driver public session label %s could not be restored: %s",
+                session_id,
+                self._logical_error_text(result),
+            )
+
     @staticmethod
     def _is_closed_session_error(exc: Exception) -> bool:
         """Return True for MCP/stdio failures that are recoverable by reconnecting."""
@@ -1518,8 +2012,10 @@ class _CuaDriverSession:
             except Exception as e:
                 logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
         self._started = False
+        self._stop_owned_standard_runtime_locked()
         # Clear stale capability state; the next start populates from scratch.
         self._capabilities = {}
+        self._tool_schemas = {}
         self._capability_version = ""
         self._start_lifecycle_locked()
         self._started = True
@@ -1590,6 +2086,19 @@ class _CuaDriverSession:
 
                 out = (proc.stdout or "").strip()
                 last_err = out[:200] or (proc.stderr or "")[:200]
+                # "daemon is not running" is a PERMANENT condition for this
+                # invocation (`cua-driver call` requires the machine-wide
+                # daemon socket, which Linux installs typically never start —
+                # Hermes talks to the direct `cua-driver mcp` runtime
+                # instead). Retrying with backoff burns ~3.5s of sleeps per
+                # fallback for an outcome that cannot change; fail fast so
+                # callers surface a diagnosable error immediately.
+                if "daemon is not running" in out or "daemon is not running" in (proc.stderr or ""):
+                    raise RuntimeError(
+                        f"cua-driver CLI fallback for {name} unavailable: the "
+                        "machine-wide cua-driver daemon is not running (the "
+                        "CLI transport requires it; the MCP runtime does not)."
+                    )
                 start = min(
                     (i for i in (out.find("{"), out.find("[")) if i != -1),
                     default=-1,
@@ -1663,6 +2172,44 @@ class _CuaDriverSession:
     # into start() when the session-start hasn't flipped _started yet.
     _LIFECYCLE_CALLS = frozenset({"start_session", "end_session"})
 
+    # Retrying these calls after a broken transport is safe. The first call
+    # either had no side effect or is explicitly idempotent. Mutations stay
+    # out of this set because a lost response does not prove they failed.
+    _TRANSPORT_REPLAY_SAFE_TOOLS = frozenset({
+        "get_cursor_position",
+        "get_displays",
+        "get_screen_size",
+        "get_window_state",
+        "list_apps",
+        "list_windows",
+    })
+
+    @classmethod
+    def _transport_replay_is_safe(cls, name: str) -> bool:
+        return name in cls._TRANSPORT_REPLAY_SAFE_TOOLS
+
+    @staticmethod
+    def _unknown_transport_outcome(name: str, exc: Exception) -> Dict[str, Any]:
+        message = (
+            f"cua-driver transport failed during {name}; the action outcome is "
+            "unknown, so Hermes did not replay it. Take fresh state before "
+            "deciding whether to act again."
+        )
+        return {
+            "data": message,
+            "images": [],
+            "image_mime_types": [],
+            "structuredContent": {
+                "ok": False,
+                "code": "transport_outcome_unknown",
+                "message": message,
+                "operation": name,
+                "next_step": "fresh_state",
+                "detail": str(exc),
+            },
+            "isError": True,
+        }
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         # A prior session may have died (MCP drop / driver crash): its
         # lifecycle coro reset _started to False in its finally (#55048).
@@ -1671,6 +2218,7 @@ class _CuaDriverSession:
                 "cua-driver session not active on %s; (re)starting before call", name
             )
             self.start()
+            self._restore_declared_session_after_transport_reset(timeout)
         self._require_started()
 
         try:
@@ -1680,6 +2228,9 @@ class _CuaDriverSession:
             )
         except Exception as e:
             if self._is_transient_daemon_error(e):
+                if not self._transport_replay_is_safe(name):
+                    self._notify_transport_reset()
+                    return self._unknown_transport_outcome(name, e)
                 logger.warning(
                     "cua-driver MCP transport failed on %s (%s); "
                     "falling back to CLI transport", name, e,
@@ -1690,6 +2241,9 @@ class _CuaDriverSession:
             logger.warning("cua-driver MCP session closed during %s; reconnecting once", name)
             with self._lock:
                 self._restart_session_locked()
+            self._restore_declared_session_after_transport_reset(timeout)
+            if not self._transport_replay_is_safe(name):
+                return self._unknown_transport_outcome(name, e)
             result = self._bridge.run(
                 self._call_tool_async(name, args),
                 timeout=timeout,
@@ -1820,6 +2374,24 @@ def _positive_int(value: Any) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
+def _is_placeholder_id(value: Any) -> bool:
+    """True when *value* is a schema-filler id rather than a real target.
+
+    Several providers emit every declared schema property on every tool call,
+    filling unused optional integers with ``0``. A non-positive id cannot name
+    a window, so treating it as a targeting request drops the caller's ``app=``
+    and fails the capture. Malformed non-numeric values are deliberately NOT
+    placeholders: those still reach the existing validation error rather than
+    being silently ignored.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return False
+    try:
+        return int(value) <= 0
+    except ValueError:
+        return False
+
+
 def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Normalise cua-driver ``list_windows`` entries, dropping unusable ones.
 
@@ -1917,14 +2489,28 @@ class CuaDriverBackend(ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
     def __init__(self, permission_mode: str = "standard") -> None:
-        if permission_mode not in {"standard", "unrestricted"}:
+        if permission_mode not in {"standard", "bounded", "unrestricted"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
         self.permission_mode = permission_mode
-        self._embedded_daemon = (
-            _EmbeddedCuaDaemon(resolve_cua_driver_cmd() or "", permission_mode)
-            if permission_mode == "unrestricted"
-            else None
-        )
+        if permission_mode == "unrestricted":
+            # Carry the manifest into unrestricted too. It is optional here
+            # (unlike bounded), but when the user declared one it still caps
+            # what an approval-bypassed run may touch.
+            self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = _EmbeddedCuaDaemon(
+                resolve_cua_driver_cmd() or "",
+                permission_mode,
+                capability_manifest=_cua_capability_manifest(),
+            )
+        elif permission_mode == "bounded":
+            # Manifest path comes from config.yaml; _EmbeddedCuaDaemon
+            # validates existence and raises a clear error otherwise.
+            self._embedded_daemon = _EmbeddedCuaDaemon(
+                resolve_cua_driver_cmd() or "",
+                permission_mode,
+                capability_manifest=_cua_capability_manifest(),
+            )
+        else:
+            self._embedded_daemon = None
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
         # Sticky context — updated by capture(), used by action tools.
@@ -1942,29 +2528,34 @@ class CuaDriverBackend(ComputerUseBackend):
         # element. Cleared whenever a fresh capture overwrites the
         # snapshot context.
         self._snapshot_tokens: Dict[int, str] = {}
-        # Per-instance cua-driver session id. cua-driver's MCP server
-        # instructions ask every consumer to declare a stable session
-        # at the start of a run (start_session) and tear it down at
-        # the end (end_session). Doing so:
+        # Per-instance public cua-driver session label. The MCP transport owns
+        # the private lifecycle and releases it when the connection closes.
+        # start_session/end_session attach this stable label to cursor,
+        # recording, and config state within that lifecycle. Doing so:
         #   - Gets a distinct agent-cursor color per Hermes run, with
         #     overlay rendering visualising where actions land
         #     (without moving the real OS cursor).
-        #   - Isolates per-session config + recording ownership so
-        #     concurrent Hermes runs / subagents don't step on each
-        #     other.
+        #   - Gives config and recording state a stable owner label inside the
+        #     transport-private lifecycle.
         # We mint a UUID4-based id once per CuaDriverBackend instance —
-        # one Hermes run = one backend = one session — and pass it as
-        # `session` on every cua-driver tool call. Sessions are an
-        # additive feature on the cua-driver side: when our id is
-        # unknown to the driver (older builds), the tool calls
-        # degrade to the anonymous / unsynced path documented in the
-        # MCP server instructions.
+        # one Hermes run = one backend = one label — and pass it as
+        # `session` on every cua-driver tool call. Labels are an
+        # part of the required Cua Driver 0.20 runtime contract checked at
+        # backend startup.
         self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
         self._typed_browser = CuaTypedBrowserRoute(
             session_id=self._session_id,
             call_tool=self._session.call_tool,
             has_tool=self._session._has_tool,
         )
+        self._session.set_transport_reset_callback(self._handle_transport_reset)
+
+    def _handle_transport_reset(self) -> None:
+        """Invalidate every capability minted by the replaced transport."""
+        self._clear_active_target()
+        route = getattr(self, "_typed_browser", None)
+        if route is not None:
+            route.state.clear()
 
     def _browser_route(self) -> CuaTypedBrowserRoute:
         """Return the per-backend typed route, including test-constructed instances."""
@@ -1980,6 +2571,22 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
+        contract = cua_driver_runtime_contract_status()
+        if not contract.get("ready"):
+            # An installed-but-incompatible driver (e.g. predating a Hermes
+            # version-floor bump) is a state we created — repair it once
+            # automatically instead of failing every computer_use call.
+            contract = _maybe_repair_runtime_contract(contract)
+        if not contract.get("ready"):
+            reason = contract.get("reason") or "runtime contract is incomplete"
+            if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+                repair = (
+                    "Update the binary selected by HERMES_CUA_DRIVER_CMD or "
+                    "remove that override."
+                )
+            else:
+                repair = "Run `hermes computer-use install` to repair it."
+            raise RuntimeError(f"cua-driver is not ready: {reason}. {repair}")
         _maybe_nudge_update()
         # The MCP client SDK (`mcp`) is an optional dependency (the
         # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
@@ -2246,6 +2853,13 @@ class CuaDriverBackend(ComputerUseBackend):
         # PR's effective minimum (trycua/cua#1961 + #1908) is well past
         # that, so the fallback is gone — the wrapper now treats the
         # structured shape as the only contract.
+        # Drop schema-filler ids before they can be read as a targeting
+        # request, so `capture(app=...)` and frontmost capture still work for
+        # models that emit every optional property zero-filled.
+        if _is_placeholder_id(pid):
+            pid = None
+        if _is_placeholder_id(window_id):
+            window_id = None
         # An exact pid/window pair is both the stable capture_after target and
         # the escape hatch when app/window discovery is unavailable on X11.
         if pid is not None or window_id is not None:
@@ -2274,7 +2888,9 @@ class CuaDriverBackend(ComputerUseBackend):
                 self._clear_active_target()
                 raise
             if not windows:
-                return self._failed_capture(mode)
+                # Diagnose instead of returning a bare 0x0: the dominant
+                # real-world cause on Linux is a locked desktop session.
+                return self._failed_capture(mode, _empty_discovery_reason())
 
         # Filter by app name (case-insensitive substring) if requested.
         # When the filter matches nothing, surface that explicitly instead of
@@ -3001,8 +3617,18 @@ class CuaDriverBackend(ComputerUseBackend):
         return self._browser_route().observe(**kwargs)
 
     def typed_browser_prepare(self, **kwargs: Any) -> Dict[str, Any]:
-        """Prepare an explicitly approved driver-owned browser profile."""
-        return self._browser_route().prepare(**kwargs)
+        """Prepare an explicitly approved driver-owned browser profile.
+
+        The authorization inputs are resolved here, from config and this
+        backend's immutable mode — never from model-supplied kwargs.
+        """
+        kwargs.pop("grant_existing_profile", None)
+        kwargs.pop("permission_mode", None)
+        return self._browser_route().prepare(
+            grant_existing_profile=_cua_grant_existing_profile(),
+            permission_mode=self.permission_mode,
+            **kwargs,
+        )
 
     def typed_browser_action(
         self,

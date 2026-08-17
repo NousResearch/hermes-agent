@@ -387,6 +387,10 @@ export function useMainApp(gw: GatewayClient) {
   const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
   const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
   const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+
+  const historyThinkingExpanded =
+    thinkingDetailsVisible && (ui.detailsModeCommandOverride || ui.sections.thinking === 'expanded')
+
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
@@ -424,6 +428,7 @@ export function useMainApp(gw: GatewayClient) {
           }),
           virtualRows[index]!.msg
         ),
+        thinkingExpanded: historyThinkingExpanded,
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
@@ -433,6 +438,7 @@ export function useMainApp(gw: GatewayClient) {
       cols,
       detailsVisible,
       firstUserIdx,
+      historyThinkingExpanded,
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,

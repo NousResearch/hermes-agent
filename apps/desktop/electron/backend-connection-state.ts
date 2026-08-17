@@ -29,6 +29,10 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       return true
     },
 
+    isCurrentAttempt(attempt: BackendConnectionAttempt<TConnection>): boolean {
+      return attempt.generation === generation
+    },
+
     attachProcess(
       attempt: BackendConnectionAttempt<TConnection>,
       nextProcess: TProcess

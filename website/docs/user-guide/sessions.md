@@ -115,6 +115,10 @@ hermes chat -c
 
 This looks up the most recent `cli` session from the SQLite database and loads its full conversation history.
 
+#### Per-Terminal Continue
+
+A bare `-c` is terminal-aware: each CLI session drops a small breadcrumb file under `~/.hermes/terminal-sessions/` keyed by the terminal it runs in (tty device, tmux pane, kitty window, wezterm pane, Zellij pane, Windows Terminal session, ...). When you run `hermes -c` again in the *same* terminal, Hermes resumes that terminal's own session — so two panes side by side each continue their own conversation instead of both grabbing the globally most-recent one. If there's no breadcrumb for the terminal (first use, deleted session, or a stale breadcrumb older than 30 days), `-c` falls back to the most-recent-session behavior. `-c "name"` and `--resume` are unaffected. Disable with `session.terminal_continue: false` in `config.yaml`.
+
 ### Resume by Name
 
 If you've given a session a title (see [Session Naming](#session-naming) below), you can resume it by name:
@@ -610,11 +614,43 @@ routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
 
 
+## Importing Sessions from Claude Code and Codex CLI
+
+Started a conversation in another agent CLI? You can pull it into Hermes and
+continue it here. Hermes reads Claude Code's session logs
+(`~/.claude/projects/`) and Codex CLI's rollouts (`~/.codex/sessions/`) —
+the foreign files are only read, never modified.
+
+```bash
+# Interactive picker across both tools, newest first
+hermes sessions import
+
+# Limit to one tool, or point at a specific file
+hermes sessions import --from claude
+hermes sessions import --from codex ~/.codex/sessions/2026/08/15/rollout-....jsonl
+
+# Import-and-resume in one step
+hermes --resume @claude
+hermes --resume @codex
+```
+
+`hermes sessions import` creates a new Hermes session titled
+`Imported from Claude Code: <first user message>` (or Codex CLI) and prints
+the id plus a ready-to-paste `hermes --resume <id>` command.
+`--resume @claude` / `--resume @codex` show the same picker and drop you
+straight into the imported conversation.
+
+What carries over: the ordered user/assistant conversation, with tool
+activity condensed to short `[ran tool: …]` notes inside assistant turns.
+System prompts, injected context, reasoning traces, and raw tool output are
+left behind — the import is a clean transcript, not a byte-for-byte replay.
+
+
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
+The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. It makes no LLM calls and returns views of actual messages from the DB rather than generating summaries.
 
-### Three calling shapes
+### Four calling shapes
 
 The tool infers what you want from which arguments you set. There's no `mode` parameter.
 
@@ -624,16 +660,18 @@ The tool infers what you want from which arguments you set. There's no `mode` pa
 session_search(query="auth refactor", limit=3)
 ```
 
-Runs FTS5, dedupes hits by session lineage, returns the top N sessions. Each result carries:
+Runs FTS5, dedupes hits by session lineage, and returns the top N sessions. Discovery uses adaptive detail by default: the highest-ranked result includes its full context window and bookends, while lower-ranked results stay compact. Pass `detail="full"` to fully hydrate every result.
+
+Each result carries:
 
 - `session_id`, `title`, `when`, `source`
 - `snippet` — FTS5-highlighted match excerpt
-- `bookend_start` — first 3 user+assistant messages of the session (the goal/kickoff)
-- `messages` — ±5 messages around the FTS5 match, with the anchor message flagged (the hit in context)
-- `bookend_end` — last 3 user+assistant messages of the session (the resolution/decisions)
+- `detail` — `full` or `compact`
+- `bookend_start` / `bookend_end` — first/last 3 user+assistant messages for full results; empty lists for compact results
+- `messages` — ±5 messages around the FTS5 match for full results; only the flagged anchor message for compact results
 - `match_message_id`, `messages_before`, `messages_after`
 
-Bookends + window together reconstruct goal → match → resolution without paying for the whole transcript. Typical wall time: 15–50ms on a real session DB.
+The top result reconstructs goal → match → resolution immediately. If another compact result looks more promising, use its session and message IDs with the scroll shape. Typical wall time is tens of milliseconds on a real session DB.
 
 **2. Scroll — pass `session_id` + `around_message_id`:**
 
@@ -650,7 +688,15 @@ Returns a window of ±`window` messages centered on the anchor. No FTS5, no book
 
 Typical wall time: 1–2ms per scroll call.
 
-**3. Browse — no args:**
+**3. Read — pass `session_id` without an anchor:**
+
+```python
+session_search(session_id="20260510_174648_805cc2")
+```
+
+Returns the whole session, or a bounded head/tail view for large sessions. This shape is also used to resolve an `@session:<profile>/<id>` link.
+
+**4. Browse — no args:**
 
 ```python
 session_search()
@@ -670,6 +716,7 @@ The keyword mode supports standard FTS5 query syntax:
 ### Optional parameters
 
 - `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
+- `detail` — `adaptive` (default) fully hydrates only the top discovery result; `full` hydrates every discovery result.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
 ### When It's Used

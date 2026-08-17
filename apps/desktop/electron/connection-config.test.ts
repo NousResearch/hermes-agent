@@ -15,12 +15,14 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
+  cookiesHavePrivyAccessToken,
   cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
@@ -32,6 +34,7 @@ import {
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  pathWithProfileScope,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
@@ -276,6 +279,37 @@ test('resolveProfileBackendRoute only tags a descriptor when the backend is shar
     assert.equal(Boolean(resolved.descriptorProfile), resolved.scopePath)
     assert.ok(!resolved.descriptorProfile || resolved.backend === 'primary')
   }
+})
+
+// --- registry-pinned REST routing (cron run history on remote gateways, #87882) ---
+
+test('apiRequestRegistryConnectionId extracts a genuinely non-local connection id', () => {
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'gw-tailscale', path: '/api/cron/jobs' }), 'gw-tailscale')
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: '  gw-1  ', path: '/x' }), 'gw-1')
+})
+
+test('apiRequestRegistryConnectionId resolves null for the legacy/local routes', () => {
+  assert.equal(apiRequestRegistryConnectionId({ path: '/api/cron/jobs' }), null)
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: '', path: '/x' }), null)
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'local', path: '/x' }), null)
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: null, path: '/x' }), null)
+  assert.equal(apiRequestRegistryConnectionId(null), null)
+  assert.equal(apiRequestRegistryConnectionId(undefined), null)
+})
+
+test('pathWithProfileScope scopes shared-remote requests to the profile unconditionally', () => {
+  // A sharedRemote registry gateway serves every profile from one host; the
+  // run-history read must land on the profile that owns the job's sessions.
+  assert.equal(
+    pathWithProfileScope('/api/cron/jobs/job-1/runs?limit=20', 'research'),
+    '/api/cron/jobs/job-1/runs?limit=20&profile=research'
+  )
+})
+
+test('pathWithProfileScope keeps an explicit profile query and no-ops on empty profile', () => {
+  assert.equal(pathWithProfileScope('/api/cron/jobs?profile=all', 'research'), '/api/cron/jobs?profile=all')
+  assert.equal(pathWithProfileScope('/api/cron/jobs', ''), '/api/cron/jobs')
+  assert.equal(pathWithProfileScope('/api/cron/jobs', null), '/api/cron/jobs')
 })
 
 // --- pathWithGlobalRemoteProfile ---
@@ -569,6 +603,42 @@ test('cookiesHavePrivySession is false for unrelated cookies and non-arrays', ()
   assert.equal(cookiesHavePrivySession(null), false)
   assert.equal(cookiesHavePrivySession(undefined), false)
   assert.equal(cookiesHavePrivySession([]), false)
+})
+
+test('cookiesHavePrivySession treats refresh-token material as a (renewable) session', () => {
+  // #73495: after a restart the ~1h `privy-token` is often gone while the
+  // 30-day renewal cookies survive. That jar is still SIGNED IN (renewable),
+  // so the session check must accept it — the access check below is what
+  // distinguishes "can discovery succeed right now".
+  assert.equal(cookiesHavePrivySession([{ name: 'privy-refresh-token', value: 'x' }]), true)
+})
+
+// --- cookiesHavePrivyAccessToken (short-lived access state for /api/agents) ---
+
+test('cookiesHavePrivyAccessToken detects privy-token and its secured prefixes', () => {
+  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: 'jwt' }]), true)
+  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Host-privy-token', value: 'x' }]), true)
+  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Secure-privy-token', value: 'x' }]), true)
+})
+
+test('cookiesHavePrivyAccessToken rejects renewal-only jars (the #73495 cold-start state)', () => {
+  // Session/refresh material present, access token absent: signed in but
+  // discovery would 401 → the silent-renewal path must trigger, not re-login.
+  const renewalOnly = [
+    { name: 'privy-session', value: 'x' },
+    { name: 'privy-refresh-token', value: 'x' }
+  ]
+
+  assert.equal(cookiesHavePrivySession(renewalOnly), true)
+  assert.equal(cookiesHavePrivyAccessToken(renewalOnly), false)
+})
+
+test('cookiesHavePrivyAccessToken is false for empty values, gateway cookies, and non-arrays', () => {
+  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: '' }]), false)
+  assert.equal(cookiesHavePrivyAccessToken([{ name: 'hermes_session_at', value: 'x' }]), false)
+  assert.equal(cookiesHavePrivyAccessToken(null), false)
+  assert.equal(cookiesHavePrivyAccessToken(undefined), false)
+  assert.equal(cookiesHavePrivyAccessToken([]), false)
 })
 
 // --- tokenPreview ---

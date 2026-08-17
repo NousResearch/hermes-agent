@@ -147,7 +147,9 @@ export function delegateTaskPayloads(
   const result = parseMaybeRecord(payload.result)
   const rawTasks = Array.isArray(args.tasks) ? args.tasks : []
   const tasks = rawTasks.length ? rawTasks.map(parseMaybeRecord) : [args]
-  const status = phase === 'complete' ? (payload.error ? 'failed' : 'completed') : 'running'
+  const resultStatus = typeof result.status === 'string' ? result.status.toLowerCase() : ''
+  const failedResult = Boolean(payload.error) || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
+  const status = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
   const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_task'
   const progressText = firstString(payload.preview, payload.message, payload.context)
 

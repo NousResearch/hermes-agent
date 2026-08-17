@@ -828,6 +828,9 @@ export interface Translations {
     confirmArchive: string;
     confirmBlocked: string;
     confirmScheduled?: string;
+    confirmDoneMany: string;
+    confirmArchiveMany: string;
+    confirmBlockedMany: string;
     completionSummary: string;
     completionSummaryRequired: string;
     triagePlaceholder: string;
@@ -861,5 +864,11 @@ export interface Translations {
     saving?: string;
     commentHint?: string;
     commentHintTitle?: string;
+    // Optional in-app confirm-dialog strings for the trash/delete flow;
+    // non-English locales fall back to the English literals in the bundle.
+    trash?: {
+      confirmTitle?: string;
+      confirmManyTitle?: string;
+    };
   };
 }

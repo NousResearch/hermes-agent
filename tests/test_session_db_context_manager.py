@@ -1,14 +1,15 @@
 """``SessionDB`` must support ``with``, so an owning scope releases its fds.
 
-A SessionDB handle cannot be released by dropping the last reference. Once its
-background token writer starts, the instance pins ITSELF two ways: the writer
-thread's target is a bound method, and ``queue_token_counts`` registers
-``atexit.register(self._drain_token_queue_at_exit)``, which only ``close()``
-unregisters. A dropped-but-pinned handle keeps its ``state.db``/``-wal``/
-``-shm`` descriptors for the life of the process, and ``__del__`` never runs
-for it -- so the safety net is dead code for exactly the instances that leak.
+Historically a SessionDB handle could not be released by dropping the last
+reference: once its background token writer started, the instance pinned
+ITSELF two ways (the writer thread's bound-method target, and a strong
+``atexit`` drain hook that only ``close()`` unregistered), so ``__del__``
+never ran for exactly the instances that leaked ``state.db``/``-wal``/
+``-shm`` descriptors (#88033). The writer now retires after an idle window
+and the atexit hook is a weak reference, so abandoned handles are eventually
+GC-collectible -- but eventual collection is not deterministic release.
 
-That is why owning call sites are expected to close explicitly; the ownership
+Owning call sites are still expected to close explicitly; the ownership
 comments in ``run_agent.py`` and ``tui_gateway/methods_session.py`` say so in
 those words. This module pins the ergonomic half of that contract: an owner can
 scope a handle with ``with`` and be exception-safe by construction, instead of

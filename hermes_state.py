@@ -4350,15 +4350,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def __enter__(self) -> "SessionDB":
         """Enter a scope that closes this handle on the way out.
 
-        Ownership of a SessionDB has to be released explicitly: once the
-        background token writer starts, the instance pins ITSELF via
-        ``atexit.register(self._drain_token_queue_at_exit)`` and via the
-        writer thread's bound-method target, and only ``close()``
-        unregisters the former.  Dropping the last reference therefore does
-        NOT release the db/-wal/-shm descriptors the way plain refcounting
-        would suggest, and ``__del__`` never runs for exactly the instances
-        that leak.  That is why call sites owning a handle are expected to
-        close it (see the ownership comments in ``run_agent.py`` and
+        Ownership of a SessionDB should be released explicitly.
+        Historically an instance with a started token writer pinned ITSELF
+        (bound-method writer target plus a strong ``atexit`` drain hook), so
+        ``__del__`` never ran for exactly the instances that leaked
+        descriptors (#88033).  The writer now retires after an idle window
+        and the atexit hook holds only a weak reference, so abandoned
+        handles are eventually collectible — but "eventually, after the
+        idle window and a GC cycle" is not a release policy.  Call sites
+        owning a handle are still expected to close it deterministically
+        (see the ownership comments in ``run_agent.py`` and
         ``tui_gateway/methods_session.py``).
 
         This makes the correct usage the easy one, so an owning scope can be

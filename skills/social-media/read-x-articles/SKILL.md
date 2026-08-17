@@ -1,8 +1,8 @@
 ---
 name: read-x-articles
-description: "Read X (Twitter) long-form Articles end-to-end from a shared x.com link, no API key required."
+description: "Read X long-form Articles from a shared link, no API key."
 version: 1.0.0
-author: Hermes Agent
+author: "Joerg Peetz (@JPeetz) + Hermes Agent"
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -26,19 +26,24 @@ and a JS-capable web-extract/browser tool. No X API key or auth needed.
 - Anyone claims "X content can't be read" — that is the trigger to act, not
   give up.
 
-## Core insight (learned 2026-08-12)
-- X **Articles** read end-to-end at the canonical **`https://x.com/i/article/<ID>`**
-  **when fetched by a JS-executing web-extractor / browser tool** (e.g.
-  `web_extract`). That returns the FULL body.
-- **Bare HTTP fetch (`urllib`/`curl`) of the article often returns a login/JS
-  shell.** The canonical URL is necessary but a plain request is NOT sufficient
-  — you need a render-capable tool. This is why `web_extract` succeeds where
-  `curl` fails.
-- **`/status/<id>` posts and profile pages** are JS-rendered and hit the login
-  wall even for a browser. The fix is resolving the article URL AND using the
-  right fetch tool, not giving up.
+## Prerequisites
+- A **render-capable web extraction tool** (`web_extract`, CDP browser, or similar
+  JS-executing fetcher) — bare `curl`/`urllib` often returns a login shell.
+- No X API key or auth required.
 
-## Steps
+## How to Run
+On any X link the user shares, run `web_extract` on the canonical article URL
+`https://x.com/i/article/<ID>`. The full article body is returned directly.
+
+## Quick Reference
+- X **Articles** read at the canonical **`/i/article/<ID>`** using a JS-executing
+  extractor. Bare `curl`/`urllib` returns a login shell.
+- **`/status/<id>` posts and profile pages** are JS-rendered and hit the login wall
+  even for a browser — resolve the article URL first.
+- If only a plain HTTP client is available, expect a login shell and fall back to a
+  browser render.
+
+## Procedure
 1. **Try first, judge later.** On any X link, immediately run `web_extract`
    on it. Declaring it unreadable *before* trying is the exact mistake this
    skill prevents.

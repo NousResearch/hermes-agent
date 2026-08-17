@@ -1914,11 +1914,15 @@ def _db_fingerprint(db_path: Path) -> "Optional[str]":
     is reached from ``repair_state_db_schema``'s exhaustion probe BEFORE
     ``_backup_db_file``'s ``has_live_connection`` guard, and the repair path is
     entered by one SessionDB while the gateway holds others, so a live peer is
-    the expected case rather than a theoretical one. When one exists we fall
-    back to ``size:mtime_ns``: a live connection means the backup is refused
-    and repair HARD STOPs (#69603), so no surgery runs and nothing moves mtime
-    behind our back — the content key is only load-bearing on the offline
-    repair path, which is exactly where the guard lets it through.
+    the expected case rather than a theoretical one.
+
+    Returns ``None`` when a live connection makes the read unsafe. Callers MUST
+    NOT substitute a differently-shaped key (an earlier revision fell back to
+    ``size:mtime_ns``): the ledger compares keys for equality, so alternating
+    between a content key and an mtime key across passes never matches, the
+    counter resets to 1 every time and the unbounded repair loop this ledger
+    exists to stop comes straight back. ``None`` means "identity unavailable",
+    and the ledger helpers below keep using the key already on record.
     """
     try:
         st = db_path.stat()
@@ -1930,14 +1934,15 @@ def _db_fingerprint(db_path: Path) -> "Optional[str]":
         except ImportError:
             # Scaffold/embed installs ship hermes_state without hermes_cli. No
             # tracked connections exist there, so the raw read is safe.
-            LiveConnectionError = ()  # type: ignore[assignment]
-            offline_file_access = None  # type: ignore[assignment]
+            @contextmanager
+            def offline_file_access(_path, **_kw):
+                yield
+
+            class LiveConnectionError(Exception):
+                pass
+
         try:
-            with (
-                contextlib.nullcontext()
-                if offline_file_access is None
-                else offline_file_access(db_path, what="fingerprint")
-            ):
+            with offline_file_access(db_path, what="fingerprint"):
                 with open(db_path, "rb") as fh:
                     head = fh.read(_FINGERPRINT_SAMPLE_BYTES)
                     if st.st_size > _FINGERPRINT_SAMPLE_BYTES:
@@ -1946,7 +1951,7 @@ def _db_fingerprint(db_path: Path) -> "Optional[str]":
                     else:
                         tail = b""
         except LiveConnectionError:
-            return f"{st.st_size}:{st.st_mtime_ns}"
+            return None
         digest = hashlib.sha256(head + tail).hexdigest()[:32]
         return f"{st.st_size}:{digest}"
     except OSError:
@@ -1970,15 +1975,28 @@ def _persistent_repair_attempts_exhausted(db_path: Path) -> bool:
     failed attempts against the CURRENT file fingerprint. Never raises; a
     missing/corrupt ledger or unstatable DB reads as "not exhausted" (the
     in-process claim and cross-process lock still bound a single run).
+
+    When the fingerprint is unavailable because a live connection makes the
+    content read unsafe, fall back to the SIZE the ledger recorded rather than
+    reading as "not exhausted". Otherwise a peer connection is enough to hide
+    an exhausted budget on every pass, which is the unbounded loop again.
     """
+    ledger = _read_repair_ledger(db_path)
+    recorded = ledger.get("fingerprint")
     fp = _db_fingerprint(db_path)
     if fp is None:
+        # Size is the one component both key shapes share and that a raw read
+        # is not needed for; an unchanged size means the damaged file is very
+        # likely the same one the budget was burned on.
+        try:
+            size_prefix = f"{db_path.stat().st_size}:"
+        except OSError:
+            return False
+        if not isinstance(recorded, str) or not recorded.startswith(size_prefix):
+            return False
+    elif recorded != fp:
         return False
-    ledger = _read_repair_ledger(db_path)
-    return (
-        ledger.get("fingerprint") == fp
-        and int(ledger.get("failed_attempts", 0)) >= _MAX_PERSISTENT_REPAIR_ATTEMPTS
-    )
+    return int(ledger.get("failed_attempts", 0)) >= _MAX_PERSISTENT_REPAIR_ATTEMPTS
 
 
 def _record_repair_outcome(
@@ -1988,20 +2006,30 @@ def _record_repair_outcome(
 
     Defaults to the post-attempt fingerprint — the file state the NEXT
     attempt's exhaustion probe will observe.
+
+    When the fingerprint is unavailable (a live connection makes the content
+    read unsafe), keep the key already on record and still increment: dropping
+    the pass would let a peer connection reset the budget every time, which is
+    the unbounded loop this ledger exists to stop. Never write a differently
+    shaped key — the probe compares for equality, so mixing key shapes across
+    passes never matches.
     """
     ledger_path = _repair_ledger_path(db_path)
     try:
         if repaired:
             ledger_path.unlink(missing_ok=True)
             return
+        ledger = _read_repair_ledger(db_path)
+        recorded = ledger.get("fingerprint")
         fp = fingerprint if fingerprint is not None else _db_fingerprint(db_path)
         if fp is None:
-            return
-        ledger = _read_repair_ledger(db_path)
+            if not isinstance(recorded, str):
+                # No prior key to extend and no way to mint one safely: the
+                # in-process claim and cross-process lock still bound this run.
+                return
+            fp = recorded
         attempts = (
-            int(ledger.get("failed_attempts", 0)) + 1
-            if ledger.get("fingerprint") == fp
-            else 1
+            int(ledger.get("failed_attempts", 0)) + 1 if recorded == fp else 1
         )
         import datetime
 

@@ -287,9 +287,11 @@ def test_fingerprint_takes_no_raw_fd_while_a_connection_is_live(tmp_path):
             fp = _db_fingerprint(db)
 
         assert not opened, f"raw fd taken on a live DB: {opened}"
-        # Must still return an identity, or the attempt ledger silently stops
-        # counting (fp None => "not exhausted" => the loop never terminates).
-        assert fp is not None
+        # None is the correct answer here — see
+        # test_budget_exhausts_when_liveness_alternates_across_passes for why a
+        # substitute key shape would be worse than no key at all. The ledger
+        # keeps counting against the key already on record.
+        assert fp is None
     finally:
         live.close()
 
@@ -455,3 +457,64 @@ def test_backup_refused_when_free_space_cannot_be_determined(tmp_path):
     assert path is None
     assert reason is not None and "free space" in reason.lower()
     assert not _existing_malformed_backups(db)
+
+
+def test_budget_exhausts_when_liveness_alternates_across_passes(tmp_path):
+    """A peer connection must not reset the attempt budget.
+
+    ``_db_fingerprint`` returns None when a live connection makes the content
+    read unsafe. If the ledger treated that as "no identity" (skip the record)
+    or substituted a differently-shaped key (``size:mtime_ns``), then a gateway
+    peer connecting and disconnecting between passes would reset the counter to
+    1 forever — the exact unbounded loop this whole ledger exists to stop.
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+
+    for index in range(_MAX_PERSISTENT_REPAIR_ATTEMPTS):
+        live = None
+        if index % 2 == 1:  # a peer holds the DB on alternate passes
+            live = connect_tracked(db, isolation_level=None, check_same_thread=False)
+        try:
+            assert not _persistent_repair_attempts_exhausted(db)
+            _record_repair_outcome(db, repaired=False)
+        finally:
+            if live is not None:
+                live.close()
+
+    assert _persistent_repair_attempts_exhausted(db), (
+        "alternating live/offline passes reset the repair budget"
+    )
+    # And an exhausted budget must stay visible even while a peer is connected.
+    live = connect_tracked(db, isolation_level=None, check_same_thread=False)
+    try:
+        assert _persistent_repair_attempts_exhausted(db)
+    finally:
+        live.close()
+
+
+def test_fingerprint_returns_none_rather_than_a_mtime_shaped_key(tmp_path):
+    """Never mint a second key SHAPE — the ledger compares for equality."""
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+
+    offline = _db_fingerprint(db)
+    assert offline is not None
+    live = connect_tracked(db, isolation_level=None, check_same_thread=False)
+    try:
+        assert _db_fingerprint(db) is None, (
+            "a live connection produced a fingerprint; if its shape differs "
+            "from the offline key the ledger can never match across passes"
+        )
+    finally:
+        live.close()

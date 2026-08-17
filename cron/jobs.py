@@ -868,35 +868,19 @@ def _recoverable_oneshot_run_at(
 def _compute_grace_seconds(schedule: dict) -> int:
     """Compute how late a job can be and still catch up instead of fast-forwarding.
 
-    Uses half the schedule period, clamped between 120 seconds and 2 hours.
-    This ensures daily jobs can catch up if missed by up to 2 hours,
-    while frequent jobs (every 5-10 min) still fast-forward quickly.
+    Uses half the schedule period (via ``_schedule_cadence_seconds``, the
+    single cadence-measurement implementation), clamped between 120 seconds
+    and 2 hours.  This ensures daily jobs can catch up if missed by up to
+    2 hours, while frequent jobs (every 5-10 min) still fast-forward quickly.
     """
     MIN_GRACE = 120
     MAX_GRACE = 7200  # 2 hours
 
-    kind = schedule.get("kind")
-
-    if kind == "interval":
-        period_seconds = schedule.get("minutes", 1) * 60
-        grace = period_seconds // 2
-        return max(MIN_GRACE, min(grace, MAX_GRACE))
-
-    if kind == "cron" and _ensure_croniter():
-        expr = schedule.get("expr")
-        if expr:
-            try:
-                now = _hermes_now()
-                cron = croniter(expr, now)
-                first = cron.get_next(datetime)
-                second = cron.get_next(datetime)
-                period_seconds = int((second - first).total_seconds())
-                grace = period_seconds // 2
-                return max(MIN_GRACE, min(grace, MAX_GRACE))
-            except Exception:
-                pass
-
-    return MIN_GRACE
+    period_seconds = _schedule_cadence_seconds(schedule)
+    if not period_seconds:
+        return MIN_GRACE
+    grace = int(period_seconds) // 2
+    return max(MIN_GRACE, min(grace, MAX_GRACE))
 
 
 # Durable (persisted-state) recovery counter for a recurring job wedged in a
@@ -1000,6 +984,11 @@ def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
             result = gap if gap > 0 else None
         except Exception:
             result = None
+        # Hard bound so deleted/edited exprs can never grow the cache
+        # unboundedly in a long-lived gateway; a rare full clear costs two
+        # croniter evaluations per live expr to rebuild.
+        if len(_cron_cadence_cache) >= 256:
+            _cron_cadence_cache.clear()
         _cron_cadence_cache[expr] = result
         return result
     return None

@@ -2,7 +2,7 @@ import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { onThemeRepaint } from '@/hooks/use-theme-epoch'
-import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
+import { createBudgetedLoop } from '@/lib/budgeted-loop'
 
 type Rgb = { r: number; g: number; b: number }
 
@@ -256,10 +256,6 @@ const drawAsciiDiffusion = (
 const MAX_ANIMATED_INSTANCES = 2
 let activeAnimatedCount = 0
 
-// ~15fps paint target for the animated shimmer — visually equivalent at
-// placeholder scale, 4x fewer full-canvas redraws than display cadence.
-const FRAME_INTERVAL = 1000 / 15
-
 export const DiffusionCanvas: FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sizeRef = useRef({ width: 0, height: 0 })
@@ -311,7 +307,7 @@ export const DiffusionCanvas: FC = () => {
 
     sizeRef.current = fitCanvas(canvas, ctx)
 
-    // Over the concurrent cap — draw one static frame, skip the rAF loop so
+    // Over the concurrent cap — draw one static frame, skip the loop so
     // extra instances are zero-cost (#79077). Each animated instance redraws
     // its full canvas per frame, so N instances multiply cost linearly.
     if (activeAnimatedCount >= MAX_ANIMATED_INSTANCES) {
@@ -323,57 +319,20 @@ export const DiffusionCanvas: FC = () => {
 
     activeAnimatedCount++
 
-    let frame = 0
-    let lastDraw = 0
-    let stopped = false
-    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
-
-    const cancelFrame = () => {
-      if (frame !== 0) {
-        window.cancelAnimationFrame(frame)
-        frame = 0
-      }
-    }
-
-    const scheduleFrame = () => {
-      if (stopped || pauseController?.isPaused() || frame !== 0) {
-        return
-      }
-
-      frame = window.requestAnimationFrame(draw)
-    }
-
-    const draw = (now: number) => {
-      frame = 0
-
-      if (stopped || pauseController?.isPaused()) {
-        return
-      }
-
-      // 15fps is visually equivalent for this placeholder shimmer and does
-      // 4x fewer full-canvas redraws than display cadence (#79077).
-      if (now - lastDraw >= FRAME_INTERVAL) {
+    // 15fps is visually equivalent for this placeholder shimmer and does 4x
+    // fewer full-canvas redraws than display cadence (#79077). The loop also
+    // pauses while the window is hidden/minimized/unfocused (#88396).
+    const loop = createBudgetedLoop(
+      now => {
         const { width, height } = sizeRef.current
         ctx.clearRect(0, 0, width, height)
         drawAsciiDiffusion(ctx, themeRef.current, width, height, now / 1000)
-        lastDraw = now
-      }
-
-      scheduleFrame()
-    }
-
-    const handleVisibilityChange = () => {
-      cancelFrame()
-      scheduleFrame()
-    }
-
-    pauseController = createRendererLoopPauseController(handleVisibilityChange)
-    scheduleFrame()
+      },
+      { fps: 15 }
+    )
 
     return () => {
-      stopped = true
-      cancelFrame()
-      pauseController.dispose()
+      loop.dispose()
       activeAnimatedCount--
     }
   }, [])

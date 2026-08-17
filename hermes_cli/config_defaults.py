@@ -3143,6 +3143,13 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # Maximum seconds the interactive autostash-restore prompt
+        # ("Restore local changes now? [Y/n]") waits before skipping
+        # restore so an unattended `hermes update` cannot hang mid-
+        # update with a managed gateway left on stale code (#85753).
+        # 0 disables the guard (blocks forever, pre-fix behavior).
+        # POSIX-only (SIGALRM); Windows keeps the blocking path.
+        "autostash_prompt_timeout": 60,
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example

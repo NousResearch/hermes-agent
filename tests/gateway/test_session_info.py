@@ -44,6 +44,43 @@ class TestFormatSessionInfo:
         assert "32K" in info
         assert "config" in info
 
+    def test_banner_reports_resolved_fallback_model_not_configured(self, runner, tmp_path):
+        """Banner must show the model actually being served, not the configured primary.
+
+        Repro: configured primary is gpt-5.6-sol but the provider is rate-limited,
+        so the runtime resolver returns a fallback provider AND its model. The banner
+        must not cross-product the configured model with the resolved provider
+        (e.g. "gpt-5.6-sol" served via "opencode-zen") — it should report the model
+        that will actually be used (deepseek-v4-flash-free).
+        """
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: gpt-5.6-sol\n  provider: openai-codex\n",
+            "gpt-5.6-sol",
+            {"provider": "opencode-zen", "base_url": "https://opencode.ai/zen/v1",
+             "api_key": "k", "model": "deepseek-v4-flash-free"},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "deepseek-v4-flash-free" in info
+        assert "opencode-zen" in info
+        # The misleading cross-product must not appear.
+        assert "gpt-5.6-sol" not in info
+
+    def test_banner_keeps_configured_model_when_no_resolved_override(self, runner, tmp_path):
+        """When the runtime provides no model override, keep the configured model."""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: gpt-5.6-sol\n  provider: openai-codex\n",
+            "gpt-5.6-sol",
+            {"provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex",
+             "api_key": "k"},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "gpt-5.6-sol" in info
+        assert "openai-codex" in info
+
     def test_default_fallback_hint(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: unknown-model-xyz\n",
                                   "unknown-model-xyz",

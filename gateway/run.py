@@ -20510,6 +20510,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             provider = runtime.get("provider") or provider
             base_url = runtime.get("base_url") or base_url
             api_key = runtime.get("api_key")
+            # When the primary provider is unavailable (e.g. rate-limited) the
+            # runtime resolver returns a fallback provider AND its model. Mirror
+            # the agent run path (gateway/run.py:7135) so the banner reports the
+            # model actually being served, not the configured primary model — the
+            # latter produced a misleading "configured model x resolved provider"
+            # cross-product (e.g. "gpt-5.6-sol" served via "opencode-zen").
+            runtime_model = runtime.get("model") or None
+            if runtime_model:
+                model = runtime_model
         except Exception:
             pass
 

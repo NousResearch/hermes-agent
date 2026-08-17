@@ -116,6 +116,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
+import { resolveDesktopRemoteRoute } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -239,7 +240,11 @@ import { selectPoolEvictions } from './pool-eviction'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
-import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
+import {
+  createPrimaryRemoteConnection,
+  FirstRunSetupResetError,
+  runPrimaryBackendStartup
+} from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import {
   assertLocalProfileCanStart,
@@ -9061,80 +9066,46 @@ function persistSshConnectionToken(profile, source, token) {
 async function resolveRemoteBackend(profile) {
   const config = readDesktopConnectionConfig()
 
-  // 1. Per-profile override — "a profile with its own remote host". Wins even
-  //    over the env override so an explicitly-configured profile always
-  //    reaches its intended backend.
-  const sshOverride = profileSshOverride(config, profile)
+  const route = resolveDesktopRemoteRoute({
+    config,
+    env: {
+      token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
+      url: process.env.HERMES_DESKTOP_REMOTE_URL
+    },
+    profile,
+    registry: readDesktopConnectionsRegistry()
+  })
 
-  if (sshOverride) {
-    const reuseToken = decryptDesktopSecret(config.profiles?.[connectionScopeKey(profile)]?.token)
-
-    return bootstrapSshConnection(profile, sshOverride, reuseToken, 'profile')
-  }
-
-  const override = profileRemoteOverride(config, profile)
-
-  if (override) {
-    const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
-
-    return buildRemoteConnection(
-      override.url,
-      override.authMode,
-      token,
-      'profile',
-      undefined,
-      config.profiles?.[connectionScopeKey(profile)]?.mode === 'cloud' ? 'cloud' : 'url',
-      undefined,
-      override.headers
-    )
-  }
-
-  // 2. Env override (global, token-auth only).
-  const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
-  const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
-
-  if (rawEnvUrl) {
-    if (!rawEnvToken) {
-      throw new Error(
-        'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
-          'Both must be provided to connect to a remote Hermes backend.'
-      )
-    }
-
-    return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
-  }
-
-  // 3. Global remote.
-  if (config.mode === 'ssh') {
-    const ssh = normalizeSshConfig({ mode: 'ssh', ...(config.remote || {}) })
-
-    if (!ssh) {
-      throw new Error('SSH remote mode is selected but no host is configured.')
-    }
-
-    const reuseToken = decryptDesktopSecret(config.remote?.token)
-
-    return bootstrapSshConnection(null, ssh, reuseToken, 'settings')
-  }
-
-  // Cloud resolves through the existing URL/OAuth path.
-  if (!modeIsRemoteLike(config.mode)) {
+  if (!route) {
     return null
   }
 
-  const authMode = normAuthMode(config.remote?.authMode)
-  const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
+  let connection
 
-  return buildRemoteConnection(
-    config.remote?.url,
-    authMode,
-    token,
-    'settings',
-    undefined,
-    config.mode === 'cloud' ? 'cloud' : 'url',
-    undefined,
-    config.remote?.headers
-  )
+  if (route.kind === 'ssh') {
+    connection = await bootstrapSshConnection(
+      route.source === 'profile' ? profile : null,
+      route.ssh,
+      decryptDesktopSecret(route.token),
+      route.source
+    )
+  } else {
+    const token =
+      route.authMode === 'oauth' ? null : route.source === 'env' ? route.token : decryptDesktopSecret(route.token)
+
+    connection = await buildRemoteConnection(
+      route.url,
+      route.authMode,
+      token,
+      route.source,
+      undefined,
+      route.kind === 'cloud' ? 'cloud' : 'url',
+      undefined,
+      route.headers
+    )
+  }
+
+  return route.connectionId ? { ...connection, connectionId: route.connectionId } : connection
 }
 
 // A remote profile's sessions live on its remote host's state.db, not on a local
@@ -10293,19 +10264,7 @@ async function startHermes() {
         error: null
       })
 
-      return {
-        baseUrl: remote.baseUrl,
-        mode: 'remote',
-        source: remote.source,
-        authMode: remote.authMode || 'token',
-        remoteHost: remote.remoteHost,
-        remoteKind: remote.remoteKind,
-        remoteHermesVersion: remote.remoteHermesVersion,
-        token: remote.token,
-        wsUrl: remote.wsUrl,
-        logs: hermesLog.slice(-80),
-        ...getWindowState()
-      }
+      return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
     }
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)

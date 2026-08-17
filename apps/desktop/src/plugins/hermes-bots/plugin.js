@@ -6658,6 +6658,54 @@ export default {
     pluginCtx = ctx
     startFaceClock()
 
+    // @-mention autocomplete: typing "@rese…" in ANY composer offers the
+    // roster's handles (issue #88060). Reads the roster straight from the
+    // query cache — useRoster keeps it ≤5s stale and the popover must answer
+    // synchronously per keystroke. Multi-source rosters contribute their
+    // precomputed @name-device handles via botHandle. The active profile is
+    // excluded (a bot doesn't @ itself); 'default' surfaces as @hermes.
+    ctx.register({
+      id: 'mention-completions',
+      area: COMPOSER_AREAS.atCompletions,
+      data: {
+        provide: query => {
+          const roster = queryClient.getQueryData(ROSTER_KEY)
+          const profiles = Array.isArray(roster?.profiles) ? roster.profiles : []
+
+          if (!profiles.length) {
+            return []
+          }
+
+          const active = (host.state.profile.get() || 'default').trim() || 'default'
+          const q = (query || '').toLowerCase()
+          const items = []
+
+          for (const profile of profiles) {
+            if (!profile?.name || profile.name === active) {
+              continue
+            }
+
+            const handle = botHandle(profile.name, profile)
+
+            if (q && !handle.toLowerCase().startsWith(q)) {
+              continue
+            }
+
+            const display = displayName(profile, $botMeta.get()[profile.name])
+            const source = profile.connectionLabel ? ` · ${profile.connectionLabel}` : ''
+
+            items.push({
+              insert: `@${handle}`,
+              display: `@${handle}`,
+              meta: `Bot · ${display}${source}`
+            })
+          }
+
+          return items.slice(0, 8)
+        }
+      }
+    })
+
     // Keyframes for the pet bob — injected because plugin classes aren't in
     // the app's precompiled CSS. Idempotent across hot reloads.
     if (!document.getElementById('hermes-bots-keyframes')) {

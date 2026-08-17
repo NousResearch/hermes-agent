@@ -425,7 +425,7 @@ export const host = {
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
-export { COMPOSER_AREAS, type ComposerAttachmentProvider, type ComposerMiddleware } from '@/app/chat/composer/contrib'
+export { COMPOSER_AREAS, type ComposerAtCompletionItem, type ComposerAtCompletionSource, type ComposerAttachmentProvider, type ComposerMiddleware } from '@/app/chat/composer/contrib'
 
 // -- ui: the design language --------------------------------------------------
 

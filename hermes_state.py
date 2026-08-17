@@ -71,7 +71,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _PREVIEW_RAW_SELECT,
     _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL,
-    is_automatic_end_reason,
+    _RESET_CHILD_SQL,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
     _ephemeral_child_sql,
@@ -80,6 +80,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _sql_session_last_active,
     _sql_session_last_active_by_id,
     escape_like as _escape_like,
+    is_automatic_end_reason,
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
     FTS_REBUILD_DEFERRAL_KEY,
@@ -14589,16 +14590,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         identifier — used for Nous Portal ``conversation=`` usage tagging.
         Returns *session_id* unchanged when it has no recorded parent.
         """
-        chain = self._session_lineage_root_to_tip(session_id)
+        chain = self._session_lineage_root_to_tip(session_id, stop_at_reset=False)
         return (chain[0] if chain and chain[0] else session_id)
 
-    def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+    def _session_lineage_root_to_tip(self, session_id: str, stop_at_reset: bool = True) -> List[str]:
         if not session_id:
             return [session_id]
 
         chain = []
         current = session_id
         seen = set()
+        reset_clause = _RESET_CHILD_SQL.format(a="s")
         with self._read_ctx() as conn:
             for _ in range(100):
                 if not current or current in seen:
@@ -14606,10 +14608,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 seen.add(current)
                 chain.append(current)
                 row = conn.execute(
-                    "SELECT parent_session_id FROM sessions WHERE id = ?",
+                    f"SELECT s.parent_session_id, ({reset_clause}) AS is_reset_child "
+                    "FROM sessions AS s WHERE s.id = ?",
                     (current,),
                 ).fetchone()
                 if row is None:
+                    break
+                # A /new (or auto) reset starts a separate user-visible
+                # conversation; its parent's transcript must not be replayed
+                # into the child (hermes_state_common: "A reset starts a
+                # separate user-visible conversation..."). Mirror
+                # resolve_resume_session_id's reset-child exclusion.
+                if stop_at_reset and row["is_reset_child"]:
                     break
                 current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
         return list(reversed(chain)) or [session_id]

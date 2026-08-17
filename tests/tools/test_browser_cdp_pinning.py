@@ -78,7 +78,9 @@ def test_cdp_command_uses_named_session_and_pins_tab(monkeypatch, tmp_path):
     sessions = {
         "task-a": {
             "session_name": "cdp_task_a",
+            "bb_session_id": None,
             "cdp_url": cdp_url,
+            "features": {"cdp_override": True},
         }
     }
 
@@ -182,7 +184,9 @@ def test_cdp_npx_command_uses_pin_spec_and_npm_policy(monkeypatch, tmp_path):
     sessions = {
         "task-npx": {
             "session_name": "cdp_task_npx",
+            "bb_session_id": None,
             "cdp_url": cdp_url,
+            "features": {"cdp_override": True},
         }
     }
     environments: list[dict[str, str]] = []
@@ -222,8 +226,18 @@ def test_cdp_npx_command_uses_pin_spec_and_npm_policy(monkeypatch, tmp_path):
 def test_two_tasks_pin_distinct_sessions_on_same_cdp_endpoint(monkeypatch, tmp_path):
     cdp_url = "ws://127.0.0.1:9222/devtools/browser/shared"
     sessions = {
-        "task-a": {"session_name": "cdp_task_a", "cdp_url": cdp_url},
-        "task-b": {"session_name": "cdp_task_b", "cdp_url": cdp_url},
+        "task-a": {
+            "session_name": "cdp_task_a",
+            "bb_session_id": None,
+            "cdp_url": cdp_url,
+            "features": {"cdp_override": True},
+        },
+        "task-b": {
+            "session_name": "cdp_task_b",
+            "bb_session_id": None,
+            "cdp_url": cdp_url,
+            "features": {"cdp_override": True},
+        },
     }
 
     commands, results = _run_commands(
@@ -344,8 +358,10 @@ def test_pinned_cdp_target_id_uses_agent_browser_active_page(monkeypatch):
 def test_navigate_fails_if_auto_snapshot_reports_tab_gone(monkeypatch):
     session = {
         "session_name": "cdp_task_a",
+        "bb_session_id": None,
         "cdp_url": "ws://shared",
         "target_id": "TARGET-OWNED",
+        "features": {"cdp_override": True},
         "_first_nav": False,
     }
     command_results = iter(

@@ -150,6 +150,26 @@ def test_missing_thread_and_loop_attrs_trigger_recreate(
     fresh.stop()
 
 
+def test_inactive_cached_supervisor_triggers_recreate(
+    isolated_registry, stub_cdp_supervisor
+):
+    cdp_url = "http://h/inactive"
+    broken = _make_fake_supervisor(
+        cdp_url,
+        thread_alive=True,
+        loop_running=True,
+    )
+    broken._active = False
+    isolated_registry._by_task["inactive"] = broken
+
+    fresh = isolated_registry.get_or_start(task_id="inactive", cdp_url=cdp_url)
+
+    assert fresh is not broken
+    assert isolated_registry._by_task["inactive"] is fresh
+    broken._thread._release()  # type: ignore[attr-defined]
+    fresh.stop()
+
+
 def test_concurrent_different_targets_leave_one_live_supervisor(
     isolated_registry, monkeypatch
 ):
@@ -388,3 +408,69 @@ def test_stop_cannot_pass_between_displacement_and_starter_registration(
     assert isolated_registry.get("replacement-race") is None
     assert created[0].live is False
     assert created[0].stop_calls >= 1
+
+
+def test_top_level_target_detach_marks_supervisor_inactive_and_clears_state():
+    supervisor = bs.CDPSupervisor(
+        task_id="top-level-detach",
+        cdp_url="ws://shared",
+        target_id="TARGET-TOP",
+    )
+    supervisor._active = True
+    supervisor._page_session_id = "PAGE-SESSION"
+    supervisor._attached_target_id = "TARGET-TOP"
+    supervisor._child_sessions["CHILD-SESSION"] = {"type": "iframe"}
+    supervisor._frames["top"] = bs.FrameInfo(
+        frame_id="top",
+        url="https://example.com",
+        origin="https://example.com",
+        parent_frame_id=None,
+        is_oopif=False,
+        cdp_session_id="PAGE-SESSION",
+    )
+    supervisor._pending_dialogs["d-1"] = bs.PendingDialog(
+        id="d-1",
+        type="alert",
+        message="hello",
+        default_prompt="",
+        opened_at=0.0,
+        cdp_session_id="PAGE-SESSION",
+    )
+
+    supervisor._on_target_detached(
+        {"sessionId": "PAGE-SESSION", "targetId": "TARGET-TOP"}
+    )
+
+    snapshot = supervisor.snapshot()
+    assert snapshot.active is False
+    assert supervisor._page_session_id is None
+    assert supervisor._attached_target_id is None
+    assert supervisor._child_sessions == {}
+    assert snapshot.frame_tree == {"top": None, "children": [], "truncated": False}
+    assert snapshot.pending_dialogs == ()
+
+
+def test_child_target_detach_keeps_frame_but_clears_child_session():
+    supervisor = bs.CDPSupervisor(
+        task_id="child-detach",
+        cdp_url="ws://shared",
+        target_id="TARGET-TOP",
+    )
+    supervisor._active = True
+    supervisor._page_session_id = "PAGE-SESSION"
+    supervisor._attached_target_id = "TARGET-TOP"
+    supervisor._child_sessions["CHILD-SESSION"] = {"type": "iframe"}
+    supervisor._frames["child"] = bs.FrameInfo(
+        frame_id="child",
+        url="https://child.example",
+        origin="https://child.example",
+        parent_frame_id="top",
+        is_oopif=True,
+        cdp_session_id="CHILD-SESSION",
+    )
+
+    supervisor._on_target_detached({"sessionId": "CHILD-SESSION", "targetId": "TARGET-CHILD"})
+
+    assert supervisor.snapshot().active is True
+    assert supervisor._frames["child"].cdp_session_id is None
+    assert supervisor._child_sessions == {}

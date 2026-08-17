@@ -233,7 +233,9 @@ def test_cdp_command_does_not_spawn_runnable_old_cli(monkeypatch, tmp_path):
         "_get_session_info",
         lambda _task: {
             "session_name": "cdp_task",
+            "bb_session_id": None,
             "cdp_url": "ws://shared",
+            "features": {"cdp_override": True},
         },
     )
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)

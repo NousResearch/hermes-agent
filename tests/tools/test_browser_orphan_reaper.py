@@ -174,9 +174,11 @@ class TestReapOrphanedBrowserSessions:
         )
         terminated = []
         with patch("gateway.status._pid_exists", side_effect=[False, True]), \
+             patch("gateway.status.get_process_start_time", return_value=777), \
              patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
              patch("tools.browser_tool._close_orphaned_pinned_target", return_value=True) as close_target, \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=terminated.append):
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid, expected_start=None: terminated.append(pid)):
             _reap_orphaned_browser_sessions()
 
         close_target.assert_called_once_with(str(d), "cdp_owned1234")
@@ -332,6 +334,9 @@ class TestReapOrphanedBrowserSessions:
         )
         (cdp_dir / f"{cdp_name}.target").write_text("[]")
         legacy_dir = _make_socket_dir(fake_tmpdir, "h_stale_after_unknown")
+        from tools.browser_tool import BROWSER_ORPHAN_GRACE_SECONDS
+
+        _age_socket_dir(legacy_dir, BROWSER_ORPHAN_GRACE_SECONDS + 600)
 
         with patch("gateway.status._pid_exists", return_value=False):
             self._run_reaper()
@@ -499,6 +504,7 @@ class TestOwnerPidCrossProcess:
                 "session_name": session_name,
                 "bb_session_id": None,
                 "cdp_url": "ws://shared/devtools/browser/opaque",
+                "features": {"cdp_override": True},
             },
         )
 

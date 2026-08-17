@@ -32,6 +32,19 @@ def _isolated_browser_lifecycle(monkeypatch):
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
 
 
+def _observe_cleanup_lock_request(monkeypatch, requested: threading.Event) -> None:
+    """Signal when the named cleanup thread requests the task operation lock."""
+    original = bt._task_cleanup_operation_lock
+
+    def _wrapped(bare_task_id):
+        lock = original(bare_task_id)
+        if threading.current_thread().name == "browser-cleanup-test":
+            requested.set()
+        return lock
+
+    monkeypatch.setattr(bt, "_task_cleanup_operation_lock", _wrapped)
+
+
 @pytest.mark.parametrize("backend", ["local", "provider"])
 def test_real_inactivity_cleanup_is_nonterminal_and_normal_command_recreates(
     monkeypatch,
@@ -169,6 +182,63 @@ def test_provider_cdp_uses_generic_node22_path_and_provider_cleanup(
     provider.close_session.assert_called_once_with("paid-provider-id")
 
 
+def test_real_profile_cdp_keeps_generic_node22_and_local_headed_semantics(
+    monkeypatch,
+    tmp_path,
+):
+    task_id = "real-profile-node22"
+    session = {
+        "session_name": "rp_task_owned_copy",
+        "bb_session_id": None,
+        "cdp_url": "ws://127.0.0.1:9333/devtools/browser/profile-copy",
+        "features": {"local": True, "real_profile": True},
+    }
+    bt._active_sessions[task_id] = session
+
+    resolver_calls: list[bool] = []
+    commands: list[list[str]] = []
+
+    def _resolver(*, require_pin_tab: bool = False):
+        resolver_calls.append(require_pin_tab)
+        if require_pin_tab:
+            raise bt.AgentBrowserCapabilityError("Node >=24 required")
+        return "/tmp/agent-browser-node22"
+
+    class _Proc:
+        returncode = 0
+
+        def __init__(self, argv, *, stdout, stderr, **_kwargs):
+            commands.append(list(argv))
+            os.write(stdout, b'{"success":true,"data":{"snapshot":"ok"}}')
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(bt, "_find_agent_browser", _resolver)
+    monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _cmd: False)
+    monkeypatch.setattr(bt, "_is_local_mode", lambda: False)
+    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bt, "_write_owner_pid", lambda *_a: None)
+    monkeypatch.setattr(bt, "_build_browser_env", lambda: {"PATH": "/usr/bin"})
+    monkeypatch.setattr(bt, "_merge_browser_path", lambda value: value)
+    monkeypatch.setattr(bt, "_needs_chromium_sandbox_bypass", lambda: False)
+    monkeypatch.setattr(bt.subprocess, "Popen", _Proc)
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+    assert bt._is_task_owned_shared_cdp_session(session) is False
+    assert bt._is_hermes_owned_local_browser_session(session) is True
+    result = bt._run_browser_command(task_id, "snapshot", ["-c"])
+
+    assert result["success"] is True
+    assert resolver_calls == [False]
+    assert commands[0][1:3] == ["--cdp", session["cdp_url"]]
+    assert "--pin-tab" not in commands[0]
+
+
 def test_provider_api_close_is_not_blocked_by_local_tab_capability(monkeypatch):
     task_id = "provider-close-authoritative"
     provider = MagicMock()
@@ -201,6 +271,49 @@ def test_provider_api_close_is_not_blocked_by_local_tab_capability(monkeypatch):
         _allow_cleanup=True,
     )
     provider.close_session.assert_called_once_with("provider-close-id")
+
+
+def test_shared_cdp_timeout_enters_exact_nonterminal_cleanup(monkeypatch):
+    task_id = "shared-timeout-exact-cleanup"
+    session = {
+        "session_name": "cdp_timeout",
+        "bb_session_id": None,
+        "cdp_url": "ws://shared",
+        "target_id": "TARGET-TIMEOUT",
+        "features": {"cdp_override": True},
+    }
+    bt._active_sessions[task_id] = session
+    cleanup = MagicMock(return_value=True)
+    discard = MagicMock()
+    monkeypatch.setattr(bt, "_cleanup_browser_session_keys", cleanup)
+    monkeypatch.setattr(bt, "_discard_timed_out_browser_session", discard)
+
+    bt._handle_browser_command_timeout(task_id, session, "/tmp/not-used")
+
+    cleanup.assert_called_once_with(
+        task_id,
+        [task_id],
+        reason=bt.BrowserCleanupReason.INACTIVITY,
+    )
+    discard.assert_not_called()
+
+
+def test_shared_cdp_timeout_without_exact_target_stays_fail_closed():
+    task_id = "shared-timeout-missing-target"
+    session = {
+        "session_name": "cdp_timeout_missing",
+        "bb_session_id": None,
+        "cdp_url": "ws://shared",
+        "features": {"cdp_override": True},
+    }
+    bt._active_sessions[task_id] = session
+
+    bt._handle_browser_command_timeout(task_id, session, "/tmp/not-used")
+
+    assert bt._active_sessions[task_id] is session
+    assert session["_cleanup_retry_pending"] is True
+    assert bt._browser_task_states[task_id] is bt.BrowserTaskState.RETIRING
+    assert bt._is_browser_task_unavailable(task_id) is True
 
 
 def test_cleanup_command_ignores_turn_interrupt(monkeypatch, tmp_path):
@@ -566,6 +679,7 @@ def test_headed_turn_retains_local_but_cleans_shared_external_cdp(monkeypatch):
     monkeypatch.setattr(bt.os.path, "exists", lambda _path: False)
 
     local_task = "headed-local"
+    real_profile_task = "headed-real-profile"
     shared_task = "headed-shared"
     local = {
         "session_name": "local-headed",
@@ -580,7 +694,19 @@ def test_headed_turn_retains_local_but_cleans_shared_external_cdp(monkeypatch):
         "target_id": "TARGET-SHARED",
         "features": {"cdp_override": True},
     }
-    bt._active_sessions.update({local_task: local, shared_task: shared})
+    real_profile = {
+        "session_name": "rp-headed",
+        "bb_session_id": None,
+        "cdp_url": "ws://real-profile-copy",
+        "features": {"local": True, "real_profile": True},
+    }
+    bt._active_sessions.update(
+        {
+            local_task: local,
+            real_profile_task: real_profile,
+            shared_task: shared,
+        }
+    )
 
     with (
         patch.object(
@@ -593,9 +719,11 @@ def test_headed_turn_retains_local_but_cleans_shared_external_cdp(monkeypatch):
         ) as command,
     ):
         assert bt.cleanup_browser_for_turn(local_task) is True
+        assert bt.cleanup_browser_for_turn(real_profile_task) is True
         assert bt.cleanup_browser_for_turn(shared_task) is True
 
     assert bt._active_sessions[local_task] is local
+    assert bt._active_sessions[real_profile_task] is real_profile
     assert shared_task not in bt._active_sessions
     assert shared_task in bt._retired_browser_tasks
     assert command.call_count == 1
@@ -634,6 +762,235 @@ def test_headed_turn_preserves_untracked_camofox_task(monkeypatch):
     soft_cleanup.assert_not_called()
     assert task_id not in bt._browser_task_states
     assert task_id not in bt._retired_browser_tasks
+
+
+def test_browser_free_camofox_turn_does_not_allocate_lifecycle_rows(monkeypatch):
+    task_id = "camofox-browser-free"
+    monkeypatch.setattr(bt, "_is_headed_mode", lambda: False)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: True)
+    monkeypatch.setattr(
+        "tools.browser_camofox.camofox_has_session",
+        lambda _task: False,
+    )
+    soft_cleanup = MagicMock()
+    monkeypatch.setattr("tools.browser_camofox.camofox_soft_cleanup", soft_cleanup)
+
+    assert bt.cleanup_browser_for_turn(task_id) is True
+
+    soft_cleanup.assert_not_called()
+    assert task_id not in bt._browser_task_states
+    assert task_id not in bt._browser_task_generations
+    assert task_id not in bt._browser_task_cleanup_locks
+
+
+def test_browser_free_camofox_fast_path_waits_for_inflight_navigation(monkeypatch):
+    task_id = "camofox-navigation-transaction"
+    nav_entered = threading.Event()
+    release_nav = threading.Event()
+    cleanup_lock_requested = threading.Event()
+    cleanup_done = threading.Event()
+    events: list[str] = []
+
+    monkeypatch.setattr(bt, "_is_headed_mode", lambda: False)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: True)
+    monkeypatch.setattr(bt, "_is_always_blocked_url", lambda _url: False)
+    monkeypatch.setattr(bt, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(bt, "check_website_access", lambda _url: None)
+    monkeypatch.setattr(
+        "tools.browser_camofox.camofox_has_session",
+        lambda _task: False,
+    )
+
+    def _navigate(_url, _task):
+        events.append("navigation-start")
+        nav_entered.set()
+        assert release_nav.wait(timeout=3)
+        events.append("navigation-end")
+        return json.dumps({"success": True})
+
+    def _soft_cleanup(_task):
+        events.append("cleanup")
+        return True
+
+    monkeypatch.setattr("tools.browser_camofox.camofox_navigate", _navigate)
+    monkeypatch.setattr("tools.browser_camofox.camofox_soft_cleanup", _soft_cleanup)
+    _observe_cleanup_lock_request(monkeypatch, cleanup_lock_requested)
+
+    nav_result: list[str] = []
+    nav_thread = threading.Thread(
+        target=lambda: nav_result.append(
+            bt.browser_navigate("https://example.com", task_id)
+        )
+    )
+    cleanup_thread = threading.Thread(
+        target=lambda: (bt.cleanup_browser_for_turn(task_id), cleanup_done.set()),
+        name="browser-cleanup-test",
+    )
+
+    nav_thread.start()
+    assert nav_entered.wait(timeout=3)
+    cleanup_thread.start()
+    assert cleanup_lock_requested.wait(timeout=3)
+    assert not cleanup_done.is_set()
+
+    release_nav.set()
+    nav_thread.join(timeout=4)
+    cleanup_thread.join(timeout=4)
+
+    assert not nav_thread.is_alive()
+    assert not cleanup_thread.is_alive()
+    assert json.loads(nav_result[0])["success"] is True
+    assert events == ["navigation-start", "navigation-end", "cleanup"]
+
+
+def test_browser_free_turn_cleanup_does_not_allocate_lifecycle_rows():
+    """Per-turn finalization is a no-op when the task never used a browser."""
+    for index in range(100):
+        assert bt.cleanup_browser_for_turn(f"browser-free-{index}") is True
+
+    assert bt._browser_task_states == {}
+    assert bt._browser_task_generations == {}
+    assert bt._browser_task_cleanup_reasons == {}
+    assert bt._browser_task_cleanup_locks == {}
+    assert bt._retired_browser_tasks == set()
+
+
+def test_navigation_holds_task_lifecycle_lock_through_snapshot(monkeypatch):
+    task_id = "navigation-transaction"
+    session = {
+        "session_name": "navigation-transaction",
+        "bb_session_id": None,
+        "cdp_url": None,
+        "features": {"local": True},
+        "_first_nav": False,
+    }
+    nav_entered = threading.Event()
+    release_nav = threading.Event()
+    cleanup_lock_requested = threading.Event()
+    cleanup_done = threading.Event()
+    events: list[str] = []
+
+    monkeypatch.setattr(bt, "_navigation_session_key", lambda _task, _url: task_id)
+    monkeypatch.setattr(bt, "_is_always_blocked_url", lambda _url: False)
+    monkeypatch.setattr(bt, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(bt, "check_website_access", lambda _url: None)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_clear_retired_browser_task_for_navigation", lambda _task: False)
+    monkeypatch.setattr(bt, "_get_open_command_timeout", lambda **_kwargs: 10)
+    monkeypatch.setattr(bt, "_maybe_start_recording", lambda _task: None)
+
+    def _get_session_info(_task):
+        events.append("session-start")
+        nav_entered.set()
+        assert release_nav.wait(timeout=3)
+        bt._active_sessions[task_id] = session
+        events.append("session-end")
+        return session
+
+    monkeypatch.setattr(bt, "_get_session_info", _get_session_info)
+
+    def _run(_session_key, command, _args, **_kwargs):
+        if command == "open":
+            events.append("open")
+            return {"success": True, "data": {"url": "https://example.com", "title": "Example"}}
+        events.append(command)
+        return {"success": True, "data": {"snapshot": "ok", "refs": {}}}
+
+    monkeypatch.setattr(bt, "_run_browser_command", _run)
+    _observe_cleanup_lock_request(monkeypatch, cleanup_lock_requested)
+    nav_result: list[str] = []
+    nav_thread = threading.Thread(
+        target=lambda: nav_result.append(bt.browser_navigate("https://example.com", task_id))
+    )
+    cleanup_thread = threading.Thread(
+        target=lambda: (bt.cleanup_browser(task_id), cleanup_done.set()),
+        name="browser-cleanup-test",
+    )
+
+    nav_thread.start()
+    assert nav_entered.wait(timeout=3)
+    cleanup_thread.start()
+    assert cleanup_lock_requested.wait(timeout=3)
+    assert not cleanup_done.is_set()
+
+    release_nav.set()
+    nav_thread.join(timeout=4)
+    cleanup_thread.join(timeout=4)
+
+    assert not nav_thread.is_alive()
+    assert not cleanup_thread.is_alive()
+    assert json.loads(nav_result[0])["success"] is True
+    assert events == ["session-start", "session-end", "open", "snapshot", "close"]
+
+
+def test_browser_dialog_is_blocked_by_retired_task(monkeypatch):
+    from tools import browser_dialog_tool
+
+    task_id = "dialog-retired"
+    bt._retired_browser_tasks.add(task_id)
+    supervisor = MagicMock()
+    monkeypatch.setattr(
+        browser_dialog_tool.SUPERVISOR_REGISTRY,
+        "get",
+        lambda _task: supervisor,
+    )
+
+    result = json.loads(browser_dialog_tool.browser_dialog(action="dismiss", task_id=task_id))
+
+    assert result["code"] == "browser_session_retired"
+    supervisor.respond_to_dialog.assert_not_called()
+
+
+def test_browser_dialog_waits_for_terminal_cleanup(monkeypatch):
+    from tools import browser_dialog_tool
+
+    task_id = "dialog-cleanup-race"
+    bt._active_sessions[task_id] = {
+        "session_name": "dialog-cleanup-race",
+        "bb_session_id": None,
+        "cdp_url": None,
+        "features": {"local": True},
+    }
+    dialog_entered = threading.Event()
+    release_dialog = threading.Event()
+    cleanup_lock_requested = threading.Event()
+    cleanup_done = threading.Event()
+    supervisor = MagicMock()
+
+    def _respond(**_kwargs):
+        dialog_entered.set()
+        assert release_dialog.wait(timeout=3)
+        return {"ok": True, "dialog": {"id": "d-1"}}
+
+    supervisor.respond_to_dialog.side_effect = _respond
+    monkeypatch.setattr(browser_dialog_tool.SUPERVISOR_REGISTRY, "get", lambda _task: supervisor)
+    monkeypatch.setattr(bt, "_run_browser_command", lambda *_args, **_kwargs: {"success": True})
+    monkeypatch.setattr(bt.os.path, "exists", lambda _path: False)
+    _observe_cleanup_lock_request(monkeypatch, cleanup_lock_requested)
+
+    dialog_result: list[str] = []
+    dialog_thread = threading.Thread(
+        target=lambda: dialog_result.append(
+            browser_dialog_tool.browser_dialog(action="dismiss", task_id=task_id)
+        )
+    )
+    cleanup_thread = threading.Thread(
+        target=lambda: (bt.cleanup_browser(task_id), cleanup_done.set()),
+        name="browser-cleanup-test",
+    )
+    dialog_thread.start()
+    assert dialog_entered.wait(timeout=3)
+    cleanup_thread.start()
+    assert cleanup_lock_requested.wait(timeout=3)
+    assert not cleanup_done.is_set()
+
+    release_dialog.set()
+    dialog_thread.join(timeout=4)
+    cleanup_thread.join(timeout=4)
+
+    assert not dialog_thread.is_alive()
+    assert not cleanup_thread.is_alive()
+    assert json.loads(dialog_result[0])["success"] is True
 
 
 @pytest.mark.parametrize("exit_kind", ["direct_return", "exception", "cancellation"])
@@ -729,6 +1086,7 @@ def test_terminal_cleanup_waits_for_inflight_subprocess_command(monkeypatch):
     }
     command_entered = threading.Event()
     release_command = threading.Event()
+    cleanup_lock_requested = threading.Event()
     cleanup_done = threading.Event()
     events: list[str] = []
 
@@ -753,6 +1111,10 @@ def test_terminal_cleanup_waits_for_inflight_subprocess_command(monkeypatch):
 
     monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kwargs: "/tmp/fake-agent-browser")
     monkeypatch.setattr(bt.subprocess, "Popen", _Popen)
+    # The local-Chromium fast-fail gate must not short-circuit this test's
+    # fake Popen path: this host may have no real Chromium installed.
+    monkeypatch.setattr(bt, "_is_local_mode", lambda: False)
+    _observe_cleanup_lock_request(monkeypatch, cleanup_lock_requested)
     command_result: list[dict] = []
     cleanup_result: list[bool] = []
     command_thread = threading.Thread(
@@ -765,11 +1127,12 @@ def test_terminal_cleanup_waits_for_inflight_subprocess_command(monkeypatch):
         cleanup_result.append(bt.cleanup_browser(task_id))
         cleanup_done.set()
 
-    cleanup_thread = threading.Thread(target=_cleanup)
+    cleanup_thread = threading.Thread(target=_cleanup, name="browser-cleanup-test")
     command_thread.start()
     assert command_entered.wait(timeout=3)
     cleanup_thread.start()
-    assert not cleanup_done.wait(timeout=0.1)
+    assert cleanup_lock_requested.wait(timeout=3)
+    assert not cleanup_done.is_set()
 
     release_command.set()
     command_thread.join(timeout=4)
@@ -795,6 +1158,7 @@ def test_terminal_cleanup_waits_for_inflight_supervisor_eval(monkeypatch):
     }
     eval_entered = threading.Event()
     release_eval = threading.Event()
+    cleanup_lock_requested = threading.Event()
     cleanup_done = threading.Event()
     events: list[str] = []
 
@@ -821,6 +1185,10 @@ def test_terminal_cleanup_waits_for_inflight_supervisor_eval(monkeypatch):
 
     monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kwargs: "/tmp/fake-agent-browser")
     monkeypatch.setattr(bt.subprocess, "Popen", _Popen)
+    # The local-Chromium fast-fail gate must not short-circuit this test's
+    # fake close Popen: this host may have no real Chromium installed.
+    monkeypatch.setattr(bt, "_is_local_mode", lambda: False)
+    _observe_cleanup_lock_request(monkeypatch, cleanup_lock_requested)
     eval_result: list[dict] = []
     cleanup_result: list[bool] = []
     eval_thread = threading.Thread(
@@ -833,11 +1201,12 @@ def test_terminal_cleanup_waits_for_inflight_supervisor_eval(monkeypatch):
         cleanup_result.append(bt.cleanup_browser(task_id))
         cleanup_done.set()
 
-    cleanup_thread = threading.Thread(target=_cleanup)
+    cleanup_thread = threading.Thread(target=_cleanup, name="browser-cleanup-test")
     eval_thread.start()
     assert eval_entered.wait(timeout=3)
     cleanup_thread.start()
-    assert not cleanup_done.wait(timeout=0.1)
+    assert cleanup_lock_requested.wait(timeout=3)
+    assert not cleanup_done.is_set()
 
     release_eval.set()
     eval_thread.join(timeout=4)

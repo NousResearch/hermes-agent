@@ -114,6 +114,7 @@ class TestBrowserCleanup:
             "bb_session_id": None,
             "cdp_url": "ws://127.0.0.1:9222/devtools/browser/shared",
             "target_id": "TARGET-OWNED",
+            "features": {"cdp_override": True},
         }
 
         with (
@@ -139,6 +140,7 @@ class TestBrowserCleanup:
             "bb_session_id": None,
             "cdp_url": "ws://shared",
             "target_id": "TARGET-OWNED",
+            "features": {"cdp_override": True},
         }
         browser_tool._session_last_activity["task-gone"] = 123.0
 
@@ -166,6 +168,7 @@ class TestBrowserCleanup:
             "bb_session_id": None,
             "cdp_url": "ws://shared",
             "target_id": "TARGET-OWNED",
+            "features": {"cdp_override": True},
         }
         browser_tool._active_sessions["task-retry"] = session
         browser_tool._session_last_activity["task-retry"] = 123.0
@@ -189,6 +192,7 @@ class TestBrowserCleanup:
             "bb_session_id": None,
             "cdp_url": "ws://shared",
             "target_id": "TARGET-OWNED",
+            "features": {"cdp_override": True},
         }
         browser_tool._session_last_activity["task-repeat"] = 123.0
 
@@ -309,7 +313,7 @@ class TestInactivityJanitorMultiplex:
 
         seen = {}
 
-        def fake_close(task_id, cmd, args, timeout=None):
+        def fake_close(task_id, cmd, args, timeout=None, **_kwargs):
             seen["home"] = str(get_hermes_home())
             seen["url"] = secret_scope.get_secret("CAMOFOX_URL")
             return {"success": True}
@@ -477,6 +481,7 @@ def test_successful_cleanup_tombstones_non_navigation_without_recreation(
             "bb_session_id": None,
             "cdp_url": "ws://shared",
             "target_id": "TARGET-OWNED",
+            "features": {"cdp_override": True},
         }
     )
     find_browser = MagicMock(return_value="/usr/bin/agent-browser")

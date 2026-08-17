@@ -2055,6 +2055,12 @@ class GatewayTurnMixin:
         media_types: Optional[List[str]] = None,
     ) -> None:
         """Profile-scoping wrapper around the background agent task (mirrors ``_run_agent``)."""
+        # This finite task has no consumer for detached completions after its
+        # parent turn closes. Reuse inline delegation aggregation only in this
+        # task's copied context; the originating live chat remains routable.
+        from gateway.session_context import declare_stateless_channel
+
+        declare_stateless_channel()
         with self._profile_scope_for_source(source):
             return await self._run_background_task_inner(
                 prompt, source, task_id, event_message_id, media_urls, media_types,

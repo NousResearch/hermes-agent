@@ -1,123 +1,110 @@
 /**
  * Window translucency (see-through window).
  *
- * One lever, 0–100. 0 = off (fully opaque, the default). Higher = more of the
- * desktop shows through. Two modes decide HOW it shows through:
+ * One lever, 0–100. 0 = off (fully opaque, the default). Two modes decide HOW
+ * the desktop shows through — see `@hermes/shared/translucency`, which owns the
+ * mapping both this store and the main process read.
  *
- * - 'clear' — the main process maps the lever to native window opacity
- *   (`setOpacity`), the same effect as the Windows shift-scroll trick. The
- *   whole window fades, text included. macOS + Windows; Linux has no runtime
- *   window opacity, so it's a no-op there.
- * - 'glass' — macOS only. The window stays opaque at the native level; this
- *   store thins the renderer's page surfaces instead (see the
- *   `[data-hermes-glass]` block in styles.css), so the vibrancy material every
- *   chat window already carries shows through as a matte blur while text keeps
- *   full contrast.
- *
- * The renderer owns both values and mirrors them to the main process over IPC.
+ * The renderer owns the value and mirrors it to the main process over IPC.
+ * Glass additionally needs page-level work, which lives here: the field
+ * surfaces have to get out of the way for the vibrancy material underneath the
+ * web contents to read (see the `[data-hermes-glass]` block in styles.css).
  */
 
+import {
+  clampIntensity,
+  glassSurfaceKeep,
+  TRANSLUCENCY_MAX,
+  TRANSLUCENCY_MIN,
+  TRANSLUCENCY_STEP,
+  type TranslucencyMode
+} from '@hermes/shared/translucency'
 import { atom } from 'nanostores'
 
-import { persistString, storedString } from '@/lib/storage'
+import { isMacPlatform } from '@/lib/platform'
+import { readJson, writeJson } from '@/lib/storage'
 
-export type TranslucencyMode = 'clear' | 'glass'
+export { TRANSLUCENCY_MAX, TRANSLUCENCY_MIN, TRANSLUCENCY_STEP, type TranslucencyMode }
+
+/** Glass rides on the macOS vibrancy material; other platforms only have Clear. */
+export const GLASS_SUPPORTED = isMacPlatform()
 
 const KEY = 'hermes.desktop.translucency.v1'
-const MODE_KEY = 'hermes.desktop.translucency-mode.v1'
 
-/** Glass rides on macOS vibrancy; other platforms only have Clear. */
-export const GLASS_SUPPORTED = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '')
-
-// Slider bounds — mirror `electron/window-opacity.ts` (TRANSLUCENCY_MIN / MAX)
-// so the control and the main-process clamp agree on the same range. The step
-// is renderer-only: the main process takes any integer in range.
-export const TRANSLUCENCY_MIN = 0
-export const TRANSLUCENCY_MAX = 100
-export const TRANSLUCENCY_STEP = 1
-
-const clamp = (n: number): number => Math.min(TRANSLUCENCY_MAX, Math.max(TRANSLUCENCY_MIN, Math.round(n)))
-
-const read = (): number => {
-  const n = Number(storedString(KEY))
-
-  return Number.isFinite(n) ? clamp(n) : 0
+interface PersistedTranslucency {
+  intensity: number
+  mode: TranslucencyMode
 }
 
-const readMode = (): TranslucencyMode => (GLASS_SUPPORTED && storedString(MODE_KEY) === 'glass' ? 'glass' : 'clear')
+// The v1 key used to hold a bare intensity (`"23"`). Anything without a mode
+// predates glass and always behaved as clear, so it stays clear — a saved
+// setting must not change how the window looks on update.
+const read = (): PersistedTranslucency => {
+  const stored = readJson<unknown>(KEY)
 
-export const $translucency = atom<number>(typeof window === 'undefined' ? 0 : read())
+  const record: Record<string, unknown> =
+    stored && typeof stored === 'object' ? (stored as Record<string, unknown>) : { intensity: stored }
 
-export const $translucencyMode = atom<TranslucencyMode>(typeof window === 'undefined' ? 'clear' : readMode())
+  return {
+    intensity: clampIntensity(record.intensity),
+    mode: record.mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear'
+  }
+}
+
+const initial: PersistedTranslucency =
+  typeof window === 'undefined' ? { intensity: TRANSLUCENCY_MIN, mode: 'clear' } : read()
+
+export const $translucency = atom<PersistedTranslucency>(initial)
 
 export function setTranslucency(intensity: number): void {
-  $translucency.set(clamp(intensity))
+  $translucency.set({ ...$translucency.get(), intensity: clampIntensity(intensity) })
 }
 
 export function setTranslucencyMode(mode: TranslucencyMode): void {
-  $translucencyMode.set(mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear')
+  $translucency.set({ ...$translucency.get(), mode: mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear' })
 }
 
-// Glass thins surfaces only in real chat windows (primary + secondary session
-// windows). The HUD, pet overlay, quick entry and wake indicator are
-// transparent special-purpose windows that manage their own backgrounds — a
-// page-surface rewrite there would fight them.
-const isChatWindow = (): boolean => {
-  try {
-    const win = new URLSearchParams(window.location.search).get('win')
+// Glass thins surfaces only in real chat windows (the primary window and
+// secondary session windows). The HUD, pet overlay, quick entry and wake
+// indicator are transparent special-purpose windows that manage their own
+// backgrounds — a page-surface rewrite there would fight them.
+const CHAT_WINDOW_KINDS = new Set([null, 'secondary'])
 
-    return win === null || win === 'secondary'
+export const isChatWindow = (search = typeof window === 'undefined' ? '' : window.location.search): boolean => {
+  try {
+    return CHAT_WINDOW_KINDS.has(new URLSearchParams(search).get('win'))
   } catch {
     return false
   }
 }
 
-/**
- * Percent of the surface tint KEPT at a given intensity. Mirrors clear mode's
- * opacity ramp (floor 0.3): at 100 the surfaces keep a 30% wash so the glass
- * stays matte — tinted blur, not bare desktop.
- */
-export const glassSurfaceKeep = (intensity: number): number => 100 - clamp(intensity) * 0.7
-
-const applyGlassSurfaces = (intensity: number, mode: TranslucencyMode): void => {
+const applyGlassSurfaces = ({ intensity, mode }: PersistedTranslucency): void => {
   if (typeof document === 'undefined') {
     return
   }
 
   const root = document.documentElement
-  const on = mode === 'glass' && intensity > 0 && GLASS_SUPPORTED && isChatWindow()
+  const glassOn = mode === 'glass' && intensity > 0 && GLASS_SUPPORTED && isChatWindow()
   // Clear mode fades the whole window uniformly, so overlay text and the
   // covered transcript blend; styles.css strengthens the overlay scrim while
-  // this attribute is present. Native opacity applies in every window kind,
-  // so no chat-window gate.
+  // this attribute is present. Native opacity applies in every window kind, so
+  // no chat-window gate.
   const clearOn = mode === 'clear' && intensity > 0
 
-  if (on) {
-    root.setAttribute('data-hermes-glass', '')
+  root.toggleAttribute('data-hermes-glass', glassOn)
+  root.toggleAttribute('data-hermes-clear', clearOn)
+
+  if (glassOn) {
     root.style.setProperty('--translucency-glass-keep', `${glassSurfaceKeep(intensity)}%`)
   } else {
-    root.removeAttribute('data-hermes-glass')
     root.style.removeProperty('--translucency-glass-keep')
-  }
-
-  if (clearOn) {
-    root.setAttribute('data-hermes-clear', '')
-  } else {
-    root.removeAttribute('data-hermes-clear')
   }
 }
 
 if (typeof window !== 'undefined') {
-  const sync = () => {
-    const intensity = $translucency.get()
-    const mode = $translucencyMode.get()
-
-    persistString(KEY, String(intensity))
-    persistString(MODE_KEY, mode)
-    applyGlassSurfaces(intensity, mode)
-    window.hermesDesktop?.setTranslucency?.({ intensity, mode })
-  }
-
-  $translucency.subscribe(sync)
-  $translucencyMode.subscribe(sync)
+  $translucency.subscribe(state => {
+    writeJson(KEY, state)
+    applyGlassSurfaces(state)
+    window.hermesDesktop?.setTranslucency?.(state)
+  })
 }

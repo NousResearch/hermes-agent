@@ -1,4 +1,5 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
+import type { TranslucencyState } from '@hermes/shared/translucency'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -226,7 +227,7 @@ declare global {
       setActiveWork?: (payload: HermesActiveWork) => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
-      setTranslucency?: (payload: { intensity: number; mode?: 'clear' | 'glass' }) => void
+      setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void

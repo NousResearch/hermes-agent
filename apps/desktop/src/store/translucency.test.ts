@@ -5,9 +5,8 @@ import { onPersistenceEvent, type PersistenceEvent } from '@/lib/storage'
 
 import {
   $translucency,
-  $translucencyMode,
   GLASS_SUPPORTED,
-  glassSurfaceKeep,
+  isChatWindow,
   setTranslucency,
   setTranslucencyMode,
   TRANSLUCENCY_MAX,
@@ -17,10 +16,14 @@ import {
 
 const KEY = 'hermes.desktop.translucency.v1'
 
+const glassAttr = () => document.documentElement.hasAttribute('data-hermes-glass')
+const clearAttr = () => document.documentElement.hasAttribute('data-hermes-clear')
+const keep = () => document.documentElement.style.getPropertyValue('--translucency-glass-keep')
+
 describe('window translucency lever', () => {
   beforeEach(() => {
-    setTranslucency(TRANSLUCENCY_MIN)
     setTranslucencyMode('clear')
+    setTranslucency(TRANSLUCENCY_MIN)
   })
 
   it('steps in single percent so the readable low end is reachable', () => {
@@ -29,31 +32,38 @@ describe('window translucency lever', () => {
     expect(TRANSLUCENCY_MAX).toBe(100)
   })
 
-  it('defaults to off', () => {
-    expect($translucency.get()).toBe(TRANSLUCENCY_MIN)
+  it('defaults to off and clear', () => {
+    expect($translucency.get()).toEqual({ intensity: TRANSLUCENCY_MIN, mode: 'clear' })
   })
 
   it('accepts every step the slider can emit', () => {
     for (let intensity = TRANSLUCENCY_MIN; intensity <= TRANSLUCENCY_MAX; intensity += TRANSLUCENCY_STEP) {
       setTranslucency(intensity)
-      expect($translucency.get()).toBe(intensity)
+      expect($translucency.get().intensity).toBe(intensity)
     }
   })
 
-  it('clamps out-of-range input to the lever bounds', () => {
+  it('clamps out-of-range input and rounds fractions', () => {
     setTranslucency(-40)
-    expect($translucency.get()).toBe(TRANSLUCENCY_MIN)
+    expect($translucency.get().intensity).toBe(TRANSLUCENCY_MIN)
 
     setTranslucency(240)
-    expect($translucency.get()).toBe(TRANSLUCENCY_MAX)
-  })
+    expect($translucency.get().intensity).toBe(TRANSLUCENCY_MAX)
 
-  it('rounds fractional input to a whole percent', () => {
     setTranslucency(35.6)
-    expect($translucency.get()).toBe(36)
+    expect($translucency.get().intensity).toBe(36)
   })
 
-  it('persists under a stable key so a saved setting survives upgrades', () => {
+  it('changing one half of the state leaves the other alone', () => {
+    setTranslucency(42)
+    setTranslucencyMode('glass')
+    expect($translucency.get().intensity).toBe(42)
+
+    setTranslucency(43)
+    expect($translucency.get().mode).toBe(GLASS_SUPPORTED ? 'glass' : 'clear')
+  })
+
+  it('persists intensity and mode together under one stable key', () => {
     const writes: PersistenceEvent[] = []
 
     const stop = onPersistenceEvent(event => {
@@ -68,17 +78,24 @@ describe('window translucency lever', () => {
       stop()
     }
 
-    expect(writes).toContainEqual({ key: KEY, op: 'write', value: '23' })
+    expect(writes.at(-1)).toEqual({ key: KEY, op: 'write', value: JSON.stringify({ intensity: 23, mode: 'clear' }) })
   })
 
-  it('mirrors intensity and mode to the desktop bridge', () => {
-    const calls: Array<{ intensity: number; mode?: string }> = []
+  it('mirrors the whole state to the desktop bridge', () => {
+    const calls: Array<{ intensity: number; mode: string }> = []
     window.hermesDesktop = {
-      setTranslucency: (payload: { intensity: number; mode?: 'clear' | 'glass' }) => calls.push(payload)
+      setTranslucency: (payload: { intensity: number; mode: 'clear' | 'glass' }) => calls.push(payload)
     } as never
 
     setTranslucency(40)
     expect(calls.at(-1)).toEqual({ intensity: 40, mode: 'clear' })
+  })
+})
+
+describe('glass mode', () => {
+  beforeEach(() => {
+    setTranslucencyMode('clear')
+    setTranslucency(TRANSLUCENCY_MIN)
   })
 
   it('rejects glass off macOS and applies it on macOS', () => {
@@ -86,47 +103,62 @@ describe('window translucency lever', () => {
     setTranslucencyMode('glass')
 
     if (GLASS_SUPPORTED) {
-      expect($translucencyMode.get()).toBe('glass')
-      expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(true)
-      expect(document.documentElement.style.getPropertyValue('--translucency-glass-keep')).toBe('65%')
+      expect($translucency.get().mode).toBe('glass')
+      expect(glassAttr()).toBe(true)
+      expect(keep()).toBe('65%')
     } else {
-      expect($translucencyMode.get()).toBe('clear')
-      expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
+      expect($translucency.get().mode).toBe('clear')
+      expect(glassAttr()).toBe(false)
     }
   })
 
-  it('removes the glass attribute at zero intensity or back on clear', () => {
+  it('drops the glass attribute at zero intensity or back on clear', () => {
     setTranslucency(50)
     setTranslucencyMode('glass')
+
     setTranslucency(0)
-    expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
+    expect(glassAttr()).toBe(false)
+    expect(keep()).toBe('')
 
     setTranslucency(50)
     setTranslucencyMode('clear')
-    expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
+    expect(glassAttr()).toBe(false)
   })
 
-  it('marks clear mode on <html> so the overlay scrim can compensate', () => {
+  // Clear and glass are mutually exclusive page states: clear strengthens the
+  // overlay scrim, glass thins the field. Both at once would fight.
+  it('marks clear mode separately, and never both at once', () => {
     setTranslucency(50)
-    setTranslucencyMode('clear')
-    expect(document.documentElement.hasAttribute('data-hermes-clear')).toBe(true)
+    expect(clearAttr()).toBe(true)
+    expect(glassAttr()).toBe(false)
 
-    setTranslucency(0)
-    expect(document.documentElement.hasAttribute('data-hermes-clear')).toBe(false)
-
-    setTranslucency(50)
+    setTranslucencyMode('glass')
 
     if (GLASS_SUPPORTED) {
-      setTranslucencyMode('glass')
-      expect(document.documentElement.hasAttribute('data-hermes-clear')).toBe(false)
+      expect(clearAttr()).toBe(false)
+      expect(glassAttr()).toBe(true)
     }
+
+    setTranslucency(0)
+    expect(clearAttr()).toBe(false)
+    expect(glassAttr()).toBe(false)
   })
 })
 
-describe('glassSurfaceKeep', () => {
-  it('mirrors the clear-mode opacity ramp with its 30% floor', () => {
-    expect(glassSurfaceKeep(0)).toBe(100)
-    expect(glassSurfaceKeep(50)).toBe(65)
-    expect(glassSurfaceKeep(100)).toBeCloseTo(30)
+// Glass rewrites page surfaces, which is only correct in a real chat window.
+// The HUD, pet overlay, quick entry and wake indicator are transparent
+// special-purpose windows that own their own backgrounds.
+describe('isChatWindow', () => {
+  it('accepts the primary window and secondary session windows', () => {
+    expect(isChatWindow('')).toBe(true)
+    expect(isChatWindow('?theme=dark')).toBe(true)
+    expect(isChatWindow('?win=secondary')).toBe(true)
+    expect(isChatWindow('?win=secondary&session=abc')).toBe(true)
+  })
+
+  it('rejects every special-purpose window kind', () => {
+    for (const win of ['hud', 'pet', 'quick-entry', 'wake', 'anything-new']) {
+      expect(isChatWindow(`?win=${win}`), win).toBe(false)
+    }
   })
 })

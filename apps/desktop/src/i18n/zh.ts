@@ -2813,6 +2813,7 @@ export const zh: Translations = {
       inferenceNotReady: '推理未就绪',
       checkingInference: '正在检查推理',
       disconnected: '已断开',
+      reconnectGateway: '重连网关',
       openSystem: '打开系统面板',
       connection: label => `连接：${label}`,
       recentActivity: '最近活动',

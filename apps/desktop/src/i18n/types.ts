@@ -2224,6 +2224,7 @@ export interface Translations {
       inferenceNotReady: string
       checkingInference: string
       disconnected: string
+      reconnectGateway: string
       openSystem: string
       connection: (label: string) => string
       recentActivity: string

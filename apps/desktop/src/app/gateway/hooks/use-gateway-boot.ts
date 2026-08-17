@@ -27,6 +27,7 @@ import {
   setPrimaryGateway,
   touchSecondaryGateways
 } from '@/store/gateway'
+import { registerGatewayReconnect } from '@/store/gateway-reconnect'
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -259,7 +260,7 @@ export function useGatewayBoot({
       }, delay)
     }
 
-    const reconnectNow = () => {
+    const reconnectNow = async () => {
       if (cancelled || !bootCompleted || $gatewaySwitching.get()) {
         return
       }
@@ -271,7 +272,7 @@ export function useGatewayBoot({
       reconnectSecondaryGateways()
 
       if (!gatewayOpen()) {
-        void attemptReconnect()
+        await attemptReconnect()
       }
     }
 
@@ -486,8 +487,9 @@ export function useGatewayBoot({
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
-    const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
+    const offPowerResume = desktop.onPowerResume?.(() => void reconnectNow())
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
+    const offGatewayReconnect = registerGatewayReconnect(reconnectNow)
 
     // Registry lifecycle: a removed connection's secondaries must close NOW
     // (remote/cloud have no local process whose death would drop the socket —
@@ -501,11 +503,11 @@ export function useGatewayBoot({
       disposeSecondariesForConnection(payload.connectionId, { redial: payload.reason === 'updated' })
     })
 
-    const onOnline = () => reconnectNow()
+    const onOnline = () => void reconnectNow()
 
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
-        reconnectNow()
+        void reconnectNow()
       }
     }
 
@@ -708,6 +710,7 @@ export function useGatewayBoot({
       offPowerResume?.()
       offConnectionApplied?.()
       offConnectionsChanged?.()
+      offGatewayReconnect()
       offState()
       offEvent()
       offExit()

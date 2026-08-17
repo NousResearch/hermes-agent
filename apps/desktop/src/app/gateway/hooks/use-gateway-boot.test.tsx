@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { closeSecondaryGateways, isActivePrimary } from '@/store/gateway'
+import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $connection, $currentCwd, $gatewayState } from '@/store/session'
 
@@ -121,6 +122,7 @@ function fakeDesktop() {
       }
     }),
     onPowerResume: vi.fn(() => () => undefined),
+    revalidateConnection: vi.fn(async () => ({ ok: true, rebuilt: false })),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
     profile: { get: vi.fn(async () => ({ profile: 'default' })) }
@@ -389,6 +391,31 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('manual reconnect revalidates, re-resolves, re-mints, and re-dials the dropped socket', async () => {
+    const desktop = fakeDesktop()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+    act(() => FakeWebSocket.instances[0].drop())
+    FakeWebSocket.mode = 'open'
+
+    await act(async () => {
+      const reconnect = reconnectGateway()
+      await vi.advanceTimersByTimeAsync(0)
+      await reconnect
+    })
+
+    expect(desktop.revalidateConnection).toHaveBeenCalledOnce()
+    expect(desktop.getConnection).toHaveBeenLastCalledWith('default')
+    expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(2)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect($gatewayState.get()).toBe('open')
   })
 
   it('FIX: a failed session-list fetch during boot is non-fatal — the app still boots', async () => {

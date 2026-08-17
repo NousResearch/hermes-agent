@@ -120,7 +120,7 @@ describe('session.info model-options invalidation gating', () => {
   })
 })
 
-describe('session.info settles a turn that produced no assistant payload', () => {
+describe('session.info settles an incomplete live turn', () => {
   // #46517: a turn that ends without ever emitting an assistant payload (gateway
   // crash mid-stream, provider error before the first delta, agent-build
   // failure) never reaches message.complete, so session.info running=false is
@@ -261,6 +261,25 @@ describe('session.info settles a turn that produced no assistant payload', () =>
 
     expect(hydrateFromStoredSession).toHaveBeenCalledTimes(1)
     expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('hydrates a live turn that settles after an interim without message.complete', async () => {
+    mountStream()
+
+    startTurn(ACTIVE_SID)
+    act(() =>
+      stream.handleEvent({
+        payload: { already_streamed: true, text: 'Now checking the details before answering.' },
+        session_id: ACTIVE_SID,
+        type: 'message.interim'
+      })
+    )
+
+    expect(sessionStates!.get(ACTIVE_SID)?.sawAssistantPayload).toBe(true)
+
+    sessionInfo(ACTIVE_SID, { running: false })
+
+    expect(hydrateFromStoredSession).toHaveBeenCalledWith(3, null, ACTIVE_SID)
   })
 })
 

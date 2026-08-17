@@ -4429,12 +4429,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
 
-    def __enter__(self) -> "SessionDB":
-        return self
-
-    def __exit__(self, _exc_type, _exc, _tb) -> None:
-        self.close()
-
     def __del__(self) -> None:
         """Safety net: close the connection if the caller forgot.
 

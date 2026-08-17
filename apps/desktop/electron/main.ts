@@ -12504,10 +12504,17 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
 }
 
 ipcMain.handle('hermes:agents:roster', async () => {
-  const enumerations = await enumerateRegistryAgentSources()
+  const registry = readDesktopConnectionsRegistry()
+  const enumerations = await enumerateRegistryAgentSources(registry)
 
   return {
     agents: buildAgentRoster(enumerations),
+    // The active gateway owns the renderer's profiles.list — union agents
+    // that report THIS connection are the same identities, not extra rows.
+    // Expose the primary id so the plugin merger can annotate them in place
+    // instead of appending duplicates (remote-only desktops doubled every
+    // bot otherwise; see #88344).
+    primaryConnectionId: registry.primary,
     sources: enumerations.map(({ connection, profiles, error }) => ({
       connectionId: connection.id,
       label: connection.label,

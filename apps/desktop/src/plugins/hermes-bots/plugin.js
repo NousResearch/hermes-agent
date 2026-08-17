@@ -2073,14 +2073,16 @@ function useRoster() {
 }
 
 /** Merge the union agent roster (host.agents) over the active gateway's
- *  profiles.list. Local-source rows are matched by profile name and only
- *  ANNOTATED (handle, connectionId) — their rich fields stay authoritative.
- *  Rows from other sources become new roster entries tagged with their
- *  source label so BotRow can badge them and route open/warm through
+ *  profiles.list. Rows from the ACTIVE gateway (union.primaryConnectionId)
+ *  are matched by profile name and only ANNOTATED (handle, connectionId) —
+ *  their rich fields stay authoritative and they are NOT duplicated. Rows
+ *  from other sources become new roster entries tagged with their source
+ *  label so BotRow can badge them and route open/warm through
  *  ensureAgent/warmAgent. Pure — exercised directly by the tests. */
 function mergeMultiSourceRoster(local, union) {
   const profiles = Array.isArray(local?.profiles) ? local.profiles.slice() : []
   const agents = Array.isArray(union?.agents) ? union.agents : []
+  const primaryId = String(union?.primaryConnectionId || '').trim()
 
   if (!agents.length) {
     return { ...local, profiles }
@@ -2089,8 +2091,16 @@ function mergeMultiSourceRoster(local, union) {
   const localByName = new Map(profiles.map(p => [p.name, p]))
 
   for (const agent of agents) {
-    const isLocalSource = agent.connectionKind === 'local'
-    const row = isLocalSource ? localByName.get(agent.profile) : null
+    // The union enumerates EVERY registered connection, including the active
+    // gateway that already answered profiles.list. Without this the active
+    // gateway's own agents (connectionKind 'remote' on a remote-primary
+    // desktop) would be appended as phantom duplicates — every bot listed
+    // twice. Older Electron builds predate primaryConnectionId; fall back to
+    // the legacy local-source rule so single-source behavior stays intact.
+    const isPrimarySource = primaryId
+      ? String(agent.connectionId || '').trim() === primaryId
+      : agent.connectionKind === 'local'
+    const row = isPrimarySource ? localByName.get(agent.profile) : null
 
     if (row) {
       // Annotate in place: the @name-device handle only differs from the
@@ -2100,9 +2110,9 @@ function mergeMultiSourceRoster(local, union) {
       continue
     }
 
-    if (isLocalSource) {
-      // Union saw a local profile profiles.list didn't return (older
-      // backend mid-refresh) — skip rather than invent a thin row.
+    if (isPrimarySource) {
+      // Union saw a primary-source profile profiles.list didn't return
+      // (older backend mid-refresh) — skip rather than invent a thin row.
       continue
     }
 

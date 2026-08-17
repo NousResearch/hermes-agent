@@ -126,3 +126,62 @@ test('filterBots: matches the source device name for remote rows', () => {
   // Bare profile search keeps matching both rows.
   assert.equal(filterBots(roster, {}, 'research').length, 2)
 })
+
+test('merge: active-gateway union agents annotate local rows, not duplicates (remote-primary desktop)', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const local = {
+    profiles: [
+      { name: 'default', last_session: { id: 's-default' } },
+      { name: 'dev', last_session: { id: 's-dev' } }
+    ]
+  }
+  const union = {
+    primaryConnectionId: '10-244-108-128-9119',
+    agents: [
+      // The ACTIVE remote gateway itself — same identities as local, must
+      // annotate in place rather than append phantom duplicates (#88344).
+      { connectionId: '10-244-108-128-9119', connectionKind: 'remote', connectionLabel: '10.244.108.128:9119', profile: 'default', handle: 'default-10-244-108-128-9119' },
+      { connectionId: '10-244-108-128-9119', connectionKind: 'remote', connectionLabel: '10.244.108.128:9119', profile: 'dev', handle: 'dev' },
+      // A genuinely separate source with a same-named profile keeps its own row.
+      { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'default', handle: 'default-this-device' },
+      { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'agent-mentor', handle: 'agent-mentor' }
+    ]
+  }
+
+  const out = merge(local, union)
+  // 2 annotated local rows + 2 other-source rows = 4, NOT 6 (no phantom copies).
+  assert.equal(out.profiles.length, 4)
+
+  const defaultRow = out.profiles.find(p => p.name === 'default' && !p.remoteSource)
+  // Annotated with the ACTIVE gateway's handle; rich fields survive.
+  assert.equal(defaultRow.last_session.id, 's-default')
+  assert.equal(defaultRow.handle, 'default-10-244-108-128-9119')
+
+  // The same-named profile on the local device stays a separate tagged row.
+  const localDefault = out.profiles.find(p => p.name === 'default' && p.remoteSource)
+  assert.equal(localDefault.handle, 'default-this-device')
+  assert.equal(localDefault.connectionId, 'local')
+
+  const mentor = out.profiles.find(p => p.name === 'agent-mentor')
+  assert.equal(mentor.remoteSource, true)
+
+  // Exactly the two other-source rows are tagged remote; none from the active gateway.
+  assert.equal(out.profiles.filter(p => p.remoteSource).length, 2)
+})
+
+test('merge: primary-local desktop keeps single-source behavior (no phantom rows)', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const local = { profiles: [{ name: 'default' }, { name: 'dev' }] }
+  const union = {
+    primaryConnectionId: 'local',
+    agents: [
+      { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'default', handle: 'default-this-device' },
+      { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'dev', handle: 'dev' }
+    ]
+  }
+
+  const out = merge(local, union)
+  assert.equal(out.profiles.length, 2)
+  assert.equal(out.profiles.filter(p => p.remoteSource).length, 0)
+  assert.equal(out.profiles[0].handle, 'default-this-device')
+})

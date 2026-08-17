@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -1514,6 +1515,16 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Board-scoped key/value metadata. Rows are write-once. The only key today
+-- is the activity-ref salt: the HMAC key that pseudonymizes task and event
+-- ids in board_activity. It lives inside the board's own DB file so it
+-- travels with backups, copies, VACUUM INTO, and container remounts; a
+-- sidecar file would desync from the DB and churn every ref.
+CREATE TABLE IF NOT EXISTS kanban_meta (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -2833,6 +2844,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "UPDATE task_events SET kind = ? WHERE kind = ?",
             (new, old),
         )
+
+    # Eagerly seed the activity-ref salt so board_activity (documented as
+    # read-only) never has to write on its own path. The sqlite_master
+    # probe is mandatory, not defensive padding: this function is also
+    # called directly by legacy-migration tests against hand-built
+    # schemas that never ran SCHEMA_SQL and have no kanban_meta table.
+    meta_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_meta'"
+    ).fetchone() is not None
+    if meta_table_exists:
+        _activity_ref_salt(conn)
 
     _rebuild_drifted_tables(conn)
 
@@ -8849,7 +8871,9 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection, *, board: Optional[str] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and restores the task's source phase.
@@ -8916,6 +8940,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
+            log_excerpt = None
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
@@ -8976,6 +9001,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+                # Incident 2026-08: error_text above is a liveness symptom,
+                # not the cause — the cause is in the worker log. Read a
+                # bounded excerpt now, while the log is still on disk.
+                log_excerpt = _worker_log_excerpt_for_crash(
+                    row["id"], board=board, run_started_at=row["started_at"],
+                )
 
             retry_status = _retry_status_for_run(conn, row["id"])
             event_payload["retry_status"] = retry_status
@@ -8991,6 +9022,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
                 _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                # The excerpt is worker stdout — untrusted text. It stays out
+                # of the run metadata because build_worker_context renders
+                # run.metadata verbatim into the NEXT worker's prompt, which
+                # would let a prior worker's output (or anything it printed,
+                # including fetched content) reach the retry as
+                # dispatcher-attributed context. The event payload is
+                # operator-facing only and no prompt reads it.
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -8999,7 +9037,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 )
                 _append_event(
                     conn, row["id"], event_kind,
-                    event_payload,
+                    dict(event_payload, worker_log_tail=log_excerpt)
+                    if log_excerpt else event_payload,
                     run_id=run_id,
                 )
                 exited_hook_payloads.append({
@@ -9951,7 +9990,10 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    # ``board`` must be threaded: the crash record reads this board's worker
+    # log, and the ambient current-board chain would resolve to whichever
+    # board happens to be selected on disk — at most one of them correct.
+    result.crashed = detect_crashed_workers(conn, board=board)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -10376,7 +10418,7 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load the sdlc-review skill for review agents — it carries
+        # Force-load the code-review skill for review agents — it carries
         # the review logic (AC verification, merge, etc.). The mandatory
         # kanban lifecycle is already injected into every worker's system
         # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
@@ -10896,6 +10938,15 @@ def _default_spawn(
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
+    # Run boundary. Without it a crash whose worker wrote nothing would let
+    # _worker_log_excerpt_for_crash pick up the PREVIOUS run's error and
+    # report it as this run's cause. Written before Popen so it is always the
+    # last thing in the file when the child produces no output.
+    try:
+        log_f.write(f"\n{_WORKER_LOG_RUN_MARKER} {int(time.time())}\n".encode())
+        log_f.flush()
+    except OSError:
+        pass
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
@@ -11253,6 +11304,591 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
 # Stats + SLA helpers
 # ---------------------------------------------------------------------------
 
+def _running_activity_stats(
+    conn: sqlite3.Connection,
+    *,
+    now: int,
+) -> tuple[dict[str, dict[str, Optional[int]]], dict[str, int]]:
+    """Return aggregate-only worker evidence for ``running`` tasks.
+
+    A worker is only reported live when both host-local PID liveness and a
+    recent heartbeat are observable. Heartbeats are optional for short runs, so
+    a host-local process that is verifiably alive but has never heartbeated is
+    reported separately as ``pid_alive_rows`` instead of being collapsed into
+    the same bucket as a remote or unobservable row. Remote-host rows and rows
+    without enough evidence remain unverified rather than being mislabeled idle
+    or stale. Task identifiers and content never leave this helper.
+    """
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    by_assignee: dict[str, dict[str, Optional[int]]] = {}
+    totals = {
+        "running_rows": 0,
+        "live_worker_rows": 0,
+        "pid_alive_rows": 0,
+        "stale_worker_rows": 0,
+        "unverified_worker_rows": 0,
+        "unassigned_running_rows": 0,
+    }
+
+    rows = conn.execute(
+        "SELECT assignee, claim_lock, worker_pid, last_heartbeat_at "
+        "FROM tasks WHERE status = 'running'"
+    ).fetchall()
+    for row in rows:
+        totals["running_rows"] += 1
+        assignee = row["assignee"]
+        if assignee is None:
+            totals["unassigned_running_rows"] += 1
+
+        claim_lock = row["claim_lock"] or ""
+        pid = row["worker_pid"]
+        heartbeat = row["last_heartbeat_at"]
+        host_local = claim_lock.startswith(host_prefix)
+        heartbeat_stale = (
+            heartbeat is not None
+            and max(0, now - int(heartbeat))
+            > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+        )
+        pid_alive = bool(host_local and pid and _pid_alive(int(pid)))
+        heartbeat_fresh = heartbeat is not None and not heartbeat_stale
+        live = pid_alive and heartbeat_fresh
+        stale = heartbeat_stale or bool(host_local and pid and not pid_alive)
+        evidence_key = (
+            "live_worker_rows" if live
+            else "stale_worker_rows" if stale
+            else "pid_alive_rows" if pid_alive
+            else "unverified_worker_rows"
+        )
+        totals[evidence_key] += 1
+
+        if assignee is None:
+            continue
+        aggregate = by_assignee.setdefault(
+            assignee,
+            {
+                "running_rows": 0,
+                "live_worker_rows": 0,
+                "pid_alive_rows": 0,
+                "stale_worker_rows": 0,
+                "unverified_worker_rows": 0,
+                "latest_heartbeat_at": None,
+            },
+        )
+        aggregate["running_rows"] = int(aggregate["running_rows"] or 0) + 1
+        aggregate[evidence_key] = int(aggregate[evidence_key] or 0) + 1
+        if heartbeat is not None:
+            latest = aggregate["latest_heartbeat_at"]
+            aggregate["latest_heartbeat_at"] = max(
+                int(heartbeat),
+                int(latest) if latest is not None else int(heartbeat),
+            )
+
+    return by_assignee, totals
+
+
+def _blocked_cause_stats(conn: sqlite3.Connection) -> dict[str, int]:
+    """Aggregate split of blocked rows by whether the runtime ever ran them.
+
+    ``blocked`` alone cannot tell an operator whether a run stopped or a person
+    parked the row, so the two are counted separately. A row the runtime ran and
+    then blocked is a machine outcome; a row with no run record was blocked
+    without ever executing. No cause is inferred beyond the presence of a run,
+    and no task identifier or error text is exposed.
+    """
+    row = conn.execute(
+        "SELECT "
+        "SUM(CASE WHEN runs > 0 THEN 1 ELSE 0 END) AS after_run, "
+        "SUM(CASE WHEN runs = 0 THEN 1 ELSE 0 END) AS without_run, "
+        "COUNT(*) AS total FROM ("
+        "SELECT t.id AS id, "
+        "(SELECT COUNT(*) FROM task_runs WHERE task_id = t.id) AS runs "
+        "FROM tasks t WHERE t.status = 'blocked')"
+    ).fetchone()
+    after_run = int(row["after_run"] or 0)
+    without_run = int(row["without_run"] or 0)
+    total = int(row["total"] or 0)
+    if after_run + without_run != total:
+        raise ValueError("blocked cause split does not reconcile with blocked total")
+
+    failed = conn.execute(
+        "SELECT COUNT(*) AS n FROM tasks t WHERE t.status = 'blocked' AND ("
+        "SELECT r.outcome FROM task_runs r WHERE r.task_id = t.id "
+        "ORDER BY r.started_at DESC, r.id DESC LIMIT 1"
+        ") IN ('crashed', 'timed_out', 'spawn_failed', 'gave_up')"
+    ).fetchone()
+    return {
+        "blocked_rows": total,
+        "blocked_after_run_rows": after_run,
+        "blocked_without_run_rows": without_run,
+        "blocked_last_run_failed_rows": int(failed["n"] or 0),
+    }
+
+
+def _board_staleness_stats(conn: sqlite3.Connection) -> dict:
+    """Last-touch time of the single most neglected open row, plus its count.
+
+    The signal this replaces was the board-maximum of
+    ``task_events.created_at``. It was defeated by a chatty neighbour: on
+    Insta Automation Review, a short-lived cron task emitted
+    created -> claimed -> spawned -> heartbeat -> completed every few
+    minutes, so the board's real backlog -- an open row untouched for 16
+    hours -- rendered as 0 minutes stale, a false calm. A board-level MAX is
+    reset by the newest row on the board regardless of which row moved; it
+    answers "did something tick" rather than "is the work moving." A
+    per-row MINIMUM cannot be reset by a neighbour that never touches the
+    neglected row, because the neglected row's own last-touch value does not
+    change until something touches that row specifically.
+
+    Restricted to ``status IN ('ready', 'todo', 'running')`` -- actionable
+    open work only. Deliberately excludes: ``blocked`` (covered by
+    ``blocked_without_comment_rows`` below, and a legitimate resting state
+    awaiting a human, not neglect); ``scheduled`` (deliberately parked, not
+    neglected); ``triage`` (not yet accepted as work); ``done`` and
+    ``archived`` (no longer open). For each such task, last-touch is
+    ``COALESCE(MAX(task_events.created_at) for that task, tasks.created_at)``
+    -- a task with zero events still has a birth time -- and the aggregate
+    is the MINIMUM of that per-task value across all open rows: how long the
+    single most neglected open row has gone untouched.
+
+    That COALESCE means every open row always has a last-touch value, so
+    there is no "open rows exist but were never touched" state distinct from
+    "touched" -- the only null case is zero open rows on the board, where
+    ``oldest_open_row_last_touch_at`` is ``None`` and ``open_rows`` is 0.
+    Callers must not read a null timestamp as "just touched."
+
+    Query plan (``EXPLAIN QUERY PLAN``, checked against all four live
+    boards): the outer scan is ``SEARCH t USING INDEX idx_tasks_status
+    (status=?)`` -- one index seek per value in the 3-value IN-list, never a
+    table scan. The correlated ``MAX(created_at)`` subquery is ``SEARCH
+    task_events USING COVERING INDEX idx_events_task (task_id=?)`` --
+    ``idx_events_task(task_id, created_at)`` lets SQLite seek to the last
+    matching row per task without touching the ``task_events`` table itself.
+    Both indexes already exist (see SCHEMA_SQL above); no schema change
+    accompanies this function. This runs on every dispatcher tick, so the
+    absence of a scan is load-bearing, not incidental.
+
+    The blocked-without-comment split reuses the same access path as
+    ``_blocked_cause_stats``: ``idx_tasks_status`` finds the blocked rows,
+    then a correlated ``NOT EXISTS`` against ``task_comments`` uses
+    ``idx_comments_task`` as a covering index per row. Both indexes already
+    exist (see SCHEMA_SQL above); no schema change accompanies this
+    function.
+    """
+    open_row = conn.execute(
+        "SELECT "
+        "MIN(last_touch) AS oldest_open_row_last_touch_at, "
+        "COUNT(*) AS open_rows FROM ("
+        "SELECT COALESCE("
+        "(SELECT MAX(created_at) FROM task_events WHERE task_id = t.id), "
+        "t.created_at"
+        ") AS last_touch "
+        "FROM tasks t WHERE t.status IN ('ready', 'todo', 'running'))"
+    ).fetchone()
+    open_rows = int(open_row["open_rows"] or 0)
+    oldest_open_row_last_touch_at = (
+        int(open_row["oldest_open_row_last_touch_at"])
+        if open_row["oldest_open_row_last_touch_at"] is not None
+        else None
+    )
+    if (oldest_open_row_last_touch_at is None) != (open_rows == 0):
+        raise ValueError(
+            "oldest-open-row timestamp nullness does not match open row count"
+        )
+
+    # Progress, as distinct from activity. Heartbeats, comments and a
+    # re-dispatch loop all record events without finishing anything; a
+    # ``completed`` event is the one recorded fact that a task finished.
+    # Null when no completion has ever been observed on this board, which is
+    # not the same claim as "nothing has ever finished" — the caller must
+    # render it as Unknown.
+    completion = conn.execute(
+        "SELECT MAX(created_at) AS at FROM task_events WHERE kind = 'completed'"
+    ).fetchone()
+    last_completion_at = (
+        int(completion["at"]) if completion and completion["at"] is not None else None
+    )
+
+    row = conn.execute(
+        "SELECT "
+        "SUM(CASE WHEN has_comment = 0 THEN 1 ELSE 0 END) AS without_comment, "
+        "COUNT(*) AS total FROM ("
+        "SELECT t.id AS id, "
+        "EXISTS(SELECT 1 FROM task_comments WHERE task_id = t.id) AS has_comment "
+        "FROM tasks t WHERE t.status = 'blocked')"
+    ).fetchone()
+    blocked_rows = int(row["total"] or 0)
+    blocked_without_comment_rows = int(row["without_comment"] or 0)
+    if not 0 <= blocked_without_comment_rows <= blocked_rows:
+        raise ValueError(
+            "blocked-without-comment count does not reconcile with blocked total"
+        )
+
+    return {
+        "last_completion_at": last_completion_at,
+        "oldest_open_row_last_touch_at": oldest_open_row_last_touch_at,
+        "open_rows": open_rows,
+        "blocked_rows": blocked_rows,
+        "blocked_without_comment_rows": blocked_without_comment_rows,
+    }
+
+
+def _unresolved_run_stats(conn: sqlite3.Connection) -> dict:
+    """Peak run count on a not-done row that has never completed, plus when.
+
+    A card was found re-dispatching every 60 seconds: 19 runs in 14 minutes,
+    every one ending ``dependency_wait`` on a gate no retry could clear,
+    ~9 minutes of agent time burned, and it was structurally unbounded --
+    ``block_kind='dependency'`` is not counted by the core's unblock-loop
+    breaker, so ``block_recurrences`` stayed 0 and nothing stopped it. A
+    second, larger instance on another board reached 65 runs in 66 minutes,
+    every outcome ``blocked``. Neither loop is visible in
+    ``_blocked_cause_stats`` above -- that split only separates blocked rows
+    by whether they ever ran, not by how many times -- and neither is
+    visible in ``_board_staleness_stats``, because dispatch and block are
+    both recorded events that keep a row's own last-touch fresh even while
+    it makes no progress. This is a third, independent signal: the raw
+    count of runs stacked on a single row that is still open and has never
+    once completed.
+
+    Scope is every task with ``status NOT IN ('done', 'archived')`` --
+    computed here as ``VALID_STATUSES`` minus those two, so the query stays
+    correct if a status is ever added or removed -- and with no run whose
+    ``outcome = 'completed'``. No time window is applied and none should be
+    invented: counting runs on a row that has never completed is already a
+    self-limiting population, unlike "runs in the last N hours", which is
+    exactly the kind of arbitrary parameter this file has twice had to
+    remove for the staleness pair above.
+
+    Returns the single highest run count across that population
+    (``max_unresolved_row_runs``, 0 when the population is empty or every
+    member has zero runs) and, separately, the most recent ``started_at``
+    among the runs that make up that maximum
+    (``max_unresolved_row_runs_last_started_at``, ``None`` under the same 0
+    condition). That timestamp exists so a loop that stopped days ago is
+    not presented as if it were happening now -- a 65-run row can last have
+    run 62 hours before the moment this is measured. Ties at the maximum
+    are resolved by taking the most recent start among the tied rows, not
+    by picking one arbitrarily -- this is a deliberate choice, not an
+    assumption that ties do not occur. Counts and timestamps only: no task
+    id, title, or error text leaves this function. A row re-run many times
+    without completing is an observation about dispatch, not proof of
+    wasted work, and callers must not word it as the latter.
+
+    Query plan (``EXPLAIN QUERY PLAN``, checked against all four live
+    boards): the outer scan of both queries below is ``SEARCH t USING INDEX
+    idx_tasks_status (status=?)``, one seek per value in the IN-list, never
+    a table scan -- the same shape as ``_board_staleness_stats``. Each
+    correlated subquery against ``task_runs`` is ``SEARCH task_runs USING
+    (COVERING) INDEX idx_runs_task (task_id=?)``; the run-count and
+    max-started-at lookups are fully covered by
+    ``idx_runs_task(task_id, started_at)``, and the completed-outcome
+    ``NOT EXISTS`` subquery seeks the same index by ``task_id`` before
+    checking ``outcome`` per row. Both indexes already exist (see SCHEMA_SQL
+    above); no schema change accompanies this function. This runs on every
+    dispatcher tick.
+    """
+    non_terminal_statuses = sorted(VALID_STATUSES - {"done", "archived"})
+    placeholders = ", ".join("?" for _ in non_terminal_statuses)
+
+    max_row = conn.execute(
+        "SELECT MAX(run_count) AS max_run_count FROM ("
+        "SELECT (SELECT COUNT(*) FROM task_runs WHERE task_id = t.id) AS run_count "
+        f"FROM tasks t WHERE t.status IN ({placeholders}) "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM task_runs WHERE task_id = t.id AND outcome = 'completed'"
+        ")"
+        ")",
+        non_terminal_statuses,
+    ).fetchone()
+    max_unresolved_row_runs = int(max_row["max_run_count"] or 0)
+
+    max_unresolved_row_runs_last_started_at = None
+    if max_unresolved_row_runs > 0:
+        started_row = conn.execute(
+            "SELECT MAX(r.started_at) AS at FROM tasks t "
+            "JOIN task_runs r ON r.task_id = t.id "
+            f"WHERE t.status IN ({placeholders}) "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM task_runs x WHERE x.task_id = t.id AND x.outcome = 'completed'"
+            ") "
+            "AND (SELECT COUNT(*) FROM task_runs y WHERE y.task_id = t.id) = ?",
+            [*non_terminal_statuses, max_unresolved_row_runs],
+        ).fetchone()
+        max_unresolved_row_runs_last_started_at = (
+            int(started_row["at"])
+            if started_row and started_row["at"] is not None
+            else None
+        )
+        if max_unresolved_row_runs_last_started_at is None:
+            raise ValueError(
+                "unresolved-run max count is positive but no matching run "
+                "start was found"
+            )
+
+    return {
+        "max_unresolved_row_runs": max_unresolved_row_runs,
+        "max_unresolved_row_runs_last_started_at": (
+            max_unresolved_row_runs_last_started_at
+        ),
+    }
+
+
+#: Reason prefix a worker writes when it blocks a finished implementation to
+#: hand it to a reviewer. Same literal the ``review_dependency_deadlock``
+#: diagnostic matches on (kanban_diagnostics.py), deliberately: two definitions
+#: of "waiting for review" that could drift apart would be worse than one.
+_REVIEW_REQUIRED_REASON_PREFIX = "review-required:"
+
+def _awaiting_review_stats(
+    conn: sqlite3.Connection, human_stopped_statuses: list[str]
+) -> int:
+    """How many needs-input rows are waiting on a review, not on the operator.
+
+    ``request-review`` moves a finished implementation to ``review``, and its
+    own CLI help ends with "NOT a block". A worker that instead calls
+    ``kanban_block(kind="needs_input", reason="review-required: ...")`` leaves
+    the row in ``blocked``, which the review dispatcher never claims -- it
+    claims ``status = 'review'`` only. The row is then unreachable by any
+    autonomous step and indistinguishable, in the queue count, from a genuine
+    question for the operator.
+
+    The ``review_dependency_deadlock`` diagnostic already recognises this exact
+    reason prefix, but only fires when the stalled parent is starving a ``todo``
+    child, so it stays silent on a row whose subtree happens to be empty.
+    Measured across all four live boards: 28 rows carry the prefix, one has a
+    waiting child. This counts the population; the diagnostic keeps reporting
+    the starvation case.
+
+    Deliberately a strict subset of the ``needs_input`` count above -- same
+    ``block_kind`` and same ``blocked``/``triage`` scope -- so the two numbers
+    reconcile and the remainder is a real "waiting on a person" figure. Counts
+    only: no id, title, or reason text leaves this function.
+    """
+    placeholders = ", ".join("?" for _ in human_stopped_statuses)
+    rows = conn.execute(
+        "SELECT p.id FROM tasks p "
+        f"WHERE p.block_kind = 'needs_input' AND p.status IN ({placeholders})",
+        human_stopped_statuses,
+    ).fetchall()
+
+    awaiting = 0
+    for row in rows:
+        # Both kinds carry the reason that set the block currently in force.
+        # `blocked` alone is not enough: BLOCK_RECURRENCE_LIMIT re-routes a
+        # repeatedly-blocked row to `triage` and records the new reason under
+        # `block_loop_detected`, so reading only `blocked` would answer with a
+        # superseded reason -- and `triage` is half of this function's own
+        # population. Ordered by `id`, not `created_at`: block and re-block
+        # land in the same second routinely, which is exactly when the
+        # distinction matters.
+        event = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind IN ('blocked', 'block_loop_detected') "
+            "ORDER BY id DESC LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        if event is None:
+            continue
+        try:
+            payload = json.loads(event["payload"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        reason = str(payload.get("reason") or "").strip().lower()
+        if reason.startswith(_REVIEW_REQUIRED_REASON_PREFIX):
+            awaiting += 1
+    return awaiting
+
+
+def _needs_input_stats(conn: sqlite3.Connection) -> dict:
+    """Cost of the unanswered human question: count, staleness, and blast radius.
+
+    ``block_kind='needs_input'`` is a first-class, agent-set fact, not an
+    inference. The constant's own comment (kanban_db.py:116) says it means
+    "needs a human decision/answer it cannot derive"; the ``tasks.block_kind``
+    schema comment (kanban_db.py:1266-1271) and ``block_task``'s docstring
+    (kanban_db.py:5650-5671) agree: ``needs_input``/``capability`` are
+    "truly blocked" and land in ``blocked`` for a human, unlike
+    ``dependency``, which is routed back to ``todo`` with no human involved.
+    The value is written by whoever calls ``block_task(kind="needs_input")``
+    -- in practice the ``kanban_block`` tool exposed to agent workers
+    (tools/kanban_tools.py:1709-1750), whose schema frames the kind
+    explicitly as "you need a human decision/answer" -- so on the intended
+    path this is an agent stating it is stuck and waiting on the operator,
+    not something this function infers from silence.
+
+    Caveat this function does NOT paper over: ``block_kind`` is preserved
+    across ``unblock_task`` (kanban_db.py:5964-5973, deliberately, to keep
+    the unblock-loop breaker honest) and across a subsequent re-claim/run
+    (``claim_task`` never touches it). It is cleared only by
+    ``complete_task`` (set to NULL on completion) or overwritten by a fresh
+    ``block_task`` call. So in principle a row that was asked, answered, and
+    unblocked back into ``ready``/``todo``/``running`` could still carry a
+    stale ``needs_input`` tag until one of those two things happens to it
+    next. Scope here is deliberately every ``status NOT IN ('done',
+    'archived')`` -- the same non-terminal scope as
+    ``_unresolved_run_stats`` -- rather than hard-coded to ``('blocked',
+    'triage')``, so a future stale tag on an active row would surface in
+    this count instead of being silently excluded by an assumption about
+    where the value "should" live. Measured against all four live boards
+    the day this was added, every row currently carrying ``needs_input`` is
+    ``blocked`` or ``triage`` -- there is no live stale-tag case today --
+    but that is a fact about current data, not a schema guarantee, and the
+    query does not hard-code it.
+
+    Returns three counts/timestamps per kind, over the population
+    (``block_kind = <kind> AND status NOT IN ('done', 'archived')``):
+
+    * ``*_rows`` -- how many.
+    * ``oldest_*_row_last_touch_at`` -- the oldest per-row last-touch
+      (``COALESCE(MAX(task_events.created_at), tasks.created_at)``, the same
+      idiom as ``_board_staleness_stats``).
+
+      This is NOT the age of the question. It is the last event of ANY kind
+      on the row that has gone longest without one. A comment on a waiting
+      card resets it without answering anything: measured live, 13 of 59
+      rows had ``commented`` as their last event, two of them carrying 25-27h
+      of reset, and the board's reported figure already differed from the
+      true earliest ask by half an hour. Callers must word it as a last
+      recorded event, never as how long ago someone was asked -- the same
+      distinction that killed two earlier signals on this surface. ``None``
+      only when the kind's row count is 0.
+    * ``needs_input_downstream_rows`` -- the cost of leaving the question
+      unanswered: the count of DISTINCT other rows linked as a
+      ``task_links`` child of any row in the population above, excluding
+      children that are themselves ``done``/``archived``. Counts rows, not
+      links, so a child gated on two different needs-input parents is
+      counted once, not twice.
+
+    Counts and timestamps only: no task id, title, or comment text leaves
+    this function.
+
+    Query plan (``EXPLAIN QUERY PLAN``, checked against all four live
+    boards): the count/oldest query's outer scan is ``SEARCH t USING INDEX
+    idx_tasks_status (status=?)``, one seek per non-terminal status value --
+    the same shape as ``_unresolved_run_stats`` -- and the correlated
+    ``MAX(created_at)`` subquery is ``SEARCH task_events USING COVERING
+    INDEX idx_events_task (task_id=?)``, the same as
+    ``_board_staleness_stats``. The downstream-children query adds two more
+    joins, both index-backed: ``SEARCH l USING COVERING INDEX
+    sqlite_autoindex_task_links_1 (parent_id=?)`` (the automatic unique
+    index SQLite builds for ``task_links``'s ``PRIMARY KEY (parent_id,
+    child_id)``, functionally the same access path as the explicit
+    ``idx_links_parent``) and ``SEARCH c USING INDEX
+    sqlite_autoindex_tasks_1 (id=?)`` (the automatic index for ``tasks.id
+    TEXT PRIMARY KEY``). No new index and no schema change accompanies this
+    function; every access path already existed. This runs on every
+    dispatcher tick.
+    """
+    non_terminal_statuses = sorted(VALID_STATUSES - {"done", "archived"})
+    placeholders = ", ".join("?" for _ in non_terminal_statuses)
+
+    # A row stopped for a human sits in ``blocked``; ``triage`` is where
+    # BLOCK_RECURRENCE_LIMIT routes one that keeps being re-blocked.
+    human_stopped_statuses = ["blocked", "triage"]
+    stopped_placeholders = ", ".join("?" for _ in human_stopped_statuses)
+
+    def _for_kind(kind: Optional[str]) -> tuple[int, Optional[int], int]:
+        """Count, oldest last-touch, and blast radius for one block kind.
+
+        Every kind is scoped to ``blocked``/``triage``, because that is what the
+        number means: work stopped in front of a person right now.
+
+        A tag alone is not enough. ``block_kind`` deliberately survives
+        ``unblock_task`` (the unblock-loop breaker needs it to recognise a
+        re-block for the same cause, and that breaker is what bounds the runaway
+        respawn loops), so a row carrying ``needs_input`` may have been answered
+        and released back to ``ready`` — queued to run, waiting on nobody.
+        Measured: none today, but five rows across three boards have been
+        unblocked while still tagged, so it is structural, not hypothetical.
+        Surfacing a stale tag is a useful diagnostic, but it is a different
+        question from this one and must not inflate this count.
+
+        A status alone is not enough either, which is why the un-typed case
+        needs both halves. ``block_kind IS NULL`` matches every untagged row, so
+        without the status filter a plain ``todo`` row satisfies it trivially:
+        measured when this was first written wrong, the bare predicate returned
+        40 rows of which only 15 were blocked, and on one board all 5 reported
+        rows had never been blocked at all.
+        """
+        if kind is None:
+            predicate = "p.block_kind IS NULL"
+            kind_params: list = []
+        else:
+            predicate = "p.block_kind = ?"
+            kind_params = [kind]
+        status_params = human_stopped_statuses
+        status_placeholders = stopped_placeholders
+
+        row = conn.execute(
+            "SELECT MIN(last_touch) AS oldest, COUNT(*) AS n FROM ("
+            "SELECT COALESCE("
+            "(SELECT MAX(created_at) FROM task_events WHERE task_id = p.id), "
+            "p.created_at"
+            ") AS last_touch "
+            "FROM tasks p "
+            f"WHERE {predicate} AND p.status IN ({status_placeholders})"
+            ")",
+            kind_params + status_params,
+        ).fetchone()
+        rows = int(row["n"] or 0)
+        oldest = int(row["oldest"]) if row["oldest"] is not None else None
+        if (oldest is None) != (rows == 0):
+            raise ValueError(
+                f"oldest {kind or 'untyped'}-block row timestamp nullness "
+                "does not match its row count"
+            )
+
+        children_row = conn.execute(
+            "SELECT COUNT(DISTINCT l.child_id) AS n "
+            "FROM tasks p "
+            "JOIN task_links l ON l.parent_id = p.id "
+            "JOIN tasks c ON c.id = l.child_id "
+            f"WHERE {predicate} AND p.status IN ({status_placeholders}) "
+            f"AND c.status IN ({placeholders})",
+            kind_params + status_params + non_terminal_statuses,
+        ).fetchone()
+        return rows, oldest, int(children_row["n"] or 0)
+
+    needs_input_rows, oldest_needs_input, needs_input_children = _for_kind("needs_input")
+    capability_rows, oldest_capability, capability_children = _for_kind("capability")
+    untyped_rows, oldest_untyped, untyped_children = _for_kind(None)
+    awaiting_review_rows = _awaiting_review_stats(conn, human_stopped_statuses)
+
+    return {
+        "needs_input_rows": needs_input_rows,
+        "oldest_needs_input_row_last_touch_at": oldest_needs_input,
+        "needs_input_downstream_rows": needs_input_children,
+        # The subset of the queue above that is waiting on a REVIEW, not on the
+        # operator. `request-review` exists for exactly this and its own help
+        # says "NOT a block", but a worker that blocks with `needs_input` and a
+        # `review-required:` reason lands here instead: `review` is the only
+        # status the review dispatcher claims, so nothing ever picks the row up.
+        # Measured across all four live boards the day this was added: 28 of 53
+        # needs-input rows, and zero rows in `review` anywhere. Reporting the
+        # whole queue as one number tells an operator that 53 things need them
+        # when most need a handoff that silently never happens.
+        "needs_input_awaiting_review_rows": awaiting_review_rows,
+        # A hard wall the agent cannot pass: no access, missing credentials, an
+        # action no AI agent can perform. The schema calls it "genuinely
+        # human-only", so it belongs in the same queue as needs_input but is a
+        # different request — do something, rather than answer something.
+        "capability_rows": capability_rows,
+        "oldest_capability_row_last_touch_at": oldest_capability,
+        "capability_downstream_rows": capability_children,
+        # Blocked with no kind recorded. The schema comment says to treat these
+        # as a generic human blocker, so they are reported rather than dropped —
+        # measured live they were the second-largest group (40 of 108) and
+        # omitting them would have shown barely half the operator's queue.
+        # Kept separate rather than folded into needs_input: the source does not
+        # say what these are waiting for, and merging would assert that it does.
+        "untyped_block_rows": untyped_rows,
+        "oldest_untyped_block_row_last_touch_at": oldest_untyped,
+        "untyped_block_downstream_rows": untyped_children,
+    }
+
+
 def board_stats(conn: sqlite3.Connection) -> dict:
     """Per-status + per-assignee counts, plus the oldest ``ready`` age in
     seconds (the clearest staleness signal for a router or HUD).
@@ -11280,12 +11916,261 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         (now - int(oldest_row["ts"]))
         if oldest_row and oldest_row["ts"] is not None else None
     )
+    activity_by_assignee, activity_totals = _running_activity_stats(
+        conn,
+        now=now,
+    )
+    blocked_causes = _blocked_cause_stats(conn)
+    staleness = _board_staleness_stats(conn)
+    if staleness["blocked_rows"] != by_status.get("blocked", 0):
+        raise ValueError("staleness blocked total does not reconcile with by_status")
+    unresolved_runs = _unresolved_run_stats(conn)
+    needs_input = _needs_input_stats(conn)
 
     return {
         "by_status": by_status,
         "by_assignee": by_assignee,
+        "activity_by_assignee": activity_by_assignee,
+        "activity_totals": activity_totals,
+        "blocked_causes": blocked_causes,
         "oldest_ready_age_seconds": oldest_ready_age,
+        # When a task on this board last finished. Heartbeats, comments and a
+        # re-dispatch loop all record events without finishing anything, so
+        # this is the progress signal the other two cannot fake. Null means no
+        # completion has been observed, not that nothing has ever finished.
+        "last_completion_at": staleness["last_completion_at"],
+        # Last-touch time of the single most neglected open (ready/todo/
+        # running) row; null only when open_rows is 0. Any recorded event
+        # counts as a touch, including a heartbeat, so this states when that
+        # row was last written to -- not that it made progress.
+        "oldest_open_row_last_touch_at": staleness["oldest_open_row_last_touch_at"],
+        # Count of open (ready/todo/running) rows the timestamp above was
+        # computed over.
+        "open_rows": staleness["open_rows"],
+        # Blocked rows with zero rows in task_comments. That is all this
+        # counts: a row may still carry a reason in block_kind or
+        # last_failure_error, so this is not "blocked without a reason".
+        "blocked_without_comment_rows": staleness["blocked_without_comment_rows"],
+        # Highest run count on any single not-done/archived row that has
+        # never had a run outcome='completed' (0 when there is no such
+        # row, or every such row has zero runs). This is a dispatch
+        # observation, not proof of wasted work: a row re-run many times
+        # without completing may still be waiting on a legitimate gate.
+        "max_unresolved_row_runs": unresolved_runs["max_unresolved_row_runs"],
+        # When the row above last started a run (None under the same 0
+        # condition as max_unresolved_row_runs). Kept separate from "now"
+        # so a loop that stopped hours or days ago is never presented as
+        # if it were happening currently.
+        "max_unresolved_row_runs_last_started_at": (
+            unresolved_runs["max_unresolved_row_runs_last_started_at"]
+        ),
+        # Count of open (status NOT IN ('done', 'archived')) rows with
+        # block_kind='needs_input' -- an agent explicitly stated it needs a
+        # human decision/answer it cannot derive (see _needs_input_stats).
+        # This is a recorded fact the agent set, not an inference.
+        "needs_input_rows": needs_input["needs_input_rows"],
+        # Oldest per-row last-touch among the rows above (None only when
+        # needs_input_rows is 0), so a question asked five days ago reads
+        # differently from one asked an hour ago.
+        "oldest_needs_input_row_last_touch_at": (
+            needs_input["oldest_needs_input_row_last_touch_at"]
+        ),
+        # Distinct other (non-done/archived) rows gated behind any row above
+        # as a task_links child -- the cost of the unanswered question.
+        "needs_input_downstream_rows": needs_input["needs_input_downstream_rows"],
+        # Strict subset of `needs_input_rows`: the part waiting on a review
+        # handoff that no dispatcher will ever make, rather than on a person.
+        "needs_input_awaiting_review_rows": needs_input[
+            "needs_input_awaiting_review_rows"
+        ],
+        # The other two kinds the schema comment (kanban_db.py:110-125) routes
+        # to a human. `capability` is a hard wall -- no access, missing creds,
+        # an action no AI agent can perform, "genuinely human-only". An
+        # un-typed block carries no kind at all and the same comment says to
+        # treat it as a generic human blocker. Only `dependency` needs nobody:
+        # it goes back to `todo` and the parent-gating machinery promotes it.
+        #
+        # Reported as three separate facts rather than one sum. The operator's
+        # next action differs -- answer a question, do something an agent
+        # cannot, or classify an old block -- and the source does not say what
+        # an un-typed block is waiting for, so folding it into needs_input
+        # would assert something it does not know. Measured live the day this
+        # was added: needs_input 59, un-typed 40, capability 9, dependency 1;
+        # reporting needs_input alone would have shown barely half the queue.
+        "capability_rows": needs_input["capability_rows"],
+        "oldest_capability_row_last_touch_at": (
+            needs_input["oldest_capability_row_last_touch_at"]
+        ),
+        "capability_downstream_rows": needs_input["capability_downstream_rows"],
+        "untyped_block_rows": needs_input["untyped_block_rows"],
+        "oldest_untyped_block_row_last_touch_at": (
+            needs_input["oldest_untyped_block_row_last_touch_at"]
+        ),
+        "untyped_block_downstream_rows": needs_input["untyped_block_downstream_rows"],
         "now": now,
+    }
+
+
+DASHBOARD_ACTIVITY_KINDS = frozenset({
+    "created",
+    "assigned",
+    "claimed",
+    "spawned",
+    "completed",
+    "blocked",
+    "unblocked",
+    "promoted",
+    "crashed",
+    "timed_out",
+    "gave_up",
+    "released",
+    "scheduled",
+    "archived",
+})
+
+
+_ACTIVITY_SALT_META_KEY = "activity_ref_salt_v1"
+_ACTIVITY_SALT_BYTES = 32
+
+
+def _activity_ref_salt(conn: sqlite3.Connection) -> bytes:
+    """Return the per-board HMAC key that pseudonymizes activity refs.
+
+    Write-once: the row is seeded on first use and never updated or
+    deleted (see kanban_meta in SCHEMA_SQL). That keeps board_activity
+    refs stable for as long as the underlying row ids are stable. A
+    legacy board rebuilt by _rebuild_drifted_tables reassigns
+    task_events ids, so its refs churn once even though the salt
+    survives.
+
+    Concurrency: several processes can race to seed this row on a
+    freshly created board. ``INSERT OR IGNORE`` lets exactly one writer
+    win; the unconditional re-SELECT afterward -- not the locally
+    generated candidate -- is what every racing process returns, so
+    they all converge on the same salt regardless of who won. Do not
+    optimize that re-SELECT away.
+
+    Not wrapped in write_txn: _sqlite_connect() opens with
+    isolation_level=None (autocommit), so the single INSERT OR IGNORE is
+    already its own atomic transaction. write_txn additionally calls
+    _assert_not_delegated_child_mutation(), which would break a
+    delegate_task child that only reads the activity projection, and
+    issues BEGIN IMMEDIATE, which cannot nest inside a caller's open
+    transaction.
+    """
+    row = conn.execute(
+        "SELECT value FROM kanban_meta WHERE key = ?", (_ACTIVITY_SALT_META_KEY,)
+    ).fetchone()
+    if row is None:
+        if _board_has_activity_history(conn):
+            # A board with recorded history should already own a salt. Losing it
+            # reseeds silently and churns every ref exactly once, which a consumer
+            # that dedupes on event_ref reads as "everything is new". Say so.
+            _log.warning(
+                "kanban: activity ref salt missing on a board with recorded "
+                "history; reseeding, so activity refs will change once"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO kanban_meta (key, value) VALUES (?, ?)",
+            (_ACTIVITY_SALT_META_KEY, secrets.token_hex(32)),
+        )
+        row = conn.execute(
+            "SELECT value FROM kanban_meta WHERE key = ?", (_ACTIVITY_SALT_META_KEY,)
+        ).fetchone()
+    salt = bytes.fromhex(row[0])
+    if len(salt) != _ACTIVITY_SALT_BYTES:
+        # bytes.fromhex("") returns b"", and HMAC under an empty key is no key at
+        # all: the 32-bit task id space becomes brute-forceable again. This is the
+        # one function whose whole job is to withhold that, so it fails closed.
+        raise ValueError("kanban activity ref salt is malformed")
+    return salt
+
+
+def _board_has_activity_history(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM task_events LIMIT 1").fetchone() is not None
+    )
+
+
+def _dashboard_activity_ref(prefix: str, salt: bytes, value: object) -> str:
+    digest = hmac.new(
+        salt, f"hermes-kanban-activity-v1\x1f{prefix}\x1f{value}".encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:16]
+    return f"{prefix}_{digest}"
+
+
+def board_activity(conn: sqlite3.Connection, *, limit: int = 80) -> dict:
+    """Return a bounded lifecycle projection without task content or raw IDs.
+
+    This is the read-only source contract for operator dashboards. Event
+    payloads are consulted only to recover the assignee recorded at creation or
+    reassignment; payloads, task content, run metadata, claim data, and raw
+    identifiers never leave this function.
+
+    event_ref and work_ref are HMAC-SHA256 digests keyed by a per-board
+    secret stored write-once in kanban_meta (see _activity_ref_salt), so
+    they are stable regardless of where the file is mounted or how it is
+    reached. Independently created boards therefore hold different keys
+    and their refs cannot be compared. A board copied from another one
+    carries that board's key, so refs stay comparable between the two --
+    which is what makes a copy still readable by a dashboard, and why
+    the key must be treated as board-identifying material.
+    """
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+        raise ValueError("activity limit must be an integer between 1 and 200")
+
+    salt = _activity_ref_salt(conn)
+    kinds = sorted(DASHBOARD_ACTIVITY_KINDS)
+    placeholders = ",".join("?" for _ in kinds)
+    rows = conn.execute(
+        "SELECT e.id, e.task_id, e.kind, e.payload, e.created_at, "
+        "       r.profile AS run_profile "
+        "FROM task_events e "
+        "LEFT JOIN task_runs r ON r.id = e.run_id "
+        f"WHERE e.kind IN ({placeholders}) "
+        "ORDER BY e.id DESC LIMIT ?",
+        (*kinds, limit),
+    ).fetchall()
+
+    events = []
+    last_profile_by_work: dict[str, Optional[str]] = {}
+    for row in reversed(rows):
+        payload = None
+        if row["payload"]:
+            try:
+                candidate = json.loads(row["payload"])
+                payload = candidate if isinstance(candidate, dict) else None
+            except (TypeError, ValueError):
+                payload = None
+        payload_profile = payload.get("assignee") if payload else None
+        profile = (
+            payload_profile
+            if row["kind"] in {"created", "assigned"} and isinstance(payload_profile, str)
+            else row["run_profile"]
+        )
+        profile = profile if isinstance(profile, str) and profile else None
+        work_ref = _dashboard_activity_ref("work", salt, row["task_id"])
+        previous_profile = last_profile_by_work.get(work_ref)
+        events.append({
+            "event_ref": _dashboard_activity_ref("event", salt, row["id"]),
+            "work_ref": work_ref,
+            "kind": row["kind"],
+            "occurred_at": int(row["created_at"]),
+            "profile": profile,
+            "previous_profile": (
+                previous_profile
+                if row["kind"] == "assigned" and previous_profile != profile
+                else None
+            ),
+        })
+        if profile is not None:
+            last_profile_by_work[work_ref] = profile
+
+    return {
+        "contract_version": "hermes-kanban-activity-v1",
+        "retention_limit": limit,
+        "now": int(time.time()),
+        "events": events,
     }
 
 
@@ -11948,6 +12833,117 @@ def read_worker_log(
             data = f.read()
         return data.decode("utf-8", errors="replace")
     except OSError:
+        return None
+
+
+# Bounded tail read + line count + char cap for the crash-record excerpt
+# below. ~4KB is enough to reach past a stack trace into the actual error
+# line even for a chatty worker; ~300 chars is enough for a message like
+# "Error: Unknown skill(s): kanban-cto-orchestration" without bloating the
+# run/event rows.
+_WORKER_LOG_RUN_MARKER = "===== hermes run start"
+
+
+_CRASH_LOG_EXCERPT_TAIL_BYTES = 4096
+_CRASH_LOG_EXCERPT_MAX_CHARS = 300
+
+
+def _worker_log_excerpt_for_crash(
+    task_id: str, *, board: Optional[str] = None,
+    run_started_at: Optional[int] = None,
+) -> Optional[str]:
+    """Return a short, redacted tail excerpt of a crashed task's worker log.
+
+    Incident (2026-08): a planner task crashed and the recorded error was
+    ``pid 43757 not alive`` — a downstream liveness symptom that says
+    nothing about the cause. The actual cause (``Unknown skill(s):
+    kanban-cto-orchestration``) was sitting in the worker log the whole
+    time; nothing surfaced it, so diagnosis took hours instead of a minute.
+    This reads a bounded tail of that log so ``detect_crashed_workers`` can
+    attach the excerpt to the crash record at the moment the crash is
+    detected.
+
+    Deliberately never raises: this runs inside ``detect_crashed_workers``'s
+    write txn in the dispatcher's reaper loop, where an uncaught exception
+    would stall every board, not just this task. Any failure — missing
+    file, unreadable, decode error, redactor import failure — yields None,
+    and the caller proceeds exactly as it did before this helper existed.
+
+    Deliberately does NOT return via ``error_text``/``last_failure_error``:
+    ``check_respawn_guard``'s ``_RESPAWN_BLOCKER_RE`` word-boundary regex
+    scans the *whole* ``last_failure_error`` string for auth/quota-looking
+    words, and an ordinary traceback line can contain one by accident
+    (e.g. a dependency's "permission denied"). Appending there would risk
+    misclassifying an ordinary crash as a quota/auth blocker and deferring
+    its respawn indefinitely. Callers must instead put the return value in
+    run metadata / event payload, which nothing in this file string-matches.
+    """
+    try:
+        path = worker_log_path(task_id, board=board)
+        raw = read_worker_log(
+            task_id, tail_bytes=_CRASH_LOG_EXCERPT_TAIL_BYTES, board=board,
+        )
+        if not raw:
+            return None
+
+        # Keep only what THIS run wrote. _default_spawn stamps a marker
+        # immediately before Popen, so the last marker in the file always
+        # belongs to the run being reaped.
+        marker_at = raw.rfind(_WORKER_LOG_RUN_MARKER)
+        if marker_at >= 0:
+            newline = raw.find("\n", marker_at)
+            raw = raw[newline + 1:] if newline >= 0 else ""
+        else:
+            # No marker in the window. If the whole file fits in the window
+            # there is genuinely no marker (a log written before this was
+            # introduced) and the run boundary is unknown — withhold rather
+            # than risk attributing a previous run's error to this one. If
+            # the file is larger than the window, the marker simply scrolled
+            # out and everything we read is post-marker.
+            try:
+                if path.stat().st_size <= _CRASH_LOG_EXCERPT_TAIL_BYTES:
+                    return None
+            except OSError:
+                return None
+            if run_started_at is not None:
+                try:
+                    if path.stat().st_mtime < float(run_started_at):
+                        return None
+                except OSError:
+                    return None
+
+        # sanitize_display_text, not strip_ansi: the latter removes escape
+        # sequences but leaves NUL and other control bytes, which would land
+        # in a SQLite TEXT column and in the CLI's event printout.
+        from tools.ansi_strip import sanitize_display_text
+
+        text = sanitize_display_text(raw)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return None
+        excerpt = "\n".join(lines[-5:])
+        if len(excerpt) > _CRASH_LOG_EXCERPT_MAX_CHARS:
+            # Leading ellipsis so a reader can see the cut, matching _cap()'s
+            # convention of marking its own truncation rather than hiding it.
+            excerpt = "… " + excerpt[-_CRASH_LOG_EXCERPT_MAX_CHARS:]
+        try:
+            from agent.redact import redact_sensitive_text
+
+            # force=True: same reasoning as _redact_log_text (debug.py) and
+            # _redact_gateway_user_facing_secrets (gateway/run.py) — this
+            # excerpt lands in the DB regardless of the operator's
+            # security.redact_secrets toggle, so redaction must too.
+            # redact_url_credentials=True because a crashed worker's tail is
+            # very often a git/curl line carrying https://user:token@host.
+            excerpt = redact_sensitive_text(
+                excerpt, force=True, redact_url_credentials=True,
+            )
+        except Exception:
+            # Fail-soft like _redact_gateway_user_facing_secrets: don't let
+            # a redactor import/error block the crash record.
+            pass
+        return excerpt or None
+    except Exception:
         return None
 
 

@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import {
+  assertLocalProfileCanStart,
+  decideProfileDeleteAction,
+  localProfilePoolKeys,
+  ProfileDeletionGate,
+  profileNameFromDeleteRequest,
+  resolveRouteProfile
+} from './profile-delete-routing'
 
 // ---------------------------------------------------------------------------
 // profileNameFromDeleteRequest
@@ -79,4 +86,64 @@ test('resolveRouteProfile passes the requested profile through when nothing was 
 
 test('resolveRouteProfile passes through undefined when nothing was torn down and no profile was requested', () => {
   assert.equal(resolveRouteProfile(null, undefined), undefined)
+})
+
+// ---------------------------------------------------------------------------
+// ProfileDeletionGate / localProfilePoolKeys
+// ---------------------------------------------------------------------------
+
+test('ProfileDeletionGate blocks concurrent starts until deletion releases', () => {
+  const gate = new ProfileDeletionGate()
+  const release = gate.acquire('Selena')
+
+  assert.equal(gate.blocks('selena'), true)
+  assert.equal(gate.blocks('trina'), false)
+
+  release()
+  assert.equal(gate.blocks('selena'), false)
+})
+
+test('ProfileDeletionGate keeps overlapping deletion leases blocked', () => {
+  const gate = new ProfileDeletionGate()
+  const releaseFirst = gate.acquire('selena')
+  const releaseSecond = gate.acquire('selena')
+
+  releaseFirst()
+  assert.equal(gate.blocks('selena'), true)
+
+  releaseSecond()
+  assert.equal(gate.blocks('selena'), false)
+})
+
+test('ProfileDeletionGate rejects a deferred start when deletion begins while it waits', async () => {
+  const gate = new ProfileDeletionGate()
+  let continueStart = () => undefined
+
+  const waiting = new Promise<void>(resolve => {
+    continueStart = resolve
+  })
+
+  const start = (async () => {
+    await waiting
+    gate.assertCanStart('selena')
+  })()
+
+  const release = gate.acquire('selena')
+
+  continueStart()
+  await assert.rejects(start, /Profile "selena" is being deleted/)
+  release()
+})
+
+test('assertLocalProfileCanStart rejects a delayed retry after the profile directory is removed', () => {
+  const gate = new ProfileDeletionGate()
+
+  assert.throws(() => assertLocalProfileCanStart('selena', gate, () => false), /Profile "selena" no longer exists/)
+  assert.doesNotThrow(() => assertLocalProfileCanStart('default', gate, () => false))
+  assert.doesNotThrow(() => assertLocalProfileCanStart('selena', gate, profile => profile === 'selena'))
+})
+
+test('localProfilePoolKeys returns every local process scope for one profile', () => {
+  assert.deepEqual(localProfilePoolKeys('Selena'), ['selena', 'conn:local::selena'])
+  assert.deepEqual(localProfilePoolKeys(''), [])
 })

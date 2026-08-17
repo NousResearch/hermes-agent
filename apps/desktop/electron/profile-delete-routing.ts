@@ -1,9 +1,9 @@
 // Profile-delete routing logic for the `hermes:api` IPC handler.
 //
 // When the renderer issues DELETE /api/profiles/<name>, the handler must
-// tear down that profile's backend (primary window backend or pool backend)
-// and then route the *next* request away from the just-deleted profile's
-// pool backend -- spawning a fresh one would call ensure_hermes_home() and
+// tear down every local backend for that profile and route the DELETE itself
+// away from the just-deleted profile. Concurrent and delayed starts must also
+// be rejected: spawning a fresh backend would call ensure_hermes_home() and
 // recreate the profile directory the delete just removed, leaving a zombie
 // process behind (issue #52279).
 //
@@ -57,6 +57,97 @@ export interface ProfileDeleteDecisionDeps {
   isDefaultProfile: (profile: string) => boolean
   isValidProfileName: (profile: string) => boolean
   primaryProfileKey: () => string
+}
+
+/**
+ * Process-local barrier for profile deletion. Electron IPC handlers run
+ * concurrently, so tearing down a pooled backend is not enough by itself: a
+ * renderer reconnect can enter ensureBackend() while the DELETE request is
+ * still removing the profile and recreate its HERMES_HOME.
+ *
+ * Counts instead of a Set keep overlapping requests for the same profile
+ * blocked until the last request releases its lease.
+ */
+export class ProfileDeletionGate {
+  readonly #active = new Map<string, number>()
+
+  acquire(profile: unknown): () => void {
+    const key = String(profile ?? '')
+      .trim()
+      .toLowerCase()
+
+    if (!key) {
+      return () => undefined
+    }
+
+    this.#active.set(key, (this.#active.get(key) ?? 0) + 1)
+    let released = false
+
+    return () => {
+      if (released) {
+        return
+      }
+
+      released = true
+      const remaining = (this.#active.get(key) ?? 1) - 1
+
+      if (remaining > 0) {
+        this.#active.set(key, remaining)
+      } else {
+        this.#active.delete(key)
+      }
+    }
+  }
+
+  blocks(profile: unknown): boolean {
+    const key = String(profile ?? '')
+      .trim()
+      .toLowerCase()
+
+    return Boolean(key && this.#active.has(key))
+  }
+
+  assertCanStart(profile: unknown): void {
+    const key = String(profile ?? '').trim()
+
+    if (this.blocks(key)) {
+      throw new Error(`Profile "${key}" is being deleted.`)
+    }
+  }
+}
+
+/**
+ * Validate the final boundary before spawning a local profile backend. The
+ * deletion gate closes the in-flight race; the directory check rejects a
+ * delayed renderer retry after the DELETE request has already completed.
+ */
+export function assertLocalProfileCanStart(
+  profile: unknown,
+  gate: ProfileDeletionGate,
+  profileDirectoryExists: (profile: string) => boolean
+): void {
+  const key = String(profile ?? '')
+    .trim()
+    .toLowerCase()
+
+  gate.assertCanStart(key)
+
+  if (key && key !== 'default' && !profileDirectoryExists(key)) {
+    throw new Error(`Profile "${key}" no longer exists.`)
+  }
+}
+
+/**
+ * A local profile can occupy the legacy bare pool slot or the explicit-local
+ * registry slot when the v1 route points elsewhere. Both processes own the
+ * same on-disk profile and must be stopped before deleting it.
+ */
+export function localProfilePoolKeys(profile: unknown): string[] {
+  const key = String(profile ?? '')
+    .trim()
+    .toLowerCase()
+
+  return key ? [key, `conn:local::${key}`] : []
 }
 
 /**

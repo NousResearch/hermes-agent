@@ -148,6 +148,19 @@ function textOf(node) {
   return ''
 }
 
+function findNode(node, predicate) {
+  if (node == null || typeof node !== 'object') return null
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findNode(child, predicate)
+      if (found) return found
+    }
+    return null
+  }
+  if (predicate(node)) return node
+  return findNode(node.props?.children, predicate)
+}
+
 const DM_BOT = {
   name: 'scribe',
   title: 'Scribe',
@@ -188,6 +201,29 @@ test('render: BotRow tolerates a fresh bot with no sessions yet', () => {
   const tree = r.__BotRow({ bot: { name: 'newbie', title: '', description: 'Fresh bot' }, onEdit: () => undefined })
   const text = textOf(tree)
   assert.match(text, /Fresh bot/)
+})
+
+test('render: a remote gateway name is not squeezed out by its handle', () => {
+  const r = renderRuntime()
+  const tree = r.__BotRow({
+    bot: {
+      connectionId: 'studio-over-ssh',
+      connectionLabel: 'Studio over SSH',
+      handle: 'default-studio-over-ssh',
+      name: 'default',
+      remoteSource: true
+    },
+    onEdit: () => undefined
+  })
+  const name = findNode(tree, node => node.type === 'span' && textOf(node) === 'Studio over SSH')
+  const handle = findNode(tree, node => node.type === 'span' && textOf(node) === '@default-studio-over-ssh')
+
+  assert.ok(name)
+  assert.match(name.props.className, /shrink-0/)
+  assert.ok(handle)
+  assert.match(handle.props.className, /min-w-0/)
+  assert.match(handle.props.className, /truncate/)
+  assert.doesNotMatch(handle.props.className, /shrink-0/)
 })
 
 test('render: BotRow previews the pinned canonical chat, not an unrelated latest session', () => {

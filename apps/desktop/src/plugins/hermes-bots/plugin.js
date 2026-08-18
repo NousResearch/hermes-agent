@@ -4949,19 +4949,22 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
                       })
                     : null,
                   jsx('span', {
-                    className: 'truncate text-[0.8125rem] font-medium',
+                    className: cn(
+                      'truncate text-[0.8125rem] font-medium',
+                      bot.remoteSource && 'max-w-[42%] shrink-0'
+                    ),
                     children: displayName(bot, meta)
                   }),
                   showsHandle(bot.name, meta, bot)
                     ? jsx('span', {
-                        className: 'shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
+                        className: 'min-w-0 truncate font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
                         children: `@${botHandle(bot.name, bot)}`
                       })
                     : null,
                   bot.remoteSource
                     ? jsx('span', {
                         className:
-                          'shrink-0 rounded bg-(--chrome-action-hover) px-1 font-mono text-[0.625rem] text-(--ui-text-tertiary)',
+                          'max-w-[28%] shrink-0 truncate rounded bg-(--chrome-action-hover) px-1 font-mono text-[0.625rem] text-(--ui-text-tertiary)',
                         title: `Lives on ${bot.connectionLabel}`,
                         children: bot.connectionLabel
                       })

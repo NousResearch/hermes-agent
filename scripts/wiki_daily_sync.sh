@@ -18,7 +18,7 @@ export HOME=${HOME:-/home/kensei}
 export GIT_TERMINAL_PROMPT=0
 export PATH="/usr/bin:${HOME}/.local/bin:${PATH:-}"
 
-WIKI_DIR="${WIKI_SYNC_DIR:-${HOME}/wiki}"
+WIKI_DIR="${WIKI_SYNC_DIR:-/home/kensei/docs/wiki}"
 EXPECTED_REMOTE="${WIKI_SYNC_EXPECTED_REMOTE:-https://github.com/Sahil-SS9/kensei-wiki.git}"
 
 # Dry-run short-circuits before cd so the target dir need not exist.

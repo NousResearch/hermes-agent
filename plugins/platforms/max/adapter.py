@@ -1096,31 +1096,51 @@ async def _standalone_send(
     for fp in (media_files or []):
         try:
             media_type = MaxAdapter._guess_media_type(str(fp))
+            # API-запрос (получить URL аплоада) — через Минцифры-CA
             async with httpx.AsyncClient(verify=ca_path or True, timeout=15.0) as client:
-                # 1. Get upload URL
                 r = await client.post(
                     f"{API_SCHEME}://{API_HOST}/uploads",
                     params={"type": media_type},
                     headers={"Authorization": token},
                 )
                 data = r.json()
-                # 2. Upload file
-                if r.status_code < 300 and data.get("url"):
-                    with open(str(fp), "rb") as f:
-                        up = await client.post(
-                            data["url"],
-                            files={"data": (os.path.basename(str(fp)), f)},
-                            timeout=30.0,
-                        )
-                    if up.status_code < 300:
-                        payload: Dict[str, Any] = {"token": data.get("token", "")}
-                        try:
-                            up_data = up.json()
-                            if isinstance(up_data, dict) and up_data.get("photos"):
-                                payload["photos"] = up_data["photos"]
-                        except Exception:
-                            pass
-                        attachments.append({"type": media_type, "payload": payload})
+            # CDN-аплоад: CDN (fu.oneme.ru / iu.oneme.ru) использует СТАНДАРТНЫЕ CA,
+            # НЕ цепочку Минцифры — нужен системный trust (verify=True), а если и он
+            # не подходит (наблюдалось у некоторых CDN-хостов) — fallback без проверки.
+            if r.status_code < 300 and data.get("url"):
+                up = None
+                try:
+                    async with httpx.AsyncClient(verify=True, timeout=60.0) as cdn:
+                        with open(str(fp), "rb") as f:
+                            up = await cdn.post(
+                                data["url"],
+                                files={"data": (os.path.basename(str(fp)), f)},
+                                timeout=60.0,
+                            )
+                except Exception as cdn_err:
+                    logger.warning("[max] standalone CDN verify=True failed (%s), retrying without verify", cdn_err)
+                    async with httpx.AsyncClient(verify=False, timeout=60.0) as cdn:
+                        with open(str(fp), "rb") as f:
+                            up = await cdn.post(
+                                data["url"],
+                                files={"data": (os.path.basename(str(fp)), f)},
+                                timeout=60.0,
+                            )
+                if up is not None and up.status_code < 300:
+                    # Для image токен живёт ВНУТРИ photos (словарь {hash: {token: ...}}),
+                    # на верхнем уровне его нет. Для остальных типов — token из /uploads.
+                    up_data = {}
+                    try:
+                        up_data = up.json()
+                    except Exception:
+                        pass
+                    if media_type == "image" and isinstance(up_data.get("photos"), dict) and up_data["photos"]:
+                        payload = {"photos": up_data["photos"]}
+                    else:
+                        payload = {"token": data.get("token", "")}
+                        if isinstance(up_data, dict) and up_data.get("photos"):
+                            payload["photos"] = up_data["photos"]
+                    attachments.append({"type": media_type, "payload": payload})
         except Exception as e:
             logger.warning("[max] standalone upload %s failed: %s", fp, e)
 

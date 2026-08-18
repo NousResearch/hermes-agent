@@ -841,6 +841,7 @@ const sidebars: SidebarsConfig = {
             'reference/optional-skills-catalog',
           ],
         },
+        'reference/cli-symbols',
         'reference/faq',
       ],
     },

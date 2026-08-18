@@ -143,7 +143,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderPanel(provider = 'honcho', profile: null | string = null) {
+async function renderPanel(provider = 'honcho', profile?: string) {
   const { ProviderConfigPanel } = await import('./provider-config-panel')
 
   return render(<ProviderConfigPanel profile={profile} provider={provider} />)
@@ -185,11 +185,7 @@ describe('ProviderConfigPanel', () => {
     fireEvent.blur(baseUrl)
 
     await waitFor(() =>
-      expect(saveMemoryProviderConfig).toHaveBeenCalledWith(
-        'honcho',
-        { baseUrl: 'http://localhost:8000' },
-        null
-      )
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { baseUrl: 'http://localhost:8000' }, undefined)
     )
     expect(saveMemoryProviderConfig).toHaveBeenCalledTimes(1)
   })
@@ -215,7 +211,7 @@ describe('ProviderConfigPanel', () => {
     fireEvent.blur(apiKey)
 
     await waitFor(() =>
-      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { apiKey: 'hch-new-key' }, null)
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { apiKey: 'hch-new-key' }, undefined)
     )
     await waitFor(() => expect((apiKey as HTMLInputElement).value).toBe(''))
   })
@@ -270,7 +266,7 @@ describe('ProviderConfigPanel', () => {
 
     const { container } = await renderPanel('builtin')
 
-    await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('builtin', null))
+    await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('builtin', undefined))
     expect(container.querySelector('section')).toBeNull()
   })
 

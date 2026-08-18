@@ -9366,7 +9366,12 @@ export default {
       // An intra-session drag still sticks until the next launch (the
       // invariant runs at adoption time only — see enforceDockedPanes in the
       // tree store).
-      data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'center', enforce: true } },
+      // collapsible: the pane lives in the sessions zone, so it must LEAVE
+      // the grid with that zone below the sidebar-collapse breakpoint. The
+      // sessions pane collapses alone without this flag. The zone then keeps
+      // a stranded BOTS tab on screen. The narrow edge overlay mirrors the
+      // zone's tab strip, so the pane stays reachable while collapsed.
+      data: { placement: 'left', width: '260px', collapsible: true, dock: { pane: 'sessions', pos: 'center', enforce: true } },
       render: () => jsx(BotsPane, {})
     })
 

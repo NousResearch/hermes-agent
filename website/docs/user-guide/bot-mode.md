@@ -75,12 +75,14 @@ Routines are plain [Hermes cron jobs](./features/cron.md) namespaced `[bot:<name
 
 ## Groups and group chats
 
-Right-click a Bot → **Move to group** to organize the roster into labeled sections — pick an existing group or create one inline. Ungrouped Bots stay on top; groups follow alphabetically, and a group disappears when its last member leaves.
+Right-click a local Bot → **Manage groups** to add or remove it from any number of group chats. Pick existing groups independently or create one inline. Local membership is stored in the Bot's backend-synced profile metadata, so it follows that profile across desktops; older profiles with one legacy group continue to work. Connections Bots join through the New Group Chat picker and remain source-qualified in that room's local Desktop state.
 
-**Open chat** on any group header (2–6 Bots) opens a shared room where the whole group coordinates:
+Groups are standalone rows in the same activity-ordered roster as Bot DMs. A Bot keeps one DM row even when it belongs to several groups, while every group gets its own room row with member count, latest-message preview, timestamp, and needs-you state.
+
+**Open chat** on any group row (2–6 Bots) opens a shared room where the whole group coordinates:
 
 - Your message triggers up to **three serial rounds** of member turns. @-mentioned Bots respond (everyone responds when nobody is mentioned); each Bot replies briefly or passes, and the room settles when a full round stays silent.
-- Bots pull each other in with `@name`, and escalate real judgment calls to you with `@user` — the group header shows a **needs you** badge when that happens.
+- Bots pull each other in with `@name`, and escalate real judgment calls to you with `@user` — the group row shows a **needs you** badge when that happens.
 - Hard caps (10 messages per send, 3 rounds) keep rooms from spinning.
 - Each member keeps its own persistent `Group: <name>` session, so room context survives like any other conversation.
 - **Not every Bot replies to every message.** Speaking is each member's own choice — a Bot replies only when it has something new to add and passes otherwise, and @-mentioning specific members scopes the round to them. Expect the members you addressed (or whoever has something to say) to speak, and the rest to stay quiet.

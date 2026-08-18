@@ -585,6 +585,18 @@ function mergeServerMeta(roster) {
         delete merged.chat
       }
 
+      // Canonical multi-group metadata is authoritative for the compatibility
+      // scalar too. A server-side `group: null` is represented by omission,
+      // so retaining the local scalar would resurrect a membership that another
+      // desktop just removed.
+      if (
+        Array.isArray(server.groups) &&
+        Object.prototype.hasOwnProperty.call(mine, 'group') &&
+        !Object.prototype.hasOwnProperty.call(server, 'group')
+      ) {
+        delete merged.group
+      }
+
       if (JSON.stringify(next[bot.name] || null) !== JSON.stringify(merged)) {
         next[bot.name] = merged
         changed = true
@@ -3151,6 +3163,46 @@ function stripPreviewMarkdown(text) {
     .trim()
 }
 
+/** Canonical multi-group read with legacy scalar compatibility. Profiles that
+ *  predate `groups` still fall back to `group`; once the canonical array exists,
+ *  it is authoritative. Writes keep `group` as a first-membership projection so
+ *  older desktops can still display one room without corrupting the array. */
+function botGroups(meta) {
+  const groups = []
+  const seen = new Set()
+  const values = Array.isArray(meta?.groups) ? meta.groups : [meta?.group]
+
+  for (const value of values) {
+    if (typeof value !== 'string') {
+      continue
+    }
+
+    const group = value.trim()
+
+    if (group && !seen.has(group)) {
+      seen.add(group)
+      groups.push(group)
+    }
+  }
+
+  return groups
+}
+
+function groupMembershipPatch(meta, group, enabled) {
+  const name = String(group || '').trim()
+  let groups = botGroups(meta)
+
+  if (enabled) {
+    if (name && !groups.includes(name)) {
+      groups = [...groups, name]
+    }
+  } else {
+    groups = groups.filter(existing => existing !== name)
+  }
+
+  return { groups, group: groups[0] || null }
+}
+
 /** Group chats that should hold a roster row: every group named in bot meta
  *  (local members) plus every room record that still has stored members or
  *  log — cross-connection rooms whose members can't ride bot-meta. */
@@ -3179,7 +3231,7 @@ function groupLastActivity(room) {
  *  Prefers the LIVE roster row for a stored descriptor when present. */
 function groupChatMemberBots(group, roster, metaByName) {
   const local = (roster || []).filter(
-    bot => !bot.remoteSource && (botRosterMeta(bot, metaByName)?.group || '').trim() === group
+    bot => !bot.remoteSource && botGroups(botRosterMeta(bot, metaByName)).includes(group)
   )
   const stored = ($groupChats.get()[group] || {}).members || []
   const seated = new Set(local.map(botRosterKey))
@@ -3214,14 +3266,12 @@ function durableGroupChatMembers(bots) {
   }))
 }
 
-/** Existing group names, alphabetical — feeds the Move-to-group dialog. */
+/** Existing group names, alphabetical — feeds the Manage-groups dialog. */
 function knownGroups(metaByName) {
   const names = new Set()
 
   for (const meta of Object.values(metaByName || {})) {
-    const group = (meta?.group || '').trim()
-
-    if (group) {
+    for (const group of botGroups(meta)) {
       names.add(group)
     }
   }
@@ -3462,13 +3512,12 @@ function updateGroupChat(group, mutate) {
   return next
 }
 
-/** Soft-disband a group chat: clear every member's group assignment (the
- *  grouping is bot-meta, so the disband syncs cross-machine via ui_meta),
- *  drop the room log from the atom + plugin storage, and close the room view
- *  if it's open. The members' per-group gateway sessions ("Group: <name>")
- *  are intentionally KEPT — they stay reachable through each bot's session
- *  browser. */
-async function disbandGroupChat(group, memberNames) {
+/** Soft-disband a group chat: remove only this group from every local member's
+ *  membership list (the metadata syncs cross-machine via ui_meta), drop the
+ *  room log from the atom + plugin storage, and close the room view if it's
+ *  open. Other group memberships and the members' per-group gateway sessions
+ *  ("Group: <name>") are intentionally KEPT. */
+async function disbandGroupChat(group, members) {
   // Invalidate any in-flight round-robin FIRST: bump the epoch so a running
   // drive bails at its next member boundary instead of appending to a room
   // the user just discarded.
@@ -3503,7 +3552,12 @@ async function disbandGroupChat(group, memberNames) {
 
     for (const [name, room] of Object.entries($groupChats.get())) {
       if (name !== group && Array.isArray(room.log)) {
-        durable[name] = { log: room.log, watermarks: room.watermarks, sessions: room.sessions || {} }
+        durable[name] = {
+          log: room.log,
+          watermarks: room.watermarks,
+          sessions: room.sessions || {},
+          members: Array.isArray(room.members) ? room.members : []
+        }
       }
     }
 
@@ -3512,11 +3566,16 @@ async function disbandGroupChat(group, memberNames) {
     /* storage unavailable — the atom reset above still empties the room */
   }
 
-  // Ungroup the members last. saveBotMeta never throws (local storage +
+  // Remove this membership last. saveBotMeta never throws (local storage +
   // best-effort profiles.configure per member), so a flaky gateway can't
   // strand the disband halfway with the room log already gone.
-  for (const name of memberNames) {
-    await saveBotMeta(name, { group: null })
+  for (const member of members) {
+    if (!member?.name || member.remoteSource) {
+      continue
+    }
+
+    const meta = $botMeta.get()[member.name] || {}
+    await saveBotMeta(member.name, groupMembershipPatch(meta, group, false))
   }
 }
 
@@ -4121,6 +4180,7 @@ function activeBots(roster, activeProfile, gatewayState, now = Date.now()) {
 function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const activeProfile = useValue(host.state.profile)
   const meta = botRosterMeta(bot, useValue($botMeta))
+  const groups = botGroups(meta)
   const last = bot.last_session
   const isActive = !bot.remoteSource && bot.name === activeProfile
   const { shape, color, image } = botAppearance(bot.name, meta)
@@ -4378,10 +4438,12 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
             children: 'Sessions'
           }),
           jsx(ContextMenuItem, { onSelect: () => onEdit(bot), children: 'Edit Profile' }),
-          jsx(ContextMenuItem, {
-            onSelect: () => onGroup(bot),
-            children: meta?.group ? `Group: ${meta.group}…` : 'Move to group…'
-          }),
+          !bot.remoteSource
+            ? jsx(ContextMenuItem, {
+                onSelect: () => onGroup(bot),
+                children: groups.length ? `Groups: ${groups.join(', ')}…` : 'Manage groups…'
+              })
+            : null,
           jsx(ContextMenuItem, {
             onSelect: () => {
               host.notify({ kind: 'info', message: `Duplicating ${displayName(bot, meta)}…` })
@@ -7247,24 +7309,23 @@ function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpe
   })
 }
 
-/** Assign a bot to a group (or clear it). Existing groups are one-click;
- *  the input creates a new one. The group is a bot-meta field, so it syncs
- *  cross-machine via ui_meta like pin/title. */
+/** Manage a bot's group-chat memberships. Existing groups are independent
+ *  toggles; the input creates and joins a new one. The canonical groups array
+ *  and legacy scalar projection both ride ui_meta like pin/title. */
 function GroupDialog({ bot, onClose }) {
   const meta = useValue($botMeta)
   const [name, setName] = useState('')
-  const current = (meta[bot?.name]?.group || '').trim()
+  const current = botGroups(meta[bot?.name])
   const groups = knownGroups(meta)
 
-  const assign = group => {
-    saveBotMeta(bot.name, { group: group || null })
+  const setMembership = (group, enabled) => {
+    saveBotMeta(bot.name, groupMembershipPatch(meta[bot.name], group, enabled))
     host.notify({
       kind: 'info',
-      message: group
-        ? `${displayName(bot, meta[bot.name])} moved to “${group}”`
-        : `${displayName(bot, meta[bot.name])} removed from its group`
+      message: enabled
+        ? `${displayName(bot, meta[bot.name])} added to “${group}”`
+        : `${displayName(bot, meta[bot.name])} removed from “${group}”`
     })
-    onClose()
   }
 
   return jsx(Dialog, {
@@ -7279,23 +7340,34 @@ function GroupDialog({ bot, onClose }) {
       children: [
         jsxs(DialogHeader, {
           children: [
-            jsx(DialogTitle, { children: 'Move to group' }),
+            jsx(DialogTitle, { children: 'Manage groups' }),
             jsx(DialogDescription, {
-              children: 'Groups render as labeled sections in the Bots roster and sync to every machine.'
+              children: 'A bot can join multiple group chats. Memberships sync to every machine.'
             })
           ]
         }),
         groups.length
           ? jsx('div', {
-              className: 'flex flex-wrap gap-1.5',
-              children: groups.map(group =>
-                jsx(Button, {
-                  variant: group === current ? 'default' : 'secondary',
-                  size: 'sm',
-                  onClick: () => assign(group),
-                  children: group
-                }, group)
-              )
+              className: 'grid gap-1.5',
+              children: groups.map(group => {
+                const enabled = current.includes(group)
+
+                return jsxs(
+                  'label',
+                  {
+                    className:
+                      'flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-(--chrome-action-hover)',
+                    children: [
+                      jsx(Checkbox, {
+                        checked: enabled,
+                        onCheckedChange: checked => setMembership(group, checked === true)
+                      }),
+                      jsx('span', { children: group })
+                    ]
+                  },
+                  group
+                )
+              })
             })
           : null,
         jsxs('form', {
@@ -7305,7 +7377,8 @@ function GroupDialog({ bot, onClose }) {
             const trimmed = name.trim()
 
             if (trimmed) {
-              assign(trimmed)
+              setMembership(trimmed, true)
+              setName('')
             }
           },
           children: [
@@ -7315,16 +7388,16 @@ function GroupDialog({ bot, onClose }) {
               value: name,
               onChange: event => setName(event.target.value)
             }),
-            jsx(Button, { type: 'submit', size: 'sm', disabled: !name.trim(), children: 'Create' })
+            jsx(Button, { type: 'submit', size: 'sm', disabled: !name.trim(), children: 'Create & join' })
           ]
         }),
-        current
+        current.length
           ? jsx(Button, {
               variant: 'ghost',
               size: 'sm',
               className: 'justify-self-start',
-              onClick: () => assign(null),
-              children: `Remove from “${current}”`
+              onClick: () => saveBotMeta(bot.name, { groups: [], group: null }),
+              children: 'Remove from all groups'
             })
           : null
       ]
@@ -7333,9 +7406,9 @@ function GroupDialog({ bot, onClose }) {
 }
 
 /** Discord-style group chat creation: pick 2+ bots via checkboxes (with
- *  search), name the group, create. Assignment is the existing per-bot
- *  `group` meta field, so the room appears in the roster and syncs
- *  cross-machine via ui_meta exactly like Move-to-group. */
+ *  search), name the group, create. Assignment appends to each local bot's
+ *  group membership list, so the room appears in the roster and syncs
+ *  cross-machine via ui_meta without replacing its other groups. */
 function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
   const allMeta = useValue($botMeta)
   const [query, setQuery] = useState('')
@@ -7393,7 +7466,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
 
     for (const bot of selected) {
       if (!bot.remoteSource) {
-        void saveBotMeta(bot.name, { group: groupName })
+        void saveBotMeta(bot.name, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
       }
     }
 
@@ -7426,7 +7499,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
           children: [
             jsx(DialogTitle, { children: 'New Group Chat' }),
             jsx(DialogDescription, {
-              children: `Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. The room lives in the Bots roster and syncs to every machine.`
+              children: `Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`
             })
           ]
         }),
@@ -7464,7 +7537,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
                   const { shape, color, image } = botAppearance(bot.name, meta)
                   const isChecked = Boolean(checked[botRosterKey(bot)])
                   const disabled = !isChecked && atCap
-                  const currentGroup = (meta?.group || '').trim()
+                  const currentGroups = botGroups(meta)
 
                   return jsxs('label', {
                     className: cn(
@@ -7486,8 +7559,8 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
                           jsx('div', {
                             className: 'truncate text-[0.625rem] text-(--ui-text-quaternary)',
                             children: [
-                              currentGroup
-                                ? `@${botHandle(bot.name, bot)} · in “${currentGroup}”`
+                              currentGroups.length
+                                ? `@${botHandle(bot.name, bot)} · in ${currentGroups.map(group => `“${group}”`).join(', ')}`
                                 : `@${botHandle(bot.name, bot)}`,
                               bot.remoteSource && bot.connectionLabel ? ` · ${bot.connectionLabel}` : ''
                             ].join('')
@@ -7771,7 +7844,7 @@ function GroupChatWorkspace({ group, members, onBack }) {
         doneLabel: 'Disbanded',
         onClose: () => setConfirmDisband(false),
         onConfirm: async () => {
-          await disbandGroupChat(group, members.map(bot => bot.name))
+          await disbandGroupChat(group, members)
           host.notify({ kind: 'success', message: `Disbanded “${group}”` })
         }
       })

@@ -68,6 +68,25 @@ test('regression: authoritative server metadata removes stale local canonical ch
   assert.equal(Object.hasOwn(writes.at(-1).value.default, 'chat'), false)
 })
 
+test('regression: authoritative groups remove a stale local legacy group projection', () => {
+  const writes = []
+  const sync = load()
+  sync.set({ researcher: { groups: ['Old'], group: 'Old', title: 'Researcher' } })
+  sync.setPluginCtx({ storage: { set: (key, value) => writes.push({ key, value }) } })
+
+  sync.mergeServerMeta([
+    {
+      name: 'researcher',
+      ui_meta: { 'hermes-bots': { groups: [], title: 'Researcher' } }
+    }
+  ])
+
+  const current = sync.get().researcher
+  assert.deepEqual(current.groups, [])
+  assert.equal(Object.hasOwn(current, 'group'), false)
+  assert.equal(Object.hasOwn(writes.at(-1).value.researcher, 'group'), false)
+})
+
 test('compatibility: local canonical chat survives when gateway has no server bot metadata', () => {
   const writes = []
   const sync = load()

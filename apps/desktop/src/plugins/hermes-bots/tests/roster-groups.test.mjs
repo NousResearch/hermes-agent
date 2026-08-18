@@ -30,15 +30,54 @@ function load() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__groups = { groupChatNames, groupLastActivity, groupChatMemberBots, durableGroupChatMembers, knownGroups, stripPreviewMarkdown, $groupChats };\n'
+      '\nglobalThis.__groups = { botGroups, groupMembershipPatch, groupChatNames, groupLastActivity, groupChatMemberBots, durableGroupChatMembers, knownGroups, stripPreviewMarkdown, $groupChats };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   return context.__groups
 }
 
+test('botGroups: normalizes canonical and legacy membership without duplicates', () => {
+  const { botGroups } = load()
+
+  assert.equal(
+    JSON.stringify(
+      botGroups({ groups: [' Engineering ', '', 'Research', 'Engineering', null, 7, { name: 'Nope' }], group: 'Operations' })
+    ),
+    JSON.stringify(['Engineering', 'Research'])
+  )
+  assert.equal(JSON.stringify(botGroups({ group: 'Legacy' })), JSON.stringify(['Legacy']))
+  assert.equal(JSON.stringify(botGroups({ groups: [] })), JSON.stringify([]))
+})
+
+test('groupMembershipPatch: toggles one membership and keeps the legacy projection compatible', () => {
+  const { groupMembershipPatch } = load()
+  const meta = { groups: ['Engineering', 'Research'], group: 'Engineering' }
+
+  assert.equal(
+    JSON.stringify(groupMembershipPatch(meta, 'Engineering', true)),
+    JSON.stringify({ groups: ['Engineering', 'Research'], group: 'Engineering' })
+  )
+  assert.equal(
+    JSON.stringify(groupMembershipPatch(meta, 'Operations', true)),
+    JSON.stringify({ groups: ['Engineering', 'Research', 'Operations'], group: 'Engineering' })
+  )
+  assert.equal(
+    JSON.stringify(groupMembershipPatch(meta, 'Engineering', false)),
+    JSON.stringify({ groups: ['Research'], group: 'Research' })
+  )
+  assert.equal(
+    JSON.stringify(groupMembershipPatch({ group: 'Legacy' }, 'Legacy', false)),
+    JSON.stringify({ groups: [], group: null })
+  )
+})
+
 test('groupChatNames: unions bot-meta groups with room records that carry members or log', () => {
   const { groupChatNames } = load()
-  const meta = { researcher: { group: 'Research' }, pm: { group: 'Ops' } }
+  const meta = {
+    researcher: { group: 'Research' },
+    pm: { groups: ['Ops', 'Research'], group: 'Ops' },
+    scout: { groups: ['External'], group: 'Stale' }
+  }
   const rooms = {
     Research: { log: [], members: [] }, // already known via meta
     Remote: { log: [], members: [{ name: 'spark', remoteSource: true }] },
@@ -48,7 +87,10 @@ test('groupChatNames: unions bot-meta groups with room records that carry member
 
   const names = groupChatNames(meta, rooms)
 
-  assert.equal(JSON.stringify([...names].sort()), JSON.stringify(['Chatty', 'Ops', 'Remote', 'Research']))
+  assert.equal(
+    JSON.stringify([...names].sort()),
+    JSON.stringify(['Chatty', 'External', 'Ops', 'Remote', 'Research'])
+  )
 })
 
 test('groupLastActivity: newest room-log timestamp, 0 for silence', () => {
@@ -75,12 +117,12 @@ test('groupChatMemberBots: seats local meta members plus stored remote descripto
 
   const members = groupChatMemberBots('Research', roster, {
     researcher: { group: 'Research' },
-    builder: { group: 'Ops' }
+    builder: { groups: ['Ops', 'Research'], group: 'Ops' }
   })
 
-  assert.equal(JSON.stringify(members.map(m => m.name)), JSON.stringify(['researcher', 'spark']))
+  assert.equal(JSON.stringify(members.map(m => m.name)), JSON.stringify(['researcher', 'builder', 'spark']))
   // The LIVE roster row was preferred over the stored descriptor.
-  assert.equal(members[1], roster[2])
+  assert.equal(members[2], roster[2])
 })
 
 test('durableGroupChatMembers: retains active and remote source identities', () => {
@@ -128,13 +170,13 @@ test('knownGroups: unique, trimmed, alphabetical', () => {
 
   const groups = knownGroups({
     a: { group: 'research' },
-    b: { group: 'Ops' },
-    c: { group: 'research' },
+    b: { groups: ['Ops', 'research'], group: 'Ops' },
+    c: { groups: ['Design'] },
     d: { group: '' },
     e: {}
   })
 
-  assert.equal(JSON.stringify(groups), JSON.stringify(['Ops', 'research']))
+  assert.equal(JSON.stringify(groups), JSON.stringify(['Design', 'Ops', 'research']))
 })
 
 test('stripPreviewMarkdown: flattens bold, quotes, code, and links out of previews', () => {
@@ -147,13 +189,16 @@ test('stripPreviewMarkdown: flattens bold, quotes, code, and links out of previe
   assert.equal(stripPreviewMarkdown(''), '')
 })
 
-test('source contract: the roster is a flat list of bot + group rows and the row menu offers grouping', () => {
-  // Flat Discord-style list — the sectioned groupRoster presentation is gone.
+test('source contract: the roster stays flat while the row menu manages multiple groups', () => {
+  // Ordering is deliberately unchanged in this PR; sectioned ordering follows separately.
   assert.doesNotMatch(pluginSource, /function groupRoster\(/)
   assert.match(pluginSource, /rosterRows\.map\(row =>/)
   assert.match(pluginSource, /function GroupRow\(/)
   assert.match(pluginSource, /onGroup: setGrouping/)
-  assert.match(pluginSource, /'Move to group…'/)
+  assert.match(pluginSource, /'Manage groups…'/)
+  assert.match(pluginSource, /!bot\.remoteSource\s*\? jsx\(ContextMenuItem, \{\s*onSelect: \(\) => onGroup\(bot\)/)
+  assert.match(pluginSource, /botGroups\(meta\[bot\?\.name\]\)/)
+  assert.match(pluginSource, /groupMembershipPatch\(meta\[bot\.name\], group, enabled\)/)
 })
 
 test('source contract: group rows carry the needs-you badge and open via openGroupChat', () => {

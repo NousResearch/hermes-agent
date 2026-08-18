@@ -252,7 +252,7 @@ test('source contract: workspace + main-window door + prompt rules are wired', (
   assert.match(pluginSource, /\[Group chat: "\$\{groupName\}"\]/)
 })
 
-test('disband: clears grouping meta, room log, workspace, needs-you; keeps sessions in storage map only for other rooms', async () => {
+test('disband: removes only this membership, room log, workspace, and needs-you state', async () => {
   const gc = load(() => '(pass)')
 
   // Two rooms; disband one.
@@ -265,11 +265,21 @@ test('disband: clears grouping meta, room log, workspace, needs-you; keeps sessi
     await new Promise(resolve => setImmediate(resolve))
   }
 
-  gc.$botMeta.set({ builder: { group: 'Gone' }, research: { group: 'Keep' } })
+  const rooms = { ...gc.$groupChats.get() }
+  rooms.Keep = {
+    ...rooms.Keep,
+    members: [{ name: 'remote', remoteSource: true, sourceScoped: true, connectionId: 'remote-1' }]
+  }
+  gc.$groupChats.set(rooms)
+
+  gc.$botMeta.set({
+    builder: { groups: ['Gone', 'Keep'], group: 'Gone' },
+    research: { groups: ['Keep'], group: 'Keep' }
+  })
   gc.$groupChatWorkspace.set('Gone')
   gc.$groupNeedsYou.set({ Gone: true, Keep: true })
 
-  await gc.disbandGroupChat('Gone', ['builder'])
+  await gc.disbandGroupChat('Gone', [{ name: 'builder' }])
 
   // Room state: gone from the atom (no running drive, so no tombstone).
   assert.equal(gc.$groupChats.get().Gone, undefined)
@@ -278,13 +288,30 @@ test('disband: clears grouping meta, room log, workspace, needs-you; keeps sessi
   assert.equal(gc.$groupChatWorkspace.get(), null)
   assert.equal(gc.$groupNeedsYou.get().Gone, undefined)
   assert.equal(gc.$groupNeedsYou.get().Keep, true)
-  // Members ungrouped; other bots keep their group.
-  assert.equal(gc.$botMeta.get().builder.group, null)
+  // Disband removes only this membership; other groups survive.
+  assert.equal(JSON.stringify(gc.$botMeta.get().builder.groups), JSON.stringify(['Keep']))
+  assert.equal(gc.$botMeta.get().builder.group, 'Keep')
+  assert.equal(JSON.stringify(gc.$botMeta.get().research.groups), JSON.stringify(['Keep']))
   assert.equal(gc.$botMeta.get().research.group, 'Keep')
   // Persisted room map no longer carries the room.
   const durable = gc.storageWrites.get('group-chats')
   assert.ok(durable && !('Gone' in durable), 'disbanded room not persisted')
   assert.ok('Keep' in durable, 'surviving room still persisted')
+  assert.equal(durable.Keep.members.length, 1, 'surviving room keeps remote member descriptors')
+  assert.equal(durable.Keep.members[0].connectionId, 'remote-1')
+})
+
+test('disband: skips source-qualified remote members instead of mutating same-named local metadata', async () => {
+  const gc = load(() => '(pass)')
+  gc.$botMeta.set({ builder: { groups: ['Keep'], group: 'Keep' } })
+
+  await gc.disbandGroupChat('Remote', [
+    { name: 'builder', remoteSource: true, sourceScoped: true, connectionId: 'remote-1' }
+  ])
+
+  assert.equal(JSON.stringify(gc.$botMeta.get().builder.groups), JSON.stringify(['Keep']))
+  assert.equal(gc.$botMeta.get().builder.group, 'Keep')
+  assert.equal(gc.$botMeta.get()['[object Object]'], undefined)
 })
 
 test('disband: a running room leaves an epoch-bumped empty tombstone so in-flight turns bail', async () => {
@@ -300,7 +327,7 @@ test('disband: a running room leaves an epoch-bumped empty tombstone so in-fligh
   rooms.Live = { ...rooms.Live, running: true, epoch: 3 }
   gc.$groupChats.set(rooms)
 
-  await gc.disbandGroupChat('Live', ['research'])
+  await gc.disbandGroupChat('Live', [{ name: 'research' }])
 
   const tomb = gc.$groupChats.get().Live
   assert.ok(tomb, 'tombstone present while a drive is mid-turn')

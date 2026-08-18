@@ -174,12 +174,15 @@ export const clearPetUnread = () => $petUnread.set(false)
 export const setPetActivity = (next: Partial<PetActivity>) => {
   const now = Date.now()
   const stamped: PetActivity = { ...next }
+
   if (next.toolRunning === true) {
     stamped.toolRunningAt = now
   }
+
   if (next.reasoning === true) {
     stamped.reasoningAt = now
   }
+
   $petActivity.set({ ...$petActivity.get(), ...stamped })
 }
 

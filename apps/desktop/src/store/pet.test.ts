@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import {
   $petActivity,
-  STEADY_ACTIVITY_TTL_MS,
   $petAtRest,
   $petMotion,
   $petState,
@@ -11,7 +10,8 @@ import {
   hasPetSpriteForMeta,
   mergePetInfoMeta,
   type PetInfo,
-  setPetActivity
+  setPetActivity,
+  STEADY_ACTIVITY_TTL_MS
 } from './pet'
 
 describe('derivePetState', () => {

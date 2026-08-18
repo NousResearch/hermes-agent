@@ -930,7 +930,10 @@ test('registry JSON helpers retain native OAuth bearer authentication', () => {
 
   assert.notEqual(postStart, -1)
   assert.notEqual(fetchStart, -1)
-  assert.match(helpers, /return fetchJsonForBackend\(descriptor, path, \{ \.\.\.opts, body: body \?\? \{\}, method: 'POST' \}\)/)
+  assert.match(
+    helpers,
+    /return fetchJsonForBackend\(descriptor, path, \{ \.\.\.opts, body: body \?\? \{\}, method: 'POST' \}\)/
+  )
   assert.match(helpers, /return fetchJsonForBackend\(descriptor, path, opts\)/)
   assert.doesNotMatch(helpers, /fetchJsonViaOauthSession/)
 })

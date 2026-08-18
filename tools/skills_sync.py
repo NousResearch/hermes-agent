@@ -48,7 +48,7 @@ for _stream in (sys.stdout, sys.stderr):
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Optional, Set, Tuple
-from utils import atomic_replace
+from utils import atomic_replace, atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -166,32 +166,20 @@ def _read_suppressed_names() -> set:
 def _write_manifest(entries: Dict[str, str]):
     """Write the manifest file atomically in v2 format (name:hash).
 
-    Uses a temp file + os.replace() to avoid corruption if the process
-    crashes or is interrupted mid-write.
+    Uses the shared atomic writer so an existing manifest's permission
+    bits (and owner, best-effort) survive the replace instead of being
+    reset to mkstemp's 0600 — the same mode-preservation contract as the
+    skill manager's document writes.
     """
-    import tempfile
-
-    MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = "\n".join(f"{name}:{hash_val}" for name, hash_val in sorted(entries.items())) + "\n"
 
     try:
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(MANIFEST_FILE.parent),
-            prefix=".bundled_manifest_",
-            suffix=".tmp",
+        atomic_write_text(
+            MANIFEST_FILE,
+            data,
+            tmp_prefix=".bundled_manifest_",
+            preserve_mode=True,
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, MANIFEST_FILE)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
     except Exception as e:
         logger.debug("Failed to write skills manifest %s: %s", MANIFEST_FILE, e, exc_info=True)
 

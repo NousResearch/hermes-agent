@@ -3,9 +3,12 @@ import { describe, expect, it } from 'vitest'
 import { sanitizeTextForSpeech } from './speech-text'
 
 describe('sanitizeTextForSpeech', () => {
-  it('summarizes fenced code blocks instead of reading them literally', () => {
+  it('does not speak placeholders for fenced code blocks', () => {
+    // The "code block omitted" summary used to be read aloud as English text
+    // (#86602). Code that can't be spoken should be silence, not a sentence.
+    // The "here is code:" colon also closes: the voice never waits on it.
     expect(sanitizeTextForSpeech('Here is code:\n```ts\nconst x = 1\n```\nDone.')).toBe(
-      'Here is code: code block omitted Done.'
+      'Here is code. Done.'
     )
   })
 
@@ -40,6 +43,43 @@ Full detail stays visible on screen.`
 Second sentence.`
 
     expect(sanitizeTextForSpeech(text)).toBe('First sentence. Second sentence.')
+  })
+
+  it('does not speak MEDIA file-link tokens', () => {
+    // Rendering shows these as "Open inference-server-shopping-list.xlsx";
+    // the hyphenated slug + odd extension made the voice loop ("eeeeee").
+    const text = 'The files are below.\nMEDIA:/Users/ricardo/Documents/inference-server-shopping-list.xlsx\nBye.'
+
+    expect(sanitizeTextForSpeech(text)).toBe('The files are below. Bye.')
+  })
+
+  it('does not speak a placeholder word for URLs', () => {
+    // Used to say the English word "link" (#86602); URLs are silence now.
+    expect(sanitizeTextForSpeech('See https://example.com/a-huge-page for details')).toBe(
+      'See for details'
+    )
+  })
+
+  it('keeps ~~strike~~ readable instead of speaking tildes', () => {
+    expect(sanitizeTextForSpeech('This ~~is~~ old.')).toBe('This is old.')
+  })
+
+  it('closes a colon orphaned when its file link is stripped', () => {
+    // Inline form: "below: MEDIA:/path" on one line. The link is stripped
+    // mid-line, orphaning the colon at the end of the text. It must close.
+    expect(sanitizeTextForSpeech('The file is below: MEDIA:/tmp/x.py')).toBe('The file is below.')
+  })
+
+  it('closes a colon that a code block used to follow', () => {
+    // The real repro: "one line added to the regex list:" then a code fence.
+    // The voice hit the colon, found a wall of punctuation, and stuttered.
+    expect(
+      sanitizeTextForSpeech('One line added to the regex list:\n```ts\nconst x = 1\n```\nBye.')
+    ).toBe('One line added to the regex list. Bye.')
+  })
+
+  it('closes a colon that ends the speakable text', () => {
+    expect(sanitizeTextForSpeech('The regex list:')).toBe('The regex list.')
   })
 
   it.each([

@@ -1,12 +1,14 @@
 const EMOJI_RE = /(?:[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]|[\u{FE0F}\u{200D}]|[\u{E0020}-\u{E007F}])+/gu
 
 const FENCED_CODE_RE = /```[\s\S]*?(?:```|$)/g
-const CODE_BLOCK_SUMMARY = ' code block omitted '
 const INLINE_CODE_RE = /`([^`]+)`/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/g
 const PARAGRAPH_BREAK_RE = /[ \t]*\n{2,}[ \t]*/g
 const PUNCTUATED_PARAGRAPH_BREAK_RE = /([.!?])([*_~`>"'’”)}\]]*)[ \t]*\n{2,}[ \t]*/g
 const SOFT_BREAK_RE = /[ \t]*\n[ \t]*/g
+
+const MEDIA_PATH_RE = /MEDIA:\S+/g
+const LINE_FINAL_COLON_RE = /:\s*$/gm
 
 const THINKING_PREFIX_RE =
   /^\s*(?:\([^)\n]{1,48}\)\s*)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
@@ -152,16 +154,27 @@ function normalizeLineBreaks(text: string): string {
 }
 
 export function sanitizeTextForSpeech(text: string): string {
-  return normalizeLineBreaks(stripMarkdownTables(text))
-    .replace(FENCED_CODE_RE, CODE_BLOCK_SUMMARY)
+  // Tables first: their right-align marker is a trailing colon (":-"), and
+  // closing colons before the table detector runs would mangle it.
+  const withoutTables = stripMarkdownTables(String(text))
+
+  // Close line-final colons BEFORE newlines are flattened: "the regex list:"
+  // followed by a code block keeps its colon if this runs after the flatten,
+  // and the voice hangs on it. Closing early turns it into "the regex list.".
+  const pre = withoutTables.replace(LINE_FINAL_COLON_RE, '.')
+
+  return normalizeLineBreaks(pre)
+    .replace(FENCED_CODE_RE, '')
     .replace(THINKING_PREFIX_RE, ' ')
     .replace(MARKDOWN_LINK_RE, '$1')
     .replace(INLINE_CODE_RE, '$1')
-    .replace(URL_RE, ' link ')
+    .replace(URL_RE, '')
+    .replace(MEDIA_PATH_RE, '')
     .replace(EMOJI_RE, ' ')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/[*_~>#]/g, '')
     .replace(/^\s*[-+*]\s+/gm, '')
+    .replace(/:\s*$/, '.') // colon orphaned when its link/code was stripped
     .replace(/\s+/g, ' ')
     .trim()
 }

@@ -13636,11 +13636,13 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   // Action buttons render only on signed macOS builds; elsewhere they're dropped
   // and the body click still works.
   const actions = Array.isArray(payload?.actions) ? payload.actions : []
+  const icon = typeof payload?.icon === 'string' && payload.icon.trim() ? payload.icon.trim() : undefined
 
   const notification = new Notification({
     title: payload?.title || 'Hermes',
     body: payload?.body || '',
     silent: Boolean(payload?.silent),
+    ...(icon ? { icon } : {}),
     actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
   })
 
@@ -13654,6 +13656,16 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
     if (payload?.sessionId) {
       mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
     }
+
+    // Plugin / session-less activation — serializable path (+ optional notifyId
+    // for renderer callbacks). Same vocabulary as hermes://index-network/….
+    if (payload?.activate || payload?.notifyId) {
+      mainWindow.webContents.send('hermes:notification-activate', {
+        activate: payload?.activate,
+        notifyId: payload?.notifyId,
+        tag: payload?.tag
+      })
+    }
   })
   notification.on('action', (_actionEvent, index) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
@@ -13662,9 +13674,24 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
 
     const action = actions[index]
 
-    if (action?.id) {
-      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload?.sessionId, actionId: action.id })
+    if (!action?.id) {
+      return
     }
+
+    // Approvals keep the existing session-scoped channel.
+    if (payload?.sessionId && !payload?.notifyId && !payload?.activate) {
+      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload.sessionId, actionId: action.id })
+
+      return
+    }
+
+    focusWindow(mainWindow)
+    mainWindow.webContents.send('hermes:notification-activate', {
+      actionId: action.id,
+      activate: action.activate || payload?.activate,
+      notifyId: payload?.notifyId,
+      tag: payload?.tag
+    })
   })
   notification.show()
 

@@ -341,6 +341,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:notification-action', listener)
   },
+  onNotificationActivate: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:notification-activate', listener)
+
+    return () => ipcRenderer.removeListener('hermes:notification-activate', listener)
+  },
   onPreviewFileChanged: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:preview-file-changed', listener)

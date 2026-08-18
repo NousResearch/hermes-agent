@@ -3,10 +3,16 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { pathFromHermesDeepLink } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
-import { respondToApprovalAction } from '@/store/native-notifications'
+import {
+  clearPluginNotifyHandlers,
+  invokePluginNotifyAction,
+  invokePluginNotifyActivate,
+  respondToApprovalAction
+} from '@/store/native-notifications'
 import { openFolderAsProject } from '@/store/projects'
 import {
   getRememberedRoute,
@@ -194,12 +200,39 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [])
 
-  // hermes:// deep links -> a reviewable /blueprint command in the composer,
-  // or (hermes://mcp/install) a pending MCP install awaiting explicit
-  // confirmation in McpInstallDeepLinkDialog. Never auto-installs.
+  // Plugin OS notification body/action → optional callback + navigate. Activation
+  // is user-driven (click), so this is offer-not-hijack. Paths share the
+  // hermes://index-network/intent/1 vocabulary with deep links.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onNotificationActivate?.(payload => {
+      if (!payload) {
+        return
+      }
+
+      if (payload.actionId) {
+        invokePluginNotifyAction(payload.notifyId, payload.actionId)
+      } else {
+        invokePluginNotifyActivate(payload.notifyId)
+      }
+
+      if (payload.activate) {
+        navigate(payload.activate)
+      }
+
+      clearPluginNotifyHandlers(payload.notifyId)
+    })
+
+    return () => unsubscribe?.()
+  }, [navigate])
+
+  // hermes:// deep links:
+  //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
+  //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
+  //  - open/<path>?… → in-app navigate (generic)
+  //  - blueprint/<name>?… → reviewable /blueprint command in the composer
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload) {
+      if (!payload?.kind) {
         return
       }
 
@@ -209,27 +242,37 @@ export function useDesktopIntegrations({
         return
       }
 
-      if (payload.kind !== 'blueprint' || !payload.name) {
+      if (payload.kind === 'blueprint') {
+        if (!payload.name) {
+          return
+        }
+
+        const slots = Object.entries(payload.params || {})
+          .map(([k, v]) => {
+            const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+
+            return `${k}=${sval}`
+          })
+          .join(' ')
+
+        const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
+        requestComposerInsert(command, { mode: 'block', target: 'main' })
+        requestComposerFocus('main')
+
         return
       }
 
-      const slots = Object.entries(payload.params || {})
-        .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+      const path = pathFromHermesDeepLink(payload.kind, payload.name || '', payload.params || {})
 
-          return `${k}=${sval}`
-        })
-        .join(' ')
-
-      const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
-      requestComposerInsert(command, { mode: 'block', target: 'main' })
-      requestComposerFocus('main')
+      if (path) {
+        navigate(path)
+      }
     })
 
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
-  }, [])
+  }, [navigate])
 
   // ⌘W via the macOS menu accelerator → close the focused tab; if nothing is
   // closeable, fall back to closing the window (so ⌘W still works as the

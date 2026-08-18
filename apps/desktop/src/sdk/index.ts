@@ -794,6 +794,7 @@ export type {
   PluginContext,
   PluginContribution,
   PluginNativeNotificationInput,
+  PluginNotificationAction,
   PluginOs,
   PluginRestOptions,
   PluginStorage
@@ -836,6 +837,7 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@/lib/format'
 export { triggerHaptic as haptic } from '@/lib/haptics'
+export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'

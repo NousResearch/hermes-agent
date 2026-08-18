@@ -4600,7 +4600,11 @@ function previewKind(preview) {
   }
   const match = text.match(A2A_RE)
   if (match) {
-    return { fromBot: (match[1] || match[2] || '').trim().toLowerCase() || null }
+    // The captured name is whatever the delivery prefix carried — a raw
+    // profile name. Map it the way every other surface does so the primary
+    // profile reads @hermes, never @default (#89484).
+    const sender = (match[1] || match[2] || '').trim().toLowerCase()
+    return { fromBot: sender ? botHandle(sender) : null }
   }
   return { fromBot: null }
 }
@@ -9175,8 +9179,12 @@ function GroupRow({ group, members, needsYou, onOpen }) {
   const log = Array.isArray(room.log) ? room.log : []
   const last = log.length ? log[log.length - 1] : null
   const lastAt = groupLastActivity(room)
+  // Room previews speak the same handle vocabulary as the roster, mentions
+  // and the group prompt: the primary profile is @hermes, not @default.
+  const lastFrom = last?.from?.name || ''
+  const lastHandle = botHandle(lastFrom || 'bot', members.find(member => member?.name === lastFrom))
   const preview = last
-    ? `${last.from?.kind === 'user' ? 'You' : `@${last.from?.name || 'bot'}`}: ${stripPreviewMarkdown(last.text) || '…'}`
+    ? `${last.from?.kind === 'user' ? 'You' : `@${lastHandle}`}: ${stripPreviewMarkdown(last.text) || '…'}`
     : 'No messages yet — say hi to the room'
   const faces = members.slice(0, 3)
 

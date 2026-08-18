@@ -209,3 +209,13 @@ test('render: BotRow previews the pinned canonical chat, not an unrelated latest
   assert.match(text, /pinned chat content/)
   assert.doesNotMatch(text, /unrelated scratch content/)
 })
+
+test('previewKind: the primary profile surfaces as @hermes, never @default', () => {
+  // botHandle() exists so "the word 'default' never surfaces in the UI"; the
+  // bot-to-bot badge was rendering the raw captured profile name (#89484).
+  assert.equal(fromBotOf("Message from agent 'default': deploy is green"), 'hermes')
+})
+
+test('previewKind: a named profile keeps its own handle', () => {
+  assert.equal(fromBotOf("Message from agent 'ops': deploy is green"), 'ops')
+})

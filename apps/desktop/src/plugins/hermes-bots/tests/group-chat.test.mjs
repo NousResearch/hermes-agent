@@ -714,3 +714,11 @@ test('source contract: group chat message bodies opt back into selectable text',
   const src = groupChatWorkspaceSource()
   assert.match(src, /'data-selectable-text':\s*'true'/)
 })
+
+test('group room preview renders the bot HANDLE, not the raw profile name', () => {
+  // #89484: the room line read "@default: …" while the bot answers to
+  // @hermes, so users concluded mention routing was broken.
+  assert.match(pluginSource, /const lastHandle = botHandle\(lastFrom \|\| 'bot', members\.find\(/)
+  assert.match(pluginSource, /\? `\$\{last\.from\?\.kind === 'user' \? 'You' : `@\$\{lastHandle\}`\}/)
+  assert.doesNotMatch(pluginSource, /`@\$\{last\.from\?\.name \|\| 'bot'\}`/)
+})

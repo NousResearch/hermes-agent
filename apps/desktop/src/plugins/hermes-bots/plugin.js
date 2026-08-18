@@ -1850,6 +1850,81 @@ function pickImageFromDevice() {
   })
 }
 
+// ── group-chat attachments: pick + downscale images the room's members see ──
+
+/** File objects → [{ name, data }] (data URLs), oversized files skipped with
+ *  a toast. Shared by the picker button and the composer's paste handler. */
+async function filesToGroupImages(files) {
+  const picked = []
+
+  for (const file of [...(files || [])]) {
+    if (!file || !/^image\//.test(file.type || '')) {
+      continue
+    }
+
+    if (file.size > 15_000_000) {
+      host.notify({ kind: 'error', message: `${file.name || 'image'}: too large (max 15MB).` })
+      continue
+    }
+
+    const data = await new Promise(done => {
+      const reader = new FileReader()
+      reader.onload = () => done(typeof reader.result === 'string' ? reader.result : null)
+      reader.onerror = () => done(null)
+      reader.readAsDataURL(file)
+    })
+
+    if (data) {
+      picked.push({ name: file.name || 'pasted image', data: await normalizeGroupAttachment(data) })
+    }
+  }
+
+  return picked
+}
+
+/** Multi-file variant of pickImageFromDevice for the group composer. Resolves
+ *  to [{ name, data }] (data URLs); oversized files are skipped with a toast. */
+function pickGroupImages() {
+  return new Promise(resolve => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/png,image/jpeg,image/webp,image/gif'
+    input.multiple = true
+    input.onchange = () => resolve(filesToGroupImages(input.files))
+    input.click()
+  })
+}
+
+/** Bound a group attachment's long edge so room logs (persisted with the
+ *  plugin's other durable state) stay light while screenshots keep enough
+ *  resolution for vision models to read text. No-op for small images or
+ *  anything the canvas can't decode. */
+function normalizeGroupAttachment(dataUrl, maxEdge = 1568) {
+  return new Promise(resolve => {
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const long = Math.max(img.width, img.height)
+
+        if (!long || long <= maxEdge) {
+          return resolve(dataUrl)
+        }
+
+        const scale = maxEdge / long
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(img.width * scale))
+        canvas.height = Math.max(1, Math.round(img.height * scale))
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+        resolve(canvas.toDataURL('image/png'))
+      } catch {
+        resolve(dataUrl)
+      }
+    }
+    img.onerror = () => resolve(dataUrl)
+    img.src = dataUrl
+  })
+}
+
 /** Cached probe: does the gateway have an image backend? A `false` answer
  *  is re-checked on every dialog open — the gateway may have been restarted
  *  (picking up image.generate) or a backend enabled since the last probe.
@@ -3439,8 +3514,14 @@ function groupSpeakerLabel(name) {
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
 function formatGroupChatLine(entry, viewerName) {
+  // Attachments are staged into each member's session as real images; the
+  // transcript line names them so the delta text and the pixels line up.
+  const attached = Array.isArray(entry.images) && entry.images.length
+    ? ` ${entry.images.map(img => `[attached image: ${img.name || 'image'}]`).join(' ')}`
+    : ''
+
   if (entry.from.kind === 'user') {
-    return `${entry.from.name || 'User'} (user): ${entry.text}`
+    return `${entry.from.name || 'User'} (user): ${entry.text}${attached}`
   }
 
   const suffix = entry.from.name === viewerName ? ' (you)' : ''
@@ -3448,7 +3529,7 @@ function formatGroupChatLine(entry, viewerName) {
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}`
+  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
 }
 
 /** The full per-turn payload for one member: participation rules + the room
@@ -3693,8 +3774,14 @@ async function renameGroupChat(oldName, newName, members) {
   return next
 }
 
-function appendGroupChatEntry(group, from, text, thread) {
+function appendGroupChatEntry(group, from, text, thread, images) {
   const entry = { at: Date.now(), from, text: String(text).trim(), thread: thread || 'legacy' }
+
+  if (Array.isArray(images) && images.length) {
+    // [{ name, data }] — data URLs. Persisted with the room log so reloads
+    // keep showing what the members were shown.
+    entry.images = images
+  }
 
   updateGroupChat(group, room => {
     room.log.push(entry)
@@ -3776,7 +3863,7 @@ const GROUP_TURN_HARD_CAP_MS = 20 * 60000
  *  so slow models aren't cut off mid-run. A turn that still times out
  *  records a stranded marker so the finished reply can be harvested into
  *  the room at the member's next turn instead of being lost. */
-async function runGroupChatMemberTurn(group, member, prompt, thread) {
+async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
   const { runtime, stored } = await ensureGroupChatSession(group, member)
 
   if (!runtime) {
@@ -3794,6 +3881,28 @@ async function runGroupChatMemberTurn(group, member, prompt, thread) {
     before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
   } catch {
     /* lazy session — zero messages */
+  }
+
+  // Stage this delta's attachments into the member's session so the model
+  // receives the actual pixels with the prompt (the same image.attach_bytes
+  // path the 1:1 chat uses — it also works cross-connection, where the
+  // member's gateway can't see this machine's files). A failed attach
+  // degrades that member to text-only; the transcript line still names the
+  // image so the member knows something was shared.
+  for (const img of Array.isArray(images) ? images : []) {
+    if (!img || typeof img.data !== 'string' || !img.data) {
+      continue
+    }
+
+    try {
+      await requestForBot(member, 'image.attach_bytes', {
+        session_id: runtime,
+        content_base64: img.data,
+        filename: img.name || 'attachment.png'
+      })
+    } catch {
+      /* text-only fallback for this member */
+    }
   }
 
   await requestForBot(member, 'prompt.submit', { session_id: runtime, text: prompt })
@@ -3979,6 +4088,12 @@ async function runGroupChatRounds(group, members, thread) {
           deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(e => formatGroupChatLine(e, member.name))
         })
 
+        // Images riding this delta (user attachments — member entries don't
+        // carry images today, but flatMap keeps this future-proof) get staged
+        // into the member's session so the model sees the pixels, not just
+        // the transcript's [attached image: …] marker.
+        const deltaImages = delta.flatMap(e => (Array.isArray(e.images) ? e.images : []))
+
         // Surface WHO is on turn (runtime-only, like running/epoch) so the
         // room shows "Radar is thinking…" instead of a generic working line —
         // long model turns otherwise read as the room being stuck.
@@ -3990,7 +4105,7 @@ async function runGroupChatRounds(group, members, thread) {
         let reply = null
 
         try {
-          reply = await runGroupChatMemberTurn(group, member, prompt, thread)
+          reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
         } catch {
           reply = null // a failed turn is a pass, never a room error
         }
@@ -4038,17 +4153,18 @@ async function runGroupChatRounds(group, members, thread) {
  *  Appends, bumps the room epoch (supersedes any running loop at its next
  *  member boundary), and starts the turn drive for the target thread.
  *  Returns the thread id the message landed in. */
-function sendToGroupChat(group, members, text, thread) {
+function sendToGroupChat(group, members, text, thread, images) {
   const trimmed = String(text || '').trim()
+  const attached = Array.isArray(images) ? images.filter(img => img && img.data) : []
 
-  if (!trimmed || !members.length) {
+  if ((!trimmed && !attached.length) || !members.length) {
     return null
   }
 
   const target = thread || mintGroupThreadId()
 
   $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: false })
-  appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target)
+  appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target, attached)
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true
 
@@ -8165,6 +8281,43 @@ function GroupChatWorkspace({ group, members, onBack }) {
   const [openThreads, setOpenThreads] = useState({})
   const [replyThread, setReplyThread] = useState(null)
   const [replyDrafts, setReplyDrafts] = useState({})
+  // Pending image attachments per composer: `null` thread key = the main
+  // composer, otherwise the reply box of that thread. Data URLs, already
+  // downscaled — they ride the send into every responding member's session.
+  const [pendingImages, setPendingImages] = useState({})
+
+  const imagesFor = thread => pendingImages[thread ?? 'main'] || []
+
+  const addImages = (thread, picked) => {
+    if (!picked.length) {
+      return
+    }
+
+    const key = thread ?? 'main'
+    setPendingImages(prev => ({ ...prev, [key]: [...(prev[key] || []), ...picked] }))
+  }
+
+  const clearImages = thread => {
+    const key = thread ?? 'main'
+    setPendingImages(prev => ({ ...prev, [key]: [] }))
+  }
+
+  const removeImage = (thread, index) => {
+    const key = thread ?? 'main'
+    setPendingImages(prev => ({ ...prev, [key]: (prev[key] || []).filter((_, i) => i !== index) }))
+  }
+
+  // Ctrl/⌘-V a screenshot into any composer in this room.
+  const pasteImages = (thread, event) => {
+    const files = [...(event.clipboardData?.files || [])].filter(f => /^image\//.test(f.type || ''))
+
+    if (!files.length) {
+      return
+    }
+
+    event.preventDefault()
+    void filesToGroupImages(files).then(picked => addImages(thread, picked))
+  }
 
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
@@ -8234,16 +8387,18 @@ function GroupChatWorkspace({ group, members, onBack }) {
 
   const submit = () => {
     const text = draft.trim()
+    const images = imagesFor(null)
 
-    if (!text) {
+    if (!text && !images.length) {
       return
     }
 
     setDraft('')
+    clearImages(null)
     // Main composer = START A NEW THREAD with the whole group (Slack shape).
     // Full descriptors ride into the turn loop: remote members keep their
     // connection fields so their turns route to their own machines.
-    const minted = sendToGroupChat(group, memberDescriptors(), text)
+    const minted = sendToGroupChat(group, memberDescriptors(), text, null, images)
 
     if (minted) {
       setOpenThreads(prev => ({ ...prev, [minted]: true }))
@@ -8252,17 +8407,64 @@ function GroupChatWorkspace({ group, members, onBack }) {
 
   const submitReply = thread => {
     const text = (replyDrafts[thread] || '').trim()
+    const images = imagesFor(thread)
 
-    if (!text) {
+    if (!text && !images.length) {
       return
     }
 
     setReplyDrafts(prev => ({ ...prev, [thread]: '' }))
+    clearImages(thread)
     // Reply box = CONTINUE this thread; the member turns it triggers are
     // scoped to it.
-    sendToGroupChat(group, memberDescriptors(), text, thread)
+    sendToGroupChat(group, memberDescriptors(), text, thread, images)
     setOpenThreads(prev => ({ ...prev, [thread]: true }))
   }
+
+  /** Pending-attachment chips + the paperclip picker for one composer
+   *  (thread = null → main). Chips preview the image and X removes it. */
+  const attachmentRow = thread => {
+    const images = imagesFor(thread)
+
+    if (!images.length) {
+      return null
+    }
+
+    return jsx('div', {
+      className: 'flex flex-wrap items-center gap-1.5 px-1 pb-1',
+      children: images.map((img, index) =>
+        jsxs('div', {
+          className:
+            'flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary,#181818) px-1 py-0.5',
+          children: [
+            jsx('img', { src: img.data, alt: '', className: 'size-6 rounded object-cover' }),
+            jsx('span', {
+              className: 'max-w-32 truncate text-[0.65rem] text-(--ui-text-tertiary)',
+              children: img.name || 'image'
+            }),
+            jsx('button', {
+              type: 'button',
+              className: 'cursor-pointer border-0 bg-transparent p-0 text-(--ui-text-quaternary) hover:text-foreground',
+              title: 'Remove attachment',
+              onClick: () => removeImage(thread, index),
+              children: jsx(Codicon, { name: 'close', className: 'text-[0.65rem]' })
+            })
+          ]
+        }, `${img.name || 'img'}:${index}`)
+      )
+    })
+  }
+
+  const attachButton = thread =>
+    jsx(Button, {
+      type: 'button',
+      variant: 'ghost',
+      size: 'sm',
+      className: 'shrink-0 text-(--ui-text-tertiary) hover:text-foreground',
+      title: 'Attach images — every responding bot sees them',
+      onClick: () => void pickGroupImages().then(picked => addImages(thread, picked)),
+      children: jsx(Codicon, { name: 'device-camera' })
+    })
 
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry, index) => {
@@ -8361,7 +8563,22 @@ function GroupChatWorkspace({ group, members, onBack }) {
                             // back in so drag-select and ⌘C work in group chat logs.
                             'data-selectable-text': 'true',
                             children: Streamdown ? jsx(Streamdown, { children: entry.text }) : entry.text
-                          })
+                          }),
+                          // User attachments: the images every responding bot was shown.
+                          Array.isArray(entry.images) && entry.images.length
+                            ? jsx('div', {
+                                className: 'mt-1 flex flex-wrap gap-1.5',
+                                children: entry.images.map((img, imgIndex) =>
+                                  jsx('img', {
+                                    src: img.data,
+                                    alt: img.name || 'attached image',
+                                    title: img.name || 'attached image',
+                                    className:
+                                      'max-h-40 max-w-60 rounded-md border border-(--ui-stroke-secondary) object-contain'
+                                  }, `${entryKey}:img:${imgIndex}`)
+                                )
+                              })
+                            : null
                         ]
                       })
                     ]
@@ -8452,21 +8669,34 @@ function GroupChatWorkspace({ group, members, onBack }) {
     threadRows.push(
       replyThread === id
         ? jsxs('form', {
-            className: 'flex items-center gap-1.5 px-2 pb-1',
+            className: 'grid gap-0 px-2 pb-1',
             onSubmit: event => {
               event.preventDefault()
               submitReply(id)
             },
             children: [
-              jsx(GroupMentionInput, {
-                'aria-label': 'Reply in thread',
-                autoFocus: true,
-                placeholder: 'Reply in thread…',
-                members,
-                value: replyDrafts[id] || '',
-                onChange: text => setReplyDrafts(prev => ({ ...prev, [id]: text }))
-              }),
-              jsx(Button, { type: 'submit', size: 'sm', disabled: !(replyDrafts[id] || '').trim(), children: 'Reply' })
+              attachmentRow(id),
+              jsxs('div', {
+                className: 'flex items-center gap-1.5',
+                children: [
+                  jsx(GroupMentionInput, {
+                    'aria-label': 'Reply in thread',
+                    autoFocus: true,
+                    placeholder: 'Reply in thread…',
+                    members,
+                    value: replyDrafts[id] || '',
+                    onChange: text => setReplyDrafts(prev => ({ ...prev, [id]: text })),
+                    onPaste: event => pasteImages(id, event)
+                  }),
+                  attachButton(id),
+                  jsx(Button, {
+                    type: 'submit',
+                    size: 'sm',
+                    disabled: !(replyDrafts[id] || '').trim() && !imagesFor(id).length,
+                    children: 'Reply'
+                  })
+                ]
+              })
             ]
           }, `replybox:${id}`)
         : jsx('button', {
@@ -8517,20 +8747,33 @@ function GroupChatWorkspace({ group, members, onBack }) {
       jsx('div', {
         className: 'border-t border-(--ui-stroke-secondary) p-2',
         children: jsxs('form', {
-          className: 'flex items-center gap-1.5',
+          className: 'grid gap-0',
           onSubmit: event => {
             event.preventDefault()
             submit()
           },
           children: [
-            jsx(GroupMentionInput, {
-              'aria-label': `Message ${group}`,
-              placeholder: `New thread in ${group}… (@name to direct, @everyone for all)`,
-              members,
-              value: draft,
-              onChange: setDraft
-            }),
-            jsx(Button, { type: 'submit', size: 'sm', disabled: !draft.trim(), children: 'New Thread' })
+            attachmentRow(null),
+            jsxs('div', {
+              className: 'flex items-center gap-1.5',
+              children: [
+                jsx(GroupMentionInput, {
+                  'aria-label': `Message ${group}`,
+                  placeholder: `New thread in ${group}… (@name to direct, @everyone for all)`,
+                  members,
+                  value: draft,
+                  onChange: setDraft,
+                  onPaste: event => pasteImages(null, event)
+                }),
+                attachButton(null),
+                jsx(Button, {
+                  type: 'submit',
+                  size: 'sm',
+                  disabled: !draft.trim() && !imagesFor(null).length,
+                  children: 'New Thread'
+                })
+              ]
+            })
           ]
         })
       }),

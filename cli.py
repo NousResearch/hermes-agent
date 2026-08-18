@@ -14852,7 +14852,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             outcome = outcome[:119] + "…"
         _cprint(f"\n{_DIM}{icon} {label}: {detail} → {outcome}{_RST}")
 
-    def _clarify_callback(self, question, choices, multi_select=False):
+    def _clarify_callback(self, question, choices, multi_select=False, questions=None):
         """
         Platform callback for the clarify tool. Called from the agent thread.
 
@@ -14863,10 +14863,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         When ``multi_select`` is True, shows checkboxes and the user can
         select multiple options with Space, confirming with Enter.
+
+        When ``questions`` is a non-empty list (batch clarify, issue #18450),
+        the panel switches to the A-compact multi-question layout and the
+        return value is a dict ``{"answers": {qid: raw_answer}}`` (plus
+        ``"timed_out": True`` when the deadline expired with only partial
+        answers). The single-question path below is unchanged.
         """
         import time as _time
 
         from tools.clarify_gateway import resolve_clarify_timeout
+
+        if questions:
+            return self._clarify_callback_batch(questions)
 
         # Canonical clarify timeout, shared with the gateway/TUI path. `<= 0`
         # means unlimited (never auto-skip mid-think) → a null deadline.
@@ -14928,6 +14937,151 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "The user did not provide a response within the time limit. "
             "Use your best judgement to make the choice and proceed."
         )
+
+    # --- Batch clarify (multi-question, issue #18450) -----------------------
+
+    def _clarify_batch_set_active(self, state, index) -> None:
+        """Point the batch clarify panel at question ``index``.
+
+        Mirrors the active question's data into the flat keys the existing
+        single-question keybindings and renderer read (``question``,
+        ``choices``, ``selected``, ``multi_select``, ``selected_indices``),
+        so ↑/↓/Space/number keys operate on the active question unchanged.
+        Open-ended questions drop straight into freetext, matching the
+        single-question path.
+        """
+        questions_list = state["questions"]
+        index = max(0, min(index, len(questions_list) - 1))
+        entry = questions_list[index]
+        state["active"] = index
+        state["question"] = entry["question"]
+        state["choices"] = entry["choices"] or []
+        state["selected"] = 0
+        state["multi_select"] = bool(entry["multi_select"])
+        state["selected_indices"] = set() if entry["multi_select"] else None
+        self._clarify_freetext = not entry["choices"]
+        self._clarify_multi_base = None
+
+    def _clarify_batch_lock(self, state, answer) -> None:
+        """Lock ``answer`` for the active batch question and advance.
+
+        Overwrites any earlier answer for the same question (locked answers
+        stay editable until the batch completes). Advances ``active`` to the
+        next unanswered question; when every question has an answer, puts the
+        answers dict on the response queue and tears down the panel.
+        """
+        entry = state["questions"][state["active"]]
+        state["answers"][entry["qid"]] = answer
+        self._persist_prompt_summary("?", "Clarify", entry["question"], str(answer))
+        total = len(state["questions"])
+        for offset in range(1, total + 1):
+            candidate = (state["active"] + offset) % total
+            if state["questions"][candidate]["qid"] not in state["answers"]:
+                self._clarify_batch_set_active(state, candidate)
+                return
+        # Every question answered — resolve the batch.
+        try:
+            state["response_queue"].put(dict(state["answers"]))
+        except Exception:
+            pass
+        self._clarify_state = None
+        self._clarify_freetext = False
+        self._clarify_multi_base = None
+
+    def _clarify_batch_enter(self, state) -> None:
+        """Enter in batch choice mode: lock the active question's selection.
+
+        Multi-select questions lock a JSON array string of the checked
+        labels (the tool core parses it via ``_parse_multi_select_response``).
+        Selecting "Other" switches to freetext; the freetext submit path
+        locks the typed answer.
+        """
+        choices = state.get("choices") or []
+        selected = state.get("selected", 0)
+        if state.get("multi_select"):
+            indices = state.get("selected_indices") or set()
+            sorted_idx = sorted(indices)
+            selected_choices = [choices[i] for i in sorted_idx if i < len(choices)]
+            other_checked = len(choices) in sorted_idx
+            if other_checked:
+                # Stash the checked real choices (possibly none) so the
+                # freetext submit appends the typed answer to the array.
+                self._clarify_multi_base = selected_choices
+                self._clarify_freetext = True
+                return
+            self._clarify_batch_lock(
+                state, json.dumps(selected_choices, ensure_ascii=False)
+            )
+            return
+        if selected < len(choices):
+            self._clarify_batch_lock(state, choices[selected])
+            return
+        # "Other" highlighted → switch to freetext
+        self._clarify_freetext = True
+
+    def _clarify_callback_batch(self, questions):
+        """Batch clarify panel (A-compact): all questions, one active.
+
+        Blocks on the response queue like the single-question path. Returns
+        ``{"answers": {qid: raw_answer}}`` when every question is locked, the
+        same dict plus ``"timed_out": True`` when the deadline expires with
+        partial (or zero) answers, and passes a cancel string through
+        unchanged so the tool core resolves the batch empty.
+        """
+        import time as _time
+
+        from tools.clarify_gateway import resolve_clarify_timeout
+
+        timeout = resolve_clarify_timeout(CLI_CONFIG)
+        response_queue = queue.Queue()
+
+        state = {
+            "questions": list(questions),
+            "answers": {},
+            "active": 0,
+            "response_queue": response_queue,
+            # Flat keys mirroring the active question — filled by
+            # _clarify_batch_set_active below.
+            "question": "",
+            "choices": [],
+            "selected": 0,
+            "multi_select": False,
+            "selected_indices": None,
+        }
+        self._clarify_state = state
+        self._clarify_batch_set_active(state, 0)
+        self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
+        self._paint_now()
+
+        _last_countdown_refresh = _time.monotonic()
+        while True:
+            try:
+                result = response_queue.get(timeout=1)
+                self._clarify_deadline = None
+                if isinstance(result, dict):
+                    return {"answers": result}
+                # Cancel path (Ctrl+C teardown) posts a plain string — pass
+                # it through so the tool core resolves the batch empty.
+                return result
+            except queue.Empty:
+                if self._clarify_deadline is not None:
+                    remaining = self._clarify_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
+                now = _time.monotonic()
+                if now - _last_countdown_refresh >= 1.0:
+                    _last_countdown_refresh = now
+                    self._paint_now()
+
+        # Timed out — keep the answers locked so far and flag the timeout.
+        partial = dict(state["answers"])
+        self._clarify_state = None
+        self._clarify_freetext = False
+        self._clarify_deadline = None
+        self._clarify_multi_base = None
+        self._paint_now()
+        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — locked answers returned){_RST}")
+        return {"answers": partial, "timed_out": True}
 
     def _sudo_password_callback(self) -> str:
         """
@@ -17032,6 +17186,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self._clarify_freetext and self._clarify_state:
                 text = event.app.current_buffer.text.strip()
                 if text:
+                    state = self._clarify_state
+                    # Batch mode: lock the typed answer for the active question
+                    if state.get("questions"):
+                        base = getattr(self, '_clarify_multi_base', None)
+                        if base is not None:
+                            # Multi-select "Other": append the typed answer to
+                            # the checked labels as a JSON array string.
+                            answer = json.dumps(base + [text], ensure_ascii=False)
+                            self._clarify_multi_base = None
+                        else:
+                            answer = text
+                        self._clarify_freetext = False
+                        self._clarify_batch_lock(state, answer)
+                        event.app.current_buffer.reset()
+                        event.app.invalidate()
+                        return
                     # multi-select: prepend previously checked real choices
                     base = getattr(self, '_clarify_multi_base', None)
                     if base:
@@ -17047,6 +17217,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # --- Clarify choice mode: confirm the highlighted selection ---
             if self._clarify_state and not self._clarify_freetext:
                 state = self._clarify_state
+                # Batch mode: Enter locks the active question's answer and
+                # advances to the next unanswered question.
+                if state.get("questions"):
+                    self._clarify_batch_enter(state)
+                    event.app.invalidate()
+                    return
                 selected = state["selected"]
                 choices = state.get("choices") or []
                 # multi-select support: submit comma-joined list of checked choices
@@ -17461,6 +17637,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     indices.add(selected)
                 event.app.invalidate()
 
+        # Batch clarify: Tab cycles the active question (any-order answering;
+        # moving onto an answered question lets the user re-answer it before
+        # the batch completes). Registered after the generic tab handler so
+        # this filtered binding wins while the batch panel is open.
+        @kb.add('tab', filter=Condition(lambda: bool(self._clarify_state) and bool(self._clarify_state.get("questions")) and not self._clarify_freetext), eager=True)
+        def clarify_batch_tab(event):
+            state = self._clarify_state
+            if state and state.get("questions"):
+                self._clarify_batch_set_active(
+                    state, (state["active"] + 1) % len(state["questions"])
+                )
+                event.app.invalidate()
+
         # Number keys for quick clarify selection (1-9, 0 for 10th item)
         def _make_clarify_number_handler(idx):
             def handler(event):
@@ -17487,6 +17676,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # Original single-select: number keys submit directly
                     # Map index to choice (treating "Other" as the last option)
                     if idx < len(choices):
+                        # Batch mode: lock the numbered choice for the active
+                        # question instead of resolving the whole prompt.
+                        if self._clarify_state.get("questions"):
+                            self._clarify_batch_lock(self._clarify_state, choices[idx])
+                            event.app.invalidate()
+                            return
                         # Select a numbered choice
                         self._clarify_state["response_queue"].put(choices[idx])
                         self._clarify_state = None
@@ -18321,6 +18516,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         ('class:hint', '  type your answer and press Enter'),
                         ('class:clarify-countdown', countdown),
                     ]
+                if cli_ref._clarify_state.get("questions"):
+                    return [
+                        ('class:hint', '  ↑/↓ to select, Enter to lock, Tab next question'),
+                        ('class:clarify-countdown', countdown),
+                    ]
                 return [
                     ('class:hint', '  ↑/↓ to select, Enter to confirm'),
                     ('class:clarify-countdown', countdown),
@@ -18400,6 +18600,99 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
             lines.append((border_style, "│" + (" " * box_width) + "│\n"))
 
+        def _get_clarify_batch_display(state):
+            """Build styled text for the batch (multi-question) clarify panel.
+
+            A-compact layout mirroring the TUI: a "N questions" header, one
+            status line per question (✓ answered → answer / ▸ active /
+            · pending), and the active question's numbered choices (+ Other)
+            expanded directly beneath its status line.
+            """
+            questions_list = state.get("questions") or []
+            answers = state.get("answers") or {}
+            active = state.get("active", 0)
+            choices = state.get("choices") or []
+            selected = state.get("selected", 0)
+            multi_select = state.get("multi_select", False)
+            selected_indices = state.get("selected_indices", set()) if multi_select else set()
+
+            title = "Hermes needs your input"
+            header = f"{len(questions_list)} questions"
+
+            def _status_rows(width):
+                """(style, text) rows for the status list + expanded active question."""
+                rows = []
+                for idx, entry in enumerate(questions_list):
+                    answered = entry["qid"] in answers
+                    if answered:
+                        marker = "✓"
+                    elif idx == active:
+                        marker = "▸"
+                    else:
+                        marker = "·"
+                    label = f"{marker} {entry['question']}"
+                    if answered:
+                        label += f" → {answers[entry['qid']]}"
+                    row_style = 'class:clarify-selected' if idx == active else 'class:clarify-choice'
+                    for wrapped in _wrap_panel_text(label, width, subsequent_indent="  "):
+                        rows.append((row_style, wrapped))
+                    if idx != active:
+                        continue
+                    # Expanded active question: numbered choices + Other.
+                    for i, choice in enumerate(choices):
+                        num_prefix = str(i + 1) if i < 9 else ('0' if i == 9 else ' ')
+                        if multi_select:
+                            cb = "[x]" if i in selected_indices else "[ ]"
+                            cursor = "❯" if i == selected and not cli_ref._clarify_freetext else " "
+                            prefix = f"  {cursor} {cb} {num_prefix}. "
+                        else:
+                            cursor = "❯" if i == selected and not cli_ref._clarify_freetext else " "
+                            prefix = f"  {cursor} {num_prefix}. "
+                        style = 'class:clarify-selected' if i == selected and not cli_ref._clarify_freetext else 'class:clarify-choice'
+                        for wrapped in _wrap_panel_text(f"{prefix}{choice}", width, subsequent_indent="      "):
+                            rows.append((style, wrapped))
+                    if choices:
+                        other_idx = len(choices)
+                        other_num = other_idx + 1
+                        other_num_prefix = str(other_num) if other_num < 10 else ('0' if other_num == 10 else ' ')
+                        if multi_select:
+                            cb = "[x]" if other_idx in selected_indices else "[ ]"
+                            mid = f"{cb} {other_num_prefix}"
+                        else:
+                            mid = other_num_prefix
+                        if cli_ref._clarify_freetext:
+                            other_label = f"  ❯ {mid}. Other (type below)"
+                            other_style = 'class:clarify-active-other'
+                        elif selected == other_idx:
+                            other_label = f"  ❯ {mid}. Other (type your answer)"
+                            other_style = 'class:clarify-selected'
+                        else:
+                            other_label = f"    {mid}. Other (type your answer)"
+                            other_style = 'class:clarify-choice'
+                        for wrapped in _wrap_panel_text(other_label, width, subsequent_indent="      "):
+                            rows.append((other_style, wrapped))
+                    elif cli_ref._clarify_freetext:
+                        for wrapped in _wrap_panel_text(
+                            "  Type your answer in the prompt below, then press Enter.", width
+                        ):
+                            rows.append(('class:clarify-active-other', wrapped))
+                return rows
+
+            preview_rows = _status_rows(60)
+            box_width = _panel_box_width(title, [header] + [text for _, text in preview_rows])
+            inner_text_width = max(8, box_width - 2)
+            rows = _status_rows(inner_text_width)
+
+            lines = []
+            lines.append(('class:clarify-border', '╭─ '))
+            lines.append(('class:clarify-title', title))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_panel_line(lines, 'class:clarify-border', 'class:clarify-question', header, box_width)
+            for style, text in rows:
+                _append_panel_line(lines, 'class:clarify-border', style, text, box_width)
+            lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
         def _get_clarify_display():
             """Build styled text for the clarify question/choices panel.
 
@@ -18411,6 +18704,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             state = cli_ref._clarify_state
             if not state:
                 return []
+            if state.get("questions"):
+                return _get_clarify_batch_display(state)
 
             question = state["question"]
             choices = state.get("choices") or []

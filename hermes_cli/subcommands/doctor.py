@@ -41,4 +41,17 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
             "doctor` first to see active advisories and their IDs."
         ),
     )
+    doctor_parser.add_argument(
+        "--profile", metavar="NAME", help="Report composition for one profile"
+    )
+    doctor_parser.add_argument(
+        "--all-profiles",
+        action="store_true",
+        help="Report composition for the default and every named profile",
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the profile composition report as deterministic JSON",
+    )
     doctor_parser.set_defaults(func=cmd_doctor)

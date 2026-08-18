@@ -1,6 +1,6 @@
 import { render, waitFor } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
 import { Streamdown } from 'streamdown'
+import { describe, expect, it } from 'vitest'
 
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
@@ -36,7 +36,7 @@ describe('file-preview math rendering', () => {
     })
   })
 
-  it('renders \(..\) delimiter math as KaTeX', async () => {
+  it('renders delimited math as KaTeX', async () => {
     const { container } = render(
       <Streamdown mode="static" plugins={{ math: mathPlugin }}>
         {normalizeFilePreviewMath('A fraction \\(\\frac{a}{b}\\) inline.')}
@@ -49,7 +49,7 @@ describe('file-preview math rendering', () => {
     expect(container.querySelector('.katex-mathml, .katex-html')).not.toBeNull()
   })
 
-  it('leaves a literal code-fence \$ alone as code, not math', async () => {
+  it('leaves a literal code-fence $ alone as code, not math', async () => {
     const { container } = render(
       <Streamdown mode="static" plugins={{ math: mathPlugin }}>
         {normalizeFilePreviewMath('```bash\necho $HOME\n```')}

@@ -125,6 +125,8 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("grok-4.5", 300),
     ("grok-4.6", 300),
     ("grok-4-fast-non-reasoning", 180),
+    ("glm-5", 300),
+    ("glm-4.6", 300),
 )
 
 

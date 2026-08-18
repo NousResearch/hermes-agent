@@ -189,6 +189,32 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # signal lands, and the following tick reclaims cleanly.
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
+# Fail-closed live concurrency cap for the gateway/CLI dispatcher.
+# ``None`` used to mean unlimited; that is the 142-worker path (2026-08-18):
+# a ready-queue flood plus hung provider workers grew without bound because
+# ``delegation.max_concurrent_children`` does not gate ``hermes -p`` admits.
+# ``dispatch_once(max_spawn=None)`` stays unlimited for explicit callers/tests;
+# production readers must go through :func:`resolve_kanban_max_spawn`.
+DEFAULT_KANBAN_MAX_SPAWN = 4
+
+
+def resolve_kanban_max_spawn(value) -> int:
+    """Return a positive live-concurrency cap, fail-closed.
+
+    ``None``, 0, negative, and non-integers become
+    :data:`DEFAULT_KANBAN_MAX_SPAWN`. This is the opposite of
+    ``max_concurrent_sessions``, where null disables the gate.
+    """
+    if value is None:
+        return DEFAULT_KANBAN_MAX_SPAWN
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_KANBAN_MAX_SPAWN
+    if parsed < 1:
+        return DEFAULT_KANBAN_MAX_SPAWN
+    return parsed
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -5665,6 +5691,12 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    skipped_concurrency_capped: list[str] = field(default_factory=list)
+    """Ready (or review) task ids deferred this tick because
+    ``max_spawn`` / ``max_in_progress`` is already saturated by running
+    workers — including hung/unresponsive ones that still occupy
+    ``status='running'``. Fail-loud signal so telemetry does not call a
+    correctly-capped board "stuck"."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7016,6 +7048,7 @@ def _dispatch_once_locked(
             "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
         ).fetchone()[0]
         if in_progress >= max_in_progress:
+            result.skipped_concurrency_capped.extend(r["id"] for r in ready_rows)
             return result
         # Only spawn enough to reach the cap, respecting max_spawn too.
         remaining = max_in_progress - in_progress
@@ -7315,6 +7348,17 @@ def _dispatch_once_locked(
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
+    if max_spawn is not None and running_count + spawned >= max_spawn:
+        handled = {tid for tid, *_ in result.spawned}
+        handled.update(result.skipped_unassigned)
+        handled.update(result.skipped_nonspawnable)
+        handled.update(tid for tid, *_ in result.skipped_per_profile_capped)
+        handled.update(tid for tid, *_ in result.respawn_guarded)
+        handled.update(result.skipped_concurrency_capped)
+        for row in list(ready_rows) + list(review_rows):
+            tid = row["id"]
+            if tid not in handled:
+                result.skipped_concurrency_capped.append(tid)
     return result
 
 

@@ -2142,16 +2142,18 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
         max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
         # CLI --max overrides config kanban.max_spawn when both are present;
-        # CLI is the more explicit signal so it wins.
+        # CLI is the more explicit signal so it wins. Missing/invalid config
+        # fail-closes to DEFAULT_KANBAN_MAX_SPAWN (never None).
         cli_max = getattr(args, "max", None)
-        max_spawn = cli_max if cli_max is not None else _coerce_positive_int(
-            _kanban_cfg.get("max_spawn")
-        )
+        if cli_max is not None:
+            max_spawn = kb.resolve_kanban_max_spawn(cli_max)
+        else:
+            max_spawn = kb.resolve_kanban_max_spawn(_kanban_cfg.get("max_spawn"))
     except Exception:
         default_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None
-        max_spawn = getattr(args, "max", None)
+        max_spawn = kb.resolve_kanban_max_spawn(getattr(args, "max", None))
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,

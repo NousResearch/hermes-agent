@@ -725,10 +725,11 @@ class GatewayKanbanWatchersMixin:
             interval = 60.0
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
-        # Read max_spawn config to limit concurrent kanban tasks
-        max_spawn = kanban_cfg.get("max_spawn", None)
-        if max_spawn is not None:
-            logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
+        # Read max_spawn config to limit concurrent kanban tasks.
+        # Fail-closed: missing/invalid values become DEFAULT_KANBAN_MAX_SPAWN
+        # so an empty user config.yaml cannot swarm (2026-08-18, 142 workers).
+        max_spawn = _kb.resolve_kanban_max_spawn(kanban_cfg.get("max_spawn"))
+        logger.info("kanban dispatcher: max_spawn=%s (fail-closed)", max_spawn)
 
         # Cap the number of simultaneously running tasks so slow workers
         # (local LLMs, resource-constrained hosts) don't pile up and time
@@ -1133,7 +1134,16 @@ class GatewayKanbanWatchersMixin:
                     await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
+                any_capped = False
                 for slug, res in (results or []):
+                    if res is not None and getattr(res, "skipped_concurrency_capped", None):
+                        any_capped = True
+                        logger.warning(
+                            "kanban dispatcher [%s]: at max_spawn cap; "
+                            "deferring %d ready/review task(s)",
+                            slug,
+                            len(res.skipped_concurrency_capped),
+                        )
                     if res is not None and getattr(res, "spawned", None):
                         any_spawned = True
                         # Quiet by default — only log when something actually
@@ -1151,7 +1161,7 @@ class GatewayKanbanWatchersMixin:
                         )
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
+                if ready_pending and not any_spawned and not any_capped:
                     bad_ticks += 1
                 else:
                     bad_ticks = 0

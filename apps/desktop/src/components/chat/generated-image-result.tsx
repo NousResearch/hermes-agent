@@ -41,7 +41,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   const { src, loaded, failed } = media
   const [canvasGone, setCanvasGone] = useState<string | null>(null)
   const [lightboxOpen, setLightboxOpen] = useState<string | null>(null)
-  const { download, saving } = useImageDownload(src)
+  const { download, saving } = useImageDownload(src, image ? mediaName(image) : undefined)
 
   // Completed but no usable image (generation failed): the agent's prose carries
   // the explanation, so render nothing here.

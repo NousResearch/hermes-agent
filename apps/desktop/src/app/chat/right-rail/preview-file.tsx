@@ -428,7 +428,7 @@ const MARKDOWN_COMPONENTS = {
   a: MarkdownLink
 }
 
-function MarkdownPreview({ text }: { text: string }) {
+export function MarkdownPreview({ text }: { text: string }) {
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
 
   return (

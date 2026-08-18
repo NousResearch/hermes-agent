@@ -1674,13 +1674,20 @@ def uninstall_service() -> None:
 
 
 def start_service() -> None:
-    """Start the Windows Service."""
+    """Start the Windows Service.
+
+    SCM ownership: when a service is registered, start/stop must go
+    through SCM. There is deliberately NO fallback to the detached
+    spawn path here — a detached gateway alongside the SCM service
+    would create two parallel gateways competing for the same
+    port/session state (PR #50200 contract).
+    """
     _assert_windows()
     try:
         import win32service
     except ImportError:
-        print("⚠ pywin32 not available — falling back to detached gateway start")
-        start()
+        print("⚠ pywin32 not available — cannot start Windows Service")
+        print("  Install pywin32: pip install pywin32")
         return
 
     service_name = get_service_name()
@@ -1701,8 +1708,7 @@ def start_service() -> None:
             win32service.CloseServiceHandle(scm)
     except Exception as exc:
         print(f"✗ Windows Service start failed: {exc}")
-        print("  Falling back to detached gateway start...")
-        start()
+        print("  Fix the SCM service and run: sc start <service-name>")
 
 
 def stop_service() -> None:

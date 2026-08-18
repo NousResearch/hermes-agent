@@ -1360,3 +1360,70 @@ class TestScmWaitForState:
         _, status, timeout = waited[0]
         assert status == win32service.SERVICE_RUNNING
         assert timeout == 60
+
+
+class TestNoDetachedFallbackFromStartService:
+    """Regression: SCM-owned start must NEVER fall back to the detached
+    spawn path (PR #50200 contract #3). start_service() previously called
+    start() on failure, which recursed through is_service_registered() ->
+    start_service() -> ... until RecursionError, and with pywin32 missing
+    would take the detached path alongside a registered SCM service
+    (two parallel gateways)."""
+
+    def test_start_service_pywin32_missing_no_detached_fallback(
+        self, monkeypatch, capsys
+    ):
+        from hermes_cli import gateway_windows
+
+        def fake_start():
+            raise AssertionError("start() must not be called from start_service()")
+
+        monkeypatch.setattr(gateway_windows, "start", fake_start)
+        monkeypatch.setattr(
+            "builtins.__import__",
+            lambda name, *a, **k: (_ for _ in ()).throw(ImportError(name))
+            if name == "win32service"
+            else __import__(name, *a, **k),
+        )
+
+        gateway_windows.start_service()
+
+        out = capsys.readouterr().out
+        assert "cannot start Windows Service" in out
+        assert "pip install pywin32" in out
+
+    def test_start_service_scm_failure_no_detached_fallback(
+        self, monkeypatch, capsys
+    ):
+        from hermes_cli import gateway_windows
+        import win32service
+
+        def fake_start():
+            raise AssertionError("start() must not be called from start_service()")
+
+        monkeypatch.setattr(gateway_windows, "start", fake_start)
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "get_service_name", lambda: "HermesGateway")
+
+        class FakeScm:
+            def OpenSCManager(self, *a, **k):
+                return object()
+            def OpenService(self, scm, name, access):
+                raise OSError("scm open failed (access denied)")
+            def CloseServiceHandle(self, h):
+                pass
+
+        fake_ws = FakeScm()
+        monkeypatch.setattr(gateway_windows, "win32service", fake_ws, raising=False)
+        monkeypatch.setattr(
+            "builtins.__import__",
+            lambda name, *a, **k: fake_ws
+            if name == "win32service"
+            else __import__(name, *a, **k),
+        )
+
+        gateway_windows.start_service()
+
+        out = capsys.readouterr().out
+        assert "Windows Service start failed" in out
+        assert "sc start <service-name>" in out

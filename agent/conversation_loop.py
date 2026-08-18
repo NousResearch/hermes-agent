@@ -2765,7 +2765,31 @@ def run_conversation(
                     request_pressure_tokens,
                     int(getattr(_compressor, "threshold_tokens", 0) or 0),
                 )
-        
+        elif not agent.compression_enabled and len(messages) > 1:
+            # Uncompressed session guard (#89297) - Defense in Depth:
+            # If mid-turn tool results expand the context beyond model limits
+            # while compression is disabled, warn the operator in-loop.
+            _ctx_len = getattr(
+                getattr(agent, "context_compressor", None), "context_length", None
+            )
+            if not isinstance(_ctx_len, int) or _ctx_len <= 0:
+                try:
+                    from agent.model_metadata import get_model_context_length
+
+                    _ctx_len = get_model_context_length(
+                        agent.model,
+                        getattr(agent, "base_url", "") or "",
+                        provider=getattr(agent, "provider", "") or "",
+                    )
+                except Exception:
+                    _ctx_len = None
+            if _ctx_len and request_pressure_tokens > _ctx_len:
+                _warn_fn = getattr(
+                    agent, "_warn_uncompressed_context_overflow", None
+                )
+                if callable(_warn_fn):
+                    _warn_fn(request_pressure_tokens, _ctx_len)
+
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
         

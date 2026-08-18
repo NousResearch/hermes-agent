@@ -809,6 +809,12 @@ DEFAULT_CONFIG = {
                                       # exceeds this many tokens, the next pass
                                       # re-summarizes the summary itself instead of
                                       # letting it grow without bound.
+        "summary_instructions": "",   # when set, replaces the batch summarizer's
+                                      # "Be CONCRETE ..." sentence and is appended
+                                      # after the NEVER/[REDACTED] block on
+                                      # micro-compact. Empty / whitespace / non-string
+                                      # = current Hermes text. Inserted verbatim
+                                      # (no interpolation).
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
                                       # WITHOUT forward progress. The summary call streams, so

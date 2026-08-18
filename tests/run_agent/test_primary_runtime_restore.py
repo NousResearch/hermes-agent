@@ -36,6 +36,15 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
+        # Unit tests must not probe live endpoints. The compressor resolves
+        # context length lazily via a real network call against base_url; for
+        # reachable hosts (the nous portal case) the endpoint's answer for the
+        # empty test model (32K) trips agent_init's 64K floor and fails the
+        # test on network behavior, not code under test.
+        patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=200_000,
+        ),
     ):
         agent = AIAgent(
             api_key="test-key-12345678",

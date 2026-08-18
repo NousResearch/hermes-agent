@@ -158,16 +158,32 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
         current_start = None
     if current_start is None:
         # No such process (or unreadable) — treat unreadable-but-extant
-        # processes as alive only if the pid exists.
+        # processes as alive only if the pid exists. Route through the
+        # cross-platform probe: ``os.kill(pid, 0)`` on Windows is NOT a
+        # no-op (bpo-14484 — CPython maps sig=0 to
+        # ``GenerateConsoleCtrlEvent(0, pid)``), so a raw probe here could
+        # Ctrl+C the gateway's own console group whenever psutil failed to
+        # read the start time of a live pid. ``_pid_exists`` keeps the
+        # EPERM-means-alive semantics (exists but owned by another user).
         try:
-            os.kill(pid, 0)  # windows-footgun: ok — EPERM counts as alive below
-        except ProcessLookupError:
-            return False
-        except PermissionError:
+            from gateway.status import _pid_exists
+        except Exception:
+            if os.name == "nt":
+                # Never fall back to a raw sig-0 probe on Windows.
+                return False
+            try:
+                os.kill(pid, 0)  # windows-footgun: ok — POSIX-only fallback branch
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            except OSError:
+                return False
             return True
-        except OSError:
+        try:
+            return bool(_pid_exists(pid))
+        except Exception:
             return False
-        return True
     if started_at is None:
         return True
     try:

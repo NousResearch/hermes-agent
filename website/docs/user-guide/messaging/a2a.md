@@ -29,7 +29,15 @@ gateway:
         port: 9900
 ```
 
-The outbound client tools ship as the `a2a` toolset, **off by default** — enable it with `hermes tools`.
+The outbound client tools ship as the `a2a` toolset, **off by default** — enable it per platform:
+
+```bash
+hermes tools enable a2a --platform cli        # CLI/TUI sessions
+hermes tools enable a2a --platform telegram   # or any messaging platform
+hermes tools enable a2a --platform a2a        # let inbound A2A tasks call peers (agent chaining)
+```
+
+The tools are available in every process type — CLI, TUI, gateway, and cron — without the inbound platform needing to be enabled.
 
 ## Outbound: calling other agents
 

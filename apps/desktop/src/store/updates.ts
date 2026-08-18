@@ -8,6 +8,7 @@ import { atom } from 'nanostores'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
+  DesktopUpdateBlocker,
   DesktopUpdateProgress,
   DesktopUpdateStage,
   DesktopUpdateStatus,
@@ -29,6 +30,8 @@ export interface UpdateApplyState {
   /** When the stage is 'manual': the exact command the user should run
    *  (CLI install with no staged updater). */
   command: string | null
+  /** Structured update blockers used by the safe close-and-update confirmation. */
+  blockers?: readonly DesktopUpdateBlocker[] | null
   log: readonly { stage: DesktopUpdateStage; message: string; at: number }[]
 }
 
@@ -206,7 +209,11 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     return
   }
 
-  if ((status.behind ?? 0) <= 0) {
+  const behind = typeof status.behind === 'number' ? status.behind : null
+
+  // behind === null means "update available, exact count unknown" (shallow
+  // clone). That still deserves the toast — just with count-free copy.
+  if ((behind ?? 0) <= 0 && !status.updateAvailable) {
     return
   }
 
@@ -217,8 +224,6 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
   if ($updateApply.get().applying) {
     return
   }
-
-  const behind = status.behind ?? 0
 
   notify({
     action: {
@@ -232,7 +237,10 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     icon: 'gift',
     id: UPDATE_TOAST_ID,
     kind: 'info',
-    message: translateNow('notifications.updateReadyMessage', behind),
+    message:
+      behind !== null && behind > 0
+        ? translateNow('notifications.updateReadyMessage', behind)
+        : translateNow('notifications.updateReadyMessageUnknown'),
     onDismiss: () => snoozeUpdateToast(),
     title: translateNow('notifications.updateReadyTitle')
   })
@@ -475,7 +483,8 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
           applying: false,
           stage: 'error',
           error: result?.error ?? 'apply-failed',
-          message: result?.message ?? translateNow('updates.errorBody')
+          message: result?.message ?? translateNow('updates.errorBody'),
+          blockers: result?.blockers ?? null
         })
       }
     }

@@ -600,6 +600,27 @@ export default class Ink {
     }, 160)
   }
 
+  private handleTerminalFocusChange(isFocused: boolean): void {
+    if (!isFocused || !this.options.stdout.isTTY) {
+      return
+    }
+
+    // Focus-in means the terminal emulator has just made this tab/pane
+    // visible again. Some emulators throttle or coalesce hidden-tab output;
+    // if we continue with the pre-blur virtual cursor/backbuffer, only the
+    // next small dirty region may repaint and stale status/progress rows can
+    // remain visible. Defer one tick so TerminalFocusProvider subscribers
+    // observe the new focus state first, then do the same recovery as /redraw.
+    queueMicrotask(() => {
+      if (this.isUnmounted || this.isPaused || !this.options.stdout.isTTY || this.currentNode === null) {
+        return
+      }
+
+      this.reassertTerminalModes(false)
+      this.forceRedraw()
+    })
+  }
+
   resolveExitPromise: () => void = () => {}
   rejectExitPromise: (reason?: Error) => void = () => {}
   unsubscribeExit: () => void = () => {}
@@ -1134,7 +1155,13 @@ export default class Ink {
     const { bytes: writeBytes, backpressure } = writeDiffToTerminal(
       this.terminal,
       optimized,
-      this.altScreenActive && !SYNC_OUTPUT_SUPPORTED,
+      // Never emit BSU/ESU (DEC 2026) on terminals that don't support it —
+      // main screen included. Multiplexers like Zellij re-parse and re-chunk
+      // the stream with their own timing, so the markers buy no atomicity and
+      // stale frames get pushed into main-screen scrollback as repeated
+      // chrome (#66490). Supported terminals keep today's behavior on both
+      // screens (skip=false → BSU/ESU wrapped).
+      !SYNC_OUTPUT_SUPPORTED,
       trackDrain
         ? () => {
             // Callback fires once Node has flushed the chunk to the OS.
@@ -2398,6 +2425,7 @@ export default class Ink {
         onSelectionChange={this.notifySelectionChange}
         onSelectionDrag={this.handleSelectionDrag}
         onStdinResume={this.reassertTerminalModes}
+        onTerminalFocusChange={this.handleTerminalFocusChange}
         selection={this.selection}
         stderr={this.options.stderr}
         stdin={this.options.stdin}

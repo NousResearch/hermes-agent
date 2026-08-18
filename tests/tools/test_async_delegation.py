@@ -761,3 +761,67 @@ def test_gateway_cli_origin_event_left_unrouted():
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
 
+
+def test_single_task_truncation_banner_when_max_iterations():
+    """A single async subagent that hit its iteration cap (exit_reason=
+    max_iterations) must surface a TRUNCATED marker in the formatted result,
+    even though status stays 'completed' (a summary exists)."""
+    evt = _make_async_evt(
+        status="completed",
+        summary="Did part of the work then ran out of budget.",
+        exit_reason="max_iterations",
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "TRUNCATED" in text
+    assert "max_iterations" in text
+    # The summary is still shown, just flagged.
+    assert "Did part of the work" in text
+
+
+def test_single_task_no_banner_when_clean():
+    """A cleanly-finished subagent must NOT get a truncation banner."""
+    evt = _make_async_evt(status="completed", summary="All done.", exit_reason="completed")
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "TRUNCATED" not in text
+
+
+def test_batch_truncation_banner_marks_only_truncated_task():
+    """In a batch, only the task that hit max_iterations gets the TRUNCATED
+    marker; a clean sibling keeps the normal check icon."""
+    evt = _make_async_evt(
+        is_batch=True,
+        goals=["clean task", "truncated task"],
+        results=[
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "finished cleanly",
+                "api_calls": 5,
+                "exit_reason": "completed",
+                "truncated": False,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": "cut off mid-work",
+                "api_calls": 250,
+                "exit_reason": "max_iterations",
+                "truncated": True,
+            },
+        ],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "TRUNCATED" in text
+    # The clean task's summary and the truncated one's both render...
+    assert "finished cleanly" in text
+    assert "cut off mid-work" in text
+    # ...but the banner is tied to the truncated task, not the clean one.
+    trunc_pos = text.index("cut off mid-work")
+    clean_pos = text.index("finished cleanly")
+    banner_pos = text.index("TRUNCATED")
+    # The header banner for task 2 appears after task 1's summary.
+    assert banner_pos > clean_pos
+

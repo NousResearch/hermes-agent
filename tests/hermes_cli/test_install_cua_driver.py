@@ -8,8 +8,8 @@ must:
   can call it unconditionally without warning unsupported-platform users.
 * Re-run the installer even when the binary is already on PATH (this is the
   fix for the "we only pulled cua-driver once on enable" complaint).
-* Preserve original ``upgrade=False`` behaviour for the toolset-enable flow:
-  skip if installed, install otherwise, warn on unsupported platforms.
+* For ``upgrade=False``, keep compatible installations, repair old or
+  incomplete installations, and install when missing.
 
 The pre-install arch probe that used to live alongside this function was
 deleted (see top-of-file comment in tools_config.py) — the upstream
@@ -21,11 +21,92 @@ cleanly on missing-arch assets, and the upgrade path uses
 
 from __future__ import annotations
 
+import json
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+
+
+def _runtime_manifest(version="0.20.0", *, omit=None):
+    omit = set(omit or ())
+    required = {
+        "mcp": {"--socket", "--grant"},
+        "serve": {
+            "--socket",
+            "--permission-mode",
+            "--capability-manifest",
+            "--approve-capability-manifest",
+            "--embedded",
+        },
+        "stop": {"--socket"},
+    }
+    return {
+        "binary_version": version,
+        "mcp_invocation": {"command": "/opt/cua-driver", "args": ["mcp"]},
+        "subcommands": [
+            {
+                "name": command,
+                "args": [
+                    {"name": arg}
+                    for arg in sorted(args - omit)
+                ],
+            }
+            for command, args in required.items()
+        ],
+    }
+
+
+class TestCuaDriverRuntimeContract:
+    def test_current_manifest_is_ready(self):
+        from hermes_cli import tools_config
+
+        result = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(_runtime_manifest()),
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=result):
+            state = tools_config._cua_driver_contract_status("/opt/cua-driver")
+
+        assert state == {
+            "ready": True,
+            "binary": "/opt/cua-driver",
+            "version": "0.20.0",
+            "reason": "",
+        }
+
+    @pytest.mark.parametrize("version", ["0.19.4", "bad-version"])
+    def test_old_or_unversioned_driver_needs_repair(self, version):
+        from hermes_cli import tools_config
+
+        result = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(_runtime_manifest(version)),
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=result):
+            state = tools_config._cua_driver_contract_status("/opt/cua-driver")
+
+        assert state["ready"] is False
+        assert state["reason"]
+
+    def test_incomplete_manifest_needs_repair(self):
+        from hermes_cli import tools_config
+
+        result = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                _runtime_manifest(omit={"--approve-capability-manifest"})
+            ),
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=result):
+            state = tools_config._cua_driver_contract_status("/opt/cua-driver")
+
+        assert state["ready"] is False
+        assert "serve --approve-capability-manifest" in state["reason"]
 
 
 class TestInstallCuaDriverUpgrade:
@@ -68,6 +149,11 @@ class TestInstallCuaDriverUpgrade:
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
                                                  if n in {"cua-driver", "curl"} else None), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner, \
              patch("subprocess.run"):
@@ -166,6 +252,11 @@ class TestInstallCuaDriverUpgrade:
              ), \
              patch.object(
                  tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
+             patch.object(
+                 tools_config,
                  "_run_cua_driver_installer",
                  return_value=True,
              ) as runner, \
@@ -236,9 +327,93 @@ class TestInstallCuaDriverUpgrade:
                           side_effect=lambda n: "/usr/local/bin/" + n
                                                  if n in {"cua-driver", "curl"} else None), \
              patch.object(tools_config, "_run_cua_driver_installer") as runner, \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
+             patch.object(
+                 tools_config,
+                 "_repair_cua_driver_autostart_windows",
+                 return_value=True,
+             ), \
              patch("subprocess.run"):
             assert tools_config.install_cua_driver(upgrade=False) is True
             runner.assert_not_called()
+
+    def test_non_upgrade_repairs_incompatible_existing_driver(self):
+        from hermes_cli import tools_config
+
+        incompatible = {
+            "ready": False,
+            "version": "0.19.4",
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+        repaired = {"ready": True, "version": "0.20.0", "reason": ""}
+        with patch.object(
+                 tools_config.shutil,
+                 "which",
+                 side_effect=lambda name: f"/usr/bin/{name}",
+             ), \
+             patch.object(
+                 tools_config,
+                 "_resolved_cua_driver_cmd",
+                 return_value="/usr/bin/cua-driver",
+             ), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 side_effect=[incompatible, repaired],
+             ), \
+             patch.object(
+                 tools_config,
+                 "_run_cua_driver_installer",
+                 return_value=True,
+             ) as runner:
+            assert tools_config.install_cua_driver(upgrade=False) is True
+
+        assert runner.call_args.kwargs["label"] == "Repairing"
+
+    def test_incompatible_explicit_override_is_not_replaced(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/opt/custom/cua-driver")
+        incompatible = {
+            "ready": False,
+            "version": "0.19.4",
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+        with patch.object(
+                 tools_config,
+                 "_resolved_cua_driver_cmd",
+                 return_value="/opt/custom/cua-driver",
+             ), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value=incompatible,
+             ), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner:
+            assert tools_config.install_cua_driver(upgrade=False) is False
+
+        runner.assert_not_called()
+
+    @pytest.mark.parametrize("upgrade", [False, True])
+    def test_missing_explicit_override_does_not_install_standard_driver(
+        self, monkeypatch, upgrade
+    ):
+        from hermes_cli import tools_config
+
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/missing/custom/cua-driver")
+        with patch.object(
+                 tools_config,
+                 "_resolved_cua_driver_cmd",
+                 return_value=None,
+             ), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner:
+            assert tools_config.install_cua_driver(upgrade=upgrade) is False
+
+        runner.assert_not_called()
 
     def test_non_upgrade_without_binary_runs_installer(self):
         from hermes_cli import tools_config
@@ -285,6 +460,11 @@ class TestRequireConfirmedUpdate:
                           return_value="/x/cua-driver"), \
              patch.object(tools_config, "_cua_install_target_writable",
                           return_value=True), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
              patch("tools.computer_use.cua_backend.cua_driver_update_check",
                    return_value=check_state), \
              patch.object(tools_config, "_run_cua_driver_installer",
@@ -337,6 +517,55 @@ class TestRequireConfirmedUpdate:
         ok, runner, _ = self._install(None, require_confirmed=False)
         assert ok is True
         runner.assert_called_once()
+
+    def test_incompatible_driver_repairs_despite_indeterminate_check(self):
+        """Hermes' own version floor is the confirmation. When the installed
+        driver fails the runtime contract, the `hermes update` refresh must
+        repair it even though ``check-update`` can't confirm a newer release
+        (its ~20h cache routinely lags a same-day floor bump — the 0.19.3
+        wedge)."""
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        incompatible = {
+            "ready": False,
+            "version": "0.19.3",
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+        with patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/x/" + n
+                          if n in {"cua-driver", "curl", "powershell"} else None), \
+             patch.object(tools_config, "_resolved_cua_driver_cmd",
+                          return_value="/x/cua-driver"), \
+             patch.object(tools_config, "_cua_install_target_writable",
+                          return_value=True), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 side_effect=[incompatible,
+                              {"ready": True, "version": "0.20.0", "reason": ""}],
+             ), \
+             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+                   return_value=None) as check, \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner, \
+             patch("subprocess.run",
+                   return_value=MagicMock(stdout="cua-driver 0.19.3",
+                                          returncode=0)), \
+             patch.object(tools_config, "_print_success"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config.install_cua_driver(
+                upgrade=True, require_confirmed_update=True
+            )
+
+        assert ok is True
+        runner.assert_called_once()
+        assert runner.call_args.kwargs["label"] == "Repairing"
+        # The confirmed-update gate must not even consult check-update:
+        # the contract failure already confirmed the need.
+        check.assert_not_called()
 
 
 class TestUpdateCheckTimeoutDefaults:
@@ -458,6 +687,11 @@ class TestArchProbeRemoval:
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
                                                  if n in ("cua-driver", "curl", "powershell") else None), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
              patch("urllib.request.urlopen") as urlopen, \
              patch("subprocess.run"), \
              patch.object(tools_config, "_run_cua_driver_installer",
@@ -890,6 +1124,11 @@ class TestConfirmedVersionPinning:
                           return_value="/x/cua-driver"), \
              patch.object(tools_config, "_cua_install_target_writable",
                           return_value=True), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
              patch("tools.computer_use.cua_backend.cua_driver_update_check",
                    return_value=check_state), \
              patch.object(tools_config, "_run_cua_driver_installer",
@@ -1049,7 +1288,10 @@ class TestWindowsAutostartRepair:
         assert captured["cmd"][:4] == [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
         ]
-        repair.assert_called_once_with("cua-driver", verbose=False)
+        repair.assert_called_once_with(
+            r"C:\Users\Ha Trung\AppData\Local\Programs\Cua\cua-driver\bin\cua-driver.exe",
+            verbose=False,
+        )
 
     @pytest.mark.windows_only
     def test_autostart_repair_quotes_username_space_path_via_file_path(self):
@@ -1093,3 +1335,42 @@ class TestWindowsAutostartRepair:
         assert "-ArgumentList @('autostart','enable')" in ps_command
         assert f"$exe = '{driver}'" in ps_command
         assert f"& {driver}" not in ps_command
+
+
+class TestCuaVersionSummary:
+    """`hermes computer-use status` prints one line, whatever the binary says.
+
+    A binary chosen by HERMES_CUA_DRIVER_CMD is under no obligation to answer
+    `--version` the way cua-driver does, and its output used to be spliced
+    verbatim into the status line.
+    """
+
+    @staticmethod
+    def _summary(raw, **kw):
+        from hermes_cli import tools_config
+
+        return tools_config._cua_version_summary(raw, **kw)
+
+    def test_plain_version_passes_through(self):
+        assert self._summary("cua-driver 0.20.0") == "cua-driver 0.20.0"
+
+    def test_multiline_banner_collapses_to_first_line(self):
+        banner = (
+            "Microsoft Windows [Version 10.0.26200.9168]\n"
+            "(c) Microsoft Corporation. All rights reserved.\n"
+            "\n"
+            "C:\\Users\\demo>"
+        )
+        summary = self._summary(banner)
+        assert summary == "Microsoft Windows [Version 10.0.26200.9168]"
+        assert "\n" not in summary
+
+    def test_leading_blank_lines_skipped(self):
+        assert self._summary("\n\n  cua-driver 0.20.0  ") == "cua-driver 0.20.0"
+
+    def test_long_line_is_bounded(self):
+        assert len(self._summary("x" * 500)) == 120
+
+    def test_empty_output_stays_empty(self):
+        assert self._summary("") == ""
+        assert self._summary("   \n  \n") == ""

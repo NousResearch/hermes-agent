@@ -66,6 +66,27 @@ class TestBuildAnthropicClient:
 
 
 
+    def test_opencode_endpoint_gets_attribution_headers(self):
+        """OpenCode identifies clients by request headers, like OpenRouter.
+
+        The OpenAI-wire paths get HTTP-Referer / X-Title / User-Agent from
+        profile.default_headers. The Anthropic Messages route builds its
+        client here and must merge the same set.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-opencode-secret",
+                base_url="https://opencode.ai/zen/go/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            headers = kwargs["default_headers"]
+            assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
+            assert headers["X-Title"] == "Hermes Agent"
+            assert headers["User-Agent"].startswith("HermesAgent/")
+            # Auth branch is unchanged: x-api-key via api_key, betas kept.
+            assert kwargs["api_key"] == "sk-opencode-secret"
+            assert "anthropic-beta" in headers
+
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(

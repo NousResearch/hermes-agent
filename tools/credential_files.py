@@ -275,13 +275,22 @@ def get_skills_directory_mount(
 
     # Mount external skill dirs
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if ext_dir.is_dir():
                 host_path = _safe_skills_path(ext_dir)
                 mounts.append({
                     "host_path": host_path,
                     "container_path": f"{container_base.rstrip('/')}/external_skills/{idx}",
+                })
+        # Trusted project-local skill dirs (repo checkouts). Separate
+        # namespace so container paths stay stable if external_dirs change.
+        for idx, proj_dir in enumerate(get_project_skills_dirs()):
+            if proj_dir.is_dir():
+                host_path = _safe_skills_path(proj_dir)
+                mounts.append({
+                    "host_path": host_path,
+                    "container_path": f"{container_base.rstrip('/')}/project_skills/{idx}",
                 })
     except ImportError:
         pass
@@ -362,7 +371,7 @@ def iter_skills_files(
 
     # Include external skill dirs
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if not ext_dir.is_dir():
                 continue
@@ -371,6 +380,18 @@ def iter_skills_files(
                 if item.is_symlink() or not item.is_file():
                     continue
                 rel = item.relative_to(ext_dir)
+                result.append({
+                    "host_path": str(item),
+                    "container_path": f"{container_root}/{rel}",
+                })
+        for idx, proj_dir in enumerate(get_project_skills_dirs()):
+            if not proj_dir.is_dir():
+                continue
+            container_root = f"{container_base.rstrip('/')}/project_skills/{idx}"
+            for item in proj_dir.rglob("*"):
+                if item.is_symlink() or not item.is_file():
+                    continue
+                rel = item.relative_to(proj_dir)
                 result.append({
                     "host_path": str(item),
                     "container_path": f"{container_root}/{rel}",

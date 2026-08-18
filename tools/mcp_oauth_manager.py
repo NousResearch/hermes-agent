@@ -146,6 +146,80 @@ def _make_hermes_provider_class() -> Optional[type]:
             # clients. See _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
 
+        def _coerce_client_secret_post(self) -> None:
+            """Use client_secret_post when dynamic registration returned a secret.
+
+            Some MCP OAuth providers, notably Supabase, return a
+            ``client_secret`` from dynamic client registration but omit
+            ``token_endpoint_auth_method``. The MCP SDK treats the missing
+            value as public-client auth (``none``), so token exchange omits the
+            secret and Supabase rejects it with ``Required parameter:
+            client_secret``. Coerce the in-memory client info before token and
+            refresh requests.
+            """
+            info = getattr(self.context, "client_info", None)
+            if not info or not getattr(info, "client_secret", None):
+                return
+            method = getattr(info, "token_endpoint_auth_method", None)
+            if method not in (None, "none", ""):
+                return
+            from mcp.shared.auth import OAuthClientInformationFull
+
+            data = info.model_dump(mode="json", exclude_none=True)
+            data["token_endpoint_auth_method"] = "client_secret_post"
+            self.context.client_info = OAuthClientInformationFull.model_validate(data)
+
+        async def _exchange_token_authorization_code(self, *args: Any, **kwargs: Any):
+            self._coerce_client_secret_post()
+            return await super()._exchange_token_authorization_code(*args, **kwargs)
+
+        async def _refresh_token(self):
+            self._coerce_client_secret_post()
+            return await super()._refresh_token()
+
+        async def _handle_token_response(self, response):
+            """Accept any 2xx token response and avoid leaking token bodies in errors."""
+            if 200 <= response.status_code < 300:
+                from mcp.client.auth.utils import handle_token_response_scopes
+                from mcp.client.auth.oauth2 import OAuthTokenError
+                from httpx import HTTPError
+
+                try:
+                    token_response = await handle_token_response_scopes(response)
+                except (HTTPError, OAuthTokenError):
+                    raise OAuthTokenError("Invalid token response") from None
+                self.context.current_tokens = token_response
+                self.context.update_token_expiry(token_response)
+                await self.context.storage.set_tokens(token_response)
+                return
+
+            from mcp.client.auth.oauth2 import OAuthTokenError
+
+            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
+
+        async def _handle_refresh_response(self, response) -> bool:
+            """Accept any 2xx refresh response and avoid logging token bodies."""
+            if not (200 <= response.status_code < 300):
+                logger.warning("Token refresh failed: %s", response.status_code)
+                self.context.clear_tokens()
+                return False
+
+            from mcp.shared.auth import OAuthToken
+            from httpx import HTTPError
+            from pydantic import ValidationError
+
+            try:
+                content = await response.aread()
+                token_response = OAuthToken.model_validate_json(content)
+                self.context.current_tokens = token_response
+                self.context.update_token_expiry(token_response)
+                await self.context.storage.set_tokens(token_response)
+                return True
+            except (HTTPError, ValidationError):
+                logger.warning("Invalid refresh response: %s", response.status_code)
+                self.context.clear_tokens()
+                return False
+
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
 
@@ -233,7 +307,14 @@ def _make_hermes_provider_class() -> Optional[type]:
             builders and response handlers so we track whatever the SDK
             version we're pinned to expects.
             """
-            import httpx  # local import: httpx is an MCP SDK dependency
+            # The SDK's httpx flavour, not Hermes' — mcp 2.0 builds on httpx2,
+            # and `create_oauth_metadata_request` below returns one of *its*
+            # Request objects, which only its own AsyncClient can send. See
+            # tools.mcp_tool.sdk_httpx.
+            from tools.mcp_tool import sdk_httpx
+            httpx = sdk_httpx()
+            if httpx is None:  # pragma: no cover — SDK import would have failed
+                return
             from mcp.client.auth.utils import (
                 build_oauth_authorization_server_metadata_discovery_urls,
                 build_protected_resource_metadata_discovery_urls,
@@ -574,7 +655,12 @@ class MCPOAuthManager:
 
         resolved_port = cfg.get("_resolved_port", 0)
         redirect_handler = _make_redirect_handler(resolved_port)
-        callback_handler = _make_callback_waiter(resolved_port)
+        # mcp 2.0 removed OAuthClientProvider's `timeout` argument, so the
+        # configured `oauth.timeout` now bounds the callback waiter's own poll
+        # loop instead — that is where the browser round-trip is awaited.
+        callback_handler = _make_callback_waiter(
+            resolved_port, timeout=float(cfg.get("timeout", 300))
+        )
 
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
@@ -584,7 +670,6 @@ class MCPOAuthManager:
             storage=storage,
             redirect_handler=redirect_handler,
             callback_handler=callback_handler,
-            timeout=float(cfg.get("timeout", 300)),
         )
 
     def remove(

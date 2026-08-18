@@ -35,6 +35,119 @@ function dataUrlReadMaxBytesFromMb(maxMb) {
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
 
+// Owner-only mode for userData files that carry credentials (the encrypted
+// gateway token in connection.json, and the URL/SSH fields alongside it).
+// connection.json was the odd one out: its two credential-bearing neighbours
+// under userData are already 0600 — desktop-installation.json
+// (desktop-installation.ts) and native-oauth-tokens.json (main.ts
+// `_nativeTokenStoreIo`) — while connection.json was written with no mode at
+// all and landed at the 0644 umask default. This makes the three consistent.
+const SECRET_FILE_MODE = 0o600
+
+// The encoding tag that marks a payload as OS-encrypted. One constant because
+// the writer (encryptDesktopSecret, here) and the reader
+// (decryptDesktopSecret, in main.ts) have to agree on the exact string across
+// a file boundary, and the native-token store round-trips the same shape.
+const SAFE_STORAGE_ENCODING = 'safeStorage'
+
+interface SecretFileFs {
+  chmodSync: typeof fs.chmodSync
+  lstatSync: typeof fs.lstatSync
+  renameSync: typeof fs.renameSync
+  rmSync: typeof fs.rmSync
+  writeFileSync: typeof fs.writeFileSync
+}
+
+interface SecretFileOptions {
+  encoding?: BufferEncoding
+  fs?: SecretFileFs
+  platform?: string
+}
+
+/**
+ * Tighten an existing credential file to owner-only (0600), returning whether
+ * the file now has that mode.
+ *
+ * Exists because `fs.writeFileSync(path, data, { mode })` only applies `mode`
+ * when it CREATES the file — rewriting an existing path silently keeps the old
+ * bits. So a file already on disk at 0644 (every connection.json written
+ * before this change, since that write passed no mode at all) needs an explicit
+ * chmod; a fresh `mode:` alone would never tighten it.
+ *
+ * Guards match `readInstallationId` in desktop-installation.ts, which does the
+ * same job for the sibling userData credential file: only ever chmod a regular
+ * file we own, never a symlink and never another user's file. Without them a
+ * symlink planted at the path would send the chmod to whatever it resolves to.
+ *
+ * POSIX only. Windows has no meaningful chmod (Node maps it to the read-only
+ * bit), and userData there is already ACL'd to the user profile, so we report
+ * success without touching the file rather than flipping it read-only and
+ * breaking the next write.
+ *
+ * Never throws: a chmod can legitimately fail (read-only mount, file owned by
+ * another user), and failing to tighten a file is not a reason to lose the
+ * user's configured gateway.
+ */
+function tightenSecretFileMode(filePath, options: SecretFileOptions = {}) {
+  const fsImpl = options.fs || fs
+  const platform = options.platform || process.platform
+
+  if (platform === 'win32') {
+    return true
+  }
+
+  try {
+    const stat = fsImpl.lstatSync(filePath)
+
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      return false
+    }
+
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+      return false
+    }
+
+    if ((stat.mode & 0o777) === SECRET_FILE_MODE) {
+      return true
+    }
+
+    fsImpl.chmodSync(filePath, SECRET_FILE_MODE)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Atomically write a credential file, owner-only wherever the OS expresses
+ * permissions as mode bits.
+ *
+ * On POSIX the file is owner-only from the moment it exists. On Windows this
+ * only gets the atomic rename: `tightenSecretFileMode` no-ops there (Node maps
+ * chmod to the read-only bit), so the file inherits the userData directory's
+ * ACL rather than an explicit owner-only one. Tightening Windows ACLs is being
+ * handled once, for the Python `_secure_file`, in PR #77527 — the desktop
+ * should follow that rather than start a second ACL story here.
+ *
+ * The temp-then-rename dance is what makes the mode subtle: `renameSync` keeps
+ * the TEMP file's permissions, so writing the temp at the default umask (0644)
+ * hands those bits to the target — and a crashed earlier write can leave a
+ * stale temp file whose existing loose bits `mode:` will not correct. Hence the
+ * unlink of any stale temp (which also drops a planted symlink, so the write
+ * cannot be redirected), the create-time `mode`, and the chmod before the
+ * rename.
+ */
+function writeSecretFileAtomic(targetPath, data, options: SecretFileOptions = {}) {
+  const fsImpl = options.fs || fs
+  const tmp = targetPath + '.tmp'
+
+  fsImpl.rmSync(tmp, { force: true })
+  fsImpl.writeFileSync(tmp, data, { encoding: options.encoding, mode: SECRET_FILE_MODE })
+  tightenSecretFileMode(tmp, options)
+  fsImpl.renameSync(tmp, targetPath)
+}
+
 function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   const fallback =
     Number.isFinite(fallbackMs) && Number(fallbackMs) > 0 ? Math.round(Number(fallbackMs)) : DEFAULT_FETCH_TIMEOUT_MS
@@ -48,12 +161,17 @@ function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   return fallback
 }
 
-function encryptDesktopSecret(value, safeStorageApi) {
+function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?: boolean } = {}) {
   const raw = String(value || '')
 
   if (!raw) {
     return null
   }
+
+  // Opt-in escape hatch for keyring-less Linux (e.g. Hyprland/Sway with no
+  // GNOME Keyring or KWallet): the renderer sets this once the user confirms
+  // the plain-text storage prompt in Settings → Gateway.
+  const allowPlainText = options?.allowPlainText === true
 
   let encryptionAvailable = false
 
@@ -64,15 +182,24 @@ function encryptDesktopSecret(value, safeStorageApi) {
   }
 
   if (!encryptionAvailable) {
+    // Only downgrade to plain text when the user has explicitly opted in;
+    // decryptDesktopSecret returns the raw value for any non-'safeStorage'
+    // encoding, so this round-trips without any decrypt-side change.
+    if (allowPlainText) {
+      return { encoding: 'plain', value: raw }
+    }
+
     throw new Error(
-      'Secure token storage is unavailable, so Hermes Desktop cannot save remote gateway tokens. ' +
-        'Set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment, or enable OS keychain access and try again.'
+      'Secure token storage is unavailable (no OS keyring service was found), so Hermes Desktop cannot save remote gateway tokens. ' +
+        'Either enable an OS keyring (e.g. GNOME Keyring or KWallet providing org.freedesktop.secrets) and try again, ' +
+        'confirm the plain-text storage option when prompted in Settings → Gateway, ' +
+        'or set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment.'
     )
   }
 
   try {
     return {
-      encoding: 'safeStorage',
+      encoding: SAFE_STORAGE_ENCODING,
       value: safeStorageApi.encryptString(raw).toString('base64')
     }
   } catch (error) {
@@ -82,6 +209,69 @@ function encryptDesktopSecret(value, safeStorageApi) {
         'Set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment as a fallback.'
     )
   }
+}
+
+// Keyring-less Linux (e.g. Hyprland/Sway with no GNOME Keyring or KWallet):
+// `--password-store=basic` selects Electron's built-in "basic" backend, but
+// Electron only counts it as available once setUsePlainTextEncryption(true) is
+// called. The caller runs this on whenReady, before createWindow() and anything
+// that could touch safeStorage, so the switch takes effect for the whole run.
+//
+// Semantics are deliberately narrow: only linux, only the exact 'basic' switch
+// value (never 'gnome-libsecret', 'kwallet', '', etc.), and only when the
+// method exists (older/mocked safeStorage may lack it) and does not throw.
+// Anything else is a no-op. Returns true only when it actually flipped the flag,
+// so the caller (and tests) can distinguish "enabled" from "left untouched".
+// Never throws: a failure here is non-fatal — encryption simply stays
+// unavailable and the user can fall back to the plain-text opt-in or the
+// HERMES_DESKTOP_REMOTE_* env vars.
+function enableBasicPasswordStoreEncryption({ platform, passwordStoreSwitch, safeStorageApi }: any = {}) {
+  if (platform !== 'linux' || passwordStoreSwitch !== 'basic') {
+    return false
+  }
+
+  try {
+    if (typeof safeStorageApi?.setUsePlainTextEncryption === 'function') {
+      safeStorageApi.setUsePlainTextEncryption(true)
+
+      return true
+    }
+  } catch {
+    // Non-fatal: fall through and report that encryption was not enabled.
+  }
+
+  return false
+}
+
+// The token-persistence seam shared by the connection-config save/apply IPC
+// path. Given the incoming edit, decide what token block to persist:
+//   - No incoming token: keep the existing block's token untouched (edits that
+//     don't retype the token must not clear it).
+//   - persistToken false (the transient test-connection path): store the raw
+//     value as a plain block WITHOUT touching secure storage — it is never
+//     written to disk, so there is nothing to protect.
+//   - Otherwise: run the incoming token through the injected encryptSecret
+//     (encryptDesktopSecret in production), forwarding the plain-text opt-in.
+//
+// The plain-text opt-in is coerced with `=== true` HERE so the strictness lives
+// in one place: a truthy-but-not-true value (1, 'yes', etc.) must NOT silently
+// enable plain-text storage. Callers pass `allowPlainText` through raw.
+function resolvePersistedRemoteToken({
+  incomingToken,
+  persistToken,
+  existingToken,
+  allowPlainText,
+  encryptSecret
+}: any = {}) {
+  if (!incomingToken) {
+    return existingToken
+  }
+
+  if (!persistToken) {
+    return { encoding: 'plain', value: incomingToken }
+  }
+
+  return encryptSecret(incomingToken, { allowPlainText: allowPlainText === true })
 }
 
 function sensitiveFileBlockReason(filePath) {
@@ -354,13 +544,19 @@ export {
   DATA_URL_READ_MIN_MAX_MB,
   dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
+  enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
   readFileDataUrlForIpc,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
+  resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
+  SAFE_STORAGE_ENCODING,
+  SECRET_FILE_MODE,
   sensitiveFileBlockReason,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES
+  TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  tightenSecretFileMode,
+  writeSecretFileAtomic
 }

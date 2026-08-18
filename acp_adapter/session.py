@@ -56,7 +56,18 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
     elif re.match(r"^/mnt/[A-Za-z]/", expanded):
         expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
 
-    return os.path.normpath(expanded)
+    # Resolve symlink aliases so equivalent spellings of the same directory
+    # compare equal — macOS reports editor workspaces as ``/var/...`` while
+    # sessions get stored under ``/private/var/...`` (and ``/tmp`` vs
+    # ``/private/tmp``), which made ACP history filters silently drop a
+    # workspace's own sessions. ``os.path.realpath`` is lexical for missing
+    # paths (strict=False), so cwds that don't exist on this host — e.g.
+    # WSL-translated Windows drives — keep the previous normpath behavior.
+    # Ported from PrimeIntellect-ai/prime-agent#628.
+    try:
+        return os.path.realpath(expanded)
+    except OSError:
+        return os.path.normpath(expanded)
 
 
 def _build_session_title(title: Any, preview: Any, cwd: str | None) -> str:

@@ -1,8 +1,9 @@
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { useStore } from '@nanostores/react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type * as React from 'react'
-import { type FC, useCallback, useRef } from 'react'
+import { type FC, useEffect, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -10,18 +11,23 @@ import { type SidebarListRow } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
+import { $sessionListDensity } from '@/store/session-list-density'
 
 import { SidebarDateDivider } from './chrome'
 import { SidebarSessionRow } from './session-row'
+import { sessionRowEstimate } from './session-row-details'
 
 interface SessionRowCommonProps {
   branchStem?: string
+  card?: boolean
   isPinned: boolean
   isSelected: boolean
+  unread: boolean
   onArchive: () => void
   onBranch?: () => void
   onDelete: () => void
   onPin: () => void
+  onToggleUnread: () => void
   onResume: () => void
   reorderable?: boolean
   showProfile?: boolean
@@ -29,6 +35,8 @@ interface SessionRowCommonProps {
 
 export interface VirtualSessionListProps {
   activeSessionId: null | string
+  /** Render every session row as the three-line inbox card. */
+  card?: boolean
   className?: string
   /** Hover-revealed control for date dividers (the group-level "+"). */
   dividerAction?: React.ReactNode
@@ -38,16 +46,22 @@ export interface VirtualSessionListProps {
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
+  onToggleUnread: (sessionId: string) => void
   pinned: boolean
   showProfileTags?: boolean
   sortable: boolean
 }
 
-const ROW_ESTIMATE_PX = 28
+// Matches the card's typical rendered height (four lines when a preview
+// exists) so long card lists don't jump under the scroll thumb before
+// self-measurement catches up.
+const CARD_ROW_ESTIMATE_PX = 66
+const DIVIDER_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
 
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
+  card = false,
   className,
   dividerAction,
   rows: listRows,
@@ -56,6 +70,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onDeleteSession,
   onResumeSession,
   onTogglePin,
+  onToggleUnread,
   pinned,
   showProfileTags = false,
   sortable
@@ -63,10 +78,19 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const density = useStore($sessionListDensity)
 
   const virtualizer = useVirtualizer({
     count: listRows.length,
-    estimateSize: () => ROW_ESTIMATE_PX,
+    estimateSize: (index: number) => {
+      const row = listRows[index]
+
+      if (row?.kind === 'divider') {
+        return DIVIDER_ESTIMATE_PX
+      }
+
+      return card ? CARD_ROW_ESTIMATE_PX : sessionRowEstimate(density)
+    },
     getItemKey: index => {
       const row = listRows[index]
 
@@ -78,10 +102,12 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     overscan: OVERSCAN_ROWS
   })
 
+  // Rows are measured after paint, so changing density must invalidate cached
+  // measurements from the previous mode before off-screen rows re-enter.
+  useEffect(() => virtualizer.measure(), [density, virtualizer])
+
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()
-  const paddingTop = virtualItems[0]?.start ?? 0
-  const paddingBottom = Math.max(0, totalSize - (virtualItems[virtualItems.length - 1]?.end ?? 0))
 
   const rows = virtualItems.map(virtualItem => {
     const row = listRows[virtualItem.index]
@@ -90,16 +116,23 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       return null
     }
 
+    const itemStyle: React.CSSProperties = {
+      left: 0,
+      position: 'absolute',
+      top: 0,
+      transform: `translateY(${virtualItem.start}px)`,
+      width: '100%'
+    }
+
     // Dividers are non-sortable, self-measured rows interleaved with sessions.
     if (row.kind === 'divider') {
       return (
-        <SidebarDateDivider
-          action={dividerAction}
-          data-index={virtualItem.index}
-          key={row.key}
-          label={'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)}
-          ref={virtualizer.measureElement}
-        />
+        <div data-index={virtualItem.index} key={row.key} ref={virtualizer.measureElement} style={itemStyle}>
+          <SidebarDateDivider
+            action={dividerAction}
+            label={'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)}
+          />
+        </div>
       )
     }
 
@@ -108,33 +141,28 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
     const commonProps: SessionRowCommonProps = {
       branchStem,
+      card,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
+      onToggleUnread: () => onToggleUnread(session.id),
       onResume: () => onResumeSession(session.id),
       reorderable,
-      showProfile: showProfileTags
+      showProfile: showProfileTags,
+      unread: session.unread === true
     }
 
     return reorderable ? (
-      <VirtualSortableRow
-        index={virtualItem.index}
-        key={session.id}
-        measureRef={virtualizer.measureElement}
-        rowProps={commonProps}
-        session={session}
-      />
+      <div data-index={virtualItem.index} key={session.id} ref={virtualizer.measureElement} style={itemStyle}>
+        <VirtualSortableRow rowProps={commonProps} session={session} />
+      </div>
     ) : (
-      <SidebarSessionRow
-        {...commonProps}
-        data-index={virtualItem.index}
-        key={session.id}
-        ref={virtualizer.measureElement}
-        session={session}
-      />
+      <div data-index={virtualItem.index} key={session.id} ref={virtualizer.measureElement} style={itemStyle}>
+        <SidebarSessionRow {...commonProps} session={session} />
+      </div>
     )
   })
 
@@ -143,13 +171,25 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   // just consume that context via useSortable.
   return (
     <div
-      className={cn(
-        'scrollbar-fade relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain',
-        className
-      )}
+      // scrollbar-fade, NOT scrollbar-overlay: overlay opts out of the themed
+      // thin scrollbar entirely, and on Windows (no native overlay scrollbars)
+      // Chromium then paints the classic always-visible gutter. The themed
+      // fade bar reserves its 4px on every platform but stays invisible until
+      // hover — and the wrapper no longer stacks a second scroller, so the
+      // double-gutter this class change was reaching for is already gone.
+      //
+      // No `overscroll-contain` here: this scroller is NESTED inside the
+      // sidebar's own scroll container (index.tsx SCROLL_Y). Containing
+      // overscroll on the inner scroller swallowed wheel events at its scroll
+      // boundaries instead of chaining them to the outer sidebar scroller,
+      // which read as a wheel dead-zone mid-list once 25+ sessions
+      // virtualized (#84964) — the scrollbar still dragged, only the wheel
+      // died. The outer sidebar scroller keeps its own overscroll-contain, so
+      // the gesture still never escapes the sidebar.
+      className={cn('scrollbar-fade relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto', className)}
       ref={scrollerRef}
     >
-      <div className="grid gap-px" style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>
+      <div className="relative" style={{ height: `${totalSize}px` }}>
         {rows}
       </div>
     </div>
@@ -157,33 +197,19 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 }
 
 interface VirtualSortableRowProps {
-  index: number
-  measureRef: (node: Element | null) => void
   rowProps: SessionRowCommonProps
   session: SessionInfo
 }
 
-function VirtualSortableRow({ index, measureRef, rowProps, session }: VirtualSortableRowProps) {
+function VirtualSortableRow({ rowProps, session }: VirtualSortableRowProps) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: session.id })
-
-  // Merge dnd-kit's setNodeRef with the virtualizer's measureElement so
-  // the row participates in both DnD hit-testing and TanStack height
-  // measurement.
-  const refMerged = useCallback(
-    (node: HTMLDivElement | null) => {
-      setNodeRef(node)
-      measureRef(node)
-    },
-    [measureRef, setNodeRef]
-  )
 
   return (
     <SidebarSessionRow
       {...rowProps}
-      data-index={index}
       dragging={isDragging}
       dragHandleProps={{ ...attributes, ...listeners }}
-      ref={refMerged}
+      ref={setNodeRef}
       reorderable
       session={session}
       style={{ transform: CSS.Transform.toString(transform), transition }}

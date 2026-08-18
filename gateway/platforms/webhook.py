@@ -42,7 +42,7 @@ import subprocess
 import sys
 import time
 from collections import deque
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 try:
     from aiohttp import web
@@ -462,6 +462,36 @@ class WebhookAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
+
+    def toolsets_for_source(self, source) -> Optional[List[str]]:
+        """Per-route toolset override.
+
+        Webhook session chat_ids are ``webhook:{route}:{delivery_id}``.
+        When the matching route config carries a ``toolsets`` list, that list
+        replaces the platform-level ``platform_toolsets.webhook`` resolution
+        for this run only. Routes without the key keep the platform default
+        (the intentionally constrained webhook-safe toolset), so a single
+        trusted route (e.g. a localhost monitoring push) can be granted
+        ``terminal`` without widening every other webhook route.
+
+        Set via ``platforms.webhook.extra.routes.<name>.toolsets`` in
+        config.yaml or a ``toolsets`` key on a subscription in
+        ``webhook_subscriptions.json`` (manual edit — deliberately NOT
+        exposed through `hermes webhook subscribe`, so an agent-created
+        subscription cannot self-grant elevated tools).
+        """
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        parts = chat_id.split(":", 2)
+        if len(parts) < 2 or parts[0] != "webhook":
+            return None
+        route_config = self._routes.get(parts[1])
+        if not isinstance(route_config, dict):
+            return None
+        toolsets = route_config.get("toolsets")
+        if not isinstance(toolsets, list) or not toolsets:
+            return None
+        cleaned = [str(t).strip() for t in toolsets if str(t).strip()]
+        return cleaned or None
 
     # ------------------------------------------------------------------
     # HTTP handlers
@@ -1036,7 +1066,7 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, Linear, generic HMAC-SHA256)."""
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -1061,6 +1091,18 @@ class WebhookAdapter(BasePlatformAdapter):
                 timestamp=svix_timestamp,
                 signature_header=svix_signature,
             )
+
+        # Linear: linear-signature = <hex HMAC-SHA256 of the raw body, keyed
+        # by the webhook signing key>. Linear's documented scheme signs the
+        # body only (no timestamp binding), so this mirrors it exactly;
+        # without this branch every Linear delivery to a secret-configured
+        # route was rejected as unrecognized (#87348).
+        linear_sig = _header("linear-signature")
+        if linear_sig:
+            expected_linear = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return _hmac_str_equal(linear_sig, expected_linear)
 
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
         gh_sig = request.headers.get("X-Hub-Signature-256", "")

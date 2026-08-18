@@ -21,7 +21,9 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
 
@@ -45,6 +47,7 @@ from agent.models_dev import (
     get_model_info,
     list_provider_models,
 )
+from utils import base_url_host_matches, base_url_hostname
 
 # Providers whose picker model list should NOT be capped by max_models.
 # OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
@@ -1651,7 +1654,7 @@ def switch_model(
         is_custom = (
             current_provider in {"custom", "local"}
             or current_provider.startswith("custom:")
-            or ("localhost" in _base or "127.0.0.1" in _base)
+            or base_url_hostname(_base) in ("localhost", "127.0.0.1")
         )
 
         if (
@@ -1911,10 +1914,10 @@ def switch_model(
         base_url = normalize_opencode_base_url(target_provider, api_mode, base_url)
 
     # --- Get capabilities (legacy) ---
-    capabilities = get_model_capabilities(target_provider, new_model)
+    capabilities = get_model_capabilities(target_provider, new_model, allow_network=True)
 
     # --- Get full model info from models.dev ---
-    model_info = get_model_info(target_provider, new_model)
+    model_info = get_model_info(target_provider, new_model, allow_network=True)
 
     # --- Collect warnings ---
     warnings: list[str] = []
@@ -2053,6 +2056,262 @@ def _scoped_key_env(name: str) -> str:
         return ""
 
 
+# --- Parallel prefetch for provider model catalogs -----------------------
+#
+# When the 1h disk cache lapses (or on first cold open), list_authenticated_providers()
+# calls cached_provider_model_ids() serially for each authed provider.  Each call
+# that misses the cache blocks on a live /v1/models HTTP round-trip (1-8s per
+# provider depending on endpoint latency).  With 10+ authed providers the
+# cumulative serial blocking time is 15-30+ seconds.
+#
+# This prefetch function runs those same cached_provider_model_ids() calls in
+# parallel via ThreadPoolExecutor before the main picker build loop starts.
+# The main loop then hits warm cache entries instead of blocking on live
+# fetches.  Providers whose cache was already fresh (SWR or within TTL) are
+# skipped entirely — no wasted network calls.
+#
+# Net effect on a 13-provider setup with an expired cache:
+#   Before: ~20s serial blocking (sum of all provider latencies)
+#   After:  ~8s parallel (max single provider latency), rest served from cache
+
+_PARALLEL_PREFETCH_WORKERS = 8
+
+
+def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
+    """Fetch model catalogs for multiple providers in parallel.
+
+    Only providers whose cache entry is stale or missing are fetched; fresh
+    entries are skipped to avoid unnecessary network calls.  Each worker uses
+    :func:`update_provider_cache_entry` (thread-safe) to persist its result,
+    so concurrent writes to ``provider_models_cache.json`` don't clobber each
+    other.
+
+    :param provider_slugs: Hermes provider IDs to prefetch (e.g. ``["openrouter",
+        "anthropic", "deepseek"]``).  Unknown providers are silently skipped.
+    """
+    from hermes_cli.models import cached_provider_model_ids
+
+    # Quick-stale-check: skip providers whose cache is already fresh so we
+    # don't waste network calls on a warm cache.  We check staleness the same
+    # way cached_provider_model_ids does internally: load the cache, compare
+    # age to TTL.  This is a read-only check — if the cache file changes
+    # between this check and the actual fetch, cached_provider_model_ids will
+    # still do the right thing (it re-reads the cache internally).
+    from hermes_cli.models import (
+        _load_provider_models_cache,
+        _credential_fingerprint,
+        _PROVIDER_MODELS_CACHE_TTL,
+        normalize_provider,
+    )
+
+    now = time.time()
+    stale_slugs: list[str] = []
+    cache = _load_provider_models_cache()
+    for slug in provider_slugs:
+        normalized = normalize_provider(slug) or (slug or "")
+        if not normalized:
+            continue
+        entry = cache.get(normalized)
+        fp = _credential_fingerprint(normalized)
+        if (
+            isinstance(entry, dict)
+            and entry.get("fp") == fp
+            and isinstance(entry.get("models"), list)
+            and entry["models"]
+        ):
+            age = now - float(entry.get("at", 0))
+            if age < _PROVIDER_MODELS_CACHE_TTL:
+                continue  # fresh, skip
+        stale_slugs.append(normalized)
+
+    if not stale_slugs:
+        return
+
+    import concurrent.futures
+
+    def _fetch_one(slug: str) -> None:
+        try:
+            models = cached_provider_model_ids(slug, force_refresh=True)
+            # cached_provider_model_ids already persists the result, but in a
+            # non-locked read-modify-write.  Re-persist via the thread-safe
+            # path to guarantee no lost writes under concurrency.
+            if models:
+                from hermes_cli.models import update_provider_cache_entry
+                update_provider_cache_entry(slug, models)
+        except Exception:
+            pass  # best-effort; picker falls back to curated list
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(_PARALLEL_PREFETCH_WORKERS, len(stale_slugs)),
+        thread_name_prefix="model-cache-prefetch",
+    ) as executor:
+        list(executor.map(_fetch_one, stale_slugs))
+
+
+def _collect_authed_provider_slugs(
+    models_dev_data: dict,
+    curated: dict[str, list[str]],
+    excluded: list[str],
+) -> list[str]:
+    """Quick-scan which providers have credentials, without fetching model lists.
+
+    Mirrors the credential-check logic from sections 1, 2, and 2b of
+    :func:`list_authenticated_providers` but **only** collects the provider
+    slugs — it never calls ``cached_provider_model_ids``.  The returned list
+    is consumed by :func:`_prefetch_provider_models_parallel` to warm the disk
+    cache in parallel before the serial picker build loop starts.
+
+    :param models_dev_data: The models.dev registry dict (from ``fetch_models_dev()``).
+    :param curated: The curated model-lists dict (``_PROVIDER_MODELS`` + extras).
+    :param excluded: Provider slugs to exclude (from ``model_catalog.excluded_providers``).
+    :returns: List of normalized provider slugs that have credentials.
+    """
+    import os
+    from agent.models_dev import PROVIDER_TO_MODELS_DEV
+    from hermes_cli.auth import PROVIDER_REGISTRY, _load_auth_store
+    from hermes_cli.providers import HERMES_OVERLAYS, ALIASES as _PROVIDER_ALIAS_TABLE
+    from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS, CANONICAL_PROVIDERS
+
+    _excluded_set = {str(p).strip().lower() for p in excluded if p}
+    slugs: list[str] = []
+    seen: set[str] = set()
+
+    # --- Section 1: Hermes-mapped providers (PROVIDER_TO_MODELS_DEV) ---
+    for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+        _alias_target = _PROVIDER_ALIAS_TABLE.get(hermes_id)
+        if (
+            _alias_target
+            and _alias_target != hermes_id
+            and _alias_target in _AGG_PROVIDERS
+        ):
+            continue
+        _canonical = hermes_id
+        try:
+            from providers import get_provider_profile as _gpp
+            _prof = _gpp(hermes_id)
+            if _prof is not None:
+                _canonical = _prof.name
+        except Exception:
+            pass
+        if _canonical != hermes_id:
+            continue
+        if hermes_id.lower() in seen:
+            continue
+        if hermes_id.lower() in _excluded_set or mdev_id.lower() in _excluded_set:
+            continue
+        pdata = models_dev_data.get(mdev_id)
+        if not isinstance(pdata, dict):
+            continue
+        pconfig = PROVIDER_REGISTRY.get(hermes_id)
+        if pconfig and pconfig.auth_type != "api_key":
+            continue
+        from hermes_cli.auth import is_runtime_provider_routable
+        if not is_runtime_provider_routable(hermes_id):
+            continue
+        if pconfig and pconfig.api_key_env_vars:
+            env_vars = list(pconfig.api_key_env_vars)
+        else:
+            env_vars = pdata.get("env", [])
+            if not isinstance(env_vars, list):
+                continue
+        has_creds = any(_scoped_key_env(ev) for ev in env_vars)
+        if not has_creds:
+            try:
+                store = _load_auth_store()
+                raw_pool_present = bool(
+                    store and store.get("credential_pool", {}).get(hermes_id)
+                )
+                if raw_pool_present:
+                    has_creds = _credential_pool_is_usable(
+                        hermes_id, raw_pool_present=True
+                    )
+            except Exception:
+                pass
+        if has_creds:
+            slugs.append(hermes_id)
+            seen.add(hermes_id.lower())
+
+    # --- Section 2: Hermes-only providers (HERMES_OVERLAYS) ---
+    _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
+    for pid, overlay in HERMES_OVERLAYS.items():
+        if pid.lower() in seen:
+            continue
+        hermes_slug = _mdev_to_hermes.get(pid, pid)
+        if hermes_slug.lower() in seen:
+            continue
+        if pid.lower() in _excluded_set or hermes_slug.lower() in _excluded_set:
+            continue
+        has_creds = False
+        if overlay.auth_type == "aws_sdk":
+            # Skip AWS SDK providers in prefetch — credential detection is heavier
+            continue
+        elif overlay.auth_type == "vertex":
+            try:
+                from agent.vertex_adapter import has_vertex_credentials
+                has_creds = has_vertex_credentials()
+            except Exception:
+                pass
+        elif overlay.extra_env_vars:
+            has_creds = any(_scoped_key_env(ev) for ev in overlay.extra_env_vars)
+        if not has_creds and overlay.auth_type == "api_key":
+            for _key in (pid, hermes_slug):
+                pcfg = PROVIDER_REGISTRY.get(_key)
+                if pcfg and pcfg.api_key_env_vars:
+                    if any(_scoped_key_env(ev) for ev in pcfg.api_key_env_vars):
+                        has_creds = True
+                        break
+        if not has_creds:
+            try:
+                store = _load_auth_store()
+                providers_store = store.get("providers", {}) if store else {}
+                if pid in providers_store or hermes_slug in providers_store:
+                    has_creds = True
+            except Exception:
+                pass
+        if not has_creds:
+            try:
+                if _credential_pool_is_usable(hermes_slug):
+                    has_creds = True
+            except Exception:
+                pass
+        if has_creds:
+            slugs.append(hermes_slug)
+            seen.add(pid.lower())
+            seen.add(hermes_slug.lower())
+
+    # --- Section 2b: Canonical providers cross-check ---
+    for _cp in CANONICAL_PROVIDERS:
+        if _cp.slug.lower() in seen:
+            continue
+        if _cp.slug.lower() in _excluded_set:
+            continue
+        _cp_config = PROVIDER_REGISTRY.get(_cp.slug)
+        _cp_has_creds = False
+        if _cp_config and _cp_config.api_key_env_vars:
+            _cp_has_creds = any(_scoped_key_env(ev) for ev in _cp_config.api_key_env_vars)
+        if not _cp_has_creds:
+            try:
+                _cp_store = _load_auth_store()
+                _cp_providers_store = _cp_store.get("providers", {}) if _cp_store else {}
+                if _cp.slug in _cp_providers_store:
+                    _cp_has_creds = True
+            except Exception:
+                pass
+        if not _cp_has_creds:
+            try:
+                if _credential_pool_is_usable(_cp.slug):
+                    _cp_has_creds = True
+            except Exception:
+                pass
+        if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
+            continue  # skip AWS SDK in prefetch
+        if _cp_has_creds:
+            slugs.append(_cp.slug)
+            seen.add(_cp.slug.lower())
+
+    return slugs
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -2127,7 +2386,6 @@ def list_authenticated_providers(
             clear_provider_models_cache()
         except Exception:
             pass
-
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -2256,6 +2514,29 @@ def list_authenticated_providers(
         if not live and is_current_lmstudio and current_model:
             live = [current_model]
         curated["lmstudio"] = live
+
+    # --- Parallel cache prefetch ---------------------------------------------
+    # The serial loops below (sections 1, 2, 2b) each call
+    # cached_provider_model_ids(slug) which blocks on a live /v1/models HTTP
+    # round-trip when the disk cache is stale or missing.  With many authed
+    # providers those serial round-trips stack to 15-30s on a cold/expired
+    # cache.  Pre-scanning which providers have credentials (without fetching
+    # their model lists) and warming their cache entries in parallel makes
+    # the subsequent serial calls hit fresh cache entries instead.
+    #
+    # Skipped entirely when refresh=True (the serial path already force-refreshes)
+    # and when there are 3 or fewer authed providers (serial is fast enough;
+    # avoids thread-pool overhead for the common 1-2 provider case).
+    _prefetch_slugs: list[str] = []
+    if not refresh:
+        _prefetch_slugs = _collect_authed_provider_slugs(
+            data, curated, excluded_providers or []
+        )
+    if len(_prefetch_slugs) > 3:
+        try:
+            _prefetch_provider_models_parallel(_prefetch_slugs)
+        except Exception:
+            pass  # best-effort; serial path still works as fallback
 
     # --- 1. Check Hermes-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
@@ -2798,7 +3079,7 @@ def list_authenticated_providers(
             # explicit models: dict — avoid a misleading zero count in /model.
             if not models_list:
                 url_lower = str(api_url).strip().lower()
-                if "api.openai.com" in url_lower:
+                if base_url_host_matches(url_lower, "api.openai.com"):
                     fb = curated.get("openai") or []
                     if fb:
                         models_list = list(fb)

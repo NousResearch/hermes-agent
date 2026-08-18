@@ -23,6 +23,17 @@ vi.mock('@/lib/query-client', () => ({
   invalidateProfileScopedQueries: vi.fn()
 }))
 
+vi.mock(import('@/store/profile'), async importOriginal => {
+  const actual = await importOriginal()
+
+  return {
+    ...actual,
+    invalidateProfileListFetches: vi.fn()
+  }
+})
+
+const { invalidateProfileListFetches } = await import('@/store/profile')
+
 describe('wipeSessionListsForGatewaySwitch', () => {
   beforeEach(() => {
     $gatewaySwitching.set(false)
@@ -57,5 +68,14 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+  })
+
+  it('strands in-flight profile-list fetches so the old backend cannot repaint the rail (#85731)', () => {
+    // The soft re-home moves /api/profiles routing to the NEW backend; a
+    // response still in flight from the previous one must be invalidated
+    // here, in the same wipe every connection/mode apply funnels through.
+    wipeSessionListsForGatewaySwitch()
+
+    expect(invalidateProfileListFetches).toHaveBeenCalled()
   })
 })

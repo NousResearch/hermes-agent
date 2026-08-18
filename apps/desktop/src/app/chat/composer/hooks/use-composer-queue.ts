@@ -11,6 +11,7 @@ import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  isSteerableEntry,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
@@ -35,6 +36,7 @@ interface UseComposerQueueArgs {
   focusInput: () => void
   loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
   onCancel: ChatBarProps['onCancel']
+  onSteer: ChatBarProps['onSteer']
   onSubmit: ChatBarProps['onSubmit']
   queueEditRef: RefObject<QueueEditState | null>
   queueSessionKey: ChatBarProps['queueSessionKey']
@@ -59,6 +61,7 @@ export function useComposerQueue({
   focusInput,
   loadIntoComposer,
   onCancel,
+  onSteer,
   onSubmit,
   queueEditRef,
   queueSessionKey,
@@ -283,6 +286,46 @@ export function useComposerQueue({
     [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
   )
 
+  // Deliver a queued entry as a mid-turn redirect — the queue-panel sibling of
+  // the composer's steer-on-Enter. No interrupt, no drain lock: a redirect
+  // rides the live turn (the gateway either restarts the active request with
+  // its displayed context or waits for the current tool boundary), so the turn
+  // keeps flowing and the remaining queue is untouched. Only meaningful while
+  // busy — idle has no turn to redirect, and `sendQueuedNow` already covers it.
+  const steerQueuedNow = useCallback(
+    async (id: string): Promise<boolean> => {
+      if (!onSteer || !busy || !activeQueueSessionKey || id === queueEditRef.current?.entryId) {
+        return false
+      }
+
+      const entry = getQueuedPrompts(activeQueueSessionKey).find(e => e.id === id)
+
+      if (!entry || !isSteerableEntry(entry)) {
+        return false
+      }
+
+      triggerHaptic('submit')
+
+      const accepted = await Promise.resolve(onSteer(entry.text))
+
+      // Rejected (turn already settling, gateway said no): leave the entry
+      // queued exactly where it was — the settle drain picks it up, so the
+      // words are never lost. Only a delivered redirect consumes the entry.
+      if (!accepted) {
+        return false
+      }
+
+      drainFailuresRef.current.delete(id)
+      removeQueuedPrompt(activeQueueSessionKey, id)
+      // A steer is the same "keep it moving" intent as a manual send — a park
+      // from an earlier Stop must not hold back what's left of the queue.
+      unparkQueuedPrompts(activeQueueSessionKey)
+
+      return true
+    },
+    [activeQueueSessionKey, busy, onSteer, queueEditRef]
+  )
+
   // Edge-independent auto-drain: send the head whenever the session is idle and
   // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
   // a stale-session 404) can't strand the entry permanently nor spin-loop. The
@@ -378,6 +421,7 @@ export function useComposerQueue({
     queueParked,
     queuedPrompts,
     sendQueuedNow,
+    steerQueuedNow,
     stepQueuedEdit
   }
 }

@@ -18,6 +18,12 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Synthetic error code used when the OpenAI SDK rejects a provider's SSE
+# ``data:`` field before Hermes receives a completion chunk.  Keeping this
+# distinct from generic JSON parse failures lets the classifier make narrow,
+# provider-stream-specific recovery decisions without inventing an HTTP status.
+PROVIDER_STREAM_NON_JSON_ERROR_CODE = "provider_stream_non_json_data"
+
 
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
@@ -96,6 +102,15 @@ class ClassifiedError:
     def is_auth(self) -> bool:
         return self.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
 
+    @property
+    def billing_unverified(self) -> bool:
+        """True when a ``billing`` verdict rests on an ambiguous body.
+
+        Anthropic's "out of extra usage" 400 can also be a content-filter
+        rejection (#82154); surfaces must hedge rather than assert exhaustion.
+        """
+        return bool(self.error_context.get("billing_unverified"))
+
 
 
 # ── Provider-specific patterns ──────────────────────────────────────────
@@ -108,6 +123,8 @@ _BILLING_PATTERNS = [
     "credit balance",
     "credits exhausted",
     "credits have been exhausted",
+    "requires available credits",
+    "account balance is too low",
     "no usable credits",
     "top up your credits",
     "payment required",
@@ -122,6 +139,25 @@ _BILLING_PATTERNS = [
     "model_not_supported_on_free_tier",
     "not available on the free tier",
 ]
+
+# Billing-pattern matches that are NOT proof of billing exhaustion. Anthropic
+# returns the identical "out of extra usage" body on a subscription OAuth
+# token both when the overage bucket is genuinely depleted AND when its
+# server-side content filter rejects part of the request (#82154) — the two
+# are indistinguishable from the response. Classification stays ``billing``
+# (rotation + fallback remain the right recovery either way), but the
+# ambiguity is carried in ``error_context`` so downstream surfaces hedge
+# instead of asserting exhaustion as fact, and the credential pool applies a
+# short cooldown instead of the one-hour billing bench (a content-filter
+# rejection leaves the credential perfectly healthy).
+_UNVERIFIED_BILLING_PATTERNS = ("out of extra usage",)
+
+
+def _billing_ambiguity_context(error_msg: str) -> Dict[str, Any]:
+    """error_context marking a billing verdict as unverified (see above)."""
+    if any(p in error_msg for p in _UNVERIFIED_BILLING_PATTERNS):
+        return {"billing_unverified": True, "possible_content_filter": True}
+    return {}
 
 # xAI's explicit Grok credit-exhaustion code. Keep the HTTP 403 special case
 # provider-scoped: other providers' generic billing codes historically remain
@@ -381,6 +417,12 @@ def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
 # loop stops looping.  The empty-stub creation is the root cause (fixed in
 # chat_completion_helpers); this pattern stops the misclassification symptom
 # for transcripts that already contain a poisoned stub.
+# Qwen/vLLM chat-template raise_exception("No user query found in messages")
+# — shared between _INVALID_MESSAGE_BODY_PATTERNS (→ format_error) and the
+# llama.cpp grammar exclusion guard below. Keeping a single constant prevents
+# the two sites from silently drifting if the phrase is ever changed.
+_NO_USER_QUERY_SIGNAL = "no user query found"
+
 _INVALID_MESSAGE_BODY_PATTERNS = [
     "must have non-empty content",
     "messages must have non-empty",
@@ -388,6 +430,15 @@ _INVALID_MESSAGE_BODY_PATTERNS = [
     "text content blocks must be non-empty",
     "content field is required",
     "messages: at least one message is required",
+    # Qwen / vLLM chat templates raise this when the request has no surviving
+    # non-empty user turn (oversized session truncation, compression that
+    # dropped the only user message, or a resumed lineage that opens with
+    # assistant/tool). Deterministic — compression cannot invent a user
+    # query the template already rejected. Fail fast as format_error so we
+    # do not thrash the compression loop or mis-route into llama.cpp
+    # grammar recovery when local engines wrap the raise_exception as
+    # applyPromptTemplate / "Unable to generate parser for this template".
+    _NO_USER_QUERY_SIGNAL,
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -524,6 +575,43 @@ _TIMEOUT_MESSAGE_PATTERNS = [
     "upstream timed out",
 ]
 
+# Connection-establishment / DNS failure message patterns.  These surface
+# when the exception TYPE is generic (RuntimeError/Exception from a local
+# shim, MCP bridge, subprocess wrapper, or an SDK that re-raises without
+# chaining) so the _TRANSPORT_ERROR_TYPES check never fires, and the error
+# carries no HTTP status.  Without message-level matching they fall through
+# to FailoverReason.unknown, which misses the transport eager-fallback path
+# in the retry loop (unknown retries the same dead endpoint for the full
+# budget before fallback).  Ported from anomalyco/opencode#40707, which hit
+# the same bug shape: serialized midstream errors matched by type only.
+#
+# Deliberately EXCLUDES mid-stream disconnect strings ("connection reset by
+# peer", "peer closed connection", "unexpected eof", "socket hang up") —
+# those belong to _SERVER_DISCONNECT_PATTERNS, whose classification step
+# runs later and routes large sessions to context-overflow compression.
+# A connection that was never established cannot be a server-side overflow
+# rejection, so these are safe to classify as plain retryable transport.
+_CONNECTION_MESSAGE_PATTERNS = [
+    # TCP connect failures
+    "connection refused",
+    "econnrefused",
+    "no route to host",
+    "network is unreachable",
+    "network unreachable",
+    # DNS resolution failures (Python, glibc, macOS, Node bridge phrasings)
+    "name or service not known",
+    "temporary failure in name resolution",
+    "nodename nor servname provided",
+    "getaddrinfo failed",
+    "getaddrinfo enotfound",
+    "eai_again",
+    # Node/undici bridge generic network failure (MCP servers, local shims)
+    "fetch failed",
+    "failed to fetch",
+    # Envoy/proxy upstream connect failure (cloud gateways)
+    "upstream connect error",
+]
+
 # Transport error type names
 _TRANSPORT_ERROR_TYPES = frozenset({
     "ReadTimeout", "ConnectTimeout", "PoolTimeout",
@@ -633,6 +721,7 @@ def classify_api_error(
     """Classify an API error into a structured recovery recommendation.
 
     Priority-ordered pipeline:
+      0. Plugin ``transform_api_error_classification`` hooks (first valid result wins)
       1. Special-case provider-specific patterns (thinking sigs, tier gates)
       2. HTTP status code + message-aware refinement
       3. Error code classification (from body)
@@ -715,6 +804,41 @@ def classify_api_error(
         }
         defaults.update(overrides)
         return ClassifiedError(**defaults)
+
+    # ── 0. Plugin classifiers (first valid result wins) ─────────────
+    #
+    # Consulted BEFORE the built-in pipeline so a provider plugin can both
+    # add classifications the core patterns miss and correct ones they get
+    # wrong for its provider (see the ``transform_api_error_classification`` entry in
+    # hermes_cli.plugins.VALID_HOOKS for the callback contract). Callback
+    # exceptions are isolated inside invoke_hook and malformed returns are
+    # dropped by the helper, so a broken plugin can never break
+    # classification — the guard here only covers import/dispatch failure.
+    try:
+        from hermes_cli.plugins import get_plugin_error_classification
+        plugin_classification = get_plugin_error_classification(
+            provider=provider,
+            model=model,
+            status_code=status_code,
+            error_type=error_type,
+            error_code=error_code,
+            error_message=error_msg,
+            error_body=body,
+            error=error,
+            approx_tokens=approx_tokens,
+            context_length=context_length,
+            num_messages=num_messages,
+        )
+    except Exception as exc:
+        logger.debug("Plugin error classification unavailable: %s", exc)
+        plugin_classification = None
+    if plugin_classification is not None:
+        reason = plugin_classification.pop("reason")
+        logger.info(
+            "API error classified by plugin hook: %s (provider=%s, status=%s)",
+            reason.value, provider, status_code,
+        )
+        return _result(reason, **plugin_classification)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
@@ -804,9 +928,16 @@ def classify_api_error(
     # recognizable phrases; on match we strip ``pattern``/``format`` from
     # ``self.tools`` in the retry loop and retry once. Cloud providers are
     # unaffected — they accept these keywords and we never hit this branch.
-    if (
-        status_code == 400
-        and (
+    #
+    # Exclude Qwen/vLLM template raise_exception("No user query found…")
+    # wrapped by some local engines as applyPromptTemplate / "Unable to
+    # generate parser for this template". That is a poisoned transcript
+    # shape (handled via _INVALID_MESSAGE_BODY_PATTERNS → format_error),
+    # not a tool-schema grammar rejection — matching it here strips
+    # pattern/format keywords and retries uselessly while the real fix
+    # is /new (or a successful compression that preserves a user turn).
+    if status_code == 400:
+        _llama_cpp_grammar_hit = (
             "error parsing grammar" in error_msg
             or "json-schema-to-grammar" in error_msg
             or (
@@ -814,6 +945,11 @@ def classify_api_error(
                 and "template" in error_msg
             )
         )
+    else:
+        _llama_cpp_grammar_hit = False
+    if (
+        _llama_cpp_grammar_hit
+        and _NO_USER_QUERY_SIGNAL not in error_msg
     ):
         return _result(
             FailoverReason.llama_cpp_grammar_pattern,
@@ -1440,6 +1576,10 @@ def _classify_400(
             retryable=False,
             should_rotate_credential=True,
             should_fallback=True,
+            # "out of extra usage" on a 400 is ambiguous — it can also be a
+            # content-filter rejection (#82154). Mark the verdict unverified
+            # so downstream hedges and the pool skips the 1-hour bench.
+            error_context=_billing_ambiguity_context(error_msg),
         )
 
     # Generic 400 + large session → probable context overflow
@@ -1494,6 +1634,20 @@ def _classify_by_error_code(
 ) -> Optional[ClassifiedError]:
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
+
+    if (
+        code_lower == PROVIDER_STREAM_NON_JSON_ERROR_CODE
+        and "request validation failed:" in error_msg
+    ):
+        # Some OpenAI-compatible endpoints encode deterministic request
+        # validation failures as plain-text ``event: error`` SSE data behind
+        # HTTP 200.  Retrying the unchanged request cannot succeed, but a
+        # configured provider fallback still may.
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
 
     if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
@@ -1607,6 +1761,10 @@ def _classify_by_message(
             retryable=False,
             should_rotate_credential=True,
             should_fallback=True,
+            # Status-less path: adapters can strip the HTTP status from the
+            # Anthropic "out of extra usage" 400, so the same ambiguity
+            # marking applies here (#82154).
+            error_context=_billing_ambiguity_context(error_msg),
         )
 
     # Rate limit patterns
@@ -1671,6 +1829,16 @@ def _classify_by_message(
     # loop rebuilds the client instead of treating the turn as an empty
     # model response.
     if any(p in error_msg for p in _TIMEOUT_MESSAGE_PATTERNS):
+        return result_fn(FailoverReason.timeout, retryable=True)
+
+    # Connection-establishment / DNS failure message patterns — same shim
+    # problem as the timeout patterns above: the wrapping exception type is
+    # generic, so _TRANSPORT_ERROR_TYPES never matches and the error would
+    # fall through to FailoverReason.unknown. Classified as timeout (the
+    # transport bucket) so the retry loop's eager transport fallback and
+    # client rebuild apply. Never routes to compression: a connection that
+    # was never established is not a context-overflow signal.
+    if any(p in error_msg for p in _CONNECTION_MESSAGE_PATTERNS):
         return result_fn(FailoverReason.timeout, retryable=True)
 
     return None

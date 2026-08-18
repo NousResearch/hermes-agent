@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from agent.models_dev import ModelInfo
+from agent.models_dev import ModelInfo, PROVIDER_TO_MODELS_DEV
 
 
 INPUT_COST_WARNING_THRESHOLD = Decimal("20")
@@ -54,6 +54,40 @@ def _pricing_from_model_info(
     )
 
 
+def _known_models_dev_provider(provider: Optional[str]) -> Optional[str]:
+    normalized = (provider or "").strip().lower()
+    if not normalized:
+        return None
+    return PROVIDER_TO_MODELS_DEV.get(normalized)
+
+
+def _can_trust_model_info_pricing(
+    provider: Optional[str],
+    model_info: Optional[ModelInfo],
+) -> bool:
+    expected_provider = _known_models_dev_provider(provider)
+    if not expected_provider or model_info is None:
+        return False
+
+    actual_provider = str(getattr(model_info, "provider_id", "") or "").strip().lower()
+    return not actual_provider or actual_provider == expected_provider
+
+
+def _can_trust_pricing_lookup(
+    model_name: str,
+    *,
+    provider: Optional[str],
+    base_url: Optional[str],
+) -> bool:
+    try:
+        from agent.usage_pricing import resolve_billing_route
+
+        route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    except Exception:
+        return False
+    return route.billing_mode != "unknown"
+
+
 def expensive_model_warning(
     model_name: str,
     *,
@@ -71,8 +105,18 @@ def expensive_model_warning(
     if not model:
         return None
 
-    input_cost, output_cost, source = _pricing_from_model_info(model_info)
-    if input_cost is None and output_cost is None and provider:
+    input_cost: Optional[Decimal] = None
+    output_cost: Optional[Decimal] = None
+    source = ""
+
+    if _can_trust_model_info_pricing(provider, model_info):
+        input_cost, output_cost, source = _pricing_from_model_info(model_info)
+
+    if (
+        input_cost is None
+        and output_cost is None
+        and _known_models_dev_provider(provider)
+    ):
         try:
             from agent.models_dev import get_model_info
 
@@ -81,7 +125,12 @@ def expensive_model_warning(
             )
         except Exception:
             pass
-    if input_cost is None and output_cost is None:
+
+    if (
+        input_cost is None
+        and output_cost is None
+        and _can_trust_pricing_lookup(model, provider=provider, base_url=base_url)
+    ):
         try:
             from agent.usage_pricing import get_pricing_entry
 
@@ -98,13 +147,15 @@ def expensive_model_warning(
             output_cost = entry.output_cost_per_million
             source = entry.source
 
+    is_known_gpt55_pro_confusion = model.lower() == GPT55_PRO_OPENROUTER_ID
+
     over_input = (
         input_cost is not None and input_cost > INPUT_COST_WARNING_THRESHOLD
     )
     over_output = (
         output_cost is not None and output_cost > OUTPUT_COST_WARNING_THRESHOLD
     )
-    if not over_input and not over_output:
+    if not over_input and not over_output and not is_known_gpt55_pro_confusion:
         return None
 
     lines = [
@@ -120,7 +171,7 @@ def expensive_model_warning(
     ]
     if source:
         lines.append(f"Pricing source: {source}.")
-    if model.lower() == GPT55_PRO_OPENROUTER_ID:
+    if is_known_gpt55_pro_confusion:
         lines.append(GPT55_SUGGESTION)
     lines.append("Confirm only if you intend to use this model.")
 

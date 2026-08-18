@@ -63,6 +63,7 @@ _PROVIDER_ENV_HINTS = (
     "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
+    "COMMANDCODE_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
 )
@@ -90,7 +91,10 @@ def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
         command = recommended_update_command_for_method(method)
         action = f"run `{command}`, then recreate all Hermes containers"
     elif method in {"nix", "nixos"}:
+        # The Nix helper is prose guidance, not a literal shell command.
         action = recommended_update_command_for_method(method)
+    elif method == "apt":
+        action = f"run `{recommended_update_command_for_method(method)}`"
     else:
         action = "run `hermes update`"
     return (
@@ -118,18 +122,48 @@ def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
 _SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
 
 
+def _unreadable_reason(db_path: Path) -> str:
+    """Explain why a database file could not be read, without opening it.
+
+    ``read_header_bytes_preopen`` collapses every ``OSError`` into ``None``,
+    but doctor's job is to say *which* problem it hit. ``stat()`` and
+    ``access()`` answer that from directory metadata alone — neither takes a
+    file descriptor, so neither can cancel the file's POSIX advisory locks.
+    """
+    try:
+        db_path.stat()
+    except OSError as exc:
+        return str(exc)
+    if not os.access(db_path, os.R_OK):
+        return f"permission denied: {db_path}"
+    return "file could not be read"
+
+
 def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
     """Return (journal mode, error) from the file header without opening the database.
 
     Header byte 18 is 2 for WAL and 1 for a rollback journal. Opening the
     database through the SQLite engine — even read-only — creates -wal/-shm
     sidecar files, which a diagnostic must not do.
+
+    The byte read is routed through ``read_header_bytes_preopen`` rather than
+    a bare ``open()``: closing *any* descriptor for a database file cancels
+    this process's POSIX advisory locks on it, so a raw read would drop the
+    locks a live connection is holding (see ``hermes_cli.sqlite_safe_read``).
+    ``run_doctor`` is also called in-process by the dashboard console, which
+    holds live ``SessionDB`` connections. The helper refuses in that case and
+    the mode is reported as unreadable instead.
     """
-    try:
-        with open(db_path, "rb") as fh:
-            header = fh.read(20)
-    except OSError as exc:
-        return None, str(exc)
+    from hermes_cli.sqlite_safe_read import (
+        has_live_connection,
+        read_header_bytes_preopen,
+    )
+
+    header = read_header_bytes_preopen(db_path, length=20)
+    if header is None:
+        if has_live_connection(db_path):
+            return None, "database is open in this process"
+        return None, _unreadable_reason(db_path)
     if len(header) == 0:
         return None, "file is empty"
     if len(header) < 20 or not header.startswith(_SQLITE_HEADER_MAGIC):
@@ -2107,49 +2141,42 @@ def run_doctor(args):
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")
-        # Check if agent-browser is installed
-        agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
+        # agent-browser is no longer a root package.json dependency (#43564)
+        # — it resolves lazily via npx (or a global/Hermes-managed install)
+        # at first use. Mirror tools.browser_tool._find_agent_browser's own
+        # resolution cascade here so doctor can't diverge from what browser
+        # tools will actually find; validate=False keeps this a cheap
+        # existence check with no subprocess spawn or install side effects.
         agent_browser_ok = False
-        _which_ab = shutil.which("agent-browser")
-        # `hermes acp --setup-browser` installs agent-browser into the
-        # Hermes-managed node prefix, which isn't necessarily on PATH. Mirror
-        # dep_ensure._has_hermes_agent_browser() so doctor and dep_ensure agree
-        # on what "installed" means; otherwise doctor false-negatives (#53192).
-        # Resolve with PATHEXT-aware ``shutil.which`` (not a bare is_file())
-        # so Windows picks the executable ``.cmd`` shim — the same class of
-        # miss fixed for _has_agent_browser() in #73932.
-        def _which_in(directory) -> str | None:
-            try:
-                if not directory.is_dir():
-                    return None
-                return shutil.which("agent-browser", path=str(directory))
-            except Exception:
-                return None
+        try:
+            from tools.browser_tool import _find_agent_browser, _is_npx_agent_browser_sentinel
+            _resolved_ab = _find_agent_browser(validate=False)
+        except Exception:
+            _resolved_ab = None
 
-        _managed_ab = (
-            _which_in(HERMES_HOME / "node" / "bin")
-            or _which_in(HERMES_HOME / "node")
-        )
-        _legacy_ab = _which_in(HERMES_HOME / "node_modules" / ".bin")
-        if agent_browser_path.exists():
-            check_ok("agent-browser (Node.js)", "(browser automation)")
+        if _resolved_ab and _is_npx_agent_browser_sentinel(_resolved_ab):
+            check_ok("agent-browser", "(resolves via npx on first use)")
             agent_browser_ok = True
-        elif _which_ab and agent_browser_runnable(_which_ab):
+            if should_fix:
+                # Doctor can't tell from here whether npx's cache already
+                # has agent-browser warm — just fire the same warm-up
+                # `hermes update` does, so a session's first browser call
+                # doesn't pay the registry fetch either way.
+                from tools.browser_tool import warm_agent_browser_npx_cache
+                if warm_agent_browser_npx_cache():
+                    check_info("  Warmed npx cache for agent-browser")
+                else:
+                    check_info("  Could not warm npx cache (offline or npx unavailable)")
+        elif _resolved_ab and agent_browser_runnable(_resolved_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
-        elif _managed_ab and agent_browser_runnable(_managed_ab):
-            check_ok("agent-browser", "(browser automation)")
-            agent_browser_ok = True
-        elif _legacy_ab and agent_browser_runnable(_legacy_ab):
-            check_ok("agent-browser", "(browser automation)")
-            agent_browser_ok = True
-        elif _which_ab:
+        elif _resolved_ab:
             # Found on PATH but won't run — almost always a dangling global
             # symlink left behind by agent-browser's npm postinstall after a
             # `hermes update` wiped node_modules (issue #48521).
             check_warn(
                 "agent-browser found but not runnable",
-                f"(broken symlink at {_which_ab}? run: npm install)",
+                f"(broken symlink at {_resolved_ab}? run: npx agent-browser --version)",
             )
         elif _is_termux():
             check_info("agent-browser is not installed (expected in the tested Termux path)")
@@ -2158,7 +2185,7 @@ def run_doctor(args):
             for step in _termux_browser_setup_steps(node_installed=True):
                 check_info(step)
         else:
-            check_warn("agent-browser not installed", "(run: npm install)")
+            check_warn("agent-browser not installed", "(requires npm/npx on PATH)")
 
         # Chromium presence — the browser tools silently fail to register when
         # agent-browser is found but no Playwright-managed Chromium is on disk

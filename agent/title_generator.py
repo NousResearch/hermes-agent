@@ -63,6 +63,14 @@ MAX_TITLE_INPUT_CHARS = 1000
 # Codex CLI independently landed on the same ~50-char slice.
 MAX_DERIVED_TITLE_CHARS = 48
 
+# Upper bound on accepted title word count. Titling is a 3-7 word task; a
+# small tiny-model sometimes ignores the task and answers the user's message
+# instead — that answer must never become the session title (see the
+# answer-shaped output guard in generate_title; port of
+# can1357/oh-my-pi#7306). 12 leaves headroom for legitimate wordy titles
+# while excluding full-sentence answers.
+_MAX_TITLE_WORDS = 12
+
 _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
     "that lets them find this conversation again in a list.\n\n"
@@ -404,7 +412,22 @@ def generate_title(
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
         )
         content = response.choices[0].message.content or ""
-        return _clean_title(_extract_title_text(content))
+        title = _clean_title(_extract_title_text(content))
+        # Answer-shaped output guard: titling is a 3-7 word task, so a title
+        # with many words is a model that ignored the task and answered
+        # the user's message instead ("I don't have context on X — that's
+        # not something I recognize..."). Truncating would store half an
+        # assistant blob as the session title, which is still an assistant
+        # blob — reject instead so the caller retries on the next exchange
+        # (maybe_auto_title fires for the first two exchanges).
+        # Port of can1357/oh-my-pi#7306.
+        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+            logger.debug(
+                "Rejecting answer-shaped title output (%d words > %d)",
+                len(title.split()), _MAX_TITLE_WORDS,
+            )
+            return None
+        return title
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
         # Full detail at debug level for operators who need the stack.

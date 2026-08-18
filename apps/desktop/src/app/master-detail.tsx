@@ -1,5 +1,13 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, type PointerEvent as ReactPointerEvent, useEffect, useState } from 'react'
+import {
+  Children,
+  type CSSProperties,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useRef,
+  useState
+} from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -9,7 +17,13 @@ import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $paneHeightOverride, $paneState, setPaneHeightOverride } from '@/store/panes'
+import {
+  $paneHeightOverride,
+  $paneState,
+  $paneWidthOverride,
+  setPaneHeightOverride,
+  setPaneWidthOverride
+} from '@/store/panes'
 
 // Monospace capability chip (tool name, transport, …). Shared by the Skills
 // and MCP tabs so the pill reads identically everywhere.
@@ -34,20 +48,71 @@ export function ToolChip({ children, title }: { children: ReactNode; title?: str
 // The wide-rail track shared by every Capabilities tab (skills/tools/mcp) so
 // the three read as one page. Exported for pages that build their own grid
 // (the MCP tab's cursor-driven layout) but must stay in step.
-export const MASTER_DETAIL_WIDE_COLS = 'sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)]'
+// `--md-split` is the drag override slot: unset it falls back to the declared
+// track, so grids without a resize sash render exactly as before.
+export const MASTER_DETAIL_WIDE_COLS = 'sm:grid-cols-[minmax(0,var(--md-split,0.75fr))_minmax(0,1fr)]'
+
+// Column-seam drag clamps: the rail can't shrink below a readable row, the
+// detail keeps enough room for its centered column.
+const SPLIT_MIN_LEFT_PX = 180
+const SPLIT_MIN_RIGHT_PX = 320
 
 // `split="wide"` gives list-heavy pages a rail that shares the page with a
 // sparse detail (skills/tools/mcp); the default 14rem rail suits pages whose
-// detail carries the weight (messaging).
+// detail carries the weight (messaging). A `resizeId` turns the column seam
+// into a drag sash: the rail width persists in the pane store under that id
+// (same store as the terminal/editor panes), double-click resets to default.
 export function MasterDetail({
   children,
   pane,
+  resizeId,
   split = 'rail'
 }: {
   children: ReactNode
   pane?: ReactNode
+  /** Pane-store key — when set, the seam between the two columns becomes a
+   *  drag-resizable sash and the rail width persists under this id. */
+  resizeId?: string
   split?: 'rail' | 'wide'
 }) {
+  const gridRef = useRef<HTMLDivElement>(null)
+  // Unconditional hook (rules of hooks) — the '' atom is inert when no id.
+  const override = useStore($paneWidthOverride(resizeId ?? ''))
+  const [dragging, setDragging] = useState(false)
+
+  const startSplitDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const grid = gridRef.current
+
+    if (!resizeId || !grid || event.button !== 0) {
+      return
+    }
+
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = (grid.children[0] as HTMLElement).getBoundingClientRect().width
+    const max = Math.max(SPLIT_MIN_LEFT_PX, grid.getBoundingClientRect().width - SPLIT_MIN_RIGHT_PX)
+    setDragging(true)
+
+    const onMove = (move: globalThis.PointerEvent) => {
+      setPaneWidthOverride(
+        resizeId,
+        Math.round(Math.min(max, Math.max(SPLIT_MIN_LEFT_PX, startWidth + (move.clientX - startX))))
+      )
+    }
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      setDragging(false)
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+  }
+
+  // With a sash the detail side gets a relative wrapper so the seam handle can
+  // sit on the boundary itself (junction-owned, like the shell's sashes).
+  const [list, ...rest] = Children.toArray(children)
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div
@@ -55,8 +120,31 @@ export function MasterDetail({
           'grid min-h-0 flex-1 grid-cols-1',
           split === 'wide' ? MASTER_DETAIL_WIDE_COLS : 'sm:grid-cols-[14rem_minmax(0,1fr)]'
         )}
+        ref={gridRef}
+        style={override !== undefined ? ({ '--md-split': `${override}px` } as CSSProperties) : undefined}
       >
-        {children}
+        {resizeId ? (
+          <>
+            {list}
+            <div className="relative grid min-h-0 min-w-0">
+              <div
+                className="group/vsash absolute inset-y-0 left-0 z-10 hidden w-1 -translate-x-1/2 cursor-col-resize sm:block"
+                onDoubleClick={() => setPaneWidthOverride(resizeId, undefined)}
+                onPointerDown={startSplitDrag}
+              >
+                <div
+                  className={cn(
+                    'absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors',
+                    dragging ? 'bg-(--ui-stroke-secondary)' : 'group-hover/vsash:bg-(--ui-stroke-secondary)'
+                  )}
+                />
+              </div>
+              {rest}
+            </div>
+          </>
+        ) : (
+          children
+        )}
       </div>
       {pane}
     </div>
@@ -361,7 +449,11 @@ export function CapRow({
   return (
     <div
       className={cn(
-        'group/row row-hover flex w-full shrink-0 items-center rounded-md hover:text-foreground',
+        // content-visibility:auto lets the browser skip layout/paint for
+        // offscreen rows — the Capabilities lists routinely hold 80+ entries.
+        // Row height is already fixed (h-8/h-11), so skipped rows keep their
+        // exact size and scrollbar geometry never jumps.
+        'group/row row-hover flex w-full shrink-0 items-center rounded-md [content-visibility:auto] hover:text-foreground',
         subtitle ? 'h-11' : 'h-8',
         active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}

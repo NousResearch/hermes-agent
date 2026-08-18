@@ -657,24 +657,18 @@ class TestUpscalePass:
         assert result["image"].endswith("native.png")
         assert mock_post.call_count == 2  # enhance attempted, fell back
 
-    def test_medium_upscales_by_default(self):
-        """krea-2-medium is 1.5K native — the Enhance pass defaults ON."""
-        enhance_job = {
-            "job_id": "00000000-0000-0000-0000-00000000e0e0",
-            "status": "completed",
-            "created_at": "2026-05-27T00:00:00Z",
-            "completed_at": "2026-05-27T00:01:00Z",
-            "result": {"urls": ["https://krea.cdn/enhanced.png"]},
-        }
-        result, mock_post, _ = self._run_generate(upscale=None, enhance_job=enhance_job)
+    def test_medium_skips_upscale_by_default(self):
+        """Upscaling is opt-in only (Aug 2026 policy) — even for
+        krea-2-medium's 1.5K native output, no automatic Enhance pass."""
+        result, mock_post, _ = self._run_generate(upscale=None, enhance_job=None)
 
         assert result["success"] is True
-        assert result["upscaled"] is True
-        assert result["image"].endswith("enhanced.png")
-        assert mock_post.call_count == 2
+        assert result["upscaled"] is False
+        assert result["image"].endswith("native.png")
+        assert mock_post.call_count == 1  # only the generation submit
 
     def test_large_skips_upscale_by_default(self):
-        """krea-2-large is 2K native — no automatic Enhance pass."""
+        """krea-2-large: no automatic Enhance pass either."""
         result, mock_post, _ = self._run_generate(
             upscale=None, enhance_job=None, model="krea-2-large",
         )
@@ -685,7 +679,7 @@ class TestUpscalePass:
         assert mock_post.call_count == 1  # only the generation submit
 
     def test_explicit_false_disables_default(self):
-        """Explicit upscale=False wins over medium's default-on."""
+        """Explicit upscale=False matches the off default."""
         result, mock_post, _ = self._run_generate(upscale=False, enhance_job=None)
 
         assert result["success"] is True

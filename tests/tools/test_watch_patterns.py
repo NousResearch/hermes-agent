@@ -336,3 +336,32 @@ class TestGlobalCircuitBreaker:
                 admitted = True
         assert released
         assert admitted
+
+
+class TestOverflowNotificationFormatting:
+    """watch_overflow_* events must surface their summary, not fall through
+    to the completion formatter as a phantom 'process exited (exit code ?)'."""
+
+    def test_overflow_tripped_formats_message(self):
+        from tools.process_registry import format_process_notification
+
+        evt = {
+            "type": "watch_overflow_tripped",
+            "message": "watch flood detected: 47 notifications suppressed for pattern 'ERROR'",
+            "session_id": "proc_a1b2",
+        }
+        out = format_process_notification(evt)
+        assert "47 notifications suppressed" in out
+        assert "exit code" not in out
+
+    def test_overflow_released_formats_message(self):
+        from tools.process_registry import format_process_notification
+
+        evt = {
+            "type": "watch_overflow_released",
+            "message": "watch flood released: notifications resumed for pattern 'ERROR'",
+            "session_id": "proc_a1b2",
+        }
+        out = format_process_notification(evt)
+        assert "notifications resumed" in out
+        assert "exit code" not in out

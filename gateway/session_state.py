@@ -163,9 +163,8 @@ class PersistentState:
     # escalation back to rung 1 while the DB-backed deadline itself survives
     # (#74136). Keying on `session_key` rather than `session_id` is what buys
     # correctness across compaction ROTATION (the sid changes, the chat does
-    # not), which the persisted `compression_*_streak` columns cannot express
-    # since they key on sid. Making this durable is tracked on #79624 as a
-    # schema-level follow-up.
+    # not). gateway.run mirrors this value to the DB keyed by session_key so
+    # the same semantics also survive gateway restarts.
     hygiene_failure_streak: int = 0
 
 

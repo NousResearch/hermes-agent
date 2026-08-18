@@ -100,6 +100,11 @@ function createBootstrapCoordinator() {
     }
 
     try {
+      // Cancellation alone only invalidates the lease; it does not interrupt a
+      // child process currently blocked in SSH connect/config resolution. Close
+      // registered resources first so rollback can settle promptly while the
+      // drain barrier still prevents stale resurrection.
+      await Promise.allSettled(entries.flatMap(entry => [...entry.forceCleanups]).map(cleanup => cleanup()))
       await Promise.allSettled(entries.map(entry => entry.promise))
     } finally {
       if (drains.get(scope) === barrier) {

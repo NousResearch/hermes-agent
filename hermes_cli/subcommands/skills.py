@@ -18,6 +18,27 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     )
     skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
 
+    skills_trust = skills_subparsers.add_parser(
+        "trust",
+        help="Trust a project so its repo-local skills (./.hermes/skills, ./.agents/skills) load",
+    )
+    skills_trust.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Project root to trust (default: enclosing git checkout of cwd)",
+    )
+
+    skills_untrust = skills_subparsers.add_parser(
+        "untrust", help="Revoke project-skill trust for a repo"
+    )
+    skills_untrust.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Project root to untrust (default: enclosing git checkout of cwd)",
+    )
+
     skills_browse = skills_subparsers.add_parser(
         "browse", help="Browse all available skills (paginated)"
     )
@@ -138,6 +159,11 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "name",
         nargs="?",
         help="Specific skill to update (default: all outdated skills)",
+    )
+    skills_update.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite skills you have edited locally (they are skipped by default)",
     )
 
     skills_audit = skills_subparsers.add_parser(

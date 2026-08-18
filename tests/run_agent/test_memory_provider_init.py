@@ -25,6 +25,24 @@ class RecordingMemoryProvider:
         pass
 
 
+def test_shutdown_memory_provider_is_idempotent():
+    from unittest.mock import MagicMock
+
+    from run_agent import AIAgent
+
+    manager = MagicMock()
+    agent = object.__new__(AIAgent)
+    agent._memory_manager = manager
+    agent.context_compressor = None
+    agent.session_id = "session-1"
+
+    agent.shutdown_memory_provider([{"role": "user", "content": "one"}])
+    agent.shutdown_memory_provider([{"role": "user", "content": "two"}])
+
+    manager.on_session_end.assert_called_once()
+    manager.shutdown_all.assert_called_once()
+
+
 def test_blank_memory_provider_does_not_auto_enable_honcho():
     """Blank memory.provider should remain opt-out even if Honcho fallback looks configured."""
     cfg = {"memory": {"provider": ""}, "agent": {}}
@@ -57,6 +75,22 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
     from_global_config.assert_not_called()
     load_memory_provider.assert_not_called()
     save_config.assert_not_called()
+
+
+def test_close_shuts_down_memory_provider():
+    from unittest.mock import MagicMock
+
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent._memory_manager = MagicMock()
+    agent.context_compressor = None
+    agent.session_id = ""
+    agent._session_messages = []
+
+    agent.close()
+
+    agent._memory_manager.shutdown_all.assert_called_once()
 
 
 def test_aiagent_forwards_user_id_alt_to_memory_provider():

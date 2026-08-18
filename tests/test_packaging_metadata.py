@@ -248,6 +248,44 @@ def test_pyproject_pins_are_internally_consistent():
     )
 
 
+def test_build_system_requires_exempt_from_exclude_newer():
+    """Regression guard for the #78227 / #75992 exclude-newer brick class.
+
+    ``[tool.uv].exclude-newer`` applies to ``[build-system].requires`` too.
+    When a resolver cannot see a package's upload date (old uv, mirror
+    index, stale HTTP cache) it treats the release as newer than the cutoff
+    and filters it — and because build requirements are exact-pinned there
+    is no older candidate to fall back to, so the project cannot even be
+    BUILT from a git checkout ("No solution found when resolving:
+    setuptools==83.0.0", observed on released v0.20.0).
+
+    Exempting an exact-pinned build requirement costs nothing: the version
+    cannot move without a reviewed pin bump, so exclude-newer adds no float
+    protection for it. Every build requirement must therefore appear in the
+    ``exclude-newer-package`` whitelist (set to ``false``) for as long as a
+    relative ``exclude-newer`` cutoff is configured.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data.get("tool", {}).get("uv", {})
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+    whitelist = {
+        _canonical(name)
+        for name, enabled in uv_cfg.get("exclude-newer-package", {}).items()
+        if enabled is False
+    }
+    build_requires = {
+        _canonical(_distribution_name(req))
+        for req in data.get("build-system", {}).get("requires", [])
+    }
+    missing = sorted(build_requires - whitelist)
+    assert not missing, (
+        "build-system.requires packages are subject to the exclude-newer "
+        "cutoff but missing from the [tool.uv].exclude-newer-package "
+        f"whitelist — fresh builds brick when upload dates are invisible: {missing}"
+    )
+
+
 
 
 def _lazy_deps_by_feature():

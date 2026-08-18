@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import threading
@@ -24,6 +25,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from utils import (
+    _preserve_file_mode,
+    _preserve_file_owner,
+    _restore_file_mode,
+    _restore_file_owner,
+    atomic_replace,
+)
 
 # Shared formatter; the private alias is kept because claw.py and the backup
 # tests import ``_format_size`` from this module.
@@ -145,6 +153,10 @@ class BackupInProgressError(RuntimeError):
 
 class _SQLiteSnapshotError(RuntimeError):
     pass
+
+
+class _SQLiteBackupTimeout(RuntimeError):
+    """Raised when a SQLite snapshot remains busy past its deadline."""
 
 
 @contextmanager
@@ -339,7 +351,12 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
 # SQLite safe copy
 # ---------------------------------------------------------------------------
 
-def _safe_copy_db(src: Path, dst: Path) -> bool:
+def _safe_copy_db(
+    src: Path,
+    dst: Path,
+    *,
+    timeout_seconds: float = 10.0,
+) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
     Handles WAL mode — produces a consistent snapshot even while
@@ -349,12 +366,42 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
     conn = None
     backup_conn = None
     try:
-        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        # Disable sqlite3's implicit busy wait so backup() progress callbacks
+        # control the full locked-source deadline instead of adding the
+        # connection's default timeout before each callback.
+        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=0.0)
         backup_conn = sqlite3.connect(str(dst))
-        conn.backup(backup_conn)
+        busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
+
+        def _check_backup_progress(status: int, _remaining: int, _total: int) -> None:
+            nonlocal busy_deadline
+            now = time.monotonic()
+            if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                if now >= busy_deadline:
+                    raise _SQLiteBackupTimeout(
+                        f"database remained locked for {timeout_seconds:g} seconds"
+                    )
+            else:
+                busy_deadline = now + max(0.0, timeout_seconds)
+
+        conn.backup(
+            backup_conn,
+            pages=256,
+            progress=_check_backup_progress,
+            sleep=0.1,
+        )
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
+        # Windows will not remove the partial destination while SQLite still
+        # has it open. Close it before fail-closed cleanup; the finally block
+        # still owns the source and any close failure.
+        if backup_conn is not None:
+            try:
+                backup_conn.close()
+            except Exception:
+                pass
+            backup_conn = None
         try:
             dst.unlink(missing_ok=True)
         except OSError:
@@ -849,6 +896,130 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     return ""
 
 
+def _default_new_file_mode() -> Optional[int]:
+    """Return the mode ``open(path, "wb")`` gives a file it has to create.
+
+    ``tempfile.mkstemp`` always creates at 0600, so staging an import through a
+    temp file would tighten every *newly created* file to owner-only — the same
+    hazard ``utils._restore_file_mode`` documents for Docker/NAS volume mounts
+    that rely on broader permissions.  The umask can only be read by setting it,
+    so this is resolved once per import rather than once per member.  The probe
+    installs a *restrictive* mask rather than 0 so that anything another thread
+    creates inside the two-syscall window is owner-only, never world-writable.
+    Returns ``None`` if the umask cannot be read, in which case the caller
+    leaves mkstemp's mode alone.
+    """
+    try:
+        current = os.umask(0o077)
+        os.umask(current)
+    except OSError:
+        return None
+    return 0o666 & ~current
+
+
+def _extract_member_atomically(
+    zf: zipfile.ZipFile,
+    member: str,
+    target: Path,
+    new_file_mode: Optional[int] = None,
+) -> None:
+    """Restore one zip member onto *target* with no truncation window.
+
+    ``open(target, "wb")`` truncates the user's existing file to zero *before*
+    any replacement bytes exist.  A Ctrl-C, an ENOSPC, a corrupt member, or a
+    crash between the truncate and the write therefore leaves that file empty
+    with nothing behind it — during ``hermes import``, which is the
+    disaster-recovery path a user reaches for *because* they already lost
+    something.  Staging into the target's own directory and publishing with a
+    rename means the target only ever moves from its old contents to the
+    complete new contents.
+
+    ``atomic_replace`` rather than a bare ``os.replace``: it resolves a
+    symlinked target first, so a deployment that links ``config.yaml`` into a
+    dotfiles repo keeps the link instead of having it silently swapped for a
+    regular file (GitHub #16743), and it falls back to copy/fsync/unlink on
+    ``EXDEV``/``EBUSY`` for cross-device and bind-mount installs.  That
+    fallback uses ``shutil.copyfile``, which does truncate in place, so on the
+    cross-device path the guarantee above degrades to today's behaviour rather
+    than improving on it; closing that belongs in ``utils.atomic_replace``,
+    where every atomic writer in the repo would benefit, not here.
+
+    Permission bits *and* ownership are carried across the replace so routing
+    through mkstemp does not change the file the caller would otherwise have
+    produced.  ``os.replace`` swaps in a temp file owned by the *writing* user,
+    so without the chown a ``sudo hermes import`` would silently re-own every
+    restored file to root — on the disaster-recovery path, and on exactly the
+    Docker/NAS installs ``utils._restore_file_owner`` documents.  Both concerns
+    delegate to the shared ``utils`` helpers rather than being re-derived here.
+    The temp file is removed on any failure so a partial import leaves no
+    residue.
+
+    The one bit of the old file *not* carried across is setuid/setgid.  The
+    replacement bytes come out of the zip, so preserving those would let an
+    archive take over the identity an existing privileged file executes as —
+    and unlike the other ``utils`` writers, which re-serialize content this
+    process produced, the trust boundary here is an untrusted archive.  The
+    mask is applied once, before the temp file is chmod'd, so neither the
+    pre-replace ``fchmod`` nor the post-replace restore can re-elevate the
+    target.
+    """
+    # ``_preserve_file_mode`` returns None when the target does not exist (or
+    # cannot be stat'd), in which case the umask-derived create-mode applies —
+    # the same shape as ``atomic_yaml_write``'s ``create_mode`` fallback.
+    mode = _preserve_file_mode(target)
+    owner = _preserve_file_owner(target)
+    if mode is None:
+        mode = new_file_mode
+    else:
+        # Deliberately NOT a faithful mode copy: setuid/setgid are dropped.
+        # ``_preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve
+        # bits, and the content replacing this file comes from the archive.
+        # Carrying the elevated bits across would let archive-controlled bytes
+        # take over an existing setuid/setgid file, so ``hermes import`` would
+        # hand whoever produced the zip the identity that file runs as.  Nothing
+        # constrains that to Hermes' own state either: the ``_external/`` branch
+        # of ``run_import`` publishes members anywhere under ``$HOME``.  The
+        # sticky bit is kept — it is inert on a regular file.
+        mode &= ~(stat.S_ISUID | stat.S_ISGID)
+
+    # Truncate the stem: mkstemp adds ~16 characters, and a member already near
+    # NAME_MAX would otherwise fail here on a write that used to succeed.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".partial"
+    )
+    try:
+        with os.fdopen(fd, "wb") as dst:
+            if mode is not None:
+                # Apply the mode to the temp file BEFORE the replace so the
+                # target never transits through mkstemp's 0600, and so
+                # ``atomic_replace``'s EXDEV/EBUSY ``shutil.copystat`` fallback
+                # copies the intended bits rather than 0600.  fchmod is
+                # Unix-only; Windows takes the path-based chmod.
+                if hasattr(os, "fchmod"):
+                    os.fchmod(dst.fileno(), mode)
+                else:
+                    os.chmod(tmp_name, mode)
+            # Stream instead of ``src.read()``: a multi-gigabyte state.db member
+            # must not be held in memory in one piece.
+            with zf.open(member) as src:
+                shutil.copyfileobj(src, dst)
+            dst.flush()
+            os.fsync(dst.fileno())
+        real_path = Path(atomic_replace(tmp_name, target))
+        # Owner first, mode second — the ordering ``atomic_yaml_write`` uses,
+        # because chown drops setuid/setgid and a mode restore that ran first
+        # would be partly undone.  Here ``mode`` no longer carries those bits,
+        # so the two agree: neither step can re-elevate the restored file.
+        _restore_file_owner(real_path, owner)
+        _restore_file_mode(real_path, mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def run_import(args) -> None:
     """Restore a Hermes backup from a zip file."""
     zip_path = Path(args.zipfile).expanduser().resolve()
@@ -907,6 +1078,9 @@ def run_import(args) -> None:
         restored_external = 0
         skipped_runtime: list[str] = []
         home_dir = Path.home().resolve()
+        # Resolved once: every member is published via a temp file, and mkstemp
+        # would otherwise create newly restored files as 0600.
+        new_file_mode = _default_new_file_mode()
         t0 = time.monotonic()
 
         for member in members:
@@ -926,8 +1100,7 @@ def run_import(args) -> None:
                     continue
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(member) as src, open(target, "wb") as dst:
-                        dst.write(src.read())
+                    _extract_member_atomically(zf, member, target, new_file_mode)
                     # External provider configs commonly hold credentials.
                     if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
                         try:
@@ -972,8 +1145,7 @@ def run_import(args) -> None:
 
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member) as src, open(target, "wb") as dst:
-                    dst.write(src.read())
+                _extract_member_atomically(zf, member, target, new_file_mode)
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1
@@ -1065,6 +1237,22 @@ def run_import(args) -> None:
             print("\nTo re-enable gateway services for profiles:")
             for pname in gw_profiles:
                 print(f"  hermes -p {pname} gateway install")
+
+        # Bring the restored install to life: the backup may contain bot
+        # tokens and registered cron jobs, but they're inert without a
+        # gateway process. Install/start the service automatically (a
+        # platform-less gateway is a supported mode, so this is safe even
+        # for backups with no messaging config). Best-effort and prompt-free;
+        # failures print a manual fallback and never fail the import.
+        try:
+            from hermes_cli.gateway import ensure_gateway_service, _is_service_running
+
+            if not _is_service_running():
+                print()
+                ensure_gateway_service(context="import")
+        except Exception:
+            print("\nStart the gateway to activate cron jobs and messaging:")
+            print("  hermes gateway install")
 
         print("Done. Your Hermes configuration has been restored.")
 

@@ -9,9 +9,10 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
-from plugins.memory.honcho.client import get_honcho_client
+from plugins.memory.honcho.client import get_honcho_client, spawn_context_thread
 from plugins.memory.honcho.oauth import redact_tokens as _redact_tokens
 
 if TYPE_CHECKING:
@@ -209,10 +210,15 @@ class HonchoSessionManager:
     def honcho(self) -> Honcho:
         """Get the Honcho client, refreshing a near-expiry OAuth token in place.
 
-        Routes every access through ``get_honcho_client`` (which returns the same
-        cached singleton) so a long session can't outlive its 1h access token.
+        Routes every access through ``get_honcho_client`` WITH this manager's
+        bound config so a long session can't outlive its 1h access token AND
+        so background threads (async writer, prefetch, sync) acquire the
+        client for the profile this manager was built under — a bare
+        ``get_honcho_client()`` re-resolves ambient ContextVar-backed state
+        that daemon threads cannot see, migrating every access onto the
+        first-built profile's client (#69123, #74065).
         """
-        self._honcho = get_honcho_client()
+        self._honcho = get_honcho_client(self._config)
         return self._honcho
 
     def _record_auth_failure(self, exc: BaseException) -> None:
@@ -238,6 +244,20 @@ class HonchoSessionManager:
         self._auth_notice_emitted = True
         return self._auth_failure
 
+    def _bound_config_path(self) -> Path:
+        """Config path for OAuth checks, bound to this manager's profile.
+
+        Falls back to ambient resolution only when the manager was built
+        without a config (tests) — on the hot path the bound path keeps
+        background threads reading THIS profile's honcho.json, not the
+        default profile the ContextVar-blind resolver would land on.
+        """
+        from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+
+        if isinstance(self._config, HonchoClientConfig):
+            return self._config.bound_config_path()
+        return resolve_config_path()
+
     def _reauth_required(self) -> bool:
         """True when the grant is dead and only a new login can fix it.
 
@@ -251,12 +271,10 @@ class HonchoSessionManager:
             if not oauth.any_dead_grants():
                 return False
 
-            from plugins.memory.honcho.client import resolve_config_path
-
             host = getattr(self._config, "host", "") or ""
             if not host:
                 return False
-            return oauth.reauth_required(resolve_config_path(), host)
+            return oauth.reauth_required(self._bound_config_path(), host)
         except Exception:
             return False
 
@@ -267,15 +285,12 @@ class HonchoSessionManager:
         """
         try:
             from plugins.memory.honcho import oauth
-            from plugins.memory.honcho.client import (
-                reset_honcho_client,
-                resolve_config_path,
-            )
+            from plugins.memory.honcho.client import reset_honcho_client
 
             host = getattr(self._config, "host", "") or ""
             if not host:
                 return False
-            token = oauth.force_refresh_token(resolve_config_path(), host)
+            token = oauth.force_refresh_token(self._bound_config_path(), host)
             if not token:
                 return False
             if not oauth.apply_token_to_client(self.honcho, token):
@@ -538,6 +553,19 @@ class HonchoSessionManager:
             return f"{sanitized_peer_id}-{digest}"
         return sanitized_peer_id
 
+    def _declared_owner_peer_id(self) -> str | None:
+        """Peer ID of the install owner, or None when no owner is declared.
+
+        The owner is the identity setup writes as ``peerName``. A runtime
+        gateway identity is the owner only when an alias maps it onto that
+        peer — which _resolve_user_peer_id already does, so callers can
+        compare a session's resolved user peer against this value.
+        """
+        peer_name = getattr(self._config, "peer_name", None) if self._config else None
+        if peer_name and str(peer_name).strip():
+            return self._sanitize_id(str(peer_name).strip())
+        return None
+
     def _resolve_user_peer_id(self, key: str) -> str:
         """Resolve the Honcho user peer ID for this manager/session."""
         pin_peer_name = (
@@ -764,12 +792,23 @@ class HonchoSessionManager:
             return
         with self._async_thread_lock:
             if self._async_thread is None or not self._async_thread.is_alive():
-                self._async_thread = threading.Thread(
-                    target=self._async_writer_loop,
+                self._async_thread = spawn_context_thread(
+                    self._async_writer_loop,
                     name="honcho-async-writer",
-                    daemon=True,
                 )
                 self._async_thread.start()
+
+    def stop_async_writer(self) -> None:
+        """Stop the async writer thread WITHOUT flushing pending messages.
+
+        Used on shutdown when persistence is disabled (saveMessages: false):
+        the thread must still be joined so process exit is clean, but nothing
+        may be written.
+        """
+        if self._async_queue is not None:
+            if self._async_thread is not None and self._async_thread.is_alive():
+                self._async_queue.put(_ASYNC_SHUTDOWN)
+                self._async_thread.join(timeout=10)
 
     def shutdown(self) -> None:
         """Gracefully shut down the async writer thread."""
@@ -830,6 +869,7 @@ class HonchoSessionManager:
         reasoning_level: str | None = None,
         peer: str = "user",
         apply_injection_cap: bool = True,
+        raise_errors: bool = False,
     ) -> str:
         """
         Query Honcho's dialectic endpoint about a peer.
@@ -848,6 +888,11 @@ class HonchoSessionManager:
             apply_injection_cap: Clip automatic injections to
                 ``dialecticMaxChars``. Explicit ``honcho_reasoning`` calls pass
                 False because Honcho already bounds their output.
+            raise_errors: Re-raise backend failures instead of returning "".
+                Explicit tool calls pass True so a timeout or server error
+                surfaces as an error, not as "no result" (#36098 issue 4:
+                collapsing failures to "" made auth errors, timeouts, and
+                genuinely-empty answers indistinguishable).
 
         Returns:
             Honcho's synthesized answer, or empty string on failure.
@@ -903,6 +948,8 @@ class HonchoSessionManager:
             raise
         except Exception as e:
             logger.warning("Honcho dialectic query failed: %s", e)
+            if raise_errors:
+                raise
             return ""
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
@@ -917,7 +964,7 @@ class HonchoSessionManager:
             if result:
                 self.set_context_result(session_key, result)
 
-        t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
+        t = spawn_context_thread(_run, name="honcho-context-prefetch")
         t.start()
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:
@@ -1101,6 +1148,38 @@ class HonchoSessionManager:
 
         if session.honcho_session_id not in self._sessions_cache:
             logger.warning("No Honcho session cached for '%s', skipping memory migration", session_key)
+            return False
+
+        # Only migrate the owner-describing memory files (MEMORY.md / USER.md)
+        # when the session's user peer IS the install owner. Otherwise a
+        # non-owner triggering a new session (e.g. any other human in a shared
+        # Slack/Discord channel) gets the owner's full profile files uploaded
+        # under the NON-OWNER's peer, and Honcho's deriver attributes the
+        # owner's facts to that person. SOUL.md describes the agent, not a
+        # human, but skipping it here too keeps the migration owner-scoped.
+        #
+        # The owner is a CONFIG fact — the declared peerName — never a
+        # re-resolution of the session's own peer: _resolve_user_peer_id
+        # answers "who is this session's user", so comparing its output to
+        # session.user_peer_id compares the triggering user to themselves
+        # and passes for the non-owner too.
+        owner_peer_id = self._declared_owner_peer_id()
+        if owner_peer_id is not None:
+            session_is_owner = session.user_peer_id == owner_peer_id
+        else:
+            # No declared owner. Without a runtime identity this is the
+            # single-operator path (peer id from config defaults or the
+            # session key) and the files describe that operator. With a
+            # runtime identity the session belongs to whoever messaged
+            # through the gateway — nobody can be proven to be the owner.
+            session_is_owner = not self._runtime_user_ids()
+        if not session_is_owner:
+            logger.info(
+                "Skipping memory-file migration: session user peer '%s' is not the "
+                "declared owner (peerName=%s)",
+                session.user_peer_id,
+                owner_peer_id or "unset",
+            )
             return False
 
         uploaded = False

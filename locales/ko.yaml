@@ -169,6 +169,8 @@ gateway:
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "`{path}/config.yaml`에 구성된 성격이 없습니다"
@@ -277,6 +279,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "{cwd}에 체크포인트를 찾을 수 없습니다"
     invalid_number:        "잘못된 체크포인트 번호입니다. 1-{max}을 사용하세요."
     restored:              "✅ 체크포인트 {hash}(으)로 복원됨: {reason}\n롤백 전 스냅샷이 자동으로 저장되었습니다."
+    kept_user_edits:       "↷ 직접 수정한 내용은 유지되었습니다: {files}\n해당 파일도 복원하려면 /rollback <N> --all 을 사용하세요."
     restore_failed:        "❌ {error}"
 
   diff:

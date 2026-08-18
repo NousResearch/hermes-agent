@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hermes Kanban — Native Dialog Prototypes</title>
+<style>
+  /* =========================================================== */
+  /*  Design tokens — host @nous-research/ui, oklch→sRGB approx. */
+  /* =========================================================== */
+  :root {
+    --bg:               #ffffff;
+    --bg-subtle:        #f8f9fa;
+    --bg-muted:         #f1f3f5;
+    --border:           #e5e7eb;
+    --border-strong:    #d1d5db;
+    --fg:               #0f172a;
+    --fg-muted:         #64748b;
+    --fg-subtle:        #94a3b8;
+    --ring:             #94a3b8;
+    --accent:           #2563eb;
+    --accent-fg:        #ffffff;
+    --destructive:      #dc2626;
+    --destructive-fg:   #ffffff;
+    --success:          #16a34a;
+    --shadow-md:        0 4px 12px -2px rgba(15, 23, 42, 0.10),
+                        0 2px 4px -2px rgba(15, 23, 42, 0.06);
+    --shadow-lg:        0 20px 25px -5px rgba(15, 23, 42, 0.10),
+                        0 8px 10px -6px rgba(15, 23, 42, 0.04);
+    --radius:           10px;
+    --radius-sm:        6px;
+    --font:             ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+                        Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono:             ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:             #0b0d10;
+      --bg-subtle:      #11141a;
+      --bg-muted:       #161a22;
+      --border:         #232833;
+      --border-strong:  #2c3140;
+      --fg:             #e6e8ec;
+      --fg-muted:       #9aa3b2;
+      --fg-subtle:      #6b7280;
+      --ring:           #4b5563;
+      --accent:         #3b82f6;
+      --accent-fg:      #ffffff;
+      --destructive:    #ef4444;
+      --destructive-fg: #ffffff;
+      --success:        #22c55e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--font);
+    color: var(--fg);
+    background: var(--bg-subtle);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* =========================================================== */
+  /*  Page chrome                                                  */
+  /* =========================================================== */
+  header.page {
+    padding: 24px 32px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+  header.page h1 {
+    font-size: 18px; font-weight: 600; margin: 0 0 4px;
+    letter-spacing: -0.01em;
+  }
+  header.page p {
+    font-size: 13px; color: var(--fg-muted); margin: 0;
+    max-width: 920px;
+  }
+  header.page .controls {
+    margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  header.page .controls button {
+    font: inherit; font-size: 12px; font-weight: 500;
+    padding: 6px 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--fg); cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  header.page .controls button:hover { background: var(--bg-muted); }
+  header.page .controls button.active {
+    background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+  }
+
+  .board {
+    padding: 24px 32px 80px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 20px;
+    max-width: 1700px;
+  }
+  @media (max-width: 1400px) { .board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 720px)  { .board { grid-template-columns: 1fr; } }
+
+  section.variant {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    min-width: 0;
+  }
+  section.variant header {
+    padding: 14px 16px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-subtle);
+  }
+  section.variant header h2 {
+    font-size: 11px; font-weight: 600; margin: 0 0 2px;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg-muted);
+  }
+  section.variant header .label {
+    font-size: 15px; font-weight: 600; color: var(--fg);
+    letter-spacing: -0.01em;
+  }
+  section.variant header p {
+    font-size: 12px; color: var(--fg-muted); margin: 6px 0 0;
+    line-height: 1.4;
+  }
+  section.variant .stage {
+    flex: 1;
+    padding: 24px 16px;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: flex-start;
+    background: var(--bg);
+    min-height: 540px;
+    position: relative;
+  }
+  section.variant .actions {
+    padding: 10px 16px;
+    border-top: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; gap: 6px;
+    background: var(--bg-subtle);
+  }
+  section.variant .actions button {
+    font: inherit; font-size: 11px;
+    padding: 5px 10px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--fg-muted); cursor: pointer;
+  }
+  section.variant .actions button:hover {
+    border-color: var(--border-strong); color: var(--fg);
+  }
+  section.variant .actions .trash {
+    color: var(--destructive); border-color: var(--destructive);
+    background: color-mix(in srgb, var(--destructive) 6%, var(--bg));
+  }
+  section.variant .note {
+    font-size: 11px; color: var(--fg-muted);
+    padding: 8px 12px; background: var(--bg-muted);
+    border-top: 1px solid var(--border);
+    line-height: 1.45;
+  }
+  section.variant .note strong { color: var(--fg); }
+  section.variant .note code {
+    font-family: var(--mono); font-size: 10px;
+    background: var(--bg); padding: 1px 4px; border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+
+  /* =========================================================== */
+  /*  Backdrop + dialog (shared)                                   */
+  /* =========================================================== */
+  .backdrop {
+    position: absolute; inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(2px);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 10;
+    animation: fade-in 160ms ease both;
+    padding: 16px;
+  }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes dialog-in {
+    from { opacity: 0; transform: translateY(4px) scale(0.98); }
+    to   { opacity: 1; transform: none; }
+  }
+  .dialog {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    width: 100%; max-width: 440px;
+    padding: 20px;
+    animation: dialog-in 180ms cubic-bezier(.2,.8,.2,1) both;
+    font-size: 14px;
+  }
+  .dialog h3 {
+    margin: 0; font-size: 16px; font-weight: 600;
+    letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px;
+    color: var(--fg);
+  }
+  .dialog p.desc {
+    margin: 8px 0 0; color: var(--fg-muted); font-size: 13px;
+    line-height: 1.45;
+  }
+  .dialog .body { margin-top: 14px; }
+  .dialog .actions {
+    margin-top: 20px;
+    display: flex; justify-content: flex-end; gap: 8px;
+  }
+  .dialog button {
+    font: inherit; font-size: 13px; font-weight: 500;
+    padding: 8px 14px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--fg); cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .dialog button:hover { background: var(--bg-muted); }
+  .dialog button:focus-visible {
+    outline: 2px solid var(--ring); outline-offset: 2px;
+  }
+  .dialog button.primary {
+    background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+  }
+  .dialog button.primary:hover {
+    background: color-mix(in srgb, var(--accent) 88%, black);
+  }
+  .dialog button.destructive {
+    background: var(--destructive); border-color: var(--destructive); color: var(--destructive-fg);
+  }
+  .dialog button.destructive:hover {
+    background: color-mix(in srgb, var(--destructive) 88%, black);
+  }
+  .dialog button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .dialog .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: -2px;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .dialog textarea, .dialog input[type="text"] {
+    font: inherit; font-size: 13px;
+    width: 100%; padding: 8px 10px;
+    border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+    background: var(--bg); color: var(--fg);
+    resize: vertical;
+  }
+  .dialog textarea:focus, .dialog input[type="text"]:focus {
+    outline: 2px solid var(--ring); outline-offset: -1px; border-color: var(--ring);
+  }
+  .dialog textarea.invalid, .dialog input.invalid {
+    border-color: var(--destructive);
+  }
+  .dialog .helper {
+    font-size: 11px; color: var(--fg-muted);
+    margin-top: 4px; min-height: 16px;
+  }
+  .dialog .helper.error { color: var(--destructive); }
+
+  /* =========================================================== */
+  /*  Icons (inline SVG, Lucide-style)                             */
+  /* =========================================================== */
+  .ico { width: 18px; height: 18px; stroke: currentColor; fill: none;
+         stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+         flex-shrink: 0; }
+  .ico.muted { color: var(--fg-muted); }
+  .ico.destructive { color: var(--destructive); }
+  .ico.success { color: var(--success); }
+
+  /* =========================================================== */
+  /*  Toast container (Variant C)                                  */
+  /* =========================================================== */
+  .toast-container {
+    position: absolute; right: 16px; bottom: 16px;
+    display: flex; flex-direction: column-reverse; gap: 8px;
+    z-index: 11; width: 320px;
+    pointer-events: none;
+  }
+  .toast {
+    background: var(--fg);
+    color: var(--bg);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    box-shadow: var(--shadow-lg);
+    display: flex; flex-direction: column; gap: 6px;
+    pointer-events: auto;
+    animation: toast-in 220ms cubic-bezier(.2,.8,.2,1) both;
+    font-size: 13px;
+  }
+  .toast.error { background: var(--destructive); color: var(--destructive-fg); }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+  }
+  .toast .title {
+    display: flex; align-items: center; gap: 8px;
+    font-weight: 600;
+  }
+  .toast .desc { font-size: 12px; opacity: 0.85; }
+  .toast .row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .toast .undo {
+    font: inherit; font-size: 11px; font-weight: 600;
+    padding: 4px 10px; border-radius: var(--radius-sm);
+    background: transparent; color: inherit;
+    border: 1px solid currentColor;
+    cursor: pointer;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .toast .undo:hover { background: rgba(255,255,255,0.12); }
+
+  /* =========================================================== */
+  /*  Bulk-many list (Variant B-refined)                           */
+  /* =========================================================== */
+  .bulk-list {
+    margin-top: 14px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg-subtle);
+    max-height: 200px; overflow-y: auto;
+  }
+  .bulk-item {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: flex-start; gap: 8px;
+    font-size: 12px;
+  }
+  .bulk-item:last-child { border-bottom: none; }
+  .bulk-item .meta { flex: 1; min-width: 0; }
+  .bulk-item .meta .title {
+    font-weight: 500; color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .bulk-item .meta .id {
+    font-family: var(--mono); font-size: 10px; color: var(--fg-subtle);
+    margin-top: 1px;
+  }
+  .bulk-item textarea {
+    font: inherit; font-size: 11px;
+    width: 100%; padding: 4px 6px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--bg); color: var(--fg);
+    margin-top: 4px;
+    min-height: 22px; resize: vertical;
+  }
+
+  /* =========================================================== */
+  /*  Decision legend                                              */
+  /* =========================================================== */
+  .legend {
+    padding: 16px 32px 24px;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--fg-muted);
+    max-width: 1700px;
+  }
+  .legend h3 {
+    font-size: 11px; font-weight: 600; color: var(--fg);
+    letter-spacing: 0.08em; text-transform: uppercase;
+    margin: 0 0 8px;
+  }
+  .legend table { border-collapse: collapse; width: 100%; max-width: 1100px; }
+  .legend th, .legend td {
+    text-align: left; padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .legend th { color: var(--fg); font-weight: 600; }
+  .legend td.yes { color: var(--success); }
+  .legend td.no  { color: var(--fg-subtle); }
+  .legend td.partial { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header class="page">
+  <h1>Hermes Kanban — Native Dialog Prototypes</h1>
+  <p>
+    Four approaches to replacing <code>window.confirm()</code>,
+    <code>window.prompt()</code>, and <code>window.alert()</code> in
+    <code>plugins/kanban/dashboard/dist/index.js</code>. Click a page-level
+    trigger to fire the same flow in every variant simultaneously, or use the
+    per-variant buttons to fire flows unique to that variant.
+  </p>
+  <div class="controls">
+    <button data-trigger="move-done">Trigger: Mark Done (with summary)</button>
+    <button data-trigger="move-blocked">Trigger: Mark Blocked</button>
+    <button data-trigger="bulk-delete">Trigger: Bulk delete (3 tasks)</button>
+    <button data-trigger="archive-board">Trigger: Archive board</button>
+    <button data-trigger="remove-attachment">Trigger: Remove attachment</button>
+    <button data-trigger="error">Trigger: Error toast</button>
+    <button data-trigger="clear">Clear all stages</button>
+  </div>
+</header>
+
+<div class="board">
+
+  <!-- ============================================================ -->
+  <!--  VARIANT A — Conservative                                     -->
+  <!-- ============================================================ -->
+  <section class="variant" data-variant="A">
+    <header>
+      <h2>Variant A</h2>
+      <div class="label">Conservative</div>
+      <p>Direct 1:1 mapping to the host's <code>ConfirmDialog</code>. Single-line input. Minimal chrome.</p>
+    </header>
+    <div class="stage" data-stage="A">
+      <div class="placeholder">Click a trigger to preview.</div>
+    </div>
+    <div class="note">
+      <strong>Trade-off:</strong> Safest to ship — zero new components, zero new
+      patterns. Fails the GPT-OSS review on three points: no multi-line
+      summary, validation triggers a SECOND dialog instead of inline, no bulk
+      affordance.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!--  VARIANT B — Strong-fit (Pro's pick)                           -->
+  <!-- ============================================================ -->
+  <section class="variant" data-variant="B">
+    <header>
+      <h2>Variant B</h2>
+      <div class="label">Strong-fit (Pro's pick)</div>
+      <p>Textarea + contextual SVG icon + inline validation + pluralized copy. What the design brief recommends.</p>
+    </header>
+    <div class="stage" data-stage="B">
+      <div class="placeholder">Click a trigger to preview.</div>
+    </div>
+    <div class="note">
+      <strong>Trade-off:</strong> Best baseline, but Pro suggested <em>either</em>
+      a disabled-button <em>or</em> an inline error — GPT-OSS caught that both
+      are needed (button disabled AND error visible) for screen-reader users.
+      Bottom-sheet on mobile is the right move but still has keyboard edge cases.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!--  VARIANT B-refined (Pro + GPT-OSS synthesis)                   -->
+  <!-- ============================================================ -->
+  <section class="variant" data-variant="B2">
+    <header>
+      <h2>Variant B-refined</h2>
+      <div class="label">Synthesis (recommended)</div>
+      <p>All of B's improvements + GPT-OSS fixes: auto-focus, dual-validation, cancellable-spinner, per-task summaries in bulk.</p>
+    </header>
+    <div class="stage" data-stage="B2">
+      <div class="placeholder">Click a trigger to preview.</div>
+    </div>
+    <div class="note">
+      <strong>Why this is the recommendation:</strong> Single contextual icon
+      (not four) keeps the title readable. Confirm button stays enabled until
+      textarea has content; the inline error appears on submit-attempted-empty
+      AND on blur if still empty. Cancel button stays clickable during the
+      PATCH (only the confirm shows the spinner) so users can abort slow
+      networks. Bulk-many shows an expandable list with per-task summary
+      fields.
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!--  VARIANT C — Divergent (undo toast, non-destructive only)     -->
+  <!-- ============================================================ -->
+  <section class="variant" data-variant="C">
+    <header>
+      <h2>Variant C</h2>
+      <div class="label">Divergent: undo toast</div>
+      <p>Skip the modal entirely for non-destructive moves. Optimistic UI + 5s undo in a bottom-right toast.</p>
+    </header>
+    <div class="stage" data-stage="C">
+      <div class="placeholder">Click a trigger to preview.</div>
+      <div class="toast-container" data-toasts></div>
+    </div>
+    <div class="note">
+      <strong>Trade-off:</strong> Radical speedup for routine moves, but breaks
+      the required-summary flow (you can't optimistically "complete" a task
+      that's missing required schema data). Best used as a
+      <em>complement</em> to B-refined — undo toast for the safe moves,
+      modal for <code>done</code>/<code>blocked</code>/<code>archive</code>.
+    </div>
+  </section>
+
+</div>
+
+<div class="legend">
+  <h3>Decision matrix — recommended pick: B-refined</h3>
+  <table>
+    <thead>
+      <tr><th>Capability</th><th>A</th><th>B</th><th>B-refined</th><th>C</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Centered modal (Radix)</td>             <td class="yes">✓</td>   <td class="yes">✓</td>   <td class="yes">✓</td>   <td class="no">✗</td></tr>
+      <tr><td>Multi-line summary</td>                 <td class="no">✗</td>    <td class="yes">✓</td>   <td class="yes">✓</td>   <td class="no">✗</td></tr>
+      <tr><td>Single contextual icon</td>             <td class="no">✗</td>    <td class="partial">4</td> <td class="yes">✓</td>   <td class="no">✗</td></tr>
+      <tr><td>Inline validation (no second dialog)</td><td class="no">✗</td>    <td class="partial">~</td> <td class="yes">✓</td>   <td class="no">✗</td></tr>
+      <tr><td>Disabled button + persistent error</td> <td class="no">✗</td>    <td class="partial">~</td> <td class="yes">✓</td>   <td class="no">✗</td></tr>
+      <tr><td>Cancellable spinner during PATCH</td>    <td class="no">✗</td>    <td class="no">✗</td>    <td class="yes">✓</td>   <td class="yes">✓</td></tr>
+      <tr><td>Bulk-many expandable list</td>          <td class="no">✗</td>    <td class="no">✗</td>    <td class="yes">✓</td>   <td class="no">✗</td></tr>
+      <tr><td>Auto-focus textarea + mobile scroll</td> <td class="no">✗</td>    <td class="partial">~</td> <td class="yes">✓</td>   <td class="no">✗</td></tr>
+      <tr><td>Toast on success</td>                   <td class="no">✗</td>    <td class="no">✗</td>    <td class="no">✗</td>    <td class="yes">✓</td></tr>
+      <tr><td>Toast on error</td>                     <td class="no">✗</td>    <td class="no">✗</td>    <td class="partial">opt.</td> <td class="yes">✓</td></tr>
+      <tr><td>Survives the required-summary flow</td> <td class="no">✗</td>    <td class="yes">✓</td>   <td class="yes">✓</td>   <td class="no">✗</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+/* =========================================================== */
+/*  Shared icon library (inline SVG)                           */
+/* =========================================================== */
+const ICONS = {
+  check:   '<svg class="ico success" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>',
+  archive: '<svg class="ico muted" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/></svg>',
+  pause:   '<svg class="ico muted" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M10 9v6M14 9v6"/></svg>',
+  trash:   '<svg class="ico destructive" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>',
+  paperclip:'<svg class="ico muted" viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.93 8.8l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
+  info:    '<svg class="ico muted" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+  x:       '<svg class="ico" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  undo:    '<svg class="ico" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/></svg>',
+};
+
+/* =========================================================== */
+/*  Dialog factories                                            */
+/*  Each factory: (stage, opts) => void; clears stage, mounts   */
+/*  backdrop + dialog.                                          */
+/* =========================================================== */
+
+function clearStage(stage) {
+  // Remove everything except the toast container (for variant C)
+  const toastContainer = stage.querySelector('.toast-container');
+  stage.innerHTML = '';
+  if (toastContainer) stage.appendChild(toastContainer);
+}
+
+function mountBackdrop(stage, dialog) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'backdrop';
+  backdrop.appendChild(dialog);
+  stage.appendChild(backdrop);
+  return backdrop;
+}
+
+/* ----- Variant A: Conservative -------------------------------- */
+function A_moveDone(stage) {
+  clearStage(stage);
+  const dlg = document.createElement('div');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `
+    <h3>Mark this task as done?</h3>
+    <p class="desc">The worker's claim is released and dependent children become ready.</p>
+    <div class="body">
+      <input type="text" placeholder="Completion summary" />
+    </div>
+    <div class="actions">
+      <button data-act="cancel">Cancel</button>
+      <button data-act="confirm" class="primary">Mark Done</button>
+    </div>
+  `;
+  const backdrop = mountBackdrop(stage, dlg);
+  dlg.querySelector('[data-act=cancel]').onclick = () => clearStage(stage);
+  dlg.querySelector('[data-act=confirm]').onclick = () => {
+    // No validation — just shows another alert if empty (current bug)
+    const v = dlg.querySelector('input').value.trim();
+    if (!v) { window.alert('Completion summary is required before marking a task done.'); return; }
+    clearStage(stage);
+  };
+  backdrop.onclick = (e) => { if (e.target === backdrop) clearStage(stage); };
+}
+
+/* ----- Variant B: Strong-fit ----------------------------------- */
+function B_moveDone(stage) {
+  clearStage(stage);
+  const dlg = document.createElement('div');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `
+    <h3>${ICONS.check} Mark this task as done?</h3>
+    <p class="desc">The worker's claim is released and dependent children become ready.</p>
+    <div class="body">
+      <textarea rows="3" placeholder="Completion summary — this is stored as the task result."></textarea>
+      <div class="helper" data-helper></div>
+    </div>
+    <div class="actions">
+      <button data-act="cancel">Cancel</button>
+      <button data-act="confirm" class="primary">Mark Done</button>
+    </div>
+  `;
+  const backdrop = mountBackdrop(stage, dlg);
+  const ta = dlg.querySelector('textarea');
+  const helper = dlg.querySelector('[data-helper]');
+  const confirm = dlg.querySelector('[data-act=confirm]');
+  // Pro suggested either disabled OR error — let's show the error path
+  confirm.onclick = () => {
+    if (!ta.value.trim()) {
+      helper.classList.add('error');
+      helper.textContent = 'Completion summary is required before marking a task done.';
+      ta.classList.add('invalid');
+      ta.focus();
+      return;
+    }
+    // Simulate PATCH
+    confirm.disabled = true;
+    confirm.innerHTML = '<span class="spinner"></span>Marking done…';
+    setTimeout(() => clearStage(stage), 1200);
+  };
+  dlg.querySelector('[data-act=cancel]').onclick = () => clearStage(stage);
+  backdrop.onclick = (e) => { if (e.target === backdrop) clearStage(stage); };
+}
+
+/* ----- Variant B-refined: synthesis ---------------------------- */
+function B2_moveDone(stage, count) {
+  clearStage(stage);
+  const isBulk = count && count > 1;
+  const label = isBulk ? `${count} selected tasks` : 'this task';
+  const title = isBulk ? `Mark ${count} tasks as done?` : 'Mark this task as done?';
+  const dlg = document.createElement('div');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `
+    <h3>${ICONS.check} ${title}</h3>
+    <p class="desc">The worker's claim is released and dependent children become ready.</p>
+    <div class="body">
+      <textarea rows="3" autofocus placeholder="Completion summary for ${label}. This is stored as the task result."></textarea>
+      <div class="helper" data-helper></div>
+      ${isBulk ? bulkList() : ''}
+    </div>
+    <div class="actions">
+      <button data-act="cancel">Cancel</button>
+      <button data-act="confirm" class="primary" disabled>Mark Done</button>
+    </div>
+  `;
+  const backdrop = mountBackdrop(stage, dlg);
+  const ta = dlg.querySelector('textarea');
+  const helper = dlg.querySelector('[data-helper]');
+  const confirm = dlg.querySelector('[data-act=confirm]');
+  const cancel  = dlg.querySelector('[data-act=cancel]');
+  const REQUIRED = 'Completion summary is required before marking a task done.';
+
+  // Auto-focus + ensure visible on mobile keyboards (best-effort)
+  setTimeout(() => {
+    ta.focus();
+    ta.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, 50);
+
+  ta.addEventListener('input', () => {
+    const valid = ta.value.trim().length > 0;
+    confirm.disabled = !valid;
+    if (valid) {
+      ta.classList.remove('invalid');
+      helper.classList.remove('error');
+      helper.textContent = '';
+    }
+  });
+  ta.addEventListener('blur', () => {
+    if (!ta.value.trim()) {
+      ta.classList.add('invalid');
+      helper.classList.add('error');
+      helper.textContent = REQUIRED;
+    }
+  });
+  confirm.onclick = () => {
+    if (!ta.value.trim()) {
+      ta.classList.add('invalid');
+      helper.classList.add('error');
+      helper.textContent = REQUIRED;
+      ta.focus();
+      return;
+    }
+    // Cancel stays enabled; only confirm gets the spinner (GPT-OSS fix)
+    confirm.disabled = true;
+    confirm.innerHTML = '<span class="spinner"></span>Marking done…';
+    setTimeout(() => clearStage(stage), 1200);
+  };
+  cancel.onclick = () => clearStage(stage);
+  backdrop.onclick = (e) => { if (e.target === backdrop) clearStage(stage); };
+  // Cmd/Ctrl + Enter submits
+  ta.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !confirm.disabled) {
+      confirm.click();
+    }
+  });
+}
+
+/* Helper: bulk list markup for B-refined bulk-many dialogs */
+function bulkList() {
+  const items = [
+    { id: 't_8c41', title: 'Refactor kanban dispatcher tick interval' },
+    { id: 't_8d12', title: 'Add batch delete endpoint smoke test' },
+    { id: 't_8e09', title: 'Document goal_mode lifecycle in user guide' },
+  ];
+  return `
+    <div class="bulk-list">
+      ${items.map(t => `
+        <div class="bulk-item">
+          <div class="meta">
+            <div class="title">${t.title}</div>
+            <div class="id">${t.id}</div>
+            <textarea rows="1" placeholder="Completion summary for this task…"></textarea>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+/* ----- Generic destructive confirm (used by A/B for blocked/archive/delete) -- */
+function makeConfirm(stage, opts) {
+  const { icon, title, desc, confirmLabel, destructive, requireReason } = opts;
+  const dlg = document.createElement('div');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `
+    <h3>${icon} ${title}</h3>
+    <p class="desc">${desc}</p>
+    ${requireReason ? `
+      <div class="body">
+        <textarea rows="2" placeholder="${requireReason}"></textarea>
+        <div class="helper" data-helper></div>
+      </div>
+    ` : ''}
+    <div class="actions">
+      <button data-act="cancel">Cancel</button>
+      <button data-act="confirm" class="${destructive ? 'destructive' : 'primary'}">${confirmLabel}</button>
+    </div>
+  `;
+  const backdrop = mountBackdrop(stage, dlg);
+  const confirm = dlg.querySelector('[data-act=confirm]');
+  if (requireReason) {
+    const ta = dlg.querySelector('textarea');
+    confirm.disabled = true;
+    ta.addEventListener('input', () => { confirm.disabled = ta.value.trim().length === 0; });
+  }
+  dlg.querySelector('[data-act=cancel]').onclick = () => clearStage(stage);
+  confirm.onclick = () => {
+    confirm.disabled = true;
+    confirm.innerHTML = '<span class="spinner"></span>Working…';
+    setTimeout(() => clearStage(stage), 800);
+  };
+  backdrop.onclick = (e) => { if (e.target === backdrop) clearStage(stage); };
+}
+
+const makeA_confirm  = (s, o) => makeConfirm(s, o);
+const makeB_confirm  = (s, o) => makeConfirm(s, o);
+const makeB2_confirm = (s, o) => makeConfirm(s, o);
+
+/* ----- Variant C: undo toast ----------------------------------- */
+function C_undoToast(stage, message, desc) {
+  const container = stage.querySelector('.toast-container');
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.innerHTML = `
+    <div class="title">${ICONS.check} ${message}</div>
+    ${desc ? `<div class="desc">${desc}</div>` : ''}
+    <div class="row">
+      <span style="opacity:0.6; font-size: 10px;">Auto-dismiss in 5s</span>
+      <button class="undo" data-act="undo">Undo</button>
+    </div>
+  `;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 5200);
+  toast.querySelector('[data-act=undo]').onclick = () => {
+    toast.style.opacity = '0';
+    toast.style.transition = 'opacity 200ms';
+    setTimeout(() => toast.remove(), 220);
+  };
+}
+function C_errorToast(stage, message) {
+  const container = stage.querySelector('.toast-container');
+  const toast = document.createElement('div');
+  toast.className = 'toast error';
+  toast.dataset.sticky = '1';  // visual marker; doesn't actually stop dismissal
+  toast.innerHTML = `
+    <div class="title">${ICONS.x} ${message}</div>
+  `;
+  container.appendChild(toast);
+  // Longer dismiss for screenshot stability
+  setTimeout(() => toast.remove(), 30000);
+}
+
+/* =========================================================== */
+/*  Dispatch table — fires the right handler per variant        */
+/* =========================================================== */
+const HANDLERS = {
+  'move-done': () => {
+    A_moveDone(stage('A'));
+    B_moveDone(stage('B'));
+    B2_moveDone(stage('B2'), 1);
+    C_undoToast(stage('C'), 'Task marked as done', 'The worker claim has been released.');
+  },
+  'move-blocked': () => {
+    const opts = (variant) => ({
+      icon: variant === 'A' ? '' : ICONS.pause,
+      title: 'Mark this task as blocked?',
+      desc: "The worker's claim is released.",
+      confirmLabel: 'Mark Blocked',
+      destructive: false,
+    });
+    makeA_confirm(stage('A'),  opts('A'));
+    makeB_confirm(stage('B'),  opts('B'));
+    makeB2_confirm(stage('B2'), opts('B2'));
+    C_undoToast(stage('C'), 'Task marked as blocked', 'Worker claim released. Worker will re-prompt on unblock.');
+  },
+  'bulk-delete': () => {
+    const isBulk = true;
+    const count = 3;
+    const titleAll = isBulk
+      ? `Permanently delete ${count} selected tasks?`
+      : 'Permanently delete this task?';
+    const opts = (variant) => ({
+      icon: variant === 'A' ? '' : ICONS.trash,
+      title: titleAll,
+      desc: 'This cannot be undone.',
+      confirmLabel: isBulk ? `Delete ${count} tasks` : 'Delete',
+      destructive: true,
+      requireReason: variant === 'B2' ? 'Optional: why are these being deleted?' : null,
+    });
+    makeA_confirm(stage('A'),  opts('A'));
+    makeB_confirm(stage('B'),  opts('B'));
+    // B2 gets the bulk list version
+    clearStage(stage('B2'));
+    const dlg = document.createElement('div');
+    dlg.className = 'dialog';
+    dlg.innerHTML = `
+      <h3>${ICONS.trash} Permanently delete 3 selected tasks?</h3>
+      <p class="desc">This cannot be undone.</p>
+      <div class="body">${bulkList()}</div>
+      <div class="actions">
+        <button data-act="cancel">Cancel</button>
+        <button data-act="confirm" class="destructive">Delete 3 tasks</button>
+      </div>
+    `;
+    const backdrop = mountBackdrop(stage('B2'), dlg);
+    dlg.querySelector('[data-act=cancel]').onclick = () => clearStage(stage('B2'));
+    dlg.querySelector('[data-act=confirm]').onclick = () => {
+      dlg.querySelector('[data-act=confirm]').disabled = true;
+      dlg.querySelector('[data-act=confirm]').innerHTML = '<span class="spinner"></span>Deleting…';
+      setTimeout(() => clearStage(stage('B2')), 1200);
+    };
+    backdrop.onclick = (e) => { if (e.target === backdrop) clearStage(stage('B2')); };
+    C_errorToast(stage('C'), 'Bulk delete is destructive — undo toast not appropriate.');
+  },
+  'archive-board': () => {
+    const msg = "Archive board 'atm10-server'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.";
+    const opts = (variant) => ({
+      icon: variant === 'A' ? '' : ICONS.archive,
+      title: "Archive board 'atm10-server'?",
+      desc: msg,
+      confirmLabel: 'Archive',
+      destructive: true,
+    });
+    makeA_confirm(stage('A'),  opts('A'));
+    makeB_confirm(stage('B'),  opts('B'));
+    makeB2_confirm(stage('B2'), opts('B2'));
+    C_errorToast(stage('C'), 'Archive is destructive — undo toast not appropriate.');
+  },
+  'remove-attachment': () => {
+    const opts = (variant) => ({
+      icon: variant === 'A' ? '' : ICONS.paperclip,
+      title: 'Remove this attachment?',
+      desc: 'The file will be unlinked from this task. Other references are unaffected.',
+      confirmLabel: 'Remove',
+      destructive: true,
+    });
+    makeA_confirm(stage('A'),  opts('A'));
+    makeB_confirm(stage('B'),  opts('B'));
+    makeB2_confirm(stage('B2'), opts('B2'));
+    C_undoToast(stage('C'), 'Attachment removed', 'design-spec-v3.pdf');
+  },
+  'error': () => {
+    // Variant C: error toast is the only place toasts really shine.
+    [stage('A'), stage('B'), stage('B2')].forEach(s => {
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:absolute; top:12px; left:12px; right:12px; padding:10px 12px; background: color-mix(in srgb, var(--destructive) 10%, var(--bg)); border: 1px solid var(--destructive); color: var(--destructive); border-radius: var(--radius-sm); font-size: 12px;';
+      banner.textContent = 'Move failed: HTTP 409 — task is in status "todo", only running/ready/blocked can be completed.';
+      s.appendChild(banner);
+    });
+    C_errorToast(stage('C'), 'Move failed: HTTP 409');
+  },
+  'clear': () => {
+    [stage('A'), stage('B'), stage('B2'), stage('C')].forEach(s => clearStage(s));
+  },
+};
+
+function stage(name) { return document.querySelector(`[data-stage="${name}"]`); }
+
+/* =========================================================== */
+/*  Wire up page-level triggers                                 */
+/* =========================================================== */
+document.querySelectorAll('header.page .controls button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const handler = HANDLERS[btn.dataset.trigger];
+    if (handler) handler();
+  });
+});
+</script>
+
+</body>
+</html>

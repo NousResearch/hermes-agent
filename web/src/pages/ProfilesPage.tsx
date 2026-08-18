@@ -26,6 +26,7 @@ import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -709,10 +710,9 @@ export default function ProfilesPage() {
       showToast(`${t.status.error}: ${e}`, "error");
       return;
     }
-    try {
-      await navigator.clipboard.writeText(cmd);
+    if (await copyTextToClipboard(cmd)) {
       showToast(`${t.profiles.commandCopied}: ${cmd}`, "success");
-    } catch {
+    } else {
       showToast(`${t.profiles.copyFailed}: ${cmd}`, "error");
     }
   };

@@ -342,14 +342,15 @@ Hermes 立即确认：
 
 ```yaml
 display:
-  background_process_notifications: all    # all | result | error | off
+  background_process_notifications: concise    # concise | all | result | error | off
 ```
 
 | 模式 | 你收到的内容 |
 |------|-----------------|
-| `all` | 运行输出更新**以及**最终完成消息（默认） |
-| `result` | 仅最终完成消息（无论退出码） |
-| `error` | 仅在退出码非零时的最终消息 |
+| `concise` | 完成时的单行状态消息；失败时附加简短的输出尾部（默认） |
+| `all` | 运行输出更新**以及**最终原始输出消息 |
+| `result` | 仅最终原始输出完成消息（无论退出码） |
+| `error` | 仅在退出码非零时的最终原始输出消息 |
 | `off` | 不接收任何进程监控消息 |
 
 也可通过环境变量设置：

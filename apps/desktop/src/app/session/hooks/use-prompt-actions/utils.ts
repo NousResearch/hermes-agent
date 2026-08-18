@@ -199,18 +199,22 @@ export async function withSessionNotFoundResume<T>(
  * blocks an IDLE target and reports "session busy" about a session doing
  * nothing, and the converse lets a background send fire mid-turn.
  *
- * The published per-session state is authoritative. Fall back to the
- * foreground flag only when the target has no state yet — a just-minted
- * session whose first publish hasn't landed.
+ * The published per-session state is authoritative. A known target with no
+ * slice yet is idle — never inherit another session's leftover foreground
+ * flag (focusing B while A runs). Fall back to the foreground flag only for
+ * a true draft (no session id), where that flag must be the focused view's
+ * busy, not a process-global lock.
  */
 export function isTargetSessionBusy(
   sessionStates: Record<string, { busy: boolean }>,
   sessionId: null | string,
   foregroundBusy: boolean
 ): boolean {
-  const state = sessionId ? sessionStates[sessionId] : undefined
+  if (!sessionId) {
+    return foregroundBusy
+  }
 
-  return state ? state.busy : foregroundBusy
+  return Boolean(sessionStates[sessionId]?.busy)
 }
 
 // Gateway JSON-RPC calls reject with "request timed out: <method>" when the
@@ -259,12 +263,97 @@ export async function withSessionBusyRetry<T>(call: () => Promise<T>): Promise<T
   }
 }
 
+// After Stop, the renderer clears busy immediately while the gateway may still
+// be winding down. Edit/restore that only checks busy then submits without
+// interrupt-first and hits 4009 session busy. A short per-session cooldown
+// keeps interrupt-first on for that window (#83855).
+export const RECENT_INTERRUPT_COOLDOWN_MS = 3_000
+
+const _recentlyInterruptedUntil = new Map<string, number>()
+
+export function markSessionRecentlyInterrupted(sessionId: string, now = Date.now()): void {
+  if (!sessionId) {
+    return
+  }
+
+  _recentlyInterruptedUntil.set(sessionId, now + RECENT_INTERRUPT_COOLDOWN_MS)
+}
+
+export function isSessionRecentlyInterrupted(sessionId: string, now = Date.now()): boolean {
+  const until = _recentlyInterruptedUntil.get(sessionId)
+
+  if (until === undefined) {
+    return false
+  }
+
+  if (now >= until) {
+    _recentlyInterruptedUntil.delete(sessionId)
+
+    return false
+  }
+
+  return true
+}
+
+export function clearSessionRecentlyInterrupted(sessionId?: string): void {
+  if (sessionId) {
+    _recentlyInterruptedUntil.delete(sessionId)
+
+    return
+  }
+
+  _recentlyInterruptedUntil.clear()
+}
+
+/** Whether a rewind/edit should interrupt before submit — busy OR recent Stop. */
+export function shouldInterruptBeforeRewind(opts: { busy: boolean; sessionId: string; now?: number }): boolean {
+  return opts.busy || isSessionRecentlyInterrupted(opts.sessionId, opts.now)
+}
+
 // Hard guard: at most one prompt.submit in flight per session. Every submit
 // path — user Enter, queue drain, busy-retry, slash fallthrough — funnels
 // through submitPromptText. Without this, a stalled turn (e.g. a context-bloated
 // session whose first call hangs) let the SAME prompt launch several real turns
 // at once (the "message stacked 5×" bug). Keyed by stored/active session id.
-export const _submitInFlight = new Set<string>()
+// Entries expire so a hung submit cannot permanently block the session (#83855).
+export const SUBMIT_IN_FLIGHT_TTL_MS = 30_000
+
+const _submitInFlightAt = new Map<string, number>()
+
+export function isSubmitInFlight(key: string, now = Date.now()): boolean {
+  const acquiredAt = _submitInFlightAt.get(key)
+
+  if (acquiredAt === undefined) {
+    return false
+  }
+
+  if (now - acquiredAt >= SUBMIT_IN_FLIGHT_TTL_MS) {
+    _submitInFlightAt.delete(key)
+
+    return false
+  }
+
+  return true
+}
+
+/** Returns true when the lock was acquired; false when another fresh hold blocks. */
+export function acquireSubmitInFlight(key: string, now = Date.now()): boolean {
+  if (isSubmitInFlight(key, now)) {
+    return false
+  }
+
+  _submitInFlightAt.set(key, now)
+
+  return true
+}
+
+export function releaseSubmitInFlight(key: string): void {
+  _submitInFlightAt.delete(key)
+}
+
+export function clearSubmitInFlight(): void {
+  _submitInFlightAt.clear()
+}
 
 export function base64FromDataUrl(dataUrl: string): string {
   const comma = dataUrl.indexOf(',')
@@ -279,9 +368,25 @@ export function imageFilenameFromPath(filePath: string): string {
 // Remote gateway: the local composer-image file lives on THIS machine's disk,
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.
+//
+// `cachedDataUrl` is the attachment's `previewUrl` when the composer already
+// read the file for the chip thumbnail — that preview is the FULL file as a
+// base64 data URL (attachmentPreviewDataUrl → readFileDataUrl), not a
+// downscaled copy, so reusing it skips a second disk read + IPC round-trip of
+// the same bytes at submit. Only a `;base64,` data URL qualifies; anything
+// else falls through to the disk read.
 export async function readImageForRemoteAttach(
-  filePath: string
+  filePath: string,
+  cachedDataUrl?: string
 ): Promise<{ contentBase64: string; filename: string } | null> {
+  if (cachedDataUrl?.includes(';base64,')) {
+    const cached = base64FromDataUrl(cachedDataUrl)
+
+    if (cached) {
+      return { contentBase64: cached, filename: imageFilenameFromPath(filePath) }
+    }
+  }
+
   const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 
@@ -495,28 +600,52 @@ export function appendText(message: AppendMessage): string {
     .trim()
 }
 
+/** The one visible-user filter every user-ordinal computation must share —
+ *  truncate ordinals, ordinal→index resolution, and survivor-rowId rebinding
+ *  all rely on counting exactly the same turns. */
+export function isVisibleUserMessage(message: ChatMessage): boolean {
+  return message.role === 'user' && !message.hidden
+}
+
+/**
+ * A user turn whose submit failed: the optimistic bubble stayed in the
+ * transcript (followed by an assistant error), but the turn never reached the
+ * gateway, so it does not exist in backend history. Every backend-facing
+ * user-turn count must skip these or every later ordinal overshoots the
+ * gateway's index and the rewind mis-aims / gets refused (#41275, #86573).
+ */
+export function isFailedUserTurn(messages: readonly ChatMessage[], index: number): boolean {
+  const next = messages[index + 1]
+
+  return next?.role === 'assistant' && Boolean(next.error)
+}
+
+/**
+ * Indices of the user turns the backend also knows about — visible AND not
+ * failed. This is the ONE ordinal space shared with the gateway: truncate
+ * ordinals, ordinal→index resolution, survivor-rowId rebinding, and durable
+ * row-id resolution all iterate exactly this list.
+ */
+export function visibleUserMessageIndices(messages: readonly ChatMessage[]): number[] {
+  const indices: number[] = []
+
+  for (let index = 0; index < messages.length; index += 1) {
+    if (isVisibleUserMessage(messages[index]) && !isFailedUserTurn(messages, index)) {
+      indices.push(index)
+    }
+  }
+
+  return indices
+}
+
 export function visibleUserOrdinal(messages: readonly ChatMessage[], end: number): number {
-  return messages.slice(0, end).filter(m => m.role === 'user' && !m.hidden).length
+  return visibleUserMessageIndices(messages).filter(index => index < end).length
 }
 
 export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targetOrdinal: number): number {
-  let ordinal = 0
+  const indices = visibleUserMessageIndices(messages)
 
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]
-
-    if (message.role !== 'user' || message.hidden) {
-      continue
-    }
-
-    if (ordinal === targetOrdinal) {
-      return index
-    }
-
-    ordinal += 1
-  }
-
-  return -1
+  return targetOrdinal >= 0 && targetOrdinal < indices.length ? indices[targetOrdinal] : -1
 }
 
 export interface SubmitTextOptions {
@@ -534,6 +663,10 @@ export interface SubmitTextOptions {
    *  body — model-facing scaffolding the UI must never render — so the slash
    *  dispatcher passes the invocation (`/work fix the leak`) here. */
   displayText?: string
+  /** `hidden` types the persisted user row (display_kind) so no bubble
+   *  renders anywhere — the off-screen path for widget intents. The agent
+   *  still receives the text as a normal user turn. */
+  displayKind?: 'hidden'
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

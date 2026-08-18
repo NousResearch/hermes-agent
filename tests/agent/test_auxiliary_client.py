@@ -2734,7 +2734,8 @@ class TestAuxiliaryProviderProfileReasoning:
             base_url="https://api.moonshot.ai/v1",
         )
 
-        assert kwargs["reasoning_effort"] == "medium"
+        # K3 maps medium → high (ref: K3 model docs)
+        assert kwargs["reasoning_effort"] == "high"
         assert "reasoning" not in kwargs.get("extra_body", {})
         assert "thinking" not in kwargs.get("extra_body", {})
 
@@ -2932,6 +2933,14 @@ class TestCodexAdapterPromptCacheKey:
             base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
             model=model,
         )
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert captured["prompt_cache_retention"] == "24h"
+
+    def test_meta_endpoint_includes_prompt_cache_retention(self):
+        adapter, captured = self._build_adapter(base_url="https://api.meta.ai/v1", model="muse-spark-1.2")
         adapter.create(messages=[
             {"role": "system", "content": "SYS"},
             {"role": "user", "content": "hi"},

@@ -29,7 +29,7 @@ type KanbanMessages = {
   noMatch: string
   noTasks: string
   open: string
-  select: string
+  select: (modifier: string) => string
   deselect: string
   moveTo: (label: string) => string
   delete: string
@@ -185,9 +185,20 @@ type KanbanMessages = {
   profileDescriptionsHint: string
   profileGoodAt: string
   auto: string
+  // native/toast notifications for terminal worker events (completion-notify)
+  notify: {
+    completedTitle: string
+    blockedTitle: string
+    blockLoopTitle: string
+    gaveUpTitle: string
+    crashedTitle: string
+    timedOutTitle: string
+    openKanban: string
+    artifacts: (n: number) => string
+  }
 }
 
-const en: KanbanMessages = {
+export const en: KanbanMessages = {
   nav: 'Kanban',
   openBoard: 'Kanban: Open board',
   newTaskCommand: 'Kanban: New task',
@@ -217,7 +228,7 @@ const en: KanbanMessages = {
   noMatch: 'No tasks match the filters',
   noTasks: 'No tasks on this board',
   open: 'Open',
-  select: 'Select (⌘-click)',
+  select: modifier => `Select (${modifier}-click)`,
   deselect: 'Deselect',
   moveTo: label => `Move to ${label}`,
   delete: 'Delete',
@@ -376,7 +387,17 @@ const en: KanbanMessages = {
   profileDescriptionsHint:
     'Descriptions guide the decomposer’s routing. Auto-generate with the auxiliary model, or write your own.',
   profileGoodAt: 'What is this profile good at?',
-  auto: 'Auto'
+  auto: 'Auto',
+  notify: {
+    completedTitle: 'Task completed',
+    blockedTitle: 'Task blocked — needs your input',
+    blockLoopTitle: 'Task routed to triage — needs a decision',
+    gaveUpTitle: 'Task gave up',
+    crashedTitle: 'Worker crashed — will retry',
+    timedOutTitle: 'Task timed out — will retry',
+    openKanban: 'Open Kanban',
+    artifacts: (n: number) => `${n} artifacts`
+  }
 }
 
 const ja: KanbanMessages = {
@@ -409,7 +430,7 @@ const ja: KanbanMessages = {
   noMatch: 'フィルタに一致するタスクはありません',
   noTasks: 'このボードにタスクはありません',
   open: '開く',
-  select: '選択（⌘クリック）',
+  select: modifier => `選択（${modifier}クリック）`,
   deselect: '選択解除',
   moveTo: label => `${label} へ移動`,
   delete: '削除',
@@ -567,7 +588,17 @@ const ja: KanbanMessages = {
   profileDescriptionsHint:
     '説明はデコンポーザーのルーティングを導きます。補助モデルで自動生成するか、自分で書いてください。',
   profileGoodAt: 'このプロフィールの得意分野は？',
-  auto: '自動'
+  auto: '自動',
+  notify: {
+    completedTitle: 'タスク完了',
+    blockedTitle: 'タスクがブロック中 — 入力が必要です',
+    blockLoopTitle: 'タスクをトリアージへ移動 — 判断が必要です',
+    gaveUpTitle: 'タスクを断念しました',
+    crashedTitle: 'ワーカーがクラッシュ — 再試行します',
+    timedOutTitle: 'タスクがタイムアウト — 再試行します',
+    openKanban: 'かんばんを開く',
+    artifacts: (n: number) => `成果物 ${n} 件`
+  }
 }
 
 const zh: KanbanMessages = {
@@ -600,7 +631,7 @@ const zh: KanbanMessages = {
   noMatch: '没有符合筛选条件的任务',
   noTasks: '此面板暂无任务',
   open: '打开',
-  select: '选择（⌘点击）',
+  select: modifier => `选择（${modifier}点击）`,
   deselect: '取消选择',
   moveTo: label => `移动到 ${label}`,
   delete: '删除',
@@ -755,7 +786,17 @@ const zh: KanbanMessages = {
   profileDescriptions: '配置档说明',
   profileDescriptionsHint: '说明用于引导分解器的路由。可用辅助模型自动生成，或自行填写。',
   profileGoodAt: '这个配置档擅长什么？',
-  auto: '自动'
+  auto: '自动',
+  notify: {
+    completedTitle: '任务已完成',
+    blockedTitle: '任务受阻 — 需要你的输入',
+    blockLoopTitle: '任务已转入分类 — 需要人工决定',
+    gaveUpTitle: '任务已放弃',
+    crashedTitle: '工作单元崩溃 — 将重试',
+    timedOutTitle: '任务超时 — 将重试',
+    openKanban: '打开看板',
+    artifacts: (n: number) => `${n} 个产物`
+  }
 }
 
 const zhHant: KanbanMessages = {
@@ -788,7 +829,7 @@ const zhHant: KanbanMessages = {
   noMatch: '沒有符合篩選條件的任務',
   noTasks: '此面板尚無任務',
   open: '開啟',
-  select: '選取（⌘點擊）',
+  select: modifier => `選取（${modifier}點擊）`,
   deselect: '取消選取',
   moveTo: label => `移至 ${label}`,
   delete: '刪除',
@@ -943,7 +984,17 @@ const zhHant: KanbanMessages = {
   profileDescriptions: '設定檔說明',
   profileDescriptionsHint: '說明用於引導分解器的路由。可用輔助模型自動產生，或自行填寫。',
   profileGoodAt: '這個設定檔擅長什麼？',
-  auto: '自動'
+  auto: '自動',
+  notify: {
+    completedTitle: '任務已完成',
+    blockedTitle: '任務受阻 — 需要你的輸入',
+    blockLoopTitle: '任務已轉入分類 — 需要人工決定',
+    gaveUpTitle: '任務已放棄',
+    crashedTitle: '工作單元當機 — 將重試',
+    timedOutTitle: '任務逾時 — 將重試',
+    openKanban: '開啟看板',
+    artifacts: (n: number) => `${n} 個產物`
+  }
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */

@@ -227,7 +227,11 @@ def test_dispatch_tick_runs_wal_checkpoint_at_interval(tmp_path, monkeypatch):
         )
         kb.dispatch_once(proxy, spawn_fn=lambda *a, **k: None, dry_run=True)
         assert len(executed) == 2, "tick after the interval should checkpoint"
-        assert all("TRUNCATE" in sql.upper() for sql in executed)
+        # PASSIVE, not TRUNCATE: CLI kanban commands in other processes write
+        # to the same board without holding the dispatch flock, so a TRUNCATE
+        # here races live writers (same class as the state.db #45383 fix).
+        assert all("PASSIVE" in sql.upper() for sql in executed)
+        assert not any("TRUNCATE" in sql.upper() for sql in executed)
     finally:
         conn.close()
 

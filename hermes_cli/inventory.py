@@ -272,6 +272,7 @@ def build_models_payload(
         _apply_capabilities(rows)
     if featured:
         _apply_featured(rows)
+    _apply_custom_aliases(rows)
 
     return {
         "providers": rows,
@@ -503,6 +504,32 @@ def _apply_featured(rows: list[dict]) -> None:
         # Preserve the row's model order for stable rendering.
         order = {m: i for i, m in enumerate(models)}
         row["featured_models"] = sorted(featured, key=lambda m: order[m])
+
+
+def _apply_custom_aliases(rows: list[dict]) -> None:
+    """Attach the accepted identity set to each user-defined provider row.
+
+    A session's ``model.options`` reports the canonical ``custom:<key>``
+    identity (via ``canonical_custom_identity``), while catalog rows carry
+    the bare config key as ``slug``. GUI pickers compare the two to decide
+    which row is active; exact equality never matches for custom providers
+    (#87035). Exposing ``aliases`` — every current and legacy spelling from
+    :func:`hermes_cli.providers.custom_provider_aliases` — lets the frontend
+    do a membership check instead.
+    """
+    from hermes_cli.providers import custom_provider_aliases
+
+    for row in rows:
+        if not row.get("is_user_defined"):
+            continue
+        try:
+            row["aliases"] = sorted(
+                custom_provider_aliases(
+                    str(row.get("name", "")), str(row.get("slug", ""))
+                )
+            )
+        except Exception:
+            continue
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────

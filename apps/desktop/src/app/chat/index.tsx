@@ -43,6 +43,8 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
+import { sessionTileDelegate } from '@/store/session-states'
+import { $transcriptTailBySessionId } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
@@ -59,11 +61,17 @@ import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { ProfileTag } from './profile-tag'
+import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
+import {
+  backfillOlderTranscriptPage,
+  mergeOlderTranscriptPage,
+  transcriptBackfillAvailable
+} from './transcript-backfill'
 import { advanceTranscriptWindow, type TranscriptWindowState } from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
@@ -78,6 +86,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
+  onAttachPrCommentUrl?: (url: string) => boolean
   onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
@@ -251,9 +260,42 @@ function ChatRuntimeBoundary({
 
   const runtimeMessageRepository = useRuntimeMessageRepository(windowedMessages)
 
-  const expandWindow = useCallback(() => setWindowPages(pages => pages + 1), [])
+  const storedId = useStore(view.$storedId)
+  // Subscribed (not read imperatively) so the "Show earlier" affordance
+  // appears/retires as tail hydrations and backfill pages record their state.
+  const transcriptTailStates = useStore($transcriptTailBySessionId)
+  const restBackfillAvailable = Boolean(storedId && transcriptTailStates[storedId]?.possiblyTruncated)
 
-  const transcriptWindow = useMemo(() => ({ olderAvailable: windowed, expandWindow }), [expandWindow, windowed])
+  const expandWindow = useCallback(() => {
+    // The store window still holds older messages: growing pages is enough.
+    // Otherwise the whole in-memory transcript is already materialized — if
+    // the REST tail hydration was truncated, fetch the next older page and
+    // PREPEND it to the session store before growing, so the grown window has
+    // something older to show. Fire-and-forget: the prepend lands through the
+    // session-state write path and re-renders this boundary.
+    if (!windowStateRef.current?.window.windowed && runtimeId && storedId && transcriptBackfillAvailable(storedId)) {
+      void backfillOlderTranscriptPage({
+        storedSessionId: storedId,
+        // Stale-response guard: a session switch remounts/re-keys this view;
+        // checking the live atoms (not captured props) discards a page that
+        // resolves after the user moved on — same pattern as isCurrentResume.
+        isCurrent: () => view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId,
+        applyOlderPage: olderPage => {
+          sessionTileDelegate()?.updateSession(runtimeId, state => {
+            const merged = mergeOlderTranscriptPage(state.messages, olderPage)
+
+            return merged === state.messages ? state : { ...state, messages: merged }
+          })
+        }
+      })
+    }
+
+    setWindowPages(pages => pages + 1)
+  }, [runtimeId, storedId, view])
+
+  const olderAvailable = windowed || restBackfillAvailable
+
+  const transcriptWindow = useMemo(() => ({ olderAvailable, expandWindow }), [expandWindow, olderAvailable])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -289,6 +331,7 @@ export const ChatView = memo(function ChatView({
   onAddUrl,
   onAttachImageBlob,
   onAttachDroppedItems,
+  onAttachPrCommentUrl,
   onBranchInNewChat,
   maxVoiceRecordingSeconds,
   onPasteClipboardImage,
@@ -398,7 +441,7 @@ export const ChatView = memo(function ChatView({
   // direct nav). Derived in render so the swap reads instantly: the same frame
   // the id changes we drop the old transcript and show the loader, instead of
   // waiting for the resume effect (which paints a frame later) to clear them.
-  const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
+  const routeSessionMismatch = isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions) : false
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
@@ -616,6 +659,7 @@ export const ChatView = memo(function ChatView({
               onAddUrl={onAddUrl}
               onAttachDroppedItems={onAttachDroppedItems}
               onAttachImageBlob={onAttachImageBlob}
+              onAttachPrCommentUrl={onAttachPrCommentUrl}
               onCancel={onCancel}
               onPasteClipboardImage={onPasteClipboardImage}
               onPickFiles={onPickFiles}

@@ -351,6 +351,38 @@ def _aggregator_row(slug: str, models: list[str]) -> dict:
     }
 
 
+def test_user_defined_rows_carry_alias_set_for_gui_current_match():
+    """Custom provider rows must expose `aliases` so the desktop picker can
+    match a session's canonical `custom:<key>` identity against the row's
+    bare-key slug (#87035). Built-in rows carry no aliases.
+    """
+    rows = [
+        {
+            "slug": "myep",
+            "name": "My Endpoint",
+            "models": ["my-model"],
+            "total_models": 1,
+            "is_current": True,
+            "is_user_defined": True,
+            "source": "user-config",
+            "api_url": "http://localhost:8000/v1",
+        },
+        _nous_row() | {"is_current": False},
+    ]
+    ctx = _empty_ctx(provider="custom:myep", model="my-model")
+
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    by_slug = {r["slug"]: r for r in payload["providers"]}
+    aliases = by_slug["myep"]["aliases"]
+    # The canonical session identity must be matchable via the alias set.
+    assert "custom:myep" in aliases
+    assert "myep" in aliases
+    assert "custom:my-endpoint" in aliases
+    assert "aliases" not in by_slug["nous"]
+
+
 def test_aggregator_dedup_removes_overlapping_models():
     """Models served by a user-defined provider are removed from
     aggregator rows so the picker doesn't show them under the wrong

@@ -1311,6 +1311,220 @@ class TestApprovalTimeoutIsNotConsent:
         ]
         assert hook_calls[-1][1]["choice"] == "notify_failed"
 
+    def test_pending_approval_is_replayable_and_acknowledged(self, monkeypatch):
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=2)
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        result_holder = {}
+
+        thread = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result", mod.check_all_command_guards("rm -rf .git", "local")
+            )
+        )
+        thread.start()
+        for _ in range(200):
+            if notified:
+                break
+            time.sleep(0.005)
+
+        request_id = notified[0]["request_id"]
+        assert request_id
+        assert mod.list_gateway_approvals(self.SESSION_KEY) == [notified[0]]
+        assert mod.ack_gateway_approval(self.SESSION_KEY, request_id) is True
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "once", request_id=request_id
+        ) == 1
+        thread.join(timeout=5)
+        assert result_holder["result"]["approved"] is True
+
+    def test_stale_request_id_cannot_resolve_current_approval(self, monkeypatch):
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=2)
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        result_holder = {}
+        thread = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result", mod.check_all_command_guards("rm -rf .git", "local")
+            )
+        )
+        thread.start()
+        for _ in range(200):
+            if notified:
+                break
+            time.sleep(0.005)
+
+        request_id = notified[0]["request_id"]
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "once", request_id="stale-request"
+        ) == 0
+        assert mod.list_gateway_approvals(self.SESSION_KEY)
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "deny", request_id=request_id
+        ) == 1
+        thread.join(timeout=5)
+        assert result_holder["result"]["approved"] is False
+
+
+# =========================================================================
+# Coalesce identical concurrent approvals — one prompt, one answer.
+# Port of anomalyco/opencode#40869 (deduplicate websearch consent prompts):
+# parallel tool calls hitting the same dangerous-command gate must produce
+# ONE user-facing prompt; followers adopt the leader's session/always/deny
+# decision, while a single-use "once" makes the follower re-prompt.
+# =========================================================================
+
+
+class TestConcurrentApprovalCoalescing:
+    SESSION_KEY = "test-coalesce-session"
+
+    def setup_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+
+    teardown_method = setup_method
+
+    def _data(self, command="rm -rf .git"):
+        return {
+            "command": command,
+            "description": "desc",
+            "pattern_key": "dangerous",
+            "pattern_keys": ["dangerous"],
+        }
+
+    def _spawn_waits(self, mod, notified, n=2, command="rm -rf .git"):
+        import threading
+        results = [None] * n
+        threads = []
+        for i in range(n):
+            def _run(idx=i):
+                results[idx] = mod._await_gateway_decision(
+                    self.SESSION_KEY, notified.append, self._data(command)
+                )
+            t = threading.Thread(target=_run)
+            t.start()
+            threads.append(t)
+            if i == 0:
+                # Wait for the leader to enqueue AND for its notify_cb to
+                # fire (the pre-approval hook dispatch runs between the
+                # queue append and the notify, and can be slow on first
+                # call) so follower threads deterministically find it and
+                # coalesce against a fully-presented prompt.
+                for _ in range(400):
+                    if mod._gateway_queues.get(self.SESSION_KEY) and notified:
+                        break
+                    time.sleep(0.005)
+            else:
+                # Followers never enqueue; give the thread a beat to reach
+                # the leader wait.
+                time.sleep(0.05)
+        return results, threads
+
+    def test_identical_concurrent_approvals_send_one_prompt(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(mod, "_get_approval_timeout", lambda: 30)
+
+        notified = []
+        results, threads = self._spawn_waits(mod, notified, n=3)
+
+        # Only the leader is in the queue; only one notify fired.
+        assert len(mod._gateway_queues.get(self.SESSION_KEY, [])) == 1
+        assert len(notified) == 1
+
+        # One answer resolves everyone.
+        assert mod.resolve_gateway_approval(self.SESSION_KEY, "session") == 1
+        for t in threads:
+            t.join(timeout=5)
+        for r in results:
+            assert r is not None and r["resolved"] and r["choice"] == "session"
+        # Followers are marked as coalesced adoptions.
+        assert sum(1 for r in results if r.get("coalesced")) == 2
+
+    def test_deny_propagates_to_followers(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(mod, "_get_approval_timeout", lambda: 30)
+
+        notified = []
+        results, threads = self._spawn_waits(mod, notified, n=2)
+        assert len(notified) == 1
+
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny", reason="nope")
+        for t in threads:
+            t.join(timeout=5)
+        for r in results:
+            assert r is not None and r["choice"] == "deny"
+        follower = next(r for r in results if r.get("coalesced"))
+        assert follower["reason"] == "nope"
+
+    def test_once_makes_follower_reprompt(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(mod, "_get_approval_timeout", lambda: 30)
+
+        notified = []
+        results, threads = self._spawn_waits(mod, notified, n=2)
+        assert len(notified) == 1
+
+        # "once" covers only the leader — the follower must re-prompt.
+        mod.resolve_gateway_approval(self.SESSION_KEY, "once")
+        for _ in range(400):
+            if len(notified) == 2:
+                break
+            time.sleep(0.01)
+        assert len(notified) == 2, "follower did not issue a fresh prompt after 'once'"
+
+        mod.resolve_gateway_approval(self.SESSION_KEY, "once")
+        for t in threads:
+            t.join(timeout=5)
+        assert all(r is not None and r["choice"] == "once" for r in results)
+
+    def test_different_commands_are_not_coalesced(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(mod, "_get_approval_timeout", lambda: 30)
+        import threading
+
+        notified = []
+        results = [None, None]
+
+        def _run(idx, cmd):
+            results[idx] = mod._await_gateway_decision(
+                self.SESSION_KEY, notified.append, self._data(cmd)
+            )
+
+        t1 = threading.Thread(target=_run, args=(0, "rm -rf .git"))
+        t1.start()
+        for _ in range(200):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.005)
+        t2 = threading.Thread(target=_run, args=(1, "rm -rf /tmp/x"))
+        t2.start()
+        for _ in range(200):
+            if len(mod._gateway_queues.get(self.SESSION_KEY, [])) == 2:
+                break
+            time.sleep(0.005)
+        # notify_cb fires after the queue append (hook dispatch runs in
+        # between and can be slow on first call) — wait for both prompts.
+        for _ in range(1000):
+            if len(notified) == 2:
+                break
+            time.sleep(0.005)
+
+        # Two distinct prompts, two queue entries, two resolutions needed.
+        assert len(notified) == 2
+        assert len(mod._gateway_queues.get(self.SESSION_KEY, [])) == 2
+        mod.resolve_gateway_approval(self.SESSION_KEY, "session", resolve_all=True)
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        assert all(r is not None and r["choice"] == "session" for r in results)
+
+
 class TestTirithImportErrorFailOpenPolicy:
     """Regression guard for #20733.
 

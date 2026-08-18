@@ -193,6 +193,7 @@ result = ctx.llm.complete(
     agent_id=None,         # 可选，受门控
     profile=None,          # 可选，受门控——显式指定认证 profile 名称
     purpose="optional-audit-string",
+    task=None,             # 可选——plugin 注册的辅助槽位
 )
 # → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
 ```
@@ -223,6 +224,7 @@ result = ctx.llm.complete_structured(
     agent_id=None,
     profile=None,
     purpose=None,
+    task=None,             # 可选——plugin 注册的辅助槽位
 )
 # → PluginLlmStructuredResult(text, provider, model, agent_id,
 #                             usage, parsed, content_type, audit)
@@ -236,11 +238,37 @@ result = ctx.llm.complete_structured(
 ### 异步
 
 ```python
-result = await ctx.llm.acomplete(messages=...)
-result = await ctx.llm.acomplete_structured(instructions=..., input=...)
+result = await ctx.llm.acomplete(messages=..., task="classifier")
+result = await ctx.llm.acomplete_structured(
+    instructions=..., input=..., task="classifier"
+)
 ```
 
 参数和结果类型与对应的同步版本相同。在 gateway 适配器、异步 hook 或任何已运行在 asyncio 事件循环上的 plugin 代码中使用。
+
+### 通过任务路由的辅助调用
+
+当 plugin 需要使用自己配置的辅助路由时，可在四种调用形态中的任意一种传入 `task=`。在 plugin 初始化期间注册该任务；在运营人员通过 `auxiliary.<task>` 覆盖 provider 和模型之前，将使用 plugin 提供的默认值：
+
+```python
+def register(ctx):
+    ctx.register_auxiliary_task(
+        "classifier", display_name="Classifier", description="Classify input."
+    )
+
+
+result = ctx.llm.complete(messages=[...], task="classifier")
+result = ctx.llm.complete_structured(instructions=..., input=..., task="classifier")
+```
+
+```yaml
+auxiliary:
+  classifier:
+    provider: openrouter
+    model: vendor/model-id
+```
+
+Plugin 可以为自己注册的任务提供 provider/模型注册默认值。运营人员在 `auxiliary.<task>` 中的配置会覆盖这些默认值，并控制部署选择。Plugin 只能使用自己注册的任务；未知或属于其他 plugin 的任务名会在调用 provider 前失败。`allow_task_override: true` 是运营人员显式授予的权限，用于使用 Hermes 内置辅助任务；它不允许使用其他 plugin 的任务。省略 `task=`（或使用 `"auto"`）会继续使用当前主 provider/模型。
 
 ### 结果属性
 
@@ -271,6 +299,7 @@ class PluginLlmStructuredResult(PluginLlmCompleteResult):
 * 设置请求塑形参数（`temperature`、`max_tokens`、`timeout`、`system_prompt`、`purpose`、`messages`、`instructions`、`input`、`json_schema`），
 
 ……仅此而已。`provider=`、`model=`、`agent_id=` 和 `profile=` 参数在运营人员授权前均会抛出 `PluginLlmTrustError`。
+同样，`task=` 只能使用该 plugin 已注册的辅助任务，除非运营人员授予 `allow_task_override` 以使用内置任务。
 
 **大多数 plugin 永远不需要此部分。** 仅调用 `ctx.llm.complete(messages=...)` 且不带任何覆盖的 plugin，会针对用户当前激活的内容运行，零配置即可工作。以下配置块仅在 plugin 明确需要固定到与用户不同的模型或 provider 时才有意义。
 
@@ -319,6 +348,7 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
 | ↳ 允许列表      | —     | `allowed_models: [...]`          |
 | `agent_id=`     | 拒绝  | `allow_agent_id_override: true`  |
 | `profile=`      | 拒绝  | `allow_profile_override: true`   |
+| 内置 `task=`    | 拒绝  | `allow_task_override: true`      |
 
 每项覆盖独立门控。授予 `allow_model_override` **不会**同时授予 `allow_provider_override`——被信任可选择模型的 plugin，在未获得 provider 门控授权前仍固定在用户当前激活的 provider 上。
 

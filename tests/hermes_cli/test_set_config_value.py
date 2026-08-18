@@ -104,6 +104,13 @@ class TestConfigYamlRouting:
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
 
+    def test_cron_script_timeout_is_recognized(self, _isolated_hermes_home, capsys):
+        """The script timeout read by cron must be accepted by config set."""
+        set_config_value("cron.script_timeout_seconds", "600")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert "script_timeout_seconds: 600" in _read_config(_isolated_hermes_home)
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)
@@ -294,6 +301,29 @@ def _write_cron_jobs(tmp_path, jobs):
 
 class TestCronModelDriftConfigWarning:
     """Warn operators before unpinned snapshot-bearing cron jobs fail closed."""
+
+    def test_warning_names_the_user_owned_cli_pin_path(
+        self,
+        _isolated_hermes_home,
+        capsys,
+    ):
+        _write_cron_jobs(
+            _isolated_hermes_home,
+            [
+                {
+                    "id": "model-drift-job",
+                    "enabled": True,
+                    "model": None,
+                    "model_snapshot": "old-model",
+                }
+            ],
+        )
+
+        set_config_value("model.default", "new-model")
+
+        warning = capsys.readouterr().out
+        assert "hermes cron edit <job_id> --provider <provider> --model <model>" in warning
+        assert "cronjob action=update" not in warning
 
 
 

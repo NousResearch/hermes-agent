@@ -182,6 +182,23 @@ after a Hermes update if a manifest version changed.
 To add an MCP to the catalog, open a PR against
 [`optional-mcps/`](https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps).
 
+### Suggestion metadata (`suggest:`)
+
+A manifest may declare an optional `suggest:` block with `keywords:` and/or
+`hosts:` lists. UI surfaces (currently the Desktop app's composer) use it to
+offer a one-click "Add &lt;server&gt;" pill when your draft mentions one of the
+keywords as a completed word, or contains a pasted link whose hostname ends
+with one of the host suffixes. It is purely advisory — installs still flow
+through the same validated catalog/config paths — and most hosted remote
+entries (Atlassian, Sentry, Notion, Stripe, Vercel, Supabase, and friends)
+declare it.
+
+GitHub is deliberately **not** in the catalog: its hosted MCP requires each
+client to bring its own OAuth app (generic dynamic client registration is
+rejected), and Hermes's bundled `github/*` skills driving the `gh` CLI are a
+more capable integration. On Desktop, GitHub mentions instead offer the
+`github-auth` skill when `gh` isn't signed in yet.
+
 ## Two kinds of MCP servers
 
 ### Stdio servers
@@ -438,6 +455,13 @@ Examples:
 | `my-api` | `query.data` | `mcp_my_api_query_data` |
 
 In practice, you usually do not need to call the prefixed name manually — Hermes sees the tool and chooses it during normal reasoning.
+
+### Tool-result sanitization and `_meta`
+
+Two behaviors apply to every MCP tool result before the model sees it:
+
+- **Invisible Unicode TAG characters are stripped.** Characters in the U+E0000–U+E007F range render as nothing in terminals and chat UIs but are fully visible to the model — a classic prompt-injection smuggling channel for a malicious or compromised server. Hermes strips them from tool results, resource content, and tool descriptions. Legitimate emoji tag sequences (regional flags like 🏴󠁧󠁢󠁳󠁣󠁴󠁿) are preserved.
+- **Vendor `_meta` is surfaced; protocol-reserved keys are not.** When a server attaches a `_meta` mapping to a tool result (vendor namespaces like `com.example/handoff`), Hermes passes it through to the model alongside the result content. Keys under protocol-reserved prefixes — a `modelcontextprotocol` or `mcp` label followed by another label, e.g. `modelcontextprotocol.io/...` or `tools.mcp.com/...` — are dropped, matching the MCP spec's key-name rules. If nothing model-facing remains, the `_meta` field is omitted entirely.
 
 ## MCP utility tools
 

@@ -29,12 +29,14 @@ Nothing in this module touches the agent's system prompt or toolset.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -661,6 +663,31 @@ def _meta_key(session_id: str) -> str:
 
 
 _DB_CACHE: Dict[str, Any] = {}
+_DB_BOOTSTRAP_LOCK = threading.Lock()
+_DB_BOOTSTRAP_INFLIGHT: Dict[str, threading.Event] = {}
+
+# How long a loop-thread caller waits for the background bootstrap before
+# degrading to None. Normal SessionDB init is ~10-100ms, so the common case
+# still returns a real DB (no silently dropped goal writes); a contended
+# init (locked state.db mid-migration) blows past this and the caller
+# degrades, with the loop stalled far under the watchdog's probe window.
+_DB_BOOTSTRAP_LOOP_WAIT_S = 0.25
+
+
+def _bootstrap_session_db(home: str, done: threading.Event) -> None:
+    """Construct SessionDB off-loop and populate the cache (worker thread)."""
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+    except Exception as exc:  # pragma: no cover
+        logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
+        db = None
+    with _DB_BOOTSTRAP_LOCK:
+        if db is not None and home not in _DB_CACHE:
+            _DB_CACHE[home] = db
+        _DB_BOOTSTRAP_INFLIGHT.pop(home, None)
+    done.set()
 
 
 def _get_session_db() -> Optional[Any]:
@@ -671,6 +698,15 @@ def _get_session_db() -> Optional[Any]:
     ``hermes_home`` path so profile switches still pick up the right DB.
     Defensive against import/instantiation failures so tests and
     non-standard launchers can still use the GoalManager.
+
+    Never constructs SessionDB on an event-loop thread. ``SessionDB.__init__``
+    runs schema init, and a migration against a contended state.db blocks for
+    seconds — on the gateway's loop thread that starves the loop-liveness
+    watchdog, which hard-exits the process (exit 75) and crash-loops the
+    gateway (enterprise field report, 2026-08-14). On a cache miss with a running
+    loop we kick a one-shot background bootstrap and return None; every
+    caller already degrades gracefully on None, and a later call returns the
+    cached instance.
     """
     try:
         from hermes_constants import get_hermes_home
@@ -684,12 +720,55 @@ def _get_session_db() -> Optional[Any]:
     cached = _DB_CACHE.get(home)
     if cached is not None:
         return cached
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        on_loop_thread = False
+    else:
+        on_loop_thread = True
+
+    if on_loop_thread:
+        with _DB_BOOTSTRAP_LOCK:
+            # Re-check under the lock: a bootstrap may have finished between
+            # the unlocked read above and here.
+            cached = _DB_CACHE.get(home)
+            if cached is not None:
+                return cached
+            done = _DB_BOOTSTRAP_INFLIGHT.get(home)
+            if done is None:
+                done = threading.Event()
+                _DB_BOOTSTRAP_INFLIGHT[home] = done
+                threading.Thread(
+                    target=_bootstrap_session_db,
+                    args=(home, done),
+                    name="goals-sessiondb-bootstrap",
+                    daemon=True,
+                ).start()
+        # Grace window: a healthy init finishes in tens of ms, so waiting
+        # briefly keeps goal/heartbeat persistence working on the very first
+        # loop-thread call instead of silently dropping it. A contended init
+        # (the crash-loop scenario) exceeds the window and we degrade to
+        # None — a bounded stall far below the watchdog's probe timeout.
+        done.wait(_DB_BOOTSTRAP_LOOP_WAIT_S)
+        return _DB_CACHE.get(home)
+
     try:
         db = SessionDB()
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None
-    _DB_CACHE[home] = db
+    with _DB_BOOTSTRAP_LOCK:
+        existing = _DB_CACHE.get(home)
+        if existing is not None:
+            # A concurrent bootstrap won the race; keep one instance and
+            # close ours so connections don't leak.
+            try:
+                db.close()
+            except Exception:
+                pass
+            return existing
+        _DB_CACHE[home] = db
     return db
 
 

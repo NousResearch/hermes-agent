@@ -19,7 +19,7 @@ import { RICH_INPUT_SLOT } from './rich-editor'
 /** Composer routing key. The main chat is `'main'`, the edit composer
  *  `'edit'`; scoped composers (session tiles) use `'tile:<id>'`. */
 export type ComposerTarget = 'edit' | 'main' | (string & {})
-export type ComposerInsertMode = 'block' | 'inline'
+export type ComposerInsertMode = 'block' | 'inline' | 'prefix'
 
 export interface FocusDetail {
   target: ComposerTarget
@@ -38,8 +38,14 @@ interface InsertRefsDetail {
   target: ComposerTarget
 }
 
+interface AttachImagesDetail {
+  blobs: Blob[]
+  target: ComposerTarget
+}
+
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
+const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
@@ -63,6 +69,9 @@ const cssEscape = (value: string): string => {
 interface SubmitDetail {
   target: ComposerTarget
   text: string
+  /** `hidden` types the persisted user row so no bubble renders — the
+   *  off-screen path for widget intents. Omit for normal visible sends. */
+  displayKind?: 'hidden'
 }
 
 let activeTarget: ComposerTarget = 'main'
@@ -220,6 +229,22 @@ export const onComposerFocusRequest = (handler: (detail: FocusDetail) => void) =
 export const onComposerInsertRequest = (handler: (detail: InsertDetail) => void) =>
   subscribe<InsertDetail>(INSERT_EVENT, handler)
 
+/** Attach image blobs to a composer's attachment set — the unfocused-paste
+ *  path (paste-to-focus) hands clipboard images over here. The edit composer
+ *  takes no attachments (its own paste path ignores images), so a request
+ *  resolving to `'edit'` is dropped by that surface's target filter. */
+export const requestComposerAttachImages = (
+  blobs: Blob[],
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  if (blobs.length) {
+    dispatch<AttachImagesDetail>(ATTACH_IMAGES_EVENT, { blobs, target: resolve(target) })
+  }
+}
+
+export const onComposerAttachImagesRequest = (handler: (detail: AttachImagesDetail) => void) =>
+  subscribe<AttachImagesDetail>(ATTACH_IMAGES_EVENT, handler)
+
 /** Insert typed ref chips (carrying a display label) into a composer — the
  * structured cousin of {@link requestComposerInsert}, used for session links. */
 export const requestComposerInsertRefs = (
@@ -239,12 +264,16 @@ export const onComposerInsertRefsRequest = (handler: (detail: InsertRefsDetail) 
  * the agent a task without the user round-tripping through the input. */
 export const requestComposerSubmit = (
   text: string,
-  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+  { target = 'active', displayKind }: { target?: ComposerTarget | 'active'; displayKind?: 'hidden' } = {}
 ) => {
   const trimmed = text.trim()
 
   if (trimmed) {
-    dispatch<SubmitDetail>(SUBMIT_EVENT, { target: resolve(target), text: trimmed })
+    dispatch<SubmitDetail>(SUBMIT_EVENT, {
+      target: resolve(target),
+      text: trimmed,
+      ...(displayKind ? { displayKind } : {})
+    })
   }
 }
 

@@ -36,9 +36,32 @@ from __future__ import annotations
 import logging
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Default glyph for the deterministic memory indicators. Providers override
+# per-status with their own brand mark (e.g. Hindsight uses "👁️").
+INDICATOR_GLYPH = "🧠"
+
+
+@dataclass(frozen=True)
+class RecallStatus:
+    """Summary of what a provider's most recent prefetch injected this turn.
+
+    Returned by :meth:`MemoryProvider.recall_status` so the agent can emit a
+    deterministic, model-independent "memory was used" indicator (see
+    ``MemoryManager.describe_recall``). ``count`` is the number of discrete
+    memories injected; ``0`` means content was injected but has no discrete
+    count (e.g. a synthesized reflect answer), which the indicator renders
+    generically rather than as "0 memories". ``glyph`` is the brand mark the
+    indicator leads with.
+    """
+
+    provider_label: str
+    count: int
+    glyph: str = INDICATOR_GLYPH
 
 
 # Prompts that carry no semantic signal — trivial acknowledgements, greetings,
@@ -120,6 +143,17 @@ class MemoryProvider(ABC):
           - user_id_alt (str): Optional alternate stable platform user identifier.
         """
 
+    def unavailable_reason(self) -> str:
+        """Actionable reason this provider reports unavailable, for the caller.
+
+        ``is_available()`` gates initialization, so a provider that reports
+        unavailable is never initialized — any diagnostic it would log from
+        ``initialize()`` is unreachable. Return a short, user-facing hint here
+        (e.g. which package to install) so the caller's "provider unavailable"
+        warning can surface it. Empty string (the default) adds nothing.
+        """
+        return ""
+
     def system_prompt_block(self) -> str:
         """Return text to include in the system prompt.
 
@@ -150,6 +184,19 @@ class MemoryProvider(ABC):
         by prefetch() on the next turn. Default is no-op — providers
         that do background prefetching should override this.
         """
+
+    def recall_status(self) -> Optional[RecallStatus]:
+        """Describe what the most recent :meth:`prefetch` injected, for the UI.
+
+        Called by the agent right after prefetch, on the same (single) turn
+        thread, so it can surface a deterministic "👁️ recalled N memories"
+        status line that does not depend on the model choosing to mention it.
+
+        Return ``None`` (the default) when this provider injected nothing this
+        turn or does not want a visible indicator. Providers that override it
+        must reflect only the LAST prefetch — never a stale prior count.
+        """
+        return None
 
     def sync_turn(
         self,

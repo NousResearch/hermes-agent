@@ -97,13 +97,16 @@ tool blocks the loopback listener, or you close the browser tab — the app
 
 ## For gateway operators
 
-Native sign-in is available automatically on any gated gateway that has a
-brokerable OAuth provider registered (e.g. the bundled **Nous** provider). No
-configuration is required — the `/auth/native/*` routes and the `auth_flows`
-advertisement are part of the dashboard-auth subsystem. Password-only and
-token-only providers do not advertise `native_pkce` (there is no upstream
-redirect to broker), and those deployments continue to use their existing
-login.
+Native sign-in is available automatically on any gated gateway with an
+interactive session provider registered. No configuration is required — the
+`/auth/native/*` routes and the `auth_flows` advertisement are part of the
+dashboard-auth subsystem. OAuth providers (e.g. the bundled **Nous** provider)
+broker the upstream IDP redirect; password providers (e.g. the bundled
+**basic-auth** plugin) land the system browser on the gateway's `/login`
+credential form instead — which is what lets OS password managers (macOS
+Passwords, etc.) autofill the form, something no embedded desktop webview can
+offer. Token-only credentials (e.g. drain) are not interactive sign-ins and do
+not advertise `native_pkce`.
 
 The relevant endpoints (all public, pre-auth bootstrap, same as the existing
 `/auth/*` OAuth routes):

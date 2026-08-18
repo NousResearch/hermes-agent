@@ -128,9 +128,6 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
     const offCtx = off.getContext('2d', { willReadFrequently: true })
 
     let sheet: HTMLImageElement | null = null
-    void loadSheet().then(img => {
-      sheet = img
-    })
 
     const render = (frame: number) => {
       if (!sheet || !offCtx) {
@@ -161,7 +158,9 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
       ctx.drawImage(off, 0, 0, FRAME, FRAME, 0, 0, dim, dim)
     }
 
-    let raf = 0
+    let raf: number | null = null
+    let wakeTimer: number | null = null
+    let stopped = false
     let step = 0
     let finished = false
     // bounce: `nextAt` is when the next thing happens — the next bounce frame, or
@@ -169,40 +168,64 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
     let resting = mode === 'bounce'
     let nextAt = 0
     let lastHatch = 0
+    let hatchStarted = false
+
+    const cancelWakeTimer = () => {
+      if (wakeTimer !== null) {
+        window.clearTimeout(wakeTimer)
+        wakeTimer = null
+      }
+    }
+
+    const cancelRaf = () => {
+      if (raf !== null) {
+        window.cancelAnimationFrame(raf)
+        raf = null
+      }
+    }
+
+    let scheduleFrame: (delayMs?: number) => void
 
     const tick = (now: number) => {
-      raf = requestAnimationFrame(tick)
+      raf = null
 
-      if (!sheet) {
+      if (stopped || !sheet) {
         return
       }
 
       if (mode === 'hatch') {
-        if (!lastHatch) {
+        if (!hatchStarted) {
+          hatchStarted = true
           lastHatch = now
-          render(HATCH_START)
+          step = HATCH_START
+          render(step)
+          scheduleFrame(frameMs)
 
           return
         }
 
-        if (now - lastHatch < frameMs) {
+        const remaining = frameMs - (now - lastHatch)
+
+        if (remaining > 0) {
+          scheduleFrame(remaining)
+
           return
         }
 
         lastHatch = now
-        const frame = Math.min(HATCH_START + step, lastFrame)
-        render(frame)
+        step = Math.min(step + 1, lastFrame)
+        render(step)
 
-        if (frame >= lastFrame) {
+        if (step >= lastFrame) {
           if (!finished) {
             finished = true
             onDoneRef.current?.()
           }
 
-          return // hold the cracked-open last frame
+          return // hold the cracked-open last frame without further work
         }
 
-        step += 1
+        scheduleFrame(frameMs)
 
         return
       }
@@ -211,11 +234,14 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
       if (!nextAt) {
         render(0)
         nextAt = now + firstDelay // staggered first bounce, per slot
+        scheduleFrame(firstDelay)
 
         return
       }
 
       if (now < nextAt) {
+        scheduleFrame(nextAt - now)
+
         return
       }
 
@@ -224,6 +250,7 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
         step = 0
         render(0)
         nextAt = now + frameMs
+        scheduleFrame(frameMs)
 
         return
       }
@@ -233,19 +260,44 @@ export function PixelEggSprite({ mode, size, index = 0, className, style, onDone
       if (step >= BOUNCE_FRAMES) {
         resting = true
         render(0)
-        nextAt = now + restMs()
+        const delay = restMs()
+        nextAt = now + delay
+        scheduleFrame(delay)
 
         return
       }
 
       render(step)
       nextAt = now + frameMs
+      scheduleFrame(frameMs)
     }
 
-    raf = requestAnimationFrame(tick)
+    scheduleFrame = (delayMs = 0) => {
+      if (stopped || raf !== null || wakeTimer !== null) {
+        return
+      }
+
+      if (delayMs > 16) {
+        wakeTimer = window.setTimeout(() => {
+          wakeTimer = null
+          scheduleFrame()
+        }, delayMs)
+
+        return
+      }
+
+      raf = window.requestAnimationFrame(tick)
+    }
+
+    void loadSheet().then(img => {
+      sheet = img
+      scheduleFrame()
+    })
 
     return () => {
-      cancelAnimationFrame(raf)
+      stopped = true
+      cancelWakeTimer()
+      cancelRaf()
     }
   }, [mode, size, index])
 

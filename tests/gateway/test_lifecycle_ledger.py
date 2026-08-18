@@ -143,6 +143,52 @@ def test_record_startup_persists_unclean_report_and_reclaims(tmp_path: Path) -> 
     assert sentinel["pid"] == os.getpid()
 
 
+def test_record_startup_carries_unclean_flags_onto_new_sentinel(
+    tmp_path: Path,
+) -> None:
+    """The unclean-death verdict must survive on the reclaimed sentinel so
+    /api/status can surface "restarted after (suspected) OOM" (NS-656)."""
+    _write_sentinel(tmp_path, {
+        "phase": "running",
+        "pid": _DEAD_PID,
+        "start_time": 1000.0,
+        "started_at": "2026-07-11T04:30:00+00:00",
+    })
+    # Last heartbeat shows near-exhausted memory → suspected OOM.
+    from gateway.shutdown_watchdog import get_loop_heartbeat_path
+
+    hb_path = get_loop_heartbeat_path(tmp_path)
+    hb_path.parent.mkdir(parents=True, exist_ok=True)
+    hb_path.write_text(json.dumps({
+        "pid": _DEAD_PID,
+        "updated_at": "2026-07-11T05:00:00+00:00",
+        "mem": {"mem_total_kib": 1024 * 1024, "mem_available_kib": 20 * 1024},
+    }), encoding="utf-8")
+
+    evidence = record_startup(home=tmp_path)
+    assert evidence is not None
+    assert evidence.get("suspected_oom") is True
+
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["phase"] == "running"
+    assert sentinel["prior_unclean_exit"] is True
+    assert sentinel["prior_suspected_oom"] is True
+
+
+def test_record_startup_clean_boot_has_no_prior_flags(tmp_path: Path) -> None:
+    _write_sentinel(tmp_path, {
+        "phase": "exited",
+        "pid": _DEAD_PID,
+        "exit_code": 0,
+        "exit_reason": "graceful_shutdown",
+    })
+    assert record_startup(home=tmp_path) is None
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["phase"] == "running"
+    assert "prior_unclean_exit" not in sentinel
+    assert "prior_suspected_oom" not in sentinel
+
+
 # ---------------------------------------------------------------------------
 # Takeover ownership guard on mark_exited
 # ---------------------------------------------------------------------------

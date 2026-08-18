@@ -2,7 +2,7 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $busy, $messages } from '@/store/session'
+import { $activeSessionId, $busy, $messages, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 
 import { PRIMARY_SESSION_VIEW } from './session-view'
@@ -32,6 +32,7 @@ describe('primary session view reads its own session slice', () => {
   beforeEach(() => {
     $sessionStates.set({})
     $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
     $messages.set([])
     $busy.set(false)
   })
@@ -72,6 +73,15 @@ describe('primary session view reads its own session slice', () => {
     expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([message('draft-msg', 'unsent draft')])
     expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(true)
     expect(PRIMARY_SESSION_VIEW.$messagesEmpty.get()).toBe(false)
+  })
+
+  it('does not mark B busy when A is still running and B has no slice yet', () => {
+    publishSessionState('runtime-a', stateWith('runtime-a', 'session A turn', true))
+    $busy.set(true)
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set('stored-runtime-b')
+
+    expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(false)
   })
 
   it('returns to the draft atoms when the active session state is dropped', () => {

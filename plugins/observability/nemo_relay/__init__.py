@@ -34,6 +34,10 @@ class _SessionState:
     atif_subscriber_name: str = ""
     is_embedded_subagent: bool = False
     parent_session_id: str = ""
+    # Flipped when a Relay scope operation for this session raises — an
+    # errored session's exporter state is unreliable and its export can be
+    # pathologically slow, so close_session skips the ATIF export for it.
+    scope_errored: bool = False
 
 
 @dataclass
@@ -58,6 +62,11 @@ class _Settings:
     atif_agent_name: str = "Hermes Agent"
     atif_agent_version: str = "unknown"
     atif_model_name: str = "unknown"
+    # Wall-clock budget for one session's ATIF export (serialize + write).
+    # A multi-day session's trace can take minutes to serialize; when the
+    # export runs inside a session-finalize hook that budget is somebody
+    # else's shutdown window. <= 0 disables the bound.
+    atif_export_timeout_s: float = 30.0
 
 
 class _ProcessPluginConfiguration:
@@ -398,24 +407,103 @@ class _Runtime:
     ) -> Any:
         if state.relay_session is None:
             raise RuntimeError("Hermes core Relay session is unavailable")
-        return self.host.run_in_session(
-            state.relay_session,
-            callback,
-            *args,
-            **kwargs,
-        )
+        try:
+            return self.host.run_in_session(
+                state.relay_session,
+                callback,
+                *args,
+                # Bounded: this wrapper serves every mark/event the plugin
+                # emits (turn start/end, approvals, subagent marks), and it
+                # runs synchronously on the agent's conversation thread. The
+                # host default (timeout=None) is an UNBOUNDED native call —
+                # a wedged native Relay pipeline then blocks the agent
+                # between API calls with zero activity ticks until the cron
+                # 600s inactivity kill / gateway idle timeout fires (the
+                # core's scope push/pop/flush sites were bounded for the
+                # same reason after the 2026-08-10 delegation stall; these
+                # plugin marks were the missed sibling class). On breach we
+                # lose one telemetry span, never the agent.
+                timeout=relay_runtime._SCOPE_OP_TIMEOUT,
+                **kwargs,
+            )
+        except TimeoutError:
+            # A wedged native pipeline is a session-level condition, not a
+            # one-off: flag it so close_session skips the (potentially very
+            # slow) ATIF export, and warn ONCE so the sick pipeline is
+            # visible before it costs anything bigger.
+            if not state.scope_errored:
+                logger.warning(
+                    "Relay scope operation for session %s exceeded %.0fs; "
+                    "native pipeline appears wedged — further exports for "
+                    "this session will be skipped",
+                    state.session_id,
+                    relay_runtime._SCOPE_OP_TIMEOUT,
+                )
+            state.scope_errored = True
+            raise
+        except Exception:
+            # A failed scope operation leaves the session's Relay/exporter
+            # state unreliable; remember it so close_session can skip the
+            # (potentially very slow) ATIF export for this session.
+            state.scope_errored = True
+            raise
 
     def export_atif(self, state: _SessionState) -> None:
         if not self.settings.atif_enabled or state.atif_exporter is None:
             return
         if state.is_embedded_subagent and self.settings.atif_subagent_export_mode != "all":
             return
+        if state.scope_errored:
+            logger.warning(
+                "Skipping ATIF export for session %s: a prior Relay scope "
+                "operation failed, exporter state is unreliable",
+                state.session_id,
+            )
+            return
         output_dir = self.settings.atif_output_directory
         if not output_dir:
             return
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         filename = self.settings.atif_filename_template.format(session_id=state.session_id)
-        Path(output_dir, filename).write_text(state.atif_exporter.export_json(), encoding="utf-8")
+
+        def _export() -> None:
+            Path(output_dir, filename).write_text(
+                state.atif_exporter.export_json(), encoding="utf-8"
+            )
+
+        timeout = self.settings.atif_export_timeout_s
+        if timeout is None or timeout <= 0:
+            _export()
+            return
+
+        # Bounded: export_json() on a long session can take minutes, and
+        # close_session runs inside session-finalize/shutdown paths where
+        # that time is somebody else's stop window. On timeout the worker
+        # thread finishes (or leaks) on its own; the partial file, if any,
+        # is overwritten by the next successful export.
+        error: dict[str, BaseException] = {}
+
+        def _runner() -> None:
+            try:
+                _export()
+            except BaseException as exc:  # re-raised below when it beat the clock
+                error["exc"] = exc
+
+        thread = threading.Thread(
+            target=_runner,
+            name=f"hermes-nemo-relay-atif-export-{state.session_id}",
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            raise TimeoutError(
+                f"ATIF export for session {state.session_id} exceeded "
+                f"{timeout:.0f}s; abandoning the wait (export thread left "
+                "to finish on its own)"
+            )
+        if "exc" in error:
+            raise error["exc"]
 
     def close_session(
         self,
@@ -497,11 +585,24 @@ class _Runtime:
 
     def mark(self, name: str, kwargs: dict[str, Any]) -> None:
         state = self.ensure_session(kwargs)
+        # Prefer the live turn scope over the session scope. Scope events
+        # export when their OWNING scope closes: turn scopes close every
+        # turn, session scopes only at session end. Parenting marks to the
+        # session means a long-lived conversation emits nothing for hours
+        # (and nothing at all if the process dies first), so approval and
+        # turn marks were invisible on audit dashboards until the operator
+        # happened to end the session. Turn scopes give per-turn export
+        # with the same parentage semantics — the turn is a child of the
+        # session, so the session tree is unchanged.
+        handle = state.handle
+        turn = relay_runtime.active_turn(state.session_id)
+        if turn is not None and turn.handle is not None:
+            handle = turn.handle
         self.run_in_session(
             state,
             self.nemo_relay.scope.event,
             name,
-            handle=state.handle,
+            handle=handle,
             data=_jsonable(kwargs),
             metadata=_metadata(kwargs),
         )
@@ -680,6 +781,9 @@ def _load_settings() -> _Settings:
         atif_agent_name=_env("HERMES_NEMO_RELAY_ATIF_AGENT_NAME") or "Hermes Agent",
         atif_agent_version=_env("HERMES_NEMO_RELAY_ATIF_AGENT_VERSION") or "unknown",
         atif_model_name=_env("HERMES_NEMO_RELAY_ATIF_MODEL_NAME") or "unknown",
+        atif_export_timeout_s=_env_float(
+            "HERMES_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S", 30.0
+        ),
     )
 
 
@@ -878,6 +982,16 @@ def _atif_subagent_export_mode() -> str:
 
 def _env_bool(name: str) -> bool:
     return _env(name).lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 def _session_id(kwargs: dict[str, Any]) -> str:

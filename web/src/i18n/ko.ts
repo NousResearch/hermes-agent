@@ -617,6 +617,12 @@ export const ko: Translations = {
       "보드를 사용하면 관련 없는 작업 흐름을 분리할 수 있습니다 — 프로젝트, 저장소, 도메인마다 하나씩. 한 보드의 워커는 다른 보드의 작업을 절대 보지 않습니다.",
     slug: "슬러그",
     slugHint: "— 소문자, 하이픈, 예: atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "표시 이름",
     displayNameHint: "(선택)",
     description: "설명",

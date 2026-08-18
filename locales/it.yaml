@@ -169,6 +169,8 @@ gateway:
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "Nessuna personalità configurata in `{path}/config.yaml`"
@@ -277,6 +279,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Nessun checkpoint trovato per {cwd}"
     invalid_number:        "Numero di checkpoint non valido. Usa 1-{max}."
     restored:              "✅ Ripristinato al checkpoint {hash}: {reason}\nUno snapshot pre-rollback è stato salvato automaticamente."
+    kept_user_edits:       "↷ Le tue modifiche manuali sono state conservate: {files}\nUsa /rollback <N> --all per ripristinare anche quelle."
     restore_failed:        "❌ {error}"
 
   diff:

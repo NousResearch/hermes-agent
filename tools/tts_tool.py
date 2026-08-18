@@ -2099,7 +2099,10 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 
     from tools.xai_http import resolve_xai_http_credentials
 
-    creds = resolve_xai_http_credentials()
+    # TTS is API-billed: a subscription OAuth bearer can authorize chat while
+    # returning 403 for /v1/tts (#87045, same root cause as x_search #88040),
+    # so prefer an explicit XAI_API_KEY with OAuth as the fallback.
+    creds = resolve_xai_http_credentials(prefer_api_key=True)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise ValueError("No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.")
@@ -3219,9 +3222,9 @@ def _text_to_speech_single(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
-        from agent.file_safety import is_write_denied
+        from agent.file_safety import is_write_approval_required, is_write_denied
 
-        if is_write_denied(str(file_path)):
+        if is_write_denied(str(file_path)) or is_write_approval_required(str(file_path)):
             return json.dumps({
                 "success": False,
                 "error": (
@@ -3578,8 +3581,8 @@ def text_to_speech_tool(
             base_path = _configured_command_tts_output_path(
                 base_path, command_provider_config,
             )
-        from agent.file_safety import is_write_denied
-        if is_write_denied(str(base_path)):
+        from agent.file_safety import is_write_approval_required, is_write_denied
+        if is_write_denied(str(base_path)) or is_write_approval_required(str(base_path)):
             return json.dumps({
                 "success": False,
                 "error": (

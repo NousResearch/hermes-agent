@@ -215,6 +215,133 @@ async def test_webhook_disconnect_polling_reconnect_resets_mode_and_waits_for_pr
 
 
 @pytest.mark.asyncio
+async def test_fallback_disabled_skips_doh_discovery_on_connect(monkeypatch):
+    """The fallback kill switch must bypass DoH discovery, not just transport use."""
+    adapter = _make_adapter()
+    polling_app = _lifecycle_app()
+
+    async def start_polling_with_progress(**_kwargs):
+        adapter._record_polling_progress(adapter._polling_generation)
+
+    polling_app.updater.start_polling = AsyncMock(
+        side_effect=start_polling_with_progress
+    )
+    builders = _configure_lifecycle_connect(monkeypatch, adapter, [polling_app])
+    monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "true")
+
+    async def fail_if_discovered():
+        raise AssertionError("fallback discovery should be skipped when disabled")
+
+    monkeypatch.setattr(tg_adapter, "discover_fallback_ips", fail_if_discovered)
+
+    assert await adapter.connect() is True
+    assert builders[0].polling_request is _ControlledRequest.instances[-1]
+    assert "transport" not in (
+        builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    )
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_fallback_discovery_timeout_uses_seed_ipv4(monkeypatch):
+    """A stuck DoH lookup must not block connect; seed IPv4 IPs are used instead."""
+    adapter = _make_adapter()
+    polling_app = _lifecycle_app()
+
+    async def start_polling_with_progress(**_kwargs):
+        adapter._record_polling_progress(adapter._polling_generation)
+
+    polling_app.updater.start_polling = AsyncMock(
+        side_effect=start_polling_with_progress
+    )
+    builders = _configure_lifecycle_connect(monkeypatch, adapter, [polling_app])
+    monkeypatch.setenv("HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT", "0.05")
+
+    async def stuck_discovery():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(tg_adapter, "discover_fallback_ips", stuck_discovery)
+
+    assert await adapter.connect() is True
+    httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    transport = httpx_kwargs.get("transport")
+    assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+    assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_non_finite_fallback_discovery_timeout_uses_finite_default(monkeypatch):
+    """NaN/Inf timeout values must not defeat the cold-connect deadline."""
+    adapter = _make_adapter()
+    polling_app = _lifecycle_app()
+
+    async def start_polling_with_progress(**_kwargs):
+        adapter._record_polling_progress(adapter._polling_generation)
+
+    polling_app.updater.start_polling = AsyncMock(
+        side_effect=start_polling_with_progress
+    )
+    builders = _configure_lifecycle_connect(monkeypatch, adapter, [polling_app])
+    monkeypatch.setenv("HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT", "nan")
+
+    async def stuck_discovery():
+        await asyncio.Event().wait()
+
+    original_deadline = tg_adapter._await_with_thread_deadline
+
+    async def deadline(awaitable, timeout, **_kwargs):
+        if getattr(getattr(awaitable, "cr_code", None), "co_name", "") == "stuck_discovery":
+            assert timeout == 5.0
+            awaitable.close()
+            raise asyncio.TimeoutError()
+        return await original_deadline(awaitable, timeout, **_kwargs)
+
+    monkeypatch.setattr(tg_adapter, "discover_fallback_ips", stuck_discovery)
+    monkeypatch.setattr(tg_adapter, "_await_with_thread_deadline", deadline)
+
+    assert await adapter.connect() is True
+    httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    transport = httpx_kwargs.get("transport")
+    assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+    assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_fallback_disabled_excludes_configured_ips_from_proxy_targets(monkeypatch):
+    """Disabled fallback IPs must not affect proxy bypass decisions."""
+    adapter = _make_adapter()
+    polling_app = _lifecycle_app()
+
+    async def start_polling_with_progress(**_kwargs):
+        adapter._record_polling_progress(adapter._polling_generation)
+
+    polling_app.updater.start_polling = AsyncMock(
+        side_effect=start_polling_with_progress
+    )
+    builders = _configure_lifecycle_connect(monkeypatch, adapter, [polling_app])
+    monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "true")
+    monkeypatch.setattr(adapter, "_fallback_ips", lambda: ["149.154.167.220"])
+
+    proxy_targets = []
+
+    def resolve_proxy(_env_name, *, target_hosts):
+        proxy_targets.append(list(target_hosts))
+        return "http://127.0.0.1:8080"
+
+    monkeypatch.setattr(tg_adapter, "resolve_proxy_url", resolve_proxy)
+
+    assert await adapter.connect() is True
+    assert proxy_targets == [["api.telegram.org"]]
+    assert builders[0].polling_request.kwargs.get("proxy") == "http://127.0.0.1:8080"
+    assert "transport" not in (
+        builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    )
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_current_polling_generation_success_records_progress():
     adapter = _make_adapter()
     generation, progress = adapter._begin_polling_generation()

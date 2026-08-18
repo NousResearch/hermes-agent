@@ -1501,7 +1501,6 @@ async def vision_analyze_tool(
             "task": "vision",
             "messages": messages,
             "temperature": vision_temperature,
-            "max_tokens": 2000,
             "timeout": vision_timeout,
         }
         if model:
@@ -2073,7 +2072,6 @@ async def video_analyze_tool(
             "task": "vision",
             "messages": messages,
             "temperature": vision_temperature,
-            "max_tokens": 4000,
             "timeout": vision_timeout,
         }
         if model:

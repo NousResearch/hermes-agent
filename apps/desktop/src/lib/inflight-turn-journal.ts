@@ -16,19 +16,33 @@ import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/c
  * Best-effort by design: storage failures must never break chat streaming.
  */
 
-/** One localStorage key PER SESSION. The v1 single-key store meant every
- *  throttled write re-parsed and re-stringified EVERY busy session's tail —
- *  with a grid of concurrent streams that was a whole-store JSON round-trip
- *  dozens of times a second, all on the main thread. Per-session keys make a
- *  write O(own tail) regardless of how many other sessions are streaming. */
-const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
 const LEGACY_STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
-const MAX_ENTRIES = 24
+const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
+const LEGACY_MIGRATION_KEY = 'hermes.desktop.inflightTurnJournal.v2.migrated'
+const DISCARDED_SNAPSHOT_RAW = '0'
+const STORE_VERSION = 1
+const MAX_SESSION_STORE_CHARS = 4 * 1024 * 1024
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+// Keep the worst-case v2 namespace below a conservative localStorage budget
+// while retaining the 24 newest session slots for ordinary small snapshots.
+const MAX_ENTRY_CHARS = 160 * 1024
+const MAX_ENTRIES = Math.min(24, Math.floor(MAX_SESSION_STORE_CHARS / MAX_ENTRY_CHARS))
+const MAX_LEGACY_STORE_CHARS = 2 * 1024 * 1024
+const MAX_SESSION_KEY_CHARS = 512
+const MAX_JOURNALED_MESSAGES = 24
+const MAX_TEXT_PART_CHARS = 64 * 1024
+const MAX_METADATA_CHARS = 2 * 1024
+const MAX_USER_ATTACHMENT_REFS = 256
+const MAX_USER_ATTACHMENT_REF_CHARS = 64 * 1024
 /** Streaming repaints arrive every ~33ms; localStorage writes are synchronous.
  *  Trailing-edge throttle keeps the journal off the hot path — a crash costs at
  *  most this much of the newest tail. */
 const PERSIST_THROTTLE_MS = 400
+
+// A renderer can accumulate one entry per session over its lifetime. Sweep the
+// bounded v2 namespace once on first journal access; never scan it on the
+// 400ms streaming write path.
+let sessionStoreSwept = false
 
 export interface InFlightTurnSnapshot {
   messages: ChatMessage[]
@@ -44,6 +58,11 @@ export interface JournalableSessionState {
   storedSessionId: null | string
   streamId: null | string
   turnStartedAt: null | number
+}
+
+interface JournalStore {
+  entries: Record<string, InFlightTurnSnapshot>
+  version: typeof STORE_VERSION
 }
 
 export interface InFlightRecoveryResult {
@@ -64,131 +83,429 @@ function storage(): Storage | null {
   }
 }
 
-const entryKey = (storedSessionId: string) => `${STORAGE_PREFIX}${storedSessionId}`
-
-function isExpired(entry: InFlightTurnSnapshot, now = Date.now()): boolean {
-  return now - entry.updatedAt > MAX_AGE_MS
-}
-
-function loadEntry(storedSessionId: string): InFlightTurnSnapshot | null {
-  const store = storage()
-
-  if (!store) {
-    return null
-  }
-
+function sessionStorageKey(storedSessionId: string): null | string {
   try {
-    const raw = store.getItem(entryKey(storedSessionId))
-    const parsed = raw ? (JSON.parse(raw) as InFlightTurnSnapshot) : null
+    const encoded = encodeURIComponent(storedSessionId)
 
-    return parsed && typeof parsed.updatedAt === 'number' && Array.isArray(parsed.messages) ? parsed : null
+    return encoded.length > 0 && encoded.length <= MAX_SESSION_KEY_CHARS ? `${STORAGE_PREFIX}${encoded}` : null
   } catch {
     return null
   }
 }
 
-function saveEntry(storedSessionId: string, entry: InFlightTurnSnapshot): void {
+function readRaw(store: Storage, key: string): null | string {
   try {
-    storage()?.setItem(entryKey(storedSessionId), JSON.stringify(entry))
+    return store.getItem(key)
   } catch {
-    // Quota/private-mode failures: the journal is a recovery aid, not truth.
+    return null
   }
 }
 
-function removeEntry(storedSessionId: string): void {
+function removeRaw(store: Storage, key: string): void {
   try {
-    storage()?.removeItem(entryKey(storedSessionId))
+    store.removeItem(key)
   } catch {
-    // Same best-effort stance as saveEntry.
+    // Best-effort recovery state must not interrupt chat streaming.
   }
 }
 
-// Split a v1 single-key store into per-session entries. Checked on every
-// journal touch (a null getItem is free); a populated v1 store exists at most
-// once, right after the upgrade.
-function migrateLegacyStore(store: Storage): void {
+function writeRaw(store: Storage, key: string, value: string): boolean {
   try {
-    const legacy = store.getItem(LEGACY_STORAGE_KEY)
+    store.setItem(key, value)
 
-    if (!legacy) {
-      return
-    }
+    return true
+  } catch {
+    return false
+  }
+}
 
-    const parsed = JSON.parse(legacy)
+function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
 
-    if (parsed && typeof parsed.entries === 'object' && !Array.isArray(parsed.entries)) {
-      for (const [id, entry] of Object.entries(parsed.entries as Record<string, InFlightTurnSnapshot>)) {
-        saveEntry(id, entry)
+  const snapshot = value as Partial<InFlightTurnSnapshot>
+
+  return (
+    Array.isArray(snapshot.messages) &&
+    snapshot.messages.every(
+      message =>
+        Boolean(message) &&
+        typeof message === 'object' &&
+        typeof message.id === 'string' &&
+        ['assistant', 'system', 'tool', 'user'].includes(message.role) &&
+        Array.isArray(message.parts) &&
+        message.parts.every(
+          part =>
+            Boolean(part) &&
+            typeof part === 'object' &&
+            typeof part.type === 'string' &&
+            (part.type !== 'text' && part.type !== 'reasoning'
+              ? part.type !== 'tool-call' ||
+                (typeof part.toolName === 'string' &&
+                  (part.toolCallId === undefined || typeof part.toolCallId === 'string') &&
+                  (part.isError === undefined || typeof part.isError === 'boolean'))
+              : typeof part.text === 'string' && (part.parentId === undefined || typeof part.parentId === 'string'))
+        ) &&
+        (message.timestamp === undefined ||
+          (typeof message.timestamp === 'number' && Number.isFinite(message.timestamp))) &&
+        (message.pending === undefined || typeof message.pending === 'boolean') &&
+        (message.error === undefined || typeof message.error === 'string') &&
+        (message.branchGroupId === undefined || typeof message.branchGroupId === 'string') &&
+        (message.hidden === undefined || typeof message.hidden === 'boolean') &&
+        (message.interim === undefined || typeof message.interim === 'boolean') &&
+        (message.attachmentRefs === undefined ||
+          (Array.isArray(message.attachmentRefs) && message.attachmentRefs.every(ref => typeof ref === 'string'))) &&
+        (message.rowId === undefined || (typeof message.rowId === 'number' && Number.isFinite(message.rowId)))
+    ) &&
+    (snapshot.streamId === null || typeof snapshot.streamId === 'string') &&
+    (snapshot.turnStartedAt === null || typeof snapshot.turnStartedAt === 'number') &&
+    typeof snapshot.updatedAt === 'number' &&
+    Number.isFinite(snapshot.updatedAt)
+  )
+}
+
+function parseSnapshot(raw: string): InFlightTurnSnapshot | null {
+  if (raw.length > MAX_ENTRY_CHARS) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+
+    return isSnapshot(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function serializeSnapshot(snapshot: InFlightTurnSnapshot): string | null {
+  let messages = snapshot.messages
+
+  while (messages.length > 0) {
+    try {
+      const raw = JSON.stringify({ ...snapshot, messages })
+
+      if (raw.length <= MAX_ENTRY_CHARS) {
+        return raw
       }
+    } catch {
+      return null
     }
-  } catch {
-    // A corrupt v1 store has nothing worth carrying over.
+
+    // Keep the join-key row and newest assistant progress while dropping the
+    // oldest sealed rows. If those two rows alone do not fit, the caller must
+    // avoid replacing an older recoverable snapshot with a tombstone.
+    if (messages.length <= 2) {
+      return null
+    }
+
+    messages = [messages[0], ...messages.slice(2)]
   }
 
-  try {
-    store.removeItem(LEGACY_STORAGE_KEY)
-  } catch {
-    // Best-effort, like every other journal write.
-  }
+  return null
 }
 
-// One-time prune per renderer: drop expired/overflow entries. Startup-only on
-// purpose — entries clear on settle, so anything left over is crash residue,
-// and enumerating localStorage on the write path would defeat the point.
-let housekeepingDone = false
-
-function ensureHousekeeping(): void {
-  const store = storage()
-
-  if (!store) {
+function sweepSessionStore(store: Storage, reserveSlot = false): void {
+  if (sessionStoreSwept) {
     return
   }
 
-  migrateLegacyStore(store)
-
-  if (housekeepingDone) {
-    return
-  }
-
-  housekeepingDone = true
+  sessionStoreSwept = true
 
   try {
-    const keys: string[] = []
+    const sessionKeys: string[] = []
 
     for (let index = 0; index < store.length; index += 1) {
       const key = store.key(index)
 
       if (key?.startsWith(STORAGE_PREFIX)) {
-        keys.push(key)
+        sessionKeys.push(key)
       }
     }
 
-    const live: { key: string; updatedAt: number }[] = []
+    const liveEntries: Array<{ key: string; snapshot: InFlightTurnSnapshot }> = []
+    const migrated = readRaw(store, LEGACY_MIGRATION_KEY) !== null
 
-    for (const key of keys) {
-      let entry: InFlightTurnSnapshot | null = null
+    for (const key of sessionKeys) {
+      const raw = readRaw(store, key)
 
-      try {
-        entry = JSON.parse(store.getItem(key) ?? '') as InFlightTurnSnapshot
-      } catch {
-        // Unparseable — prune below.
+      // A tombstone is intentional state. It suppresses the stale v1
+      // predecessor until the one-shot migration removes the aggregate.
+      if (raw === DISCARDED_SNAPSHOT_RAW) {
+        if (migrated) {
+          removeRaw(store, key)
+        }
+
+        continue
       }
 
-      if (!entry || typeof entry.updatedAt !== 'number' || isExpired(entry)) {
-        store.removeItem(key)
-      } else {
-        live.push({ key, updatedAt: entry.updatedAt })
+      const snapshot = raw ? parseSnapshot(raw) : null
+
+      if (!snapshot || isExpired(snapshot)) {
+        removeRaw(store, key)
+
+        continue
+      }
+
+      liveEntries.push({ key, snapshot })
+    }
+
+    liveEntries
+      .sort((left, right) => right.snapshot.updatedAt - left.snapshot.updatedAt)
+      .slice(reserveSlot ? MAX_ENTRIES - 1 : MAX_ENTRIES)
+      .forEach(entry => removeRaw(store, entry.key))
+  } catch {
+    // The journal is best effort; a storage enumeration failure must not
+    // interrupt renderer work or turn persistence.
+  }
+}
+
+function boundedString(value: string, maxChars: number): string {
+  return value.length <= maxChars ? value : value.slice(0, maxChars)
+}
+
+function boundedPart(part: ChatMessagePart): ChatMessagePart | null {
+  if (part.type === 'text') {
+    return {
+      type: 'text',
+      text: boundedString(part.text, MAX_TEXT_PART_CHARS),
+      ...(part.parentId === undefined ? {} : { parentId: boundedString(part.parentId, MAX_METADATA_CHARS) })
+    }
+  }
+
+  if (part.type === 'reasoning') {
+    return {
+      type: 'reasoning',
+      text: boundedString(part.text, MAX_TEXT_PART_CHARS),
+      ...(part.parentId === undefined ? {} : { parentId: boundedString(part.parentId, MAX_METADATA_CHARS) })
+    }
+  }
+
+  if (part.type === 'tool-call') {
+    // Tool payloads can contain multi-megabyte command output. Recovery only
+    // needs invocation identity and failure state; args/results are available
+    // from the backend transcript when it survives.
+    return {
+      type: 'tool-call',
+      toolName: boundedString(part.toolName, MAX_METADATA_CHARS),
+      args: {},
+      ...(part.toolCallId === undefined ? {} : { toolCallId: boundedString(part.toolCallId, MAX_METADATA_CHARS) }),
+      ...(part.result === undefined ? {} : { result: {} }),
+      ...(part.isError === undefined ? {} : { isError: part.isError })
+    }
+  }
+
+  // Rich file/image/data/source parts can embed large payloads. They are not
+  // required for in-flight text/tool recovery and remain backend-owned.
+  return null
+}
+
+function boundedMessages(messages: ChatMessage[]): ChatMessage[] | null {
+  const bounded =
+    messages.length <= MAX_JOURNALED_MESSAGES
+      ? messages
+      : [messages[0], ...messages.slice(-(MAX_JOURNALED_MESSAGES - 1))]
+
+  // User text and attachment refs are the recovery join key. Truncating either
+  // could attach a journal tail to the wrong transcript row, so pathological
+  // prompts skip journaling instead of weakening the match.
+  if (
+    bounded.some(message => {
+      if (message.role !== 'user') {
+        return false
+      }
+
+      if (
+        message.parts.some(
+          part => (part.type === 'text' || part.type === 'reasoning') && part.text.length > MAX_TEXT_PART_CHARS
+        )
+      ) {
+        return true
+      }
+
+      const refs = message.attachmentRefs
+
+      if (!refs) {
+        return false
+      }
+
+      if (refs.length > MAX_USER_ATTACHMENT_REFS) {
+        return true
+      }
+
+      let chars = 0
+
+      for (const ref of refs) {
+        chars += ref.length
+
+        if (chars > MAX_USER_ATTACHMENT_REF_CHARS) {
+          return true
+        }
+      }
+
+      return false
+    })
+  ) {
+    return null
+  }
+
+  return bounded.map(message => ({
+    id: boundedString(message.id, MAX_METADATA_CHARS),
+    role: message.role,
+    parts: message.parts.map(boundedPart).filter((part): part is ChatMessagePart => part !== null),
+    ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
+    ...(message.pending === undefined ? {} : { pending: message.pending }),
+    ...(message.error === undefined ? {} : { error: boundedString(message.error, MAX_METADATA_CHARS) }),
+    ...(message.branchGroupId === undefined
+      ? {}
+      : { branchGroupId: boundedString(message.branchGroupId, MAX_METADATA_CHARS) }),
+    ...(message.hidden === undefined ? {} : { hidden: message.hidden }),
+    ...(message.interim === undefined ? {} : { interim: message.interim }),
+    ...(message.attachmentRefs === undefined
+      ? {}
+      : {
+          attachmentRefs:
+            message.role === 'user'
+              ? [...message.attachmentRefs]
+              : message.attachmentRefs
+                  .slice(0, MAX_USER_ATTACHMENT_REFS)
+                  .map(ref => boundedString(ref, MAX_METADATA_CHARS))
+        }),
+    ...(message.rowId === undefined ? {} : { rowId: message.rowId })
+  }))
+}
+
+function migrateLegacyStore(store: Storage): void {
+  if (readRaw(store, LEGACY_MIGRATION_KEY) !== null) {
+    return
+  }
+
+  const raw = readRaw(store, LEGACY_STORAGE_KEY)
+
+  if (raw === null) {
+    return
+  }
+
+  // Claim the migration before touching the aggregate. If storage is failing,
+  // skip legacy recovery rather than retrying an expensive parse on every read.
+  if (!writeRaw(store, LEGACY_MIGRATION_KEY, '1')) {
+    return
+  }
+
+  // Release the multi-megabyte aggregate before allocating per-session v2
+  // entries. The captured string remains available for this one migration.
+  removeRaw(store, LEGACY_STORAGE_KEY)
+
+  if (!raw) {
+    return
+  }
+
+  if (raw.length > MAX_LEGACY_STORE_CHARS) {
+    return
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<JournalStore>
+
+    if (
+      parsed.version !== STORE_VERSION ||
+      !parsed.entries ||
+      typeof parsed.entries !== 'object' ||
+      Array.isArray(parsed.entries)
+    ) {
+      return
+    }
+
+    const existingV2Keys = new Set<string>()
+
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index)
+
+      if (key?.startsWith(STORAGE_PREFIX)) {
+        existingV2Keys.add(key)
       }
     }
 
-    live.sort((a, b) => b.updatedAt - a.updatedAt)
+    const entries = Object.entries(parsed.entries)
+      .filter((entry): entry is [string, InFlightTurnSnapshot] => isSnapshot(entry[1]) && !isExpired(entry[1]))
+      .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
+      .slice(0, Math.max(0, MAX_ENTRIES - existingV2Keys.size))
 
-    for (const { key } of live.slice(MAX_ENTRIES)) {
-      store.removeItem(key)
+    for (const [storedSessionId, snapshot] of entries) {
+      const key = sessionStorageKey(storedSessionId)
+      const messages = boundedMessages(snapshot.messages)
+      const value = messages ? serializeSnapshot({ ...snapshot, messages }) : null
+
+      // A v2 snapshot may have been written before the one-shot migration ran.
+      // Never replace newer per-session state with its stale v1 predecessor.
+      if (key && value && readRaw(store, key) === null) {
+        if (writeRaw(store, key, value)) {
+          existingV2Keys.add(key)
+        }
+      }
     }
   } catch {
-    // Best-effort, like every other journal write.
+    // Malformed legacy data is discarded below.
   }
+}
+
+function discardSnapshot(store: Storage, key: string): void {
+  // Migrate first so an existing v2 key suppresses its stale v1 predecessor,
+  // then remove the current session. This keeps every discard path from
+  // resurrecting legacy state on a later read.
+  migrateLegacyStore(store)
+  removeRaw(store, key)
+}
+
+function readSnapshot(storedSessionId: string): InFlightTurnSnapshot | null {
+  const store = storage()
+  const key = sessionStorageKey(storedSessionId)
+
+  if (!store || !key) {
+    return null
+  }
+
+  sweepSessionStore(store)
+
+  let raw = readRaw(store, key)
+
+  if (!raw) {
+    migrateLegacyStore(store)
+    raw = readRaw(store, key)
+  }
+
+  if (!raw) {
+    return null
+  }
+
+  const snapshot = parseSnapshot(raw)
+
+  if (!snapshot || isExpired(snapshot)) {
+    discardSnapshot(store, key)
+
+    return null
+  }
+
+  return snapshot
+}
+
+function removeSnapshot(storedSessionId: string): void {
+  const store = storage()
+  const key = sessionStorageKey(storedSessionId)
+
+  if (store && key) {
+    sweepSessionStore(store)
+
+    // Settling a session before the one-shot migration must clear its legacy
+    // entry too; otherwise a later read can migrate and resurrect stale state.
+    // This aggregate parse is terminal-transition work, never a stream write.
+    discardSnapshot(store, key)
+  }
+}
+
+function isExpired(entry: InFlightTurnSnapshot, now = Date.now()): boolean {
+  return now - entry.updatedAt > MAX_AGE_MS
 }
 
 function cloneMessages(messages: ChatMessage[]): ChatMessage[] {
@@ -286,7 +603,7 @@ function recoverableTail(messages: ChatMessage[], streamId: null | string): Chat
     }
   }
 
-  return cloneMessages(visible.slice(start))
+  return visible.slice(start)
 }
 
 function normalizeRecoveredTail(tail: ChatMessage[], keepPending: boolean): ChatMessage[] {
@@ -376,6 +693,32 @@ function withoutBaseIds(rows: ChatMessage[], baseMessages: ChatMessage[]): ChatM
   return rows.filter(row => !baseIds.has(row.id))
 }
 
+/** Whether every recoverable assistant row in the journal tail already exists
+ *  as committed text in the base transcript. When true, the journal outlived
+ *  the turn it recorded and appending it would re-render the same answers at
+ *  the end of the transcript (the "scrambled conversation" regression). */
+function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages: ChatMessage[]): boolean {
+  const recoverable = tailAssistants.filter(assistantHasRecoverableContent)
+
+  if (recoverable.length === 0) {
+    return false
+  }
+
+  const baseTexts = new Set(
+    baseMessages
+      .filter(message => message.role === 'assistant' && !message.hidden)
+      .map(message => normalizedText(chatMessageText(message)))
+  )
+
+  return recoverable.every(message => {
+    const text = normalizedText(chatMessageText(message))
+
+    // Error-only rows carry no text to verify against — keep the conservative
+    // append path rather than risk dropping a recoverable failure.
+    return text.length > 0 && baseTexts.has(text)
+  })
+}
+
 export function mergeInFlightMessages(
   baseMessages: ChatMessage[],
   tailMessages: ChatMessage[],
@@ -402,15 +745,27 @@ export function mergeInFlightMessages(
   const matchingUserIndex = tailUser ? baseMessages.findLastIndex(message => userMessagesMatch(message, tailUser)) : -1
 
   if (matchingUserIndex < 0) {
-    // Base doesn't know this turn at all (user row was never persisted):
-    // append the whole tail.
+    // No base user matches the tail's user row (a projected user-inflight row
+    // that never persisted, or a tail captured without its user prompt). If the
+    // tail's answers are already committed in the transcript, the journal is
+    // stale — appending it would re-render the same replies at the end of the
+    // conversation. Otherwise, the base never saw this turn at all: append the
+    // whole tail (the crash-recovery path the journal exists for).
+    if (journalTailAlreadyCommitted(tailAssistants, baseMessages)) {
+      return { ...noop, caughtUp: true }
+    }
+
     const streamId = lastJournalRow?.id ?? null
 
     return {
       applied: true,
       caughtUp: false,
       messages: [...baseMessages, ...withoutBaseIds(tail, baseMessages)],
-      streamId,
+      // Only a genuinely running turn keeps a live stream target. On an idle
+      // resume, carrying the stale streamId would keep the journal entry alive
+      // (persistInFlightTurnState only clears when streamId is null) and the
+      // same tail would be folded again on every open.
+      streamId: options.keepPending ? streamId : null,
       turnStartedAt: null
     }
   }
@@ -442,7 +797,11 @@ export function mergeInFlightMessages(
       applied: true,
       caughtUp: false,
       messages: [...baseMessages, ...withoutBaseIds(tailAssistants, baseMessages)],
-      streamId,
+      // Same idle-resume rule as the other exit paths: only a running turn
+      // keeps the stream target alive. Carrying the stale streamId here kept
+      // the journal entry alive (persistInFlightTurnState only clears when
+      // streamId is null), so the same tail was folded again on every open.
+      streamId: options.keepPending ? streamId : null,
       turnStartedAt: null
     }
   }
@@ -464,11 +823,31 @@ export function mergeInFlightMessages(
     ...baseMessages.slice(projectionIndex + 1)
   ]
 
-  return { applied: true, caughtUp: false, messages, streamId: merged.id, turnStartedAt: null }
+  return {
+    applied: true,
+    caughtUp: false,
+    messages,
+    // Same idle-resume rule as the append path: only a running turn keeps the
+    // stream target alive, so an idle resume clears the journal instead of
+    // re-folding the same tail on every open.
+    streamId: options.keepPending ? merged.id : null,
+    turnStartedAt: null
+  }
 }
 
 const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const persistLatest = new Map<string, JournalableSessionState>()
+
+/** @internal Test-only reset for module-scoped throttles and sweep state. */
+export function resetInFlightTurnJournalStateForTests(): void {
+  for (const timer of persistTimers.values()) {
+    clearTimeout(timer)
+  }
+
+  persistTimers.clear()
+  persistLatest.clear()
+  sessionStoreSwept = false
+}
 
 function writeSnapshot(storedSessionId: string, state: JournalableSessionState): void {
   const tail = recoverableTail(state.messages, state.streamId)
@@ -477,13 +856,63 @@ function writeSnapshot(storedSessionId: string, state: JournalableSessionState):
     return
   }
 
-  ensureHousekeeping()
-  saveEntry(storedSessionId, {
-    messages: tail,
+  const store = storage()
+  const key = sessionStorageKey(storedSessionId)
+
+  if (!store || !key) {
+    return
+  }
+
+  sweepSessionStore(store, true)
+
+  const messages = boundedMessages(tail)
+
+  if (!messages) {
+    // Keep the timer write path free of aggregate migration. This tiny invalid
+    // v2 value suppresses the stale v1 predecessor until read/settle performs
+    // the one-shot migration and removes it.
+    tombstoneUnlessRecoverable(store, key)
+
+    return
+  }
+
+  const raw = serializeSnapshot({
+    messages,
     streamId: state.streamId,
     turnStartedAt: state.turnStartedAt,
     updatedAt: Date.now()
   })
+
+  if (!raw) {
+    // Preserve an older bounded snapshot if the newest assistant row alone is
+    // too large. A tombstone is only needed when there is no recoverable v2
+    // value, so stale v1 state cannot be resurrected on a later read.
+    tombstoneUnlessRecoverable(store, key)
+
+    return
+  }
+
+  if (!writeRaw(store, key, raw)) {
+    // A quota failure must not leave an older, misleading snapshot behind, or
+    // let the stale v1 predecessor be resurrected on a later read.
+    tombstoneUnlessRecoverable(store, key)
+  }
+}
+
+function tombstoneUnlessRecoverable(store: Storage, key: string): void {
+  const previous = readRaw(store, key)
+
+  if (previous) {
+    const snapshot = parseSnapshot(previous)
+
+    if (snapshot && !isExpired(snapshot)) {
+      return
+    }
+  }
+
+  if (!writeRaw(store, key, DISCARDED_SNAPSHOT_RAW)) {
+    removeRaw(store, key)
+  }
 }
 
 /** Persist the running turn's visible tail (throttled), or clear the entry the
@@ -527,20 +956,7 @@ export function readInFlightTurnJournal(storedSessionId: null | string): InFligh
     return null
   }
 
-  ensureHousekeeping()
-  const entry = loadEntry(storedSessionId)
-
-  if (!entry) {
-    return null
-  }
-
-  if (isExpired(entry)) {
-    removeEntry(storedSessionId)
-
-    return null
-  }
-
-  return entry
+  return readSnapshot(storedSessionId)
 }
 
 /** Fold a journaled in-flight tail back onto a restored transcript. A no-op
@@ -570,7 +986,11 @@ export function recoverInFlightTurnJournal(
 
   return {
     ...recovered,
-    streamId: recovered.applied ? (recovered.streamId ?? snapshot.streamId) : null,
+    // Never resurrect a stale stream target on an idle resume: with
+    // keepPending=false the session is not running, so the recovered rows are
+    // settled history and the journal must clear on the next state update —
+    // otherwise the same stale tail is folded again on every open.
+    streamId: recovered.applied ? (recovered.streamId ?? (options.keepPending ? snapshot.streamId : null)) : null,
     turnStartedAt: recovered.applied ? snapshot.turnStartedAt : null
   }
 }
@@ -588,6 +1008,6 @@ export function clearInFlightTurnJournal(storedSessionId: null | string): void {
   }
 
   persistLatest.delete(storedSessionId)
-  ensureHousekeeping()
-  removeEntry(storedSessionId)
+
+  removeSnapshot(storedSessionId)
 }

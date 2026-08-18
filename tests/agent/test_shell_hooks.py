@@ -251,6 +251,34 @@ class TestCallbackSubprocess:
 
 
 
+    def test_modify_canonical_parsing(self, tmp_path):
+        """Shell hook returning canonical modify is parsed correctly."""
+        script = _write_script(
+            tmp_path, "mod_canon.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"action": "modify", "args": {"path": "/safe"}}\\n\'',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="write_file", args={"path": "/unsafe"})
+        assert result == {"action": "modify", "args": {"path": "/safe"}}
+
+    def test_modify_claude_code_parsing(self, tmp_path):
+        """Shell hook returning Claude-Code modify is normalised."""
+        script = _write_script(
+            tmp_path, "mod_cc.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"decision": "modify", "tool_input": {"content": "safe"}}\\n\'',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="write_file", args={"content": "danger"})
+        assert result == {"action": "modify", "args": {"content": "safe"}}
+
 
 # ── config parsing ────────────────────────────────────────────────────────
 
@@ -270,6 +298,25 @@ class TestParseHooksBlock:
 
 
 
+    def test_python_only_event_refused(self, caplog):
+        # transform_api_error_classification returns a classification directive that
+        # _parse_response has no channel for — a shell registration would
+        # be silently ignored, so it must be refused with a warning.
+        specs = shell_hooks._parse_hooks_block({
+            "transform_api_error_classification": [
+                {"command": "/tmp/hook.sh"},
+            ],
+        })
+        assert specs == []
+        assert any("Python-plugin-only" in r.message for r in caplog.records)
+
+    def test_timeout_clamped_to_max(self):
+        specs = shell_hooks._parse_hooks_block({
+            "post_tool_call": [
+                {"command": "/tmp/slow.sh", "timeout": 9999},
+            ],
+        })
+        assert specs[0].timeout == shell_hooks.MAX_TIMEOUT_SECONDS
 
 
 

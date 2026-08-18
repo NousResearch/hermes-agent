@@ -10,6 +10,7 @@ import {
   expandRemotePath,
   fingerprintToken,
   isForwardBindCollision,
+  listRemoteHermesProfiles,
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
@@ -78,6 +79,36 @@ function fakeSsh(rules: any[] = []) {
     }
   }
 }
+
+test('listRemoteHermesProfiles inventories Mini-style profile dirs without spawning a dashboard', async () => {
+  const ssh = fakeSsh([
+    [/HERMES_HOME/, '/Users/zillajr/.hermes\n'],
+    [/ls -1/, 'bob\ndixie\ngoose\nrambo\nbob.rollback-old\n']
+  ])
+
+  assert.deepEqual(await listRemoteHermesProfiles(ssh), ['default', 'bob', 'dixie', 'goose', 'rambo'])
+  assert.equal(
+    ssh.calls.some(cmd => cmd.includes('serve') || cmd.includes('dashboard')),
+    false
+  )
+})
+
+test('listRemoteHermesProfiles rejects a hostile HERMES_HOME', async () => {
+  const ssh = fakeSsh([[/HERMES_HOME/, '/tmp/x; echo pwned\n']])
+
+  await assert.rejects(
+    () => listRemoteHermesProfiles(ssh),
+    (err: any) => {
+      assert.equal(err.kind, 'unsafe-path')
+
+      return true
+    }
+  )
+  assert.equal(
+    ssh.calls.some(cmd => cmd.includes('ls -1')),
+    false
+  )
+})
 
 test('locateHermes prefers the explicit profile path when executable', async () => {
   const ssh = fakeSsh([[/\[ -x .*\/opt\/hermes/, 'OK']])

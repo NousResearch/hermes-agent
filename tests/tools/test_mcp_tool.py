@@ -20,6 +20,18 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _stop_reason(result):
+    """Read a sampling result's stop reason across the mcp 1.x -> 2.x rename.
+
+    ``CreateMessageResult.stopReason`` became ``.stop_reason`` in mcp 2.0
+    (camelCase survives only as the serialization alias, which pydantic does
+    not expose to attribute access).
+    """
+    from tools.mcp_tool import mcp_field
+
+    return mcp_field(result, "stop_reason", "stopReason")
+
+
 def _make_mcp_tool(name="read_file", description="Read a file", input_schema=None):
     """Create a fake MCP Tool object matching the SDK interface."""
     tool = SimpleNamespace()
@@ -765,6 +777,58 @@ class TestDiscoverAndRegister:
             "name normalization collision" in record.message
             and "tool 'read-file'" in record.message
             and "tool 'read_file'" in record.message
+            for record in caplog.records
+        )
+
+    def test_native_tool_wins_over_generated_utility_on_collision(self, caplog):
+        """A server-native tool named `read_resource` must survive its collision
+        with the generated `read_resource` utility (#87112).
+
+        Before the fix the collision handler treated the pair as ambiguous and
+        skipped BOTH, so the server's own tool vanished on every boot. The
+        generated utility is only sugar for servers that lack such a tool, so
+        the native tool wins and the utility is dropped.
+        """
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = _make_mock_server(
+            "srv",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("read_resource", "Native read-resource tool"),
+                _make_mcp_tool("safe_tool"),
+            ],
+        )
+        # Resources enabled (default) so the read_resource utility is generated
+        # and collides; prompts disabled to keep the candidate set focused.
+        config = {"tools": {"prompts": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+            registered = _register_server_tools("srv", server, config)
+
+        # The native tool is registered (before the fix it was dropped) and it
+        # is the server's tool, not the utility stub.
+        assert "mcp__srv__read_resource" in registered
+        entry = registry.get_entry("mcp__srv__read_resource")
+        assert entry is not None
+        assert entry.description == "Native read-resource tool"
+        assert "mcp__srv__safe_tool" in registered
+
+        # The collision was resolved in favour of the native tool, not skipped
+        # as ambiguous.
+        assert not any(
+            "name normalization collision" in record.message
+            and "mcp__srv__read_resource" in record.message
+            for record in caplog.records
+        )
+        assert any(
+            record.levelno == logging.INFO
+            and "keeping the native tool and dropping the utility" in record.message
+            and "read_resource" in record.message
             for record in caplog.records
         )
 
@@ -1888,7 +1952,7 @@ class TestSamplingCallbackText:
         assert result.content.text == "Hello from LLM"
         assert result.model == "test-model"
         assert result.role == "assistant"
-        assert result.stopReason == "endTurn"
+        assert _stop_reason(result) == "endTurn"
 
     def test_server_tools_with_object_schema_are_normalized(self):
         """Server-provided tools should gain empty properties for object schemas."""
@@ -1938,7 +2002,7 @@ class TestSamplingCallbackToolUse:
             result = asyncio.run(self.handler(None, params))
 
         assert isinstance(result, CreateMessageResultWithTools)
-        assert result.stopReason == "toolUse"
+        assert _stop_reason(result) == "toolUse"
         assert result.model == "test-model"
         assert len(result.content) == 1
         tc = result.content[0]

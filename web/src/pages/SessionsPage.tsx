@@ -33,6 +33,7 @@ import {
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
 import {
   importSummary,
@@ -1499,10 +1500,7 @@ export default function SessionsPage() {
     setPruning(true);
     try {
       const resp = await api.pruneSessions(days);
-      showToast(
-        `Pruned ${resp.removed} session${resp.removed === 1 ? "" : "s"}`,
-        "success",
-      );
+      showToast(formatSessionPruneResult(resp), "success");
       setPruneOpen(false);
       loadSessions(0);
       setPage(0);

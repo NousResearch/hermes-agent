@@ -897,7 +897,8 @@ def _complete_logical(
                     output["response_model"] = response_model_name
             lease.host.run_in_session(
                 lease.session,
-                lease.host.relay.scope.pop,
+                relay_runtime.pop_relay_scope,
+                lease.host.relay,
                 handle,
                 output=output,
                 metadata={

@@ -206,6 +206,9 @@ class TestVideoAnalyzeTool:
         assert content[1]["type"] == "video_url"
         assert "video_url" in content[1]
         assert content[1]["video_url"]["url"].startswith("data:video/mp4;base64,")
+        # No hardcoded output cap — the aux client omits max_tokens so the
+        # provider uses its full output budget (max-tokens-knob policy).
+        assert "max_tokens" not in captured_kwargs
 
     def test_non_local_backend_reads_video_from_terminal_backend(self, tmp_path, monkeypatch):
         """Non-local terminal backends must not read local host video paths.

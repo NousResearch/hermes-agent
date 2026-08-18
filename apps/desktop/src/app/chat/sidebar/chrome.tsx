@@ -31,6 +31,9 @@ const rowLead = 'grid size-3.5 shrink-0 place-items-center'
 const rowInset = cn(rowPadX, rowGap, 'flex h-full min-w-0 items-center self-stretch py-0.5')
 const rowLabel = 'min-w-0 truncate text-[0.8125rem] leading-none text-(--ui-text-secondary)'
 
+/** Inbox-style card (workspace + age, title + preview, model + size). */
+export const SIDEBAR_ROW_CARD_MIN_H = 'min-h-[3.375rem]' as const
+
 /** Codicon size in sidebar row leads — matches the file tree (`tree.tsx`). */
 export const SIDEBAR_LEAD_ICON_SIZE = '0.875rem' as const
 
@@ -73,15 +76,16 @@ export function SidebarDateDivider({
  *  one selector: it holds real controls, never grab surface. */
 export function SidebarRowShell({
   actions,
+  actionsClassName,
   children,
   className,
   ...props
-}: React.ComponentProps<'div'> & { actions?: React.ReactNode }) {
+}: React.ComponentProps<'div'> & { actions?: React.ReactNode; actionsClassName?: string }) {
   return (
     <div className={cn(rowMinH, 'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md', className)} {...props}>
       {children}
       {actions ? (
-        <div className="flex shrink-0 items-center self-center" data-row-actions>
+        <div className={cn('flex shrink-0 items-center self-center', actionsClassName)} data-row-actions>
           {actions}
         </div>
       ) : null}

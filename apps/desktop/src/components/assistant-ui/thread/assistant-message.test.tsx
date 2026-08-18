@@ -8,9 +8,17 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $displayTimestamps } from '@/store/display-timestamps'
+
+import { formatTimelineRange, formatTimelineTimestamp } from './timestamp'
+
 import { Thread } from '.'
 
+// Timeline timestamps render only when `display.timestamps` is enabled.
+$displayTimestamps.set(true)
+
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
+const completedAt = createdAt.getTime() / 1000 + 1.25
 
 class TestResizeObserver {
   observe() {}
@@ -37,15 +45,28 @@ function userMessage(): ThreadMessage {
     content: [{ type: 'text', text: 'question one' }],
     attachments: [],
     createdAt,
-    metadata: { custom: {} }
-  } as ThreadMessage
+    metadata: { custom: { timelineTimestamp: createdAt.getTime() / 1000 } }
+  } as unknown as ThreadMessage
 }
 
 function assistantMessage(): ThreadMessage {
   return {
     id: 'assistant-1',
     role: 'assistant',
-    content: [{ type: 'text', text: 'done' }],
+    content: [
+      {
+        type: 'reasoning',
+        text: 'checked carefully',
+        timestamp: createdAt.getTime() / 1000 + 0.05,
+        completedAt: createdAt.getTime() / 1000 + 0.1
+      },
+      {
+        type: 'text',
+        text: 'done',
+        timestamp: createdAt.getTime() / 1000 + 0.125,
+        completedAt: createdAt.getTime() / 1000 + 0.5
+      }
+    ],
     status: { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
@@ -53,14 +74,20 @@ function assistantMessage(): ThreadMessage {
       unstable_annotations: [],
       unstable_data: [],
       steps: [],
-      custom: {}
+      custom: { timelineCompletedAt: completedAt, timelineTimestamp: createdAt.getTime() / 1000 }
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
-function Harness({ onBranchInNewChat }: { onBranchInNewChat?: (messageId: string) => void }) {
+function Harness({
+  assistant = assistantMessage(),
+  onBranchInNewChat
+}: {
+  assistant?: ThreadMessage
+  onBranchInNewChat?: (messageId: string) => void
+}) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistantMessage()],
+    messages: [userMessage(), assistant],
     isRunning: false,
     onNew: async () => {}
   })
@@ -88,5 +115,43 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
     await screen.findByText('done')
 
     expect(screen.queryByRole('button', { name: 'Branch in new chat' })).toBeNull()
+  })
+})
+
+describe('message timeline timestamps', () => {
+  it('always renders precise user and assistant lifecycle times', async () => {
+    const { container } = render(<Harness />)
+
+    await screen.findByText('done')
+
+    const stamps = Array.from(container.querySelectorAll('[data-slot="timeline-timestamp"]')).map(node =>
+      node.textContent?.trim()
+    )
+
+    const startedAt = createdAt.getTime() / 1000
+
+    expect(stamps).toContain(formatTimelineTimestamp(startedAt))
+    expect(stamps).toContain(formatTimelineRange(startedAt, completedAt))
+    expect(stamps).toContain(formatTimelineRange(startedAt + 0.05, startedAt + 0.1))
+    expect(stamps).toContain(formatTimelineRange(startedAt + 0.125, startedAt + 0.5))
+  })
+
+  it('suppresses an aggregate assistant stamp that exactly duplicates its sole part', async () => {
+    const startedAt = createdAt.getTime() / 1000
+
+    const assistant = {
+      ...assistantMessage(),
+      content: [{ completedAt, text: 'done', timestamp: startedAt, type: 'text' }]
+    } as unknown as ThreadMessage
+
+    const { container } = render(<Harness assistant={assistant} />)
+
+    await screen.findByText('done')
+
+    const stamps = Array.from(container.querySelectorAll('[data-slot="timeline-timestamp"]')).map(node =>
+      node.textContent?.trim()
+    )
+
+    expect(stamps.filter(stamp => stamp === formatTimelineRange(startedAt, completedAt))).toHaveLength(1)
   })
 })

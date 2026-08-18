@@ -56,6 +56,7 @@ mcp_servers:
 | `enabled` | bool | both | Skip the server entirely when false |
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
+| `protocol` | string | both | Protocol-era negotiation: `auto` (default — legacy `initialize` handshake first, falling back to the 2026-07-28 `server/discover` stateless probe when the server rejects the handshake as modern-only), `stateless` (probe `server/discover` first; one legacy retry), or `legacy` (handshake only, no fallback) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `transport` | string | HTTP | Set to `sse` to use the SSE transport instead of Streamable HTTP |
@@ -335,3 +336,24 @@ Behavior:
 - Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` and reused across sessions
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
+
+## Add to Hermes link
+
+MCP vendors and docs can offer a one-click **"Add to Hermes"** button that opens the Hermes desktop app with a pre-filled server config, mirroring Cursor's `cursor://anysphere.cursor-deeplink/mcp/install` scheme:
+
+```text
+hermes://mcp/install?name=NAME&config=BASE64
+```
+
+- `name` — the server name. Must match `^[A-Za-z0-9._-]{1,64}$`.
+- `config` — the server config object as **base64url-encoded JSON** (standard base64 is also accepted). The decoded JSON must be an object with either a string `url` field (`http://`/`https://` only) or a string `command` field, and may carry any of the server keys documented above. Payloads over 32KB are rejected.
+
+Example (JavaScript):
+
+```js
+const config = { url: 'https://mcp.example.com/mcp' }
+const link = `hermes://mcp/install?name=example&config=${btoa(JSON.stringify(config))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`
+```
+
+Opening the link never installs anything by itself: the desktop app shows a confirmation dialog with the server name and the full pretty-printed config (with an extra caution for `command`-based servers, which run a local process), and the user must explicitly confirm. Existing server names are never overwritten — the user is asked to rename or cancel.

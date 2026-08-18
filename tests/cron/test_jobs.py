@@ -484,6 +484,34 @@ class TestMarkJobRun:
         assert updated["last_error"] is None
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
 
+    def test_failure_streak_increments_and_resets(self, tmp_cron_dir):
+        """failure_streak counts consecutive agent failures; success resets."""
+        job = create_job(prompt="Flaky", schedule="every 1h")
+        assert get_job(job["id"])["failure_streak"] == 0
+        mark_job_run(job["id"], success=False, error="timeout")
+        mark_job_run(job["id"], success=False, error="timeout")
+        assert get_job(job["id"])["failure_streak"] == 2
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["failure_streak"] == 0
+
+    def test_failure_streak_ignores_delivery_errors(self, tmp_cron_dir):
+        """A successful run with a delivery error must not count as a failure."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="timeout")
+        mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
+        assert get_job(job["id"])["failure_streak"] == 0
+
+    def test_failure_streak_backcompat_missing_field(self, tmp_cron_dir):
+        """Jobs persisted before the field existed increment from 0."""
+        job = create_job(prompt="Old", schedule="every 1h")
+        # Simulate a pre-field record on disk.
+        jobs = load_jobs()
+        for j in jobs:
+            j.pop("failure_streak", None)
+        save_jobs(jobs)
+        mark_job_run(job["id"], success=False, error="boom")
+        assert get_job(job["id"])["failure_streak"] == 1
+
 
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
         """Regression test for issue #16265.

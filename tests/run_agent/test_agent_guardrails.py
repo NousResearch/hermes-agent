@@ -181,6 +181,37 @@ class TestDeduplicateToolCalls:
         out = AIAgent._deduplicate_tool_calls(tcs)
         assert len(out) == 1
 
+    def test_duplicate_json_objects_with_reordered_keys_deduplicated(self):
+        first = make_tc(
+            "terminal",
+            '{"command":"printf hello >> out.log","timeout":10}',
+        )
+        second = make_tc(
+            "terminal",
+            '{"timeout":10,"command":"printf hello >> out.log"}',
+        )
+
+        out = AIAgent._deduplicate_tool_calls([first, second])
+
+        assert out == [first]
+
+    def test_distinct_json_arguments_are_preserved(self):
+        first = make_tc("terminal", '{"command":"one","timeout":10}')
+        second = make_tc("terminal", '{"timeout":10,"command":"two"}')
+
+        out = AIAgent._deduplicate_tool_calls([first, second])
+
+        assert out == [first, second]
+
+    def test_malformed_arguments_use_raw_string_for_deduplication(self):
+        first = make_tc("terminal", '{"command":"one"')
+        duplicate = make_tc("terminal", '{"command":"one"')
+        distinct = make_tc("terminal", '{ "command":"one"')
+
+        out = AIAgent._deduplicate_tool_calls([first, duplicate, distinct])
+
+        assert out == [first, distinct]
+
 
 
 

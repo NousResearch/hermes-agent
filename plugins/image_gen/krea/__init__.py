@@ -57,9 +57,9 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Illustration, anime, painting, expressive styles. Faster + cheaper.",
         "price": "$0.030 (text) / $0.035 (style refs) / $0.040 (moodboards)",
         "path": "medium",
-        # 1.5K native — default the Enhance pass on (mirrors the FAL
-        # catalog policy: sub-2MP models upscale by default).
-        "upscale": True,
+        # Upscaling is opt-in everywhere (Aug 2026 policy: default-on
+        # enhance passes degraded output quality).
+        "upscale": False,
     },
     "krea-2-large": {
         "display": "Krea 2 Large",
@@ -76,8 +76,8 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Fastest Krea 2 — medium quality at lower latency / cost.",
         "price": "$0.015 (text) / $0.0175 (style refs)",
         "path": "medium-turbo",
-        # 1.5K native — default the Enhance pass on.
-        "upscale": True,
+        # Opt-in only (Aug 2026 policy).
+        "upscale": False,
     },
 }
 

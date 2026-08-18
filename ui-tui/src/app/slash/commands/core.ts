@@ -199,7 +199,7 @@ export const coreCommands: SlashCommand[] = [
         ctx.session.newSession(isNew ? 'new session started' : undefined, requestedTitle || undefined)
       }
 
-      if (NO_CONFIRM_DESTRUCTIVE) {
+      if (NO_CONFIRM_DESTRUCTIVE || !ctx.ui.destructiveSlashConfirm) {
         return commit()
       }
 

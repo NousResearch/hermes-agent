@@ -59,7 +59,9 @@ def _make_event(text="hi", chat_id="42"):
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        source=SessionSource(
+            platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        ),
     )
 
 
@@ -81,13 +83,27 @@ async def test_pending_drain_keeps_active_session_guard_live():
     # pending message arrives.
     first_started = asyncio.Event()
     release_first = asyncio.Event()
+    second_processed = asyncio.Event()
+    handoff_entered = asyncio.Event()
+    release_handoff = asyncio.Event()
 
     async def handler(event):
         first_started.set()
         await release_first.wait()
+        if event.text == "M2":
+            second_processed.set()
         return "done"
 
     adapter._message_handler = handler
+
+    original_stop_refresh = adapter._stop_typing_refresh
+
+    async def stop_typing_during_handoff(*args, **kwargs):
+        handoff_entered.set()
+        await release_handoff.wait()
+        return await original_stop_refresh(*args, **kwargs)
+
+    adapter._stop_typing_refresh = stop_typing_during_handoff
 
     # Spawn M1 through handle_message.
     await adapter.handle_message(_make_event(text="M1"))
@@ -107,27 +123,28 @@ async def test_pending_drain_keeps_active_session_guard_live():
     # reference) so any M3 arriving in that window hits the busy-handler.
     release_first.set()
 
-    # Give the drain a moment to execute its .clear() + await typing_task
-    # without letting it fully finish the recursive call.
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    try:
+        # Pause inside the handoff's typing cleanup. Production has already
+        # cleared the guard and has not yet transferred task ownership.
+        await asyncio.wait_for(handoff_entered.wait(), timeout=2.0)
 
-    # Across the drain transition, the Event object must be the SAME
-    # reference (not replaced, not deleted).  If del happened, the key
-    # would be missing briefly; if a new Event was installed, the
-    # identity would differ.
-    assert sk in adapter._active_sessions, (
-        "_active_sessions[session_key] was deleted during pending-drain — "
-        "opens a window for duplicate-agent spawn"
-    )
-    assert adapter._active_sessions[sk] is active_event, (
-        "_active_sessions[session_key] was replaced during pending-drain — "
-        "the old Event may have waiters that now won't be signaled"
-    )
+        # Across the drain transition, the Event object must be the SAME
+        # reference (not replaced, not deleted).
+        assert sk in adapter._active_sessions, (
+            "_active_sessions[session_key] was deleted during pending-drain — "
+            "opens a window for duplicate-agent spawn"
+        )
+        assert adapter._active_sessions[sk] is active_event, (
+            "_active_sessions[session_key] was replaced during pending-drain — "
+            "the old Event may have waiters that now won't be signaled"
+        )
 
-    # Finish drain.
-    await asyncio.sleep(0.1)
-    await adapter.cancel_background_tasks()
+        # Finish drain without relying on scheduler speed.
+        release_handoff.set()
+        await asyncio.wait_for(second_processed.wait(), timeout=2.0)
+    finally:
+        release_handoff.set()
+        await adapter.cancel_background_tasks()
 
 
 @pytest.mark.asyncio
@@ -139,9 +156,12 @@ async def test_finally_cleanup_drains_late_arrival_pending():
     sk = _sk()
 
     processed = []
+    late_processed = asyncio.Event()
 
     async def handler(event):
         processed.append(event.text)
+        if event.text == "LATE":
+            late_processed.set()
         return "ok"
 
     adapter._message_handler = handler
@@ -169,11 +189,8 @@ async def test_finally_cleanup_drains_late_arrival_pending():
     # Send M1.
     await adapter.handle_message(_make_event(text="M1"))
 
-    # Drain: wait for M1 to finish and the late-drain task to process LATE.
-    for _ in range(50):  # up to ~0.5s
-        if "LATE" in processed:
-            break
-        await asyncio.sleep(0.01)
+    # Drain: wait for the late-drain task itself to process LATE.
+    await asyncio.wait_for(late_processed.wait(), timeout=2.0)
 
     await adapter.cancel_background_tasks()
 
@@ -198,11 +215,10 @@ async def test_no_pending_cleans_up_normally():
 
     await adapter.handle_message(_make_event(text="solo"))
 
-    # Wait for background task to finish.
-    for _ in range(50):
-        if sk not in adapter._active_sessions:
-            break
-        await asyncio.sleep(0.01)
+    # Await the task that owns this session rather than sampling cleanup after
+    # an arbitrary wall-clock delay.
+    owner_task = adapter._session_tasks[sk]
+    await asyncio.wait_for(asyncio.shield(owner_task), timeout=2.0)
 
     assert sk not in adapter._active_sessions, (
         "_active_sessions was not cleaned up after a normal turn with no pending"

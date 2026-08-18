@@ -62,7 +62,7 @@ class TestClarifyToolChoicesValidation:
             return "answer"
 
         clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
-        assert choices_received == ["1", "2", "3"]
+        assert choices_received == ["1 (Recommended)", "2", "3"]
 
 
 class TestClarifyToolCallbackHandling:
@@ -129,7 +129,7 @@ class TestClarifyDictChoices:
             callback=cb,
         ))  # type: ignore
         assert seen == [
-            "Tight, covers all 3 points",
+            "Tight, covers all 3 points (Recommended)",
             "Loose layout",
             "A plain string choice",
         ]
@@ -220,6 +220,78 @@ class TestClarifyToolMultiSelect:
             callback=mock_callback,
         )
         assert len(choices_passed) == MAX_CHOICES
+
+
+class TestClarifyRecommendedLabel:
+    """The first choice is the agent's pick and is labelled as such.
+
+    The schema tells the model to order choices best-first, so the tool tags
+    element 0 with "(Recommended)" at the one platform-agnostic entry point —
+    CLI, TUI, desktop, and messaging adapters all inherit the same label. The
+    label is presentation only: it never appears in the answer the agent reads.
+    """
+
+    def test_first_choice_is_labelled(self):
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[1]
+
+        clarify_tool("Pick", choices=["Rebase", "Merge"], callback=cb)
+        assert seen == ["Rebase (Recommended)", "Merge"]
+
+    def test_answer_strips_the_label(self):
+        """Picking the recommended option returns the bare option text."""
+        def cb(question, choices):
+            return choices[0]
+
+        result = json.loads(clarify_tool("Pick", choices=["Rebase", "Merge"], callback=cb))
+        assert result["user_response"] == "Rebase"
+        assert result["choices_offered"] == ["Rebase", "Merge"]
+
+    def test_multi_select_answers_strip_the_label(self):
+        def cb(question, choices, multi_select=False):
+            return ", ".join(choices[:2])
+
+        result = json.loads(clarify_tool(
+            "Pick some",
+            choices=["Rebase", "Merge", "Squash"],
+            multi_select=True,
+            callback=cb,
+        ))
+        assert result["user_response"] == ["Rebase", "Merge"]
+
+    def test_single_choice_is_not_labelled(self):
+        """One option isn't a recommendation — there's nothing to prefer it over."""
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[0]
+
+        clarify_tool("Confirm", choices=["Ship it"], callback=cb)
+        assert seen == ["Ship it"]
+
+    def test_label_is_not_doubled(self):
+        """A model that wrote its own label doesn't get a second one."""
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[0]
+
+        clarify_tool("Pick", choices=["Rebase (recommended)", "Merge"], callback=cb)
+        assert seen == ["Rebase (recommended)", "Merge"]
+
+    def test_open_ended_unaffected(self):
+        def cb(question, choices):
+            assert choices is None
+            return "whatever"
+
+        result = json.loads(clarify_tool("Thoughts?", callback=cb))
+        assert result["choices_offered"] is None
+        assert result["user_response"] == "whatever"
 
 
 class TestInvokeCallbackDispatch:

@@ -95,9 +95,14 @@ class TestMessageHandler:
         # reaching into asyncio.create_task internals.
         with patch.object(MCPServerTask, "_schedule_tools_refresh") as mock_schedule:
             handler = server._make_message_handler()
-            notification = ServerNotification(
-                root=ToolListChangedNotification(method="notifications/tools/list_changed")
+            notification = ToolListChangedNotification(
+                method="notifications/tools/list_changed"
             )
+            if hasattr(ServerNotification, "model_validate"):
+                # mcp < 2.0 wrapped notifications in a RootModel; 2.0 made
+                # ServerNotification a plain union of the concrete types, which
+                # has no constructor to wrap with.
+                notification = ServerNotification(root=notification)
             await handler(notification)
             mock_schedule.assert_called_once()
 

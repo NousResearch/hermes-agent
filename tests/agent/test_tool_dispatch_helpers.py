@@ -135,6 +135,12 @@ class TestUntrustedWrapping:
 
 class TestMakeToolResultMessage:
 
+    def test_message_is_timestamped_when_result_is_created(self, monkeypatch):
+        monkeypatch.setattr("agent.message_metadata.wall_time", lambda: 123.5)
+
+        msg = make_tool_result_message("terminal", "ok", "call_timestamp")
+
+        assert msg["timestamp"] == 123.5
 
     def test_high_risk_message_content_wrapped(self):
         msg = make_tool_result_message("web_extract", SAMPLE_LONG_TEXT, "call_2")

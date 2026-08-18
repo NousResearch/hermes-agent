@@ -683,3 +683,26 @@ test('source contract: thread UI — folded rows, per-thread reply box, new-thre
   assert.match(pluginSource, /children: 'New Thread'/)
   assert.match(pluginSource, /const markKey = `\$\{thread\}::\$\{memberKey\}`/)
 })
+
+function groupChatWorkspaceSource() {
+  const start = pluginSource.indexOf('function GroupChatWorkspace')
+  const end = pluginSource.indexOf('function closeGroupChatMainTab')
+  assert.ok(start >= 0, 'GroupChatWorkspace is defined')
+  assert.ok(end > start, 'closeGroupChatMainTab follows GroupChatWorkspace')
+  return pluginSource.slice(start, end)
+}
+
+test('source contract: group chat log lines expose CopyButton on the entry body', () => {
+  const src = groupChatWorkspaceSource()
+  assert.match(pluginSource, /CopyButton/)
+  assert.match(src, /CopyButton/)
+  assert.match(src, /text:\s*entry\.text/)
+  assert.match(src, /stopPropagation:\s*true/)
+  assert.match(src, /appearance:\s*['"]icon['"]/)
+  assert.match(src, /buttonSize:\s*['"]icon['"]/)
+  assert.match(src, /['"]group /)
+  assert.doesNotMatch(src, /playSpeechText/)
+  assert.doesNotMatch(src, /RefreshCw/)
+  assert.doesNotMatch(src, /readAloud/)
+  assert.doesNotMatch(src, /ActionBarPrimitive\.Reload/)
+})

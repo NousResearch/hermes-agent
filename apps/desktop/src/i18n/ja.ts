@@ -2700,6 +2700,7 @@ export const ja = defineLocale({
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
       sendFailed: '明確化応答を送信できませんでした',
       loadingQuestion: '質問を読み込み中…',
+      invalidChoices: 'この確認には使用可能な選択肢がありません。スキップすると、エージェントが再試行できます。',
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',
       skip: 'スキップ',

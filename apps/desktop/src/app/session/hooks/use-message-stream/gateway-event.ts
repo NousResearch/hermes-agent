@@ -25,7 +25,13 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
-import { clearClarifyRequest, normalizeChoices, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import {
+  clearClarifyRequest,
+  hasMalformedStructuredChoices,
+  normalizeChoices,
+  setClarifyRequest,
+  warnDroppedChoices
+} from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
@@ -1165,9 +1171,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const rawChoices = payload?.choices
         const choices = normalizeChoices(rawChoices)
         const multiSelect = payload?.multi_select === true
+        const choicesMalformed = hasMalformedStructuredChoices(rawChoices, choices)
 
         if (requestId && question) {
-          if (rawChoices != null && choices.length === 0) {
+          if (choicesMalformed) {
             warnDroppedChoices('gateway', question, rawChoices)
           }
 
@@ -1176,6 +1183,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             question,
             choices: choices.length > 0 ? choices : null,
             multiSelect,
+            choicesMalformed,
             sessionId: sessionId ?? null
           })
 

@@ -2611,6 +2611,7 @@ export const zhHant = defineLocale({
       gatewayDisconnected: 'Hermes 閘道未連線',
       sendFailed: '無法傳送澄清回應',
       loadingQuestion: '正在載入問題…',
+      invalidChoices: '此澄清要求沒有可用選項。請略過，讓代理程式重試。',
       other: '其他（輸入您的答案）',
       placeholder: '輸入您的答案…',
       skip: '略過',

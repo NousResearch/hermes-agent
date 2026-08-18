@@ -3008,6 +3008,7 @@ export const en: Translations = {
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send clarify response',
       loadingQuestion: 'Loading question…',
+      invalidChoices: 'This clarification has no usable options. Skip it so the agent can retry.',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
       skip: 'Skip',

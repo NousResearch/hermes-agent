@@ -4,10 +4,10 @@ import { memo, useState } from 'react'
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import { LONG_MSG } from '../config/limits.js'
 import { hasLeadGap } from '../domain/blockLayout.js'
+import { splitComposerHighlights } from '../domain/composerHighlights.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
-import { splitSlashSkillRefs } from '../domain/slash.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedLiveRenderText,
@@ -230,11 +230,11 @@ export const MessageLine = memo(function MessageLine({
       )
     }
 
-    // A skill the user referenced mid-prose (`clean this up with /clean`)
-    // keeps the accent it wore as a completion in the composer, instead of
-    // flattening back into the body text.
+    // A skill, `@ref`, or attachment token the user put in the message keeps
+    // the accent it wore in the composer, instead of flattening back into the
+    // body text.
     if (msg.role === 'user') {
-      const segments = splitSlashSkillRefs(msg.text)
+      const segments = splitComposerHighlights(msg.text)
 
       return (
         <Text {...(body ? { color: body } : {})}>

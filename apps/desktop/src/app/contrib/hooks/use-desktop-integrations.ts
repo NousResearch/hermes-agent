@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
-import { pathFromHermesDeepLink } from '@/lib/hermes-open-target'
+import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
@@ -216,7 +216,14 @@ export function useDesktopIntegrations({
       }
 
       if (payload.activate) {
-        navigate(payload.activate)
+        // Defense-in-depth: re-resolve at the IPC boundary rather than trusting
+        // the pre-IPC validation — any future hermesDesktop.notify caller gets
+        // funneled through the same resolver.
+        const path = resolveHermesOpenPath(payload.activate)
+
+        if (path) {
+          navigate(path)
+        }
       }
 
       clearPluginNotifyHandlers(payload.notifyId)

@@ -203,6 +203,30 @@ describe('dispatchPluginNativeNotification', () => {
     expect(notify).toHaveBeenCalledTimes(2)
   })
 
+  it('does not register handlers for throttled or suppressed notifications', () => {
+    const onActivate = vi.fn()
+
+    // First fires and registers; the immediate repeat is throttled per plugin id.
+    dispatchPluginNativeNotification('leak-plugin', { onActivate: () => undefined, title: 'first' })
+    dispatchPluginNativeNotification('leak-plugin', { onActivate, title: 'throttled' })
+    expect(notify).toHaveBeenCalledTimes(1)
+
+    // The throttled call must not have registered anything: no notifyId ever
+    // reached the OS, so its handlers would leak. Invoking with the only
+    // minted id (from the first call) must not hit the throttled callback.
+    const payload = notify.mock.calls[0]?.[0] as { notifyId?: string }
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(onActivate).not.toHaveBeenCalled()
+
+    // Fully suppressed (kind disabled): nothing registered either.
+    setNativeNotifyKind('plugin', false)
+    const suppressed = vi.fn()
+    dispatchPluginNativeNotification('other-plugin', { onActivate: suppressed, title: 'muted' })
+    expect(notify).toHaveBeenCalledTimes(1)
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(suppressed).not.toHaveBeenCalled()
+  })
+
   it('forwards icon, resolved activate path, and action buttons (deeplink-compatible)', () => {
     // Unique tag (throttle is per plugin id); activate still uses the plugin deep link.
     dispatchPluginNativeNotification('index-network-alerts', {

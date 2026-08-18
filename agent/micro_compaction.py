@@ -102,7 +102,12 @@ class MicroCompactionMixin:
             "open questions.\n\n"
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary \u2014 replace any that appear "
-            f"with [REDACTED].\n\n"
+            "with [REDACTED].\n\n"
+        )
+        _custom_instructions = self._effective_summary_instructions()
+        if _custom_instructions:
+            user_prompt = user_prompt + _custom_instructions + "\n\n"
+        user_prompt = user_prompt + (
             f"## Current Running Summary\n{summary_block}\n\n"
             f"## Next Exchange to Merge\n{exchange_text}\n\n"
             "Return ONLY the updated summary text, no preamble or explanation. "

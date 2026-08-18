@@ -27,7 +27,7 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 
 
 class _FakePickerAdapter:
@@ -40,10 +40,12 @@ class _FakePickerAdapter:
 
     def __init__(self):
         self.captured_callback = None
+        self.captured_kwargs = None
 
     async def send_model_picker(self, *, on_model_selected, **kwargs):
         # Stash the closure the handler built so the test can fire a "tap".
         self.captured_callback = on_model_selected
+        self.captured_kwargs = kwargs
         return types.SimpleNamespace(success=True)
 
 
@@ -61,6 +63,24 @@ def _make_event(text):
         text=text,
         message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"),
+    )
+
+
+def _make_shared_group_event(text):
+    return MessageEvent(
+        text=text,
+        message_type=(
+            MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+        ),
+        user_id="111",
+        user_name="Alice",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            user_id=None,
+            user_name=None,
+        ),
     )
 
 
@@ -199,6 +219,62 @@ async def test_picker_tap_global_flag_persists(tmp_path, monkeypatch, seed_model
     assert "api_key" not in written["model"]
     assert "api_mode" not in written["model"]
     assert "context_length" not in written["model"]
+
+
+@pytest.mark.asyncio
+async def test_typed_model_and_next_group_turn_use_shared_routing_key(
+    tmp_path, monkeypatch
+):
+    adapter = _FakePickerAdapter()
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openrouter"},
+    )
+    runner = _make_runner(adapter)
+    command = _make_shared_group_event("/model gpt-5.5 --session")
+    shared_key = build_session_key(command.source, group_sessions_per_user=True)
+
+    confirmation = await runner._handle_model_command(command)
+
+    assert confirmation is not None
+    assert shared_key == "agent:main:telegram:group:-100"
+    next_addressed_turn = _make_shared_group_event("@hermes_bot hello")
+    resolved_model, resolved_runtime = runner._resolve_session_agent_runtime(
+        source=next_addressed_turn.source,
+        user_config={"model": {"default": "old-model", "provider": "openrouter"}},
+    )
+
+    assert resolved_model == "gpt-5.5"
+    assert resolved_runtime["provider"] == "openrouter"
+    assert resolved_runtime["api_key"] == "sk-test"
+
+
+@pytest.mark.asyncio
+async def test_picker_callback_closure_persists_under_exact_shared_key(
+    tmp_path, monkeypatch
+):
+    adapter = _FakePickerAdapter()
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openrouter"},
+    )
+    runner = _make_runner(adapter)
+    event = _make_shared_group_event("/model --session")
+    shared_key = build_session_key(event.source, group_sessions_per_user=True)
+
+    sent = await runner._handle_model_command(event)
+    assert sent is None
+    assert adapter.captured_kwargs["session_key"] == shared_key
+    assert adapter.captured_kwargs["metadata"]["picker_user_id"] == "111"
+
+    confirmation = await adapter.captured_callback(
+        "-100", "gpt-5.5", "openrouter"
+    )
+
+    assert confirmation is not None
+    assert runner._session_model_overrides[shared_key]["model"] == "gpt-5.5"
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,22 @@ _ALWAYS_ALLOWED_FOR_USERS: FrozenSet[str] = frozenset({
 })
 
 
+# Commands still reachable when the caller has NO trustworthy actor identity —
+# for example Telegram observed-group sources, whose SessionSource is
+# deliberately anonymized (``user_id=None``) so every member shares one
+# transcript while the real actor rides on ``MessageEvent``. This is a
+# different question from ``_ALWAYS_ALLOWED_FOR_USERS`` above: that floor is
+# what an *identified* non-admin may run under an enabled policy; this one is
+# the read-only diagnostic set safe for actors we cannot identify at all.
+# Anything outside this set fails closed at the dispatch gate when identity is
+# missing — including when no slash policy is configured at all.
+IDENTITY_FREE_FLOOR_COMMANDS: FrozenSet[str] = frozenset({
+    "help",
+    "status",
+    "whoami",
+})
+
+
 @dataclass(frozen=True)
 class SlashAccessPolicy:
     """Resolved access policy for a single (platform, scope) pair.
@@ -223,6 +239,7 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
 
 
 __all__ = [
+    "IDENTITY_FREE_FLOOR_COMMANDS",
     "SlashAccessPolicy",
     "policy_from_extra",
     "policy_for_source",

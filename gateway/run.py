@@ -6866,6 +6866,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Effective named-profile GatewayConfigs for authorization-policy
+        # decisions (typed slash gating, /whoami, /approvals, cross-origin
+        # /resume). Populated by _configure_profile_adapter(); extended on
+        # demand by _effective_gateway_config_for_source() for routed
+        # profiles whose own adapter never connected. Without this map,
+        # typed commands on a multiplexed secondary profile would silently
+        # fall back to self.config — the multiplexer's OWN policy.
+        self._profile_gateway_configs: Dict[str, GatewayConfig] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -12890,6 +12898,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # secondary profile: authorization and prompt rendering both run
             # before the narrower agent-turn scope is installed.
             adapter.set_message_handler(self._primary_message_handler())
+            _set_slash_access = getattr(adapter, "set_slash_access_check", None)
+            if callable(_set_slash_access):
+                _set_slash_access(self._primary_slash_access_check())
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -14507,6 +14518,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
 
                     adapter.set_message_handler(self._primary_message_handler())
+                    _set_slash_access = getattr(adapter, "set_slash_access_check", None)
+                    if callable(_set_slash_access):
+                        _set_slash_access(self._primary_slash_access_check())
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -15542,7 +15556,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # and owns no resources that should be disconnected.
                     continue
 
-            self._configure_profile_adapter(adapter, profile_name, platform)
+            self._configure_profile_adapter(
+                adapter,
+                profile_name,
+                platform,
+                gateway_config=profile_cfg,
+            )
 
             try:
                 with _profile_runtime_scope(profile_home):
@@ -15570,13 +15589,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter: BasePlatformAdapter,
         profile_name: str,
         platform: Platform,
+        *,
+        gateway_config: Optional[GatewayConfig] = None,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
         # Runtime status is process-scoped even while message/config work is
         # profile-scoped.  Preserve both dimensions in the key so dashboard
         # and NAS health aggregation can see which secondary profile failed.
         adapter._runtime_status_platform_key = f"{profile_name}:{platform.value}"
+        # Register this profile's effective GatewayConfig so per-message
+        # policy resolution (see _effective_gateway_config_for_source) can
+        # gate typed commands by THIS profile's authorization policy instead
+        # of falling back to the multiplexer's own self.config. setattr-style
+        # guard: bare object.__new__(GatewayRunner) test runners never ran
+        # __init__, so the registry dict may not exist yet.
+        if gateway_config is not None:
+            registry = getattr(self, "_profile_gateway_configs", None)
+            if isinstance(registry, dict):
+                registry[profile_name] = gateway_config
+            else:
+                self._profile_gateway_configs = {profile_name: gateway_config}
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
+        _set_slash_access = getattr(adapter, "set_slash_access_check", None)
+        if callable(_set_slash_access):
+            _set_slash_access(
+                self._make_profile_slash_access_check(
+                    profile_name,
+                    gateway_config=gateway_config,
+                )
+            )
         adapter.set_fatal_error_handler(
             self._make_profile_fatal_error_handler(profile_name, platform)
         )
@@ -15625,7 +15666,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     profile_home = get_profile_dir(profile_name)
                     with _profile_runtime_scope(profile_home):
-                        profile_config = load_gateway_config().platforms.get(platform)
+                        profile_gateway_config = load_gateway_config()
+                        profile_config = profile_gateway_config.platforms.get(platform)
                         if profile_config is None or not profile_config.enabled:
                             return
                         adapter = self._create_adapter(platform, profile_config)
@@ -15637,7 +15679,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             return
                         self._configure_profile_adapter(
-                            adapter, profile_name, platform
+                            adapter,
+                            profile_name,
+                            platform,
+                            gateway_config=profile_gateway_config,
                         )
                         success = await self._connect_adapter_with_timeout(
                             adapter, platform, is_reconnect=True
@@ -15835,6 +15880,147 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(self.config, "multiplex_profiles", False):
             return self._make_default_profile_message_handler()
         return self._handle_message
+
+    def _make_profile_slash_access_check(
+        self,
+        profile_name: str,
+        *,
+        gateway_config: Optional[GatewayConfig] = None,
+    ):
+        """Return a slash checker scoped to one multiplexed profile runtime."""
+        from hermes_cli.profiles import get_profile_dir
+
+        try:
+            profile_home = get_profile_dir(profile_name)
+        except Exception:
+            profile_home = None
+
+        def _check(source: SessionSource, canonical_cmd: str) -> Optional[str]:
+            if profile_home is None or gateway_config is None:
+                return f"⛔ /{canonical_cmd} is unavailable without profile policy context."
+            scoped_source = source
+            if not getattr(source, "profile", None):
+                scoped_source = dataclasses.replace(source, profile=profile_name)
+            with _profile_runtime_scope(profile_home):
+                return self._check_slash_access(
+                    scoped_source,
+                    canonical_cmd,
+                    gateway_config=gateway_config,
+                )
+
+        return _check
+
+    def _make_default_profile_slash_access_check(self):
+        """Scope native primary-adapter callbacks like primary message ingress."""
+        profile_home = Path(get_hermes_home())
+
+        def _check(source: SessionSource, canonical_cmd: str) -> Optional[str]:
+            with _profile_runtime_scope(profile_home):
+                return self._check_slash_access(
+                    source,
+                    canonical_cmd,
+                    gateway_config=self.config,
+                )
+
+        return _check
+
+    def _primary_slash_access_check(self):
+        """Return the slash-policy callback for a primary adapter instance."""
+        if getattr(self.config, "multiplex_profiles", False):
+            return self._make_default_profile_slash_access_check()
+        return self._check_slash_access
+
+    def _effective_gateway_config_for_source(
+        self, source: Optional[SessionSource]
+    ) -> tuple:
+        """Return ``(gateway_config, resolved)`` for authorization decisions.
+
+        The GatewayConfig whose policy must govern *source*: under
+        ``gateway.multiplex_profiles`` that is the named profile actually
+        serving the source (``source.profile``, stamped by per-credential
+        adapter handlers or profile-route matching) — never blindly
+        ``self.config``, which is the multiplexer's OWN profile config.
+        Native picker callbacks already capture the effective profile
+        config; this resolver gives typed command paths the same property.
+
+        Returns ``resolved=False`` when a named profile is requested but no
+        trustworthy policy context exists for it. Callers MUST fail closed
+        in that case — falling back to ``self.config`` would apply another
+        profile's allow_admin_from / user_allowed_commands lists (the exact
+        defect this closes).
+
+        When multiplexing is off, returns ``(self.config, True)`` so every
+        caller keeps byte-identical single-profile behavior.
+        """
+        base_cfg = getattr(self, "config", None)
+        if not getattr(base_cfg, "multiplex_profiles", False):
+            return base_cfg, True
+        profile_name = ""
+        if source is not None:
+            profile_name = str(getattr(source, "profile", "") or "").strip()
+        if not profile_name:
+            # Unstamped ingress is the multiplexer's own lane: self.config IS
+            # this profile's config. (Do NOT branch on
+            # ``_active_profile_name()`` here — it is derived from
+            # ``get_hermes_home()``, which the per-message runtime scope
+            # redirects to the SECONDARY profile's home while this resolver
+            # runs inside it.)
+            return base_cfg, True
+        registry = getattr(self, "_profile_gateway_configs", None)
+        cfg = registry.get(profile_name) if isinstance(registry, dict) else None
+        if cfg is None and isinstance(registry, dict):
+            try:
+                from hermes_cli.profiles import normalize_profile_name
+
+                cfg = registry.get(normalize_profile_name(profile_name))
+            except Exception:
+                cfg = None
+        if cfg is not None:
+            return cfg, True
+        # Routed-but-never-connected profile: resolve its own config once,
+        # mirroring how secondary adapters are built at startup (scoped load).
+        try:
+            from gateway.config import load_gateway_config as _load_profile_cfg
+            from hermes_cli.profiles import (
+                get_profile_dir,
+                normalize_profile_name,
+                profile_exists,
+            )
+
+            norm_name = normalize_profile_name(profile_name)
+            if profile_exists(norm_name):
+                profile_home = get_profile_dir(norm_name)
+                with _profile_runtime_scope(profile_home):
+                    loaded = _load_profile_cfg()
+                if isinstance(registry, dict):
+                    registry[norm_name] = loaded
+                else:
+                    self._profile_gateway_configs = {norm_name: loaded}
+                return loaded, True
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve GatewayConfig for multiplexed profile %r; "
+                "failing closed for authorization-sensitive paths: %s",
+                profile_name,
+                exc,
+            )
+        return None, False
+
+    def _quick_commands_for_source(self, source: Optional[SessionSource]) -> dict:
+        """User-defined quick commands of the profile serving *source*.
+
+        Quick commands are slash capabilities — type:exec entries run shell
+        commands in the gateway process — so the lookup must use the
+        effective named-profile config, not the multiplexer's dict.
+        """
+        cfg, resolved = self._effective_gateway_config_for_source(source)
+        if not resolved or cfg is None:
+            return {}
+        if isinstance(cfg, dict):
+            quick_commands = cfg.get("quick_commands", {}) or {}
+        else:
+            quick_commands = getattr(cfg, "quick_commands", {}) or {}
+        return quick_commands if isinstance(quick_commands, dict) else {}
 
     async def _handle_gateway_platform_event(self, event: dict, source) -> None:
         """Authorize and publish one normalized adapter event to plugin hooks."""
@@ -16655,6 +16841,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+        # SessionSource is the routing identity. Some shared group adapters
+        # deliberately remove its participant fields so every member reaches
+        # one transcript. MessageEvent retains the actual inbound actor for
+        # authorization and identity-sensitive commands. Rehydrate a temporary
+        # access-only source without changing the source used for session keys.
+        _actor_user_id = getattr(event, "user_id", None) or getattr(source, "user_id", None)
+        _actor_user_name = getattr(event, "user_name", None) or getattr(source, "user_name", None)
+        _slash_access_source = source
+        if source is not None and (
+            _actor_user_id != getattr(source, "user_id", None)
+            or _actor_user_name != getattr(source, "user_name", None)
+        ):
+            _slash_access_source = dataclasses.replace(
+                source,
+                user_id=_actor_user_id,
+                user_name=_actor_user_name,
+            )
 
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
         # asyncio task created via create_task(), which snapshots the spawning
@@ -17221,7 +17424,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # session state. /help and /whoami fall under the always-allowed
             # floor inside _check_slash_access.
             if _evt_cmd and _cmd_def_inner is not None:
-                _denied = self._check_slash_access(source, _cmd_def_inner.name)
+                _denied = self._check_slash_access(
+                    _slash_access_source, _cmd_def_inner.name
+                )
                 if _denied is not None:
                     return _denied
 
@@ -17422,10 +17627,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Preserve built-in precedence; aliases only need early handling when
         # the typed command is not already known.
         if command and _cmd_def is None:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+            quick_commands = self._quick_commands_for_source(source)
             if isinstance(quick_commands, dict) and command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "alias":
@@ -17446,7 +17648,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
         # /whoami). Plain chat is unaffected — only slash commands gate.
         if command and canonical and is_gateway_known_command(canonical):
-            _denied = self._check_slash_access(source, canonical)
+            _denied = self._check_slash_access(_slash_access_source, canonical)
             if _denied is not None:
                 return _denied
 
@@ -17889,12 +18091,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if not isinstance(quick_commands, dict):
-                quick_commands = {}
+            quick_commands = self._quick_commands_for_source(source)
             if command in quick_commands:
                 # Quick commands are slash capabilities too — and type:exec
                 # ones run a shell command in the gateway process. The early
@@ -17903,7 +18100,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # dispatch sink unchecked. Apply the same admin/user policy to
                 # the raw typed name here so non-admins can't invoke admin-only
                 # quick commands. (#44727)
-                _denied = self._check_slash_access(source, command)
+                _denied = self._check_slash_access(_slash_access_source, command)
                 if _denied is not None:
                     return _denied
                 qcmd = quick_commands[command]
@@ -21163,7 +21360,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
     def _check_slash_access(
-        self, source: SessionSource, canonical_cmd: str
+        self,
+        source: SessionSource,
+        canonical_cmd: str,
+        *,
+        gateway_config: Optional[GatewayConfig] = None,
     ) -> Optional[str]:
         """Return a denial message if ``source`` cannot run ``canonical_cmd``,
         else None. Used by both the cold and running-agent dispatch paths
@@ -21175,11 +21376,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         hasn't set ``allow_admin_from`` for the scope, the policy returns
         ``enabled=False`` and this method always returns None.
         """
-        from gateway.slash_access import policy_for_source as _policy_for_source
+        from gateway.slash_access import (
+            IDENTITY_FREE_FLOOR_COMMANDS,
+            policy_for_source as _policy_for_source,
+        )
 
         if not canonical_cmd:
             return None
-        policy = _policy_for_source(self.config, source)
+        # Shared routing sources intentionally omit participant identity. The
+        # dispatch path must rehydrate the actual actor from MessageEvent; if it
+        # cannot, fail closed before any stateful command runs even when slash
+        # policy is unconfigured. Keep only read-only diagnostics available.
+        if (
+            not getattr(source, "user_id", None)
+            and canonical_cmd not in IDENTITY_FREE_FLOOR_COMMANDS
+        ):
+            logger.info(
+                "Slash command /%s denied for %s (missing actor identity)",
+                canonical_cmd,
+                source.platform.value if source and source.platform else "?",
+            )
+            return f"⛔ /{canonical_cmd} requires an identifiable user."
+        if gateway_config is not None:
+            policy_cfg = gateway_config
+        else:
+            # Typed dispatch paths (busy / cold / quick-command gates) don't
+            # know which multiplexed profile serves this source. Resolve it —
+            # and fail closed rather than silently gating by the multiplexer's
+            # own policy (same contract as the native picker callbacks). A
+            # resolved-but-absent config (config=None bare runners) keeps the
+            # legacy disabled-policy path below.
+            policy_cfg, _policy_resolved = (
+                self._effective_gateway_config_for_source(source)
+            )
+            if not _policy_resolved:
+                logger.info(
+                    "Slash command /%s denied for %s (no policy context for "
+                    "profile %r)",
+                    canonical_cmd,
+                    source.platform.value if source.platform else "?",
+                    getattr(source, "profile", "") or "?",
+                )
+                return (
+                    f"⛔ /{canonical_cmd} is unavailable without profile "
+                    "policy context."
+                )
+        policy = _policy_for_source(policy_cfg, source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
         logger.info(
@@ -23365,7 +23607,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "5. /topic <id> inside a topic restores an old session into it."
         )
 
-    async def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
+    async def _disable_telegram_topic_mode_for_chat(
+        self, source: SessionSource, *, actor_user_id: str
+    ) -> str:
         """Cleanly disable topic mode for a chat via /topic off."""
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
@@ -23377,7 +23621,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             currently_enabled = await self._session_db.is_telegram_topic_mode_enabled(
                 chat_id=chat_id,
-                user_id=str(source.user_id or ""),
+                user_id=actor_user_id,
             )
         except Exception:
             currently_enabled = False
@@ -23402,7 +23646,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
 
-    async def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
+    async def _telegram_topic_root_status_message(
+        self, source: SessionSource, *, actor_user_id: Optional[str] = None
+    ) -> str:
         lines = [
             "Telegram multi-session topics are enabled.",
             "",
@@ -23414,7 +23660,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             sessions = await self._session_db.list_unlinked_telegram_sessions_for_user(
                 chat_id=str(source.chat_id),
-                user_id=str(source.user_id),
+                user_id=str(actor_user_id or source.user_id),
                 limit=10,
             )
         except Exception:
@@ -23448,9 +23694,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ])
         return "\n".join(lines)
 
-    async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
+    async def _restore_telegram_topic_session(
+        self,
+        event: MessageEvent,
+        raw_session_id: str,
+        *,
+        actor_user_id: Optional[str] = None,
+    ) -> str:
         """Restore an existing Telegram-owned Hermes session into this topic."""
         source = event.source
+        # Direct callers may omit the actor; rehydrate it from the event so a
+        # shared routing source still resolves the real sender. No identity
+        # anywhere fails closed at the ownership check below.
+        actor_user_id = str(
+            actor_user_id
+            or getattr(event, "user_id", None)
+            or source.user_id
+            or ""
+        )
         session_id = await self._session_db.resolve_session_id(raw_session_id.strip())
         if not session_id:
             return f"Session not found: {raw_session_id.strip()}"
@@ -23460,7 +23721,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return f"Session not found: {raw_session_id.strip()}"
         if str(session.get("source") or "") != "telegram":
             return "That session is not a Telegram session and cannot be restored into this topic."
-        if str(session.get("user_id") or "") != str(source.user_id):
+        if str(session.get("user_id") or "") != actor_user_id:
             return "That session does not belong to this Telegram user."
 
         linked = await self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
@@ -23477,7 +23738,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._session_db.bind_telegram_topic(
                 chat_id=str(source.chat_id),
                 thread_id=str(source.thread_id),
-                user_id=str(source.user_id),
+                user_id=actor_user_id,
                 session_key=session_key,
                 session_id=session_id,
                 managed_mode="restored",

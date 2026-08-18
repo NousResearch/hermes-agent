@@ -902,9 +902,11 @@ class TelegramAdapter(BasePlatformAdapter):
             if self.config.extra.get("base_url")
             else 20 * 1024 * 1024
         )
-        # Interactive model picker state per chat
-        self._model_picker_state: Dict[str, dict] = {}
-        self._choice_picker_state: Dict[str, dict] = {}
+        # Model pickers are bound to their concrete Telegram message. A chat
+        # can contain independent pickers in multiple forum topics, so chat_id
+        # alone is not a safe identity.
+        self._model_picker_state: Dict[tuple[str, str], dict] = {}
+        self._choice_picker_state: Dict[tuple[str, str], dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -1206,17 +1208,38 @@ class TelegramAdapter(BasePlatformAdapter):
         if not normalized_user_id:
             return False
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
+        normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+        if normalized_chat_type == "private":
+            normalized_chat_type = "dm"
+        elif normalized_chat_type == "supergroup":
+            normalized_chat_type = "forum" if thread_id is not None else "group"
+
+        auth_fn = getattr(self, "_authorization_check", None)
         if callable(auth_fn):
             try:
-                from gateway.session import SessionSource
+                return bool(
+                    auth_fn(
+                        normalized_user_id,
+                        normalized_chat_type,
+                        str(chat_id or normalized_user_id),
+                    )
+                )
+            except Exception:
+                logger.debug(
+                    "[Telegram] Explicit callback authorization failed for user %s",
+                    normalized_user_id,
+                    exc_info=True,
+                )
 
-                normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-                if normalized_chat_type == "private":
-                    normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
+        # Backward-compatible single-profile/test seam. Multiplex production
+        # handlers are closures and therefore rely on the explicit callback
+        # above; older bound handlers can still expose the same authoritative
+        # runner check rather than dropping straight to the env-only fallback.
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        runner_auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(runner_auth_fn):
+            try:
+                from gateway.session import SessionSource
 
                 source = SessionSource(
                     platform=Platform.TELEGRAM,
@@ -1226,10 +1249,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     user_name=str(user_name).strip() if user_name else None,
                     thread_id=str(thread_id) if thread_id is not None else None,
                 )
-                return bool(auth_fn(source))
+                return bool(runner_auth_fn(source))
             except Exception:
                 logger.debug(
-                    "[Telegram] Falling back to env-only callback auth for user %s",
+                    "[Telegram] Bound-runner callback authorization failed for user %s",
                     normalized_user_id,
                     exc_info=True,
                 )
@@ -6506,9 +6529,27 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             )
 
-            # Store picker state keyed by chat_id
-            self._model_picker_state[str(chat_id)] = {
+            sent_thread_id = getattr(msg, "message_thread_id", thread_id)
+            bound_thread_id = (
+                str(sent_thread_id) if sent_thread_id is not None else None
+            )
+            owner_user_id = str(
+                (metadata or {}).get("picker_user_id") or ""
+            ).strip()
+            state_key = (str(chat_id), str(msg.message_id))
+
+            # A newer picker for the same session makes the older message
+            # stale. Pickers for other topic/session keys in the same chat
+            # remain independently usable.
+            if session_key:
+                for old_key, old_state in list(self._model_picker_state.items()):
+                    if old_state.get("session_key") == session_key:
+                        self._model_picker_state.pop(old_key, None)
+
+            self._model_picker_state[state_key] = {
                 "msg_id": msg.message_id,
+                "thread_id": bound_thread_id,
+                "owner_user_id": owner_user_id,
                 "providers": providers,
                 "session_key": session_key,
                 "on_model_selected": on_model_selected,
@@ -6576,8 +6617,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             )
 
-            self._choice_picker_state[str(chat_id)] = {
+            sent_thread_id = getattr(msg, "message_thread_id", thread_id)
+            bound_thread_id = (
+                str(sent_thread_id) if sent_thread_id is not None else None
+            )
+            owner_user_id = str(
+                (metadata or {}).get("picker_user_id") or ""
+            ).strip()
+            state_key = (str(chat_id), str(msg.message_id))
+            if session_key:
+                for old_key, old_state in list(self._choice_picker_state.items()):
+                    if old_state.get("session_key") == session_key:
+                        self._choice_picker_state.pop(old_key, None)
+
+            self._choice_picker_state[state_key] = {
                 "msg_id": msg.message_id,
+                "thread_id": bound_thread_id,
+                "owner_user_id": owner_user_id,
                 "choices": choices,
                 "session_key": session_key,
                 "on_choice_selected": on_choice_selected,
@@ -6587,12 +6643,48 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_choice_picker failed: %s", self.name, _redact_telegram_error_text(e))
             return SendResult(success=False, error=_redact_telegram_error_text(e))
 
+    @staticmethod
+    def _bound_picker_callback_state(query, chat_id: str, states: dict) -> tuple:
+        """Resolve picker state only for the exact message, topic, and actor."""
+        query_message = getattr(query, "message", None)
+        query_message_id = getattr(query_message, "message_id", None)
+        if query_message_id is None:
+            return None, None, "expired"
+
+        state_key = (str(chat_id), str(query_message_id))
+        state = states.get(state_key)
+        if not state:
+            return state_key, None, "expired"
+
+        actual_thread_id = getattr(query_message, "message_thread_id", None)
+        actual_thread_id = (
+            str(actual_thread_id) if actual_thread_id is not None else None
+        )
+        if (
+            str(state.get("msg_id")) != str(query_message_id)
+            or state.get("thread_id") != actual_thread_id
+            or not str(state.get("session_key") or "").strip()
+        ):
+            return state_key, None, "expired"
+
+        owner_user_id = str(state.get("owner_user_id") or "").strip()
+        query_user = getattr(query, "from_user", None)
+        actor_user_id = str(getattr(query_user, "id", "") or "").strip()
+        if not owner_user_id or actor_user_id != owner_user_id:
+            return state_key, None, "unauthorized"
+        return state_key, state, None
+
     async def _handle_choice_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
         """Handle choice picker button taps (cp:<index>)."""
-        state = self._choice_picker_state.get(chat_id)
-        if not state:
+        state_key, state, binding_error = self._bound_picker_callback_state(
+            query, chat_id, self._choice_picker_state
+        )
+        if binding_error == "unauthorized":
+            await query.answer(text="⛔ You are not authorized to change this setting.")
+            return
+        if not state or state_key is None:
             await query.answer(text="Picker expired — run the command again.")
             return
 
@@ -6643,7 +6735,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass
         await query.answer()
-        self._choice_picker_state.pop(chat_id, None)
+        self._choice_picker_state.pop(state_key, None)
 
     _MODEL_PAGE_SIZE = 8
 
@@ -6752,13 +6844,85 @@ class TelegramAdapter(BasePlatformAdapter):
 
         return InlineKeyboardMarkup(rows), page_meta["page_info"]
 
+    def _model_picker_callback_actor_source(self, query):
+        """Build an actor-bearing source for model-picker authorization only."""
+        from gateway.session import SessionSource
+
+        user = getattr(query, "from_user", None)
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        user_id = str(getattr(user, "id", "") or "").strip()
+        chat_id = str(getattr(message, "chat_id", "") or "").strip()
+        if not user_id or not chat_id or chat is None:
+            return None
+
+        chat_type = str(getattr(chat, "type", "dm") or "dm").strip().lower()
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            chat_type = "forum" if thread_id_raw is not None else "group"
+        user_name = (
+            str(
+                getattr(user, "username", "")
+                or getattr(user, "full_name", "")
+                or getattr(user, "first_name", "")
+                or ""
+            ).strip()
+            or None
+        )
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=str(thread_id_raw) if thread_id_raw is not None else None,
+        )
+
+    def _is_model_picker_callback_authorized(self, query) -> bool:
+        """Apply Telegram intake auth and the runner's /model slash policy."""
+        source = self._model_picker_callback_actor_source(query)
+        if source is None:
+            return False
+        if not self._is_callback_user_authorized(
+            source.user_id,
+            chat_id=source.chat_id,
+            chat_type=source.chat_type,
+            thread_id=source.thread_id,
+            user_name=source.user_name,
+        ):
+            return False
+
+        slash_check = getattr(self, "_slash_access_check", None)
+        if not callable(slash_check):
+            return False
+        try:
+            return slash_check(source, "model") is None
+        except Exception:
+            logger.debug("[Telegram] Model picker slash-access check failed", exc_info=True)
+            return False
+
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
         """Handle model picker inline keyboard callbacks (mp:/mm:/mc:/mb:/mx:/mg:)."""
-        state = self._model_picker_state.get(chat_id)
-        if not state:
+        state_key, state, binding_error = self._bound_picker_callback_state(
+            query, chat_id, self._model_picker_state
+        )
+        if binding_error == "unauthorized":
+            await query.answer(text="⛔ You are not authorized to change this setting.")
+            return
+        if not state or state_key is None:
             await query.answer(text="Picker expired — use /model again.")
+            return
+
+        # Inline callbacks bypass normal MessageEvent dispatch, so reconstruct
+        # the tapping actor and apply both Telegram authorization and the exact
+        # /model slash-command policy before navigation or final selection.
+        # Missing callback identity and unavailable policy context fail closed.
+        if not self._is_model_picker_callback_authorized(query):
+            await query.answer(text="⛔ You are not authorized to change this setting.")
             return
 
         try:
@@ -6919,7 +7083,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(
                 text="Switch failed." if switch_failed else "Model switched!"
             )
-            self._model_picker_state.pop(chat_id, None)
+            self._model_picker_state.pop(state_key, None)
 
         elif data.startswith("mm:"):
             # --- Model selected: perform the switch ---
@@ -6972,6 +7136,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="Confirm model selection")
                 return
 
+            # A newer picker for this session may have been sent while the
+            # warning lookup ran off-loop. Do not execute a stale closure.
+            if self._model_picker_state.get(state_key) is not state:
+                await query.answer(text="Picker expired — use /model again.")
+                return
+
             switch_failed = False
             try:
                 result_text = await callback(chat_id, model_id, provider_slug)
@@ -7002,7 +7172,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             # Clean up state
-            self._model_picker_state.pop(chat_id, None)
+            self._model_picker_state.pop(state_key, None)
 
         elif data.startswith("mpg:"):
             # --- Provider group selected: show member providers ---
@@ -7076,7 +7246,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         elif data == "mx":
             # --- Cancel ---
-            self._model_picker_state.pop(chat_id, None)
+            self._model_picker_state.pop(state_key, None)
             await query.edit_message_text(
                 text="Model selection cancelled.",
                 reply_markup=None,
@@ -9179,6 +9349,24 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         return True
 
+    def _is_bare_bot_command(self, message: Message) -> bool:
+        """Return whether Telegram marked a slash command with no @bot target.
+
+        Telegram emits at most one ``bot_command`` entity, covering the
+        leading command token of a command message — so consulting the first
+        match is sufficient.
+        """
+        text = getattr(message, "text", None) or ""
+        for entity in getattr(message, "entities", None) or []:
+            if str(getattr(entity, "type", "")) != "bot_command":
+                continue
+            try:
+                token = text[entity.offset : entity.offset + entity.length]
+            except (AttributeError, TypeError):
+                continue
+            return token.startswith("/") and "@" not in token
+        return False
+
     def _telegram_group_observe_shared_source(self, source):
         """Return a chat/topic-scoped source for observed Telegram group context."""
         return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
@@ -9215,15 +9403,14 @@ class TelegramAdapter(BasePlatformAdapter):
         observe_prompt = self._telegram_group_observe_channel_prompt()
         channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
         if event.message_type == MessageType.COMMAND:
-            # Commands must retain the original source (with user_id) so
-            # slash-access control (_check_slash_access) can identify the
-            # sender.  Replacing the source with an anonymised shared source
-            # (user_id=None) causes admin-only commands like /new to be
-            # denied even when the sender is an admin, because
-            # SlashAccessPolicy.is_admin(None) is always False.
-            # Still inject channel_prompt for group context.
+            # Route commands through the same shared source as observed and
+            # addressed group turns. The actual sender remains on
+            # MessageEvent.user_id/user_name for slash access control; keeping
+            # it on SessionSource would make /new, /status, etc. target a
+            # per-user shadow session instead of the visible group transcript.
             return dataclasses.replace(
                 event,
+                source=shared_source,
                 channel_prompt=channel_prompt,
             )
         return dataclasses.replace(
@@ -9554,6 +9741,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._telegram_is_free_response_topic(message):
             return True
         if not self._telegram_require_mention():
+            return True
+        # In an explicitly allowed observe/shared group, bare Telegram slash
+        # commands target this bot just like /command@this_bot. Foreign-bot
+        # commands were rejected by the exclusive-mention gate above. Keeping
+        # this exception scoped to observe mode preserves legacy per-user group
+        # trigger behavior everywhere else.
+        if (
+            is_command
+            and self._telegram_observe_unmentioned_group_messages()
+            and chat_id_str in self._telegram_observe_allowed_chats()
+            and self._is_bare_bot_command(message)
+        ):
             return True
         if self._is_reply_to_bot(message):
             return True
@@ -10628,6 +10827,8 @@ class TelegramAdapter(BasePlatformAdapter):
         return MessageEvent(
             text=message.text or "",
             message_type=msg_type,
+            user_id=source.user_id,
+            user_name=source.user_name,
             source=source,
             raw_message=message,
             message_id=str(message.message_id),

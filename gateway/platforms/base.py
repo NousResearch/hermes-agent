@@ -3012,6 +3012,11 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Runner-owned slash-command policy boundary for adapter-native
+        # interactions (for example Telegram inline-keyboard callbacks) that do
+        # not pass through normal MessageEvent dispatch.  Adapters must treat a
+        # missing checker as denial for stateful actions.
+        self._slash_access_check: Optional[Callable[[Any, str], Optional[str]]] = None
         # Optional gateway-supplied fan-out for platform-native emoji
         # reaction events (see ``set_reaction_handler``).
         self._reaction_handler: Optional[
@@ -3641,6 +3646,18 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_slash_access_check(
+        self,
+        check: Optional[Callable[[Any, str], Optional[str]]],
+    ) -> None:
+        """Install the runner-owned slash-policy checker for native callbacks.
+
+        The checker receives an actor-bearing ``SessionSource`` and a canonical
+        command name.  It returns ``None`` when allowed and a denial string
+        otherwise, matching ``GatewayRunner._check_slash_access``.
+        """
+        self._slash_access_check = check
 
     def set_platform_event_handler(
         self,

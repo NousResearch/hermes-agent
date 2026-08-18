@@ -8,15 +8,17 @@ command, so picker and typed arguments can never diverge.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaml
 
 import gateway.run as gateway_run
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_event(text="/reasoning", platform=Platform.TELEGRAM, user_id="12345", chat_id="67890"):
@@ -26,7 +28,7 @@ def _make_event(text="/reasoning", platform=Platform.TELEGRAM, user_id="12345", 
         chat_id=chat_id,
         user_name="testuser",
     )
-    return MessageEvent(text=text, source=source)
+    return MessageEvent(text=text, source=source, user_id=user_id)
 
 
 class _PickerAdapter:
@@ -86,6 +88,7 @@ class TestReasoningChoicePicker:
         assert values[0] == "none"
         assert values[1:1 + len(VALID_REASONING_EFFORTS)] == list(VALID_REASONING_EFFORTS)
         assert values[-3:] == ["reset", "show", "hide"]
+        assert call["metadata"]["picker_user_id"] == "12345"
 
 
     @pytest.mark.asyncio
@@ -143,5 +146,89 @@ class TestFastChoicePicker:
         assert runner._service_tier == "priority"
         assert runner._session_service_tier_overrides
         assert not (tmp_path / "config.yaml").exists()
+
+
+def _telegram_choice_query(
+    *, user_id=111, message_id=42, thread_id=77, data="cp:0"
+):
+    return SimpleNamespace(
+        data=data,
+        message=SimpleNamespace(
+            chat_id=12345,
+            chat=SimpleNamespace(type="supergroup"),
+            message_id=message_id,
+            message_thread_id=thread_id,
+        ),
+        from_user=SimpleNamespace(id=user_id, first_name="Alice"),
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+
+
+async def _send_real_telegram_choice_picker(adapter, selected):
+    adapter._bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=42, message_thread_id=77)
+    )
+    result = await adapter.send_choice_picker(
+        chat_id="12345",
+        title="Choose mode",
+        choices=[{"value": "fast", "label": "Fast", "is_current": False}],
+        session_key="agent:main:telegram:thread:12345:77",
+        on_choice_selected=selected,
+        metadata={"thread_id": "77", "picker_user_id": "111"},
+    )
+    assert result.success is True
+
+
+class TestTelegramChoicePickerBinding:
+    @staticmethod
+    def _adapter():
+        adapter = TelegramAdapter(
+            PlatformConfig(enabled=True, token="test-token")
+        )
+        adapter._bot = AsyncMock()
+        adapter._authorization_check = lambda *_args: True
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_exact_message_topic_and_actor_executes_callback(self):
+        adapter = self._adapter()
+        selected = AsyncMock(return_value="Fast mode enabled")
+        await _send_real_telegram_choice_picker(adapter, selected)
+        query = _telegram_choice_query()
+
+        await adapter._handle_callback_query(
+            SimpleNamespace(callback_query=query), SimpleNamespace()
+        )
+
+        selected.assert_awaited_once_with("12345", "fast")
+        query.edit_message_text.assert_awaited_once()
+        assert ("12345", "42") not in adapter._choice_picker_state
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("query_kwargs", "expected"),
+        [
+            ({"message_id": 99}, "expired"),
+            ({"thread_id": 88}, "expired"),
+            ({"user_id": 222}, "not authorized"),
+        ],
+        ids=["wrong-message", "wrong-topic", "different-authorized-actor"],
+    )
+    async def test_mismatched_picker_identity_never_executes_callback(
+        self, query_kwargs, expected
+    ):
+        adapter = self._adapter()
+        selected = AsyncMock(return_value="Fast mode enabled")
+        await _send_real_telegram_choice_picker(adapter, selected)
+        query = _telegram_choice_query(**query_kwargs)
+
+        await adapter._handle_callback_query(
+            SimpleNamespace(callback_query=query), SimpleNamespace()
+        )
+
+        selected.assert_not_awaited()
+        query.edit_message_text.assert_not_awaited()
+        assert expected in query.answer.await_args.kwargs["text"].lower()
 
 

@@ -40,6 +40,17 @@ export function mediaKind(path: string): MediaKind {
   return mediaInfo(path)?.kind ?? 'file'
 }
 
+// Markdown is renderable content, not an opaque download: the preview rail
+// already knows how to render a `.md` file (rendered/source toggle), so the
+// MEDIA delivery path routes these to a preview instead of a download link.
+const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown', 'mdown', 'mkd'])
+
+export function isMarkdownDocumentPath(path: string): boolean {
+  const ext = path.split(/[?#]/, 1)[0]?.split('.').pop()?.toLowerCase()
+
+  return ext ? MARKDOWN_EXTENSIONS.has(ext) : false
+}
+
 export function mediaMime(path: string): string {
   return mediaInfo(path)?.mime ?? 'application/octet-stream'
 }

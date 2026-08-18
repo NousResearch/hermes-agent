@@ -23,6 +23,7 @@ import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
   isInlineMediaSrc,
+  isMarkdownDocumentPath,
   isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
@@ -255,6 +256,14 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
+    // A delivered markdown document is renderable content, not an opaque
+    // download: route it to the preview rail (which renders .md with a
+    // rendered/source toggle) instead of the download-link fallback that
+    // `mediaKind() === 'file'` would produce. (#84951)
+    if (isMarkdownDocumentPath(mediaPath)) {
+      return <PreviewAttachment source="tool-result" target={mediaPath} />
+    }
+
     return <MediaAttachment path={mediaPath} />
   }
 

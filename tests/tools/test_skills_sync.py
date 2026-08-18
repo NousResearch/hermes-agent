@@ -936,3 +936,69 @@ class TestUpdateBackupRecovery:
             result2 = sync_skills(quiet=True)
         assert "old-skill" in result2["updated"]
         assert result2["user_modified"] == []
+
+
+class TestCallTimeDirResolution:
+    """Regression for #65828: skills_sync bound SKILLS_DIR/MANIFEST_FILE/
+    HERMES_HOME at import, so a long-lived dashboard/TUI process serving a
+    console skills command for another profile resolved (and for
+    reset_bundled_skill DELETED) against whichever home was live at import.
+    The accessors must follow set_hermes_home_override() at call time, while
+    an explicitly patched module global (tests, _profile_scope retargeting)
+    still wins.
+    """
+
+    def test_accessors_follow_hermes_home_override(self, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import tools.skills_sync as ss
+
+        profile_home = tmp_path / "profiles" / "research"
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            assert ss._hermes_home() == profile_home
+            assert ss._skills_dir() == profile_home / "skills"
+            assert ss._manifest_file() == profile_home / "skills" / ".bundled_manifest"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_explicit_module_patch_wins_over_override(self, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import tools.skills_sync as ss
+
+        patched = tmp_path / "patched-skills"
+        token = set_hermes_home_override(str(tmp_path / "other-profile"))
+        try:
+            with patch("tools.skills_sync.SKILLS_DIR", patched):
+                assert ss._skills_dir() == patched
+                # MANIFEST_FILE unpatched -> derives from the patched skills dir.
+                assert ss._manifest_file() == patched / ".bundled_manifest"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_rmtree_guard_anchors_on_overridden_profile(self, tmp_path):
+        """The #48200 strict-child rmtree guard must anchor on the OVERRIDDEN
+        profile's skills root. Under the stale import-time binding the guard
+        was computed against the wrong home (#65828's sharpest edge): a
+        legitimate delete in the scoped profile would be refused, and a stale
+        path under the import-time home would pass the guard."""
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import tools.skills_sync as ss
+
+        profile_home = tmp_path / "profiles" / "worker"
+        victim = profile_home / "skills" / "doomed-skill"
+        victim.mkdir(parents=True)
+        (victim / "SKILL.md").write_text("---\nname: doomed-skill\n---\n", encoding="utf-8")
+
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            # Allowed: strict child of the overridden profile's skills root.
+            ss._rmtree_writable(victim)
+            assert not victim.exists()
+
+            # Refused: a path under the import-time home is OUTSIDE the
+            # overridden profile's skills root now.
+            foreign = ss._SKILLS_DIR_AT_IMPORT / "some-skill"
+            with pytest.raises(ValueError):
+                ss._rmtree_writable(foreign)
+        finally:
+            reset_hermes_home_override(token)

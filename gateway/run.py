@@ -1234,16 +1234,24 @@ def _prepare_resume_pending_message(
     *,
     interactive: bool = True,
 ) -> tuple[str, str]:
-    """Return the recovery message and the identical persisted user text.
+    """Return the recovery message and the user text to persist.
 
-    Resume turns replace the empty startup event with a recovery note before
-    entering the agent. Persist that note too, rather than the original empty
-    event, so the durable transcript matches what the model received.
+    Resume turns replace the startup event's text with a recovery note before
+    entering the agent. When the original message is empty (the synthesized
+    auto-resume turn), persist the note too — persisting the empty string
+    left a blank user row in state.db that the pre-call sanitizer re-healed
+    on every later call forever (#86580). When the user sent REAL text while
+    the resume was pending, keep persisting their clean words: the transcript
+    stays scaffold-free (the model still receives the wrapped note), and a
+    non-empty row never trips the sanitizer.
     """
     recovery_message = build_resume_recovery_note(
         reason, message or "", interactive=interactive,
     )
-    return recovery_message, recovery_message
+    persist_message = (
+        message if isinstance(message, str) and message.strip() else recovery_message
+    )
+    return recovery_message, persist_message
 
 
 # Assistant-message fields that must survive transcript replay so multi-turn

@@ -326,6 +326,30 @@ class TestResumePendingSystemNote:
         assert persisted == message
         assert persisted != ""
 
+    def test_whitespace_only_message_also_persists_the_note(self):
+        """A whitespace-only startup event is as blank as an empty one —
+        persisting it verbatim would recreate the sanitizer loop (#86580)."""
+        message, persisted = _prepare_resume_pending_message(
+            "shutdown_timeout", "   ", interactive=True
+        )
+
+        assert persisted == message
+        assert persisted.strip()
+
+    def test_real_user_text_persists_clean_not_the_scaffolded_note(self):
+        """When the user typed real text while resume was pending, the durable
+        transcript keeps their clean words; only the MODEL sees the wrapped
+        recovery note (transcript stays scaffold-free)."""
+        message, persisted = _prepare_resume_pending_message(
+            "restart_timeout", "what were we doing?", interactive=True
+        )
+
+        assert persisted == "what were we doing?"
+        assert "[System note:" not in persisted
+        assert message != persisted
+        assert "what were we doing?" in message
+        assert "[System note:" in message
+
 
     def test_resume_pending_fires_without_tool_tail(self):
         """Key improvement over PR #9934: the restart-resume note fires

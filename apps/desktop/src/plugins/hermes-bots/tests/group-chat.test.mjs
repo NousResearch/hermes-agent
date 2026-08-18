@@ -18,6 +18,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
   const calls = []
   const clarifyResponds = []
   const approvalResponds = []
+  const requests = []
   const sessions = new Map()
   const runtimeToStored = new Map()
   const titleToStored = new Map()
@@ -45,6 +46,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } },
     host: {
       request: async (method, params) => {
+        requests.push({ method, params })
         if (method === 'session.create') {
           sessionSequence += 1
           const stored = `sid-${params.profile}-${sessionSequence}`
@@ -124,7 +126,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, scheduleGroupChatServerSync, disbandGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -132,7 +134,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
     register: () => undefined
   })
-  return { ...context.__gc, approvalResponds, calls, clarifyResponds, host: context.host, sessions, storageWrites }
+  return { ...context.__gc, approvalResponds, calls, clarifyResponds, host: context.host, requests, sessions, storageWrites }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }, { name: 'ops', title: 'The Ops' }]
@@ -444,6 +446,140 @@ test('log trimming keeps watermarks consistent', () => {
   assert.equal(trimmed.length, 96)
   assert.equal(watermarks.research, 150 - 104)
   assert.equal(watermarks.builder, 0)
+})
+
+test('group room messages and members mirror through bounded gateway profile metadata', async () => {
+  const gc = load(() => '(pass)')
+  const members = [
+    { name: 'research', handle: 'research' },
+    { name: 'builder', handle: 'builder' }
+  ]
+  gc.sendToGroupChat('Research', members, 'What changed?')
+  for (let i = 0; i < 200 && (gc.$groupChats.get().Research || {}).running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  const configure = gc.requests.filter(call => call.method === 'profiles.configure').at(-1)
+  assert.ok(configure, 'room updates are mirrored to the gateway')
+  assert.equal(configure.params.name, 'default')
+  const envelope = configure.params.ui_meta['hermes-bots-groups']
+  assert.equal(envelope.version, 1)
+  assert.equal(envelope.rooms.Research.log[0].text, 'What changed?')
+  assert.equal(JSON.stringify(envelope.rooms.Research.members.map(member => member.name)), JSON.stringify(['research', 'builder']))
+  assert.ok(gc.groupChatGatewayJsonSize(envelope) <= 48000)
+})
+
+test('group gateway mirror is size bounded and favors recent messages', () => {
+  const gc = load(() => '(pass)')
+  const long = 'x'.repeat(5000)
+  const snapshot = gc.groupChatSyncSnapshot({
+    Large: {
+      log: Array.from({ length: 100 }, (_, index) => ({
+        from: { kind: index % 2 ? 'member' : 'user', name: index % 2 ? 'research' : 'You' },
+        text: `${index}:${long}`,
+        at: index
+      }))
+    }
+  })
+
+  assert.ok(gc.groupChatGatewayJsonSize(snapshot) <= 48000)
+  assert.ok(snapshot.rooms.Large.log.length <= 16)
+  assert.match(snapshot.rooms.Large.log.at(-1).text, /^99:/)
+  assert.ok(snapshot.rooms.Large.log.at(-1).text.length <= 1200)
+})
+
+test('group gateway mirror preserves threads and budgets escaped Unicode', () => {
+  const gc = load(() => '(pass)')
+  const snapshot = gc.groupChatSyncSnapshot({
+    Unicode: {
+      log: Array.from({ length: 16 }, (_, index) => ({
+        from: { kind: 'member', name: 'research' },
+        text: `message ${index} ${'🧠'.repeat(1200)}`,
+        at: index,
+        thread: `thread-${index}`
+      }))
+    }
+  })
+
+  assert.ok(gc.groupChatGatewayJsonSize(snapshot) <= 48000)
+  assert.equal(snapshot.rooms.Unicode.log.at(-1).thread, 'thread-15')
+})
+
+test('empty runtime rooms are omitted from the gateway mirror', () => {
+  const gc = load(() => '(pass)')
+  const snapshot = gc.groupChatSyncSnapshot({
+    Disbanded: { log: [], members: [{ name: 'research' }] }
+  })
+
+  assert.deepEqual(Object.keys(snapshot.rooms), [])
+})
+
+test('an empty hydrate cannot erase a shared gateway room mirror', () => {
+  const gc = load(() => '(pass)')
+  const before = gc.requests.length
+
+  gc.scheduleGroupChatServerSync({})
+
+  assert.equal(gc.requests.length, before)
+})
+
+test('an explicit final-room disband may clear the gateway room mirror', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.scheduleGroupChatServerSync({}, { allowEmpty: true, deletedRooms: ['Research'] })
+  await new Promise(resolve => setImmediate(resolve))
+
+  const configure = gc.requests.filter(call => call.method === 'profiles.configure').at(-1)
+  assert.deepEqual(Object.keys(configure.params.ui_meta['hermes-bots-groups'].rooms), [])
+  assert.ok(configure.params.ui_meta['hermes-bots-groups'].deleted.Research > 0)
+})
+
+test('pull-before-push merge preserves disjoint rooms, messages, and members', () => {
+  const gc = load(() => '(pass)')
+  const merged = gc.mergeGroupChatSyncSnapshots(
+    {
+      version: 1,
+      rooms: {
+        Shared: {
+          log: [{ from: { kind: 'user', name: 'You' }, text: 'remote', at: 1, thread: 'one' }],
+          members: [{ name: 'research', handle: 'research' }]
+        },
+        RemoteOnly: {
+          log: [{ from: { kind: 'member', name: 'ops' }, text: 'kept', at: 2 }],
+          members: [{ name: 'ops' }]
+        }
+      }
+    },
+    {
+      version: 1,
+      rooms: {
+        Shared: {
+          log: [{ from: { kind: 'member', name: 'builder' }, text: 'local', at: 3, thread: 'one' }],
+          members: [{ name: 'builder', handle: 'builder' }]
+        }
+      }
+    }
+  )
+
+  assert.equal(JSON.stringify(merged.rooms.Shared.log.map(entry => entry.text)), JSON.stringify(['remote', 'local']))
+  assert.equal(JSON.stringify(merged.rooms.Shared.members.map(member => member.name)), JSON.stringify(['research', 'builder']))
+  assert.equal(merged.rooms.RemoteOnly.log[0].text, 'kept')
+})
+
+test('room deletion tombstone wins over stale history but not a later recreation', () => {
+  const gc = load(() => '(pass)')
+  const stale = gc.mergeGroupChatSyncSnapshots(
+    { rooms: { Research: { log: [{ from: { kind: 'user', name: 'You' }, text: 'old', at: 10 }] } } },
+    { rooms: {}, deleted: { Research: 20 } }
+  )
+  assert.equal(stale.rooms.Research, undefined)
+  assert.equal(stale.deleted.Research, 20)
+
+  const recreated = gc.mergeGroupChatSyncSnapshots(stale, {
+    rooms: { Research: { log: [{ from: { kind: 'user', name: 'You' }, text: 'new', at: 30 }] } }
+  })
+  assert.equal(recreated.rooms.Research.log[0].text, 'new')
+  assert.equal(recreated.deleted, undefined)
 })
 
 test('source contract: workspace + main-window door + prompt rules are wired', () => {

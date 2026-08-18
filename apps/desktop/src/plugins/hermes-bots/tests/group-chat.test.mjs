@@ -126,7 +126,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, scheduleGroupChatServerSync, disbandGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -564,6 +564,42 @@ test('pull-before-push merge preserves disjoint rooms, messages, and members', (
   assert.equal(JSON.stringify(merged.rooms.Shared.log.map(entry => entry.text)), JSON.stringify(['remote', 'local']))
   assert.equal(JSON.stringify(merged.rooms.Shared.members.map(member => member.name)), JSON.stringify(['research', 'builder']))
   assert.equal(merged.rooms.RemoteOnly.log[0].text, 'kept')
+})
+
+test('gateway projection hydrates a cold Desktop without dropping local runtime fields', () => {
+  const gc = load(() => '(pass)')
+  const merged = gc.mergeRemoteGroupChatSnapshotIntoRooms(
+    {
+      rooms: {
+        Shared: {
+          log: [
+            { from: { kind: 'user', name: 'You' }, text: 'remote question', at: 10, thread: 'thread-1' },
+            { from: { kind: 'member', name: 'research' }, text: 'remote answer', at: 20, thread: 'thread-1' }
+          ],
+          members: [{ name: 'research', connectionId: 'mini', sourceScoped: true }]
+        }
+      }
+    },
+    {
+      Local: {
+        log: [{ from: { kind: 'user', name: 'You' }, text: 'local', at: 5, thread: 'thread-local' }],
+        watermarks: { builder: 1 },
+        sessions: { builder: 'session-1' },
+        members: [{ name: 'builder' }],
+        epoch: 7,
+        running: true
+      }
+    }
+  )
+
+  assert.equal(
+    JSON.stringify(merged.Shared.log.map(entry => entry.text)),
+    JSON.stringify(['remote question', 'remote answer'])
+  )
+  assert.equal(merged.Shared.members[0].remoteSource, true)
+  assert.equal(merged.Local.sessions.builder, 'session-1')
+  assert.equal(merged.Local.epoch, 7)
+  assert.equal(merged.Local.running, true)
 })
 
 test('room deletion tombstone wins over stale history but not a later recreation', () => {

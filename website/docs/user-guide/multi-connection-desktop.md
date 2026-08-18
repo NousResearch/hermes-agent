@@ -17,20 +17,24 @@ app talking to several machines.
 
 ## Where to find it
 
-Three doors lead to the same pane:
+Everything lives on the unified **Settings → Gateways** page (older builds had
+separate **Gateway** and **Connections** pages; legacy Connections deep links
+redirect there). Three doors lead to it:
 
-- **Settings → Connections** — the pane itself (**Cmd/Ctrl+,**, then
-  **Connections** in the settings nav).
+- **Settings → Gateways** — the page itself (**Cmd/Ctrl+,**, then
+  **Gateways** in the settings nav). The connections registry is a section
+  of that page, below the connection-mode and per-profile override controls.
 - **The sidebar profile rail** — the plug button at the right end of the rail
   (tooltip: **"Connect another Hermes gateway…"**) deep-links straight to
-  Settings → Connections. It is always visible, even before you have created
+  the Gateways page. It is always visible, even before you have created
   a second profile or a second connection.
-- **The command palette** — **Cmd/Ctrl+K**, then type *Connections* (also
-  matches *add gateway*, *remote*, *ssh*, *instances*).
+- **The command palette** — **Cmd/Ctrl+K**, then type *Gateways* (also
+  matches *connections*, *add gateway*, *remote*, *ssh*, *instances*).
 
 ## The connection registry
 
-**Settings → Connections** manages a named registry of agent sources. The
+The registry section of **Settings → Gateways** manages a named list of agent
+sources. The
 pane's intro says it plainly: *"Register every place your agents live — this
 device, remote gateways on your network, and Hermes Cloud instances. All of
 them are stored here."* Each entry is a *connection*:
@@ -58,19 +62,29 @@ Rules worth knowing:
 - **Test** probes the connection's own HTTP *and* WebSocket legs, so a pass
   (the *"Reachable"* toast) means chat will actually work — not just that the
   host pinged.
-- Cloud entries come from the Hermes Cloud sign-in/discovery flow
-  (Settings → Gateway), not a hand-typed URL — which is why the add-connection
-  editor only offers **Remote gateway** and **SSH**.
+- **Duplicates are rejected when you save**: there is only ever one **local**
+  entry; **remote** and **cloud** entries are deduplicated on the normalized
+  URL (trimmed, trailing slashes stripped, lowercased — and across both
+  kinds, so a cloud entry and a remote entry can't point at the same URL);
+  **SSH** entries are deduplicated on the normalized `user@host:port` plus
+  remote profile.
+- Cloud entries normally come from the Hermes Cloud sign-in/discovery flow at
+  the top of the Gateways page — the **Hermes Cloud** kind in the add-connection
+  editor points you there.
 
 As the pane's own caption notes: *"Chats and the agent roster follow the
-source you pick; the app-managed window backend is still chosen in
-Settings → Gateway."*
+source you pick; the app-managed window backend is still chosen by the
+connection-mode controls above."*
 
 ## Adding a connection, step by step
 
-1. Open **Settings → Connections** (or click the plug in the profile rail).
+1. Open **Settings → Gateways** and scroll to the connections registry (or
+   click the plug in the profile rail).
 2. Click **Add connection**.
-3. Pick the kind: **Remote gateway** or **SSH**.
+3. Pick the kind: **Local**, **Hermes Cloud**, **Remote gateway**, or **SSH**.
+   (**Local** is disabled while the app-managed local entry exists — which is
+   almost always; **Hermes Cloud** directs you to the cloud sign-in/discovery
+   flow above.)
 4. Fill the fields:
    - **Name** — required, unique; the "device name" shown everywhere this
      instance appears (placeholder: `Homelab`). Max 64 characters.
@@ -108,7 +122,8 @@ and Tailscale guidance.
 
 The first launch of a registry-capable build imports your existing settings
 automatically: the global connection mode and any per-profile overrides from
-Settings → Gateway become named registry entries (deduplicated by URL/host).
+the old Gateway settings become named registry entries (deduplicated by
+URL/host).
 The legacy settings file is left untouched, so older builds on the same
 machine keep working. If a migrated name collided, it was suffixed
 (`Homelab 2`).
@@ -153,7 +168,7 @@ Switching agents is the same gesture as switching profiles:
 
 ## Updating every instance at once
 
-**Settings → Connections → Update all instances** (shown once more than one
+**Settings → Gateways → Update all instances** (shown once more than one
 connection is registered) dispatches `hermes update` to every eligible
 connection in parallel:
 
@@ -178,7 +193,7 @@ with their own message, per row.
   refreshed automatically before expiry.
 - **Keyring-less Linux.** On a Linux session without a usable keychain the
   app cannot encrypt the token; saving one raises an explicit opt-in dialog
-  (the same consent flow as Settings → Gateway) before it will store the
+  before it will store the
   token in plain text.
 - **The registry file** (`connections.json` under the app's user-data
   directory) holds labels, URLs, and hosts — secrets only ever appear inside

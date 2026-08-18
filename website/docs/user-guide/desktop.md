@@ -151,6 +151,17 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 
 First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
 
+#### Per-profile settings: the "Applies to" scope
+
+When you have two or more [profiles](./profiles.md), the config-backed settings pages — **Model, Workspace, Safety, Memory & Context, Voice, Chat, Advanced, and Tools & Keys** — and the **Messaging** overlay show a shared **Applies to** chip row at the top. It selects which profile your edits target:
+
+- The default selection **follows the active profile**, which behaves exactly as before — edit the profile you're using.
+- Pick another profile to view and edit *its* settings without switching the whole app; the selection persists as you move between settings pages.
+- Switching the app's active profile resets the selector, so edits can't silently keep landing on a previously selected profile.
+- With fewer than two profiles the chip row is hidden entirely.
+
+(The Gateways page handles profiles differently — via its **Per-profile overrides** subsection — and the Capabilities and Scheduled Jobs views have their own scope selectors.)
+
 ### Management panes
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
@@ -172,6 +183,12 @@ pet), its own canonical **Bot Chat** conversation, and its own **Routines**
 Name / Title / Description plus an Advanced disclosure with the full
 capabilities surface (model, SOUL, skills, toolsets, MCP servers) — group
 them into sections, and open group chats where several bots deliberate.
+Group chats appear as standalone Discord-style rows in the roster — stacked
+member avatars, member count, a preview of the latest room line, and the
+"needs you" badge — interleaved with the bot rows in the same pin+recency
+ordering. Clicking a group row opens the room as a tab that takes over the
+**main chat window** (older desktop builds fall back to opening it inside the
+bots side panel).
 
 Bots message each other: type `@researcher have a look at this` in any chat
 and the active bot hands the message off and reports back, and bots reach
@@ -253,24 +270,26 @@ The packaged app ships the Electron shell and a native React chat surface. On fi
 
 By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale.
 
-**Settings → Gateway → Connection mode** offers the alternatives to the local gateway:
+Everything connection-related lives on one settings page: **Settings → Gateways**. (Older builds split this across separate **Gateway** and **Connections** pages — those are now unified, and old `?tab=connections` deep links redirect to the unified page.)
+
+**Settings → Gateways → Connection mode** offers the alternatives to the local gateway:
 
 - **Remote gateway** — enter the URL of a `hermes serve` backend you run yourself and sign in. This is the mode the rest of this section walks through.
 - **Hermes Cloud** — sign in once to Hermes Cloud and pick from the agents on your account; no URL to paste. The app discovers your agents (with an organization picker if your account spans several orgs), and connecting to one switches the session over automatically. The status bar shows the cloud connection while it's active.
 
-Connection modes are configured **per profile** — a per-profile override can point one profile at a remote or cloud backend while others stay local (**Use default gateway** removes an override).
+Connection modes are configured **per profile** — the page's **Per-profile overrides** subsection lists the default connection and each named profile, with an **Edit** affordance per row, so one profile can point at a remote or cloud backend while others stay local (**Use default gateway** removes an override).
 
-### Settings → Connections: the multi-connection registry
+### The multi-connection registry
 
-Alongside the per-profile connection mode above, **Settings → Connections** manages a named registry of every agent source the app knows about — the local runtime, any number of remote gateways (LAN, Tailscale, internet), Hermes Cloud instances, and SSH hosts — all persisted together in one place. You can jump there from the plug button at the right end of the sidebar profile rail (**Connect another Hermes gateway…**) or via **⌘K → Connections**. The full guide, including the union agent roster, `@name-device` handles, fleet-wide updates, and the plugin SDK surface, is at [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md).
+Further down the same **Settings → Gateways** page, the connections registry manages a named list of every agent source the app knows about — the local runtime, any number of remote gateways (LAN, Tailscale, internet), Hermes Cloud instances, and SSH hosts — all persisted together in one place. You can jump there from the plug button at the right end of the sidebar profile rail (**Connect another Hermes gateway…**) or via **⌘K → Gateways**. The full guide, including the union agent roster, `@name-device` handles, fleet-wide updates, and the plugin SDK surface, is at [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md).
 
 - **Every connection needs a unique name** (a device name such as "Homelab" or "Work laptop"). When the same profile name exists on several registered sources, surfaces disambiguate it as `@profile-device` (e.g. `@research-homelab`).
-- **Add / edit / remove / test** connections from the panel. The local entry is managed by the app and cannot be removed. **Test** probes the connection's own HTTP and WebSocket legs directly.
+- **Add / edit / remove / test** connections from the panel. The **Add** flow offers all four kinds — **Local**, **Hermes Cloud**, **Remote gateway**, and **SSH** (the Local button is disabled while the app-managed local entry exists, and a hint points cloud adds at the sign-in/discovery flow above). The local entry is managed by the app and cannot be removed. **Test** probes the connection's own HTTP and WebSocket legs directly.
+- **Duplicates are rejected at save time**: only one **local** entry ever; remote and cloud entries are deduplicated on the normalized URL (trimmed, trailing slashes stripped, lowercased — across both kinds); SSH entries on the normalized `user@host:port` plus remote profile.
 - Existing settings are **imported automatically** the first time you run a build with the registry: your current global connection and any per-profile overrides become named entries. The legacy settings file is left untouched, so older builds keep working.
-- Cloud entries come from the Hermes Cloud sign-in/discovery flow above, not from a hand-typed URL.
-- Tokens are stored encrypted with the OS keyring (with the same explicit plain-text opt-in as Settings → Gateway on keyring-less Linux).
+- Tokens are stored encrypted with the OS keyring (with an explicit plain-text opt-in on keyring-less Linux).
 
-Side-by-side routing is live: each registered source dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** in the Connections panel dispatches `hermes update` to every eligible source at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
+Side-by-side routing is live: each registered source dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** on the Gateways page dispatches `hermes update` to every eligible source at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
 
 
 :::info The remote backend is a running `hermes serve` process
@@ -321,13 +340,13 @@ The backend reads and writes your `.env` (API keys, secrets) and can run agent c
 
 ### In the app
 
-**Settings → Gateway → Remote gateway:**
+**Settings → Gateways → Remote gateway:**
 
 1. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` work if you front it with a reverse proxy)
 2. **Sign in** — the app detects which provider the backend advertises and adapts the button. For a username/password backend it shows a **Sign in** button that opens a credential form (enter the credentials from step 1). For an OAuth backend it shows **Sign in with `<provider>`** (e.g. *Sign in with Nous Research*), which runs the provider's browser sign-in. Either way the app ends up with an authenticated session against the backend.
 3. **Save and reconnect** — switches the desktop shell onto the remote backend. The session refreshes automatically; you stay signed in across restarts when `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is set.
 
-You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in from the Gateway settings panel.
+You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in from the Gateways settings panel.
 
 :::note Per-profile remote hosts
 The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
@@ -352,6 +371,16 @@ hot-reloads every save. Manage installed plugins live in **Settings → Plugins*
 
 See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
 reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
+
+The **Agent plugins** section on the same Settings → Plugins page manages
+backend (agent-side) [plugins](./features/plugins.md) you installed — user,
+git, project, pip, and portable installs. Repo-bundled built-ins (platform
+adapters, provider plugins, and similar) are not listed there: they ship
+enabled by default and are configured from their own surfaces, so the section
+stays focused on what you added yourself. With two or more profiles the
+section also has its own **Applies to** selector, so you can list and toggle
+another profile's agent plugins without switching the whole app (the backend
+`plugins.manage` RPC accepts an optional `profile` parameter for this).
 
 ## Troubleshooting
 

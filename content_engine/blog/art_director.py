@@ -410,18 +410,17 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
     if not isinstance(brief, dict):
         return None
     style = str(brief.get("style", "")).strip()
-    if style not in STYLE_IDS:
+    if style:
         low = style.lower()
-        style = next((sid for sid in STYLE_IDS if sid in low or low in sid), "")
+        style = next((sid for sid in STYLE_IDS if sid == style or sid in low or low in sid), "")
         if not style:
             return None
     preferred_style = style
     hero = str(brief.get("hero_prompt", "")).strip()
-    if not hero:
-        return None
 
     selection_seed = _selection_seed(draft) if draft is not None else ""
     concept_plan = None
+    selected_candidate: Mapping[str, object] = {}
     if draft is not None:
         raw_candidates = brief.get("concept_candidates")
         if not isinstance(raw_candidates, list) or not raw_candidates:
@@ -435,14 +434,29 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
             )
         except ConceptPlanError:
             return None
+        selected_candidate = next(
+            (candidate for candidate in raw_candidates
+             if isinstance(candidate, Mapping) and candidate.get("candidate_id") == concept_plan.candidate_id),
+            {},
+        )
+        # Some providers place all rendering fields inside each candidate. Accept
+        # that equivalent shape, but still validate the selected style locally.
+        style = style or str(selected_candidate.get("style", "")).strip()
+        hero = hero or str(selected_candidate.get("hero_prompt", "")).strip()
+        low = style.lower()
+        style = next((sid for sid in STYLE_IDS if sid == style or sid in low or low in sid), "")
+        if not style or not hero:
+            return None
+        preferred_style = style
         # The scene and article select the rendering language. A specialist
         # candidate is a deliberate override; otherwise retain the validated
         # article-fit style supplied by the art director.
         style = concept_plan.specialist_skill or preferred_style
 
-    palette = str(brief.get("palette", "")).strip()
-    motif = str(brief.get("motif", "")).strip()
-    direction = str(brief.get("art_direction", "")).strip()
+    direction_source = {**selected_candidate, **brief}
+    palette = str(direction_source.get("palette", "")).strip()
+    motif = str(direction_source.get("motif", "")).strip()
+    direction = str(direction_source.get("art_direction", "")).strip()
     asset_layouts: dict[str, str] = {}
     if concept_plan is not None:
         asset_layouts = {scene.asset_key: scene.composition for scene in concept_plan.scenes}
@@ -454,9 +468,9 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
             layout_source["layout"] = STYLE_BY_ID.get(style, {}).get("layout", "")
             layout_source["layout_variants"] = []
         layout, layout_variants = _normalise_layout(layout_source, style)
-    text_policy = _normalise_text_policy(style, str(brief.get("text_policy", "")))
+    text_policy = _normalise_text_policy(style, str(direction_source.get("text_policy", "")))
 
-    raw_text = brief.get("text_elements") or []
+    raw_text = direction_source.get("text_elements") or []
     text_elements: list[str] = []
     if isinstance(raw_text, list) and text_policy != "none":
         for item in raw_text[:6]:

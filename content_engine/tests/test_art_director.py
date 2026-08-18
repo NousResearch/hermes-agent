@@ -83,6 +83,19 @@ def test_build_art_brief_handles_fenced_json():
     assert brief["style"] == "ninth-observatory"
 
 
+def test_build_art_brief_accepts_provider_shape_with_rendering_fields_inside_candidate():
+    payload = json.loads(_good_brief_json())
+    candidate = payload["concept_candidates"][0]
+    for field in ("style", "hero_prompt", "palette", "motif", "art_direction", "text_policy", "text_elements"):
+        candidate[field] = payload.pop(field)
+
+    brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: json.dumps(payload))
+
+    assert brief is not None
+    assert brief["style"] == "ninth-observatory"
+    assert brief["hero_prompt"]
+
+
 def test_build_art_brief_rejects_unknown_style():
     bad = _good_brief_json().replace("ninth-observatory", "not-a-real-style")
     brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: bad)

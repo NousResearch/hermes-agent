@@ -181,7 +181,11 @@ export async function switchProfile(name: string): Promise<void> {
 // A single-profile user never triggers a swap, so their path is unchanged.
 
 // The profile the live gateway WebSocket is currently connected to. Initialized
-// to the primary (window) backend's profile on boot.
+// to the primary (window) backend's profile on boot. The gateway registry
+// mirrors its own route into this atom via the onActiveRouteChanged callback
+// (wired in use-gateway-boot's configureGatewayRegistry), so registry-internal
+// eviction fallbacks (idle reap, connection removal, profile delete) can never
+// leave this naming a profile the active socket no longer serves (#89206).
 export const $activeGatewayProfile = atom<string>('default')
 
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary

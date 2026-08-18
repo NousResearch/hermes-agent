@@ -472,6 +472,23 @@ export function useGatewayBoot({
     // profile name (every source has a 'default') can't collide.
     configureGatewayRegistry({
       onActiveConnectionChanged: publish,
+      // Keep $activeGatewayProfile in lockstep with the registry's OWN record
+      // of which profile the active socket serves. The registry is the only
+      // party that sees eviction fallbacks (idle reap, connection removal,
+      // profile delete → primary); before this mirror those fallbacks moved
+      // the SOCKET back to the primary while the profile atom kept naming the
+      // evicted bot. ensureGatewayProfile's "already active" fast path then
+      // trusted the stale atom and skipped the re-swap, so every
+      // session-scoped RPC for that bot went out on the primary socket — the
+      // #89206 "Waking up… → retries gave up" wake failure, while the bot's
+      // own backend sat healthy and idle.
+      onActiveRouteChanged: profile => {
+        const key = normalizeProfileKey(profile)
+
+        if (normalizeProfileKey($activeGatewayProfile.get()) !== key) {
+          $activeGatewayProfile.set(key)
+        }
+      },
       onEvent: event => {
         recordSessionEventScope(event)
         callbacksRef.current.handleGatewayEvent(event)

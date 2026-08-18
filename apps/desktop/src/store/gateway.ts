@@ -27,6 +27,15 @@ interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
   onActiveConnectionInvalidated?: (fallbackProfile: string, activationEpoch: number) => void
   onActiveConnectionChanged?: (connection: HermesConnection) => void
+  /**
+   * Fires whenever applyActive() moves the active route to a (possibly
+   * different) profile — including registry-internal eviction fallbacks
+   * (idle reap, connection removal, profile delete) that no renderer call
+   * initiated. Consumers mirror this into $activeGatewayProfile so the
+   * published profile can never diverge from the socket actually selected
+   * (#89206: the stale-profile split-brain that stranded bot wake-ups).
+   */
+  onActiveRouteChanged?: (profile: string) => void
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
@@ -71,6 +80,7 @@ interface GatewayRegistryState {
   activationEpoch: number
   secondaries: Map<string, Secondary>
   $gateway: ReturnType<typeof atom<HermesGateway | null>>
+  $activeProfile: ReturnType<typeof atom<string>>
 }
 
 const STATE_KEY = Symbol.for('hermes.desktop.gatewayRegistryState')
@@ -86,7 +96,14 @@ function createRegistryState(): GatewayRegistryState {
     // The active gateway instance, exposed for inline message-stream
     // components (inline ClarifyTool, model overlays) that call gateway
     // methods without the instance threaded down through props.
-    $gateway: atom<HermesGateway | null>(null)
+    $gateway: atom<HermesGateway | null>(null),
+    // The PROFILE the active gateway is routed to (bare profile name, never a
+    // composite registry scope). Owned exclusively by applyActive() so the
+    // published profile can never diverge from the socket actually selected —
+    // the split-brain where an eviction re-pointed activeKey at the primary
+    // while the profile atom kept naming the evicted bot routed every
+    // "loki" session.resume to the default backend (#89206 wake failures).
+    $activeProfile: atom<string>('default')
   }
 }
 
@@ -114,6 +131,19 @@ const g = gatewayState()
 // reload of this module hands back the SAME atom subscribers are already wired
 // to. (A fresh `atom()` per reload would orphan existing subscriptions.)
 export const $gateway = g.$gateway
+
+// The profile the ACTIVE gateway is actually routed to. Registry-owned: the
+// only writer is applyActive(), which sets it in the same synchronous step
+// that selects the socket — so a consumer that reads this and then calls
+// activeGateway() always gets a matching (profile, socket) pair. Renderer
+// surfaces (store/profile.ts's $activeGatewayProfile) mirror this atom
+// instead of writing their own copy.
+export const $activeGatewayRoute = g.$activeProfile
+
+/** Bare profile name the active gateway serves (never a composite scope). */
+export function activeGatewayProfileKey(): string {
+  return g.$activeProfile.get()
+}
 
 export function configureGatewayRegistry(cfg: RegistryConfig): void {
   g.config = cfg
@@ -218,6 +248,18 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   // through the same source of truth every activation path maintains here —
   // registry-agent activations included, not just profile switches.
   setApiRequestConnection(activeGatewayConnectionId())
+  // Publish the BARE profile this route serves, in the same synchronous step
+  // as the socket selection. activeKey may be a composite registry scope
+  // (connectionId::profile); consumers route RPCs by profile, so resolve it
+  // through the secondary's own record. This atom is the single source of
+  // truth for "which profile is the active gateway on" — every eviction /
+  // fallback path funnels through applyActive, so the published profile can
+  // never linger on a backend that is no longer selected (#89206).
+  const routeProfile =
+    g.activeKey === g.primaryProfile ? g.primaryProfile : (g.secondaries.get(g.activeKey)?.profile ?? g.primaryProfile)
+
+  g.$activeProfile.set(routeProfile)
+  g.config?.onActiveRouteChanged?.(routeProfile)
 
   return true
 }

@@ -67,6 +67,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { requestForSessionProfile } from '@/store/session-request-router'
 import {
   $sessionTiles,
   closeSessionTile,
@@ -736,6 +737,21 @@ export function useSessionActions({
 
       await ensureGatewayProfile(sessionProfile)
 
+      // Request-time routing guard for every session-scoped RPC below. The
+      // await above REQUESTS the swap, but by dispatch time the active gateway
+      // can be back on another profile: a concurrent switch won the
+      // gatewaySwitch mutex, an eviction path (idle reap, connection edit,
+      // profile delete) re-pointed the active route at the primary, or the
+      // target's dial failed and scheduleReconnect left the previous socket
+      // active. Sending this session's resume/activate on whatever socket
+      // happens to be active then lands it on a backend that has never heard
+      // of the session — the backend boots, sits idle, and the renderer burns
+      // its bounded retries into the "retries gave up" screen while the bot's
+      // own backend is healthy one port over (#89206: local pool AND SSH).
+      // requestForSessionProfile re-resolves the route at each call.
+      const requestForSession = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
+        requestForSessionProfile<T>(sessionProfile, requestGateway, method, params)
+
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
       // purges a cross-wired mapping before we trust the fast-path.
@@ -806,7 +822,7 @@ export function useSessionActions({
             let activated: SessionResumeResponse | null = null
 
             try {
-              activated = await requestGateway<SessionResumeResponse>('session.activate', {
+              activated = await requestForSession<SessionResumeResponse>('session.activate', {
                 session_id: cachedRuntimeId,
                 cols: 96,
                 omit_messages: true
@@ -819,7 +835,7 @@ export function useSessionActions({
                 throw error
               }
 
-              const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+              const usage = await requestForSession<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
               if (!isCurrentResume()) {
                 return
@@ -1047,7 +1063,7 @@ export function useSessionActions({
 
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
 
-        const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
+        const resumePromise = requestForSession<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
           source: 'desktop',

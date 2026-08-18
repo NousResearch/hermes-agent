@@ -212,5 +212,9 @@ class GatewayInboundTranscriptionMixin:
                 "to resend or type it out.]"
             )
         # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
-        # and made the LLM comment on voice mode instead.
-        return transcript, f'"{transcript}"'
+        # and made the LLM comment on voice mode instead. The path follows on its own line, as every
+        # failure branch keeps it: ``content`` is the only record of where the audio lives, in
+        # ``_build_media_placeholder``'s marker grammar so a consumer parsing media markers finds it.
+        from tools.credential_files import to_agent_visible_cache_path
+        agent_path = to_agent_visible_cache_path(os.path.abspath(path))
+        return transcript, f'"{transcript}"\n[User sent audio: {agent_path}]'

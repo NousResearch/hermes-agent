@@ -1105,6 +1105,86 @@ interface PaneDockHint {
   pos: DropPosition
   /** Center docks: stack BEFORE this pane id (the strip divider's slot). */
   before?: null | string
+  /** One-time re-home token: a pane ALREADY adopted under an older dock hint
+   *  moves onto this hint's center anchor once per token — never when the
+   *  user has placed the pane themselves. See `healDockedPanes`. */
+  heal?: string
+}
+
+// One-time dock heals already applied, persisted so a heal runs exactly once
+// per pane per token across boots (and never re-fights a user who re-arranges
+// the healed pane afterward).
+const DOCK_HEAL_KEY = 'hermes.desktop.paneDockHeals.v1'
+
+const appliedDockHeals = new Set<string>(readJson<string[]>(DOCK_HEAL_KEY) ?? [])
+
+function markDockHealApplied(token: string) {
+  appliedDockHeals.add(token)
+  writeJson(DOCK_HEAL_KEY, [...appliedDockHeals])
+}
+
+/**
+ * A `panes` contribution whose dock hint carries a `heal` token gets ONE
+ * chance to re-home its already-adopted pane onto the hint's anchor —
+ * adoption is once per pane lifetime (the persisted tree remembers it), so a
+ * contribution whose default dock CHANGED would otherwise never reach
+ * existing installs. Guarded hard:
+ *
+ *  - the token burns exactly once per pane (idempotent across boots), and it
+ *    burns even when the heal is skipped, so a user who later drags the pane
+ *    back to the old spot is never fought;
+ *  - a USER-PLACED pane ($userPlacedPanes) is never touched — their spot wins;
+ *  - center re-homes only: a heal exists to consolidate a stray split into
+ *    its anchor's tab strip, not to re-run arbitrary splits.
+ *
+ * Silent like adoption — the anchor zone keeps its active tab. The center
+ * insert pins the zone's header shown, which is the point: the strip is how
+ * the user finds the healed tab.
+ */
+function healDockedPanes(
+  tree: LayoutNode,
+  dataOf: (paneId: string) => { dock?: PaneDockHint; placement?: string } | undefined
+): LayoutNode {
+  let next = tree
+
+  for (const pane of registry.getArea('panes')) {
+    const dock = dataOf(pane.id)?.dock
+
+    if (!dock?.heal || dock.pos !== 'center' || !allPaneIds(next).includes(pane.id)) {
+      continue
+    }
+
+    const token = `${pane.id}:${dock.heal}`
+
+    if (appliedDockHeals.has(token)) {
+      continue
+    }
+
+    markDockHealApplied(token)
+
+    if ($userPlacedPanes.get().has(pane.id)) {
+      continue
+    }
+
+    const from = findGroupOfPane(next, pane.id)
+    const anchor = findGroupOfPane(next, dock.pane)
+
+    // Already stacked with its anchor, or the anchor isn't in the tree.
+    if (!from || !anchor || from.id === anchor.id) {
+      continue
+    }
+
+    const without = removePane(next, pane.id)
+    const target = without ? findGroupOfPane(without, dock.pane)?.id : undefined
+
+    if (!without || !target) {
+      continue
+    }
+
+    next = insertAtGroup(without, target, pane.id, 'center', dock.before, false) ?? next
+  }
+
+  return next
 }
 
 function adoptContributedPanes(): void {
@@ -1125,6 +1205,10 @@ function adoptContributedPanes(): void {
 
   const dismissed = $dismissedPanes.get()
 
+  // One-time dock heals run FIRST: a heal re-homes a pane that is ALREADY in
+  // the tree, so the missing-pane adoption below never sees it.
+  const healed = healDockedPanes(tree, dataOf)
+
   // `placement: 'floating'` opts OUT of the tree entirely — those panes render
   // as fixed cards above it (renderer/floating-panes.tsx). Adopting one would
   // turn it into a track that steals width from a zone, which is the whole
@@ -1134,10 +1218,14 @@ function adoptContributedPanes(): void {
   )
 
   if (missing.length === 0) {
+    if (healed !== tree) {
+      commit(healed)
+    }
+
     return
   }
 
-  let next = tree
+  let next = healed
 
   for (const pane of missing) {
     const dock = dataOf(pane.id)?.dock

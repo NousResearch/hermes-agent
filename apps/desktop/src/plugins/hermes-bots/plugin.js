@@ -8238,30 +8238,70 @@ export default {
       id: 'pane',
       area: 'panes',
       title: 'Bots',
-      // dock: explicit adoption gesture. Without it the tree adopts a
-      // same-placement pane by CENTER-STACKING it into the sessions zone —
-      // and when that zone's header is hidden (lone-pane auto-hide is the
-      // default the user never changed), the sessions pane vanishes behind
-      // the Bots tab with no visible strip to switch back. Splitting below
-      // the sessions pane keeps both surfaces visible instead.
-      data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'bottom' } },
+      // dock: explicit adoption gesture — CENTER-STACK into the sessions zone
+      // so the sidebar grows a SESSIONS | BOTS tab strip instead of splitting
+      // two cramped panes down the column. Center is safe now: insertAtGroup
+      // pins the zone's header explicitly shown on a center gain (and it
+      // stays shown once the zone has stacked), so the sessions pane can
+      // never vanish behind a stripless Bots tab — the lone-pane auto-hide
+      // trap this dock used to work around with a 'bottom' split.
+      // heal: one-shot re-home for installs that adopted under the old
+      // 'bottom' split — moves the pane into the sessions strip ONCE, never
+      // touching a user-placed layout (see healDockedPanes in the tree store).
+      data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'center', heal: 'sessions-tab-v1' } },
       render: () => jsx(BotsPane, {})
     })
 
     // Routines — its OWN tiling pane splitting the workspace's right edge
     // (NOT the collapsible right sidebar; placement 'right' is that sidebar's
     // role and hides the pane until "Show Right Sidebar").
-    ctx.register({
-      id: 'routines',
-      area: 'panes',
-      title: 'Cronjobs',
-      data: {
-        placement: 'main',
-        dock: { pane: 'workspace', pos: 'right' },
-        width: '250px'
-      },
-      render: () => jsx(RoutinesPane, {})
-    })
+    //
+    // Registered ONLY while Bot Mode is on screen: the pane exists while the
+    // Bots pane is visible (its zone's active tab, or a lone pane in a
+    // stacked pre-heal layout) and unregisters when the user tabs back to
+    // Sessions — no Cronjobs tile squatting beside the chat outside Bot Mode.
+    // `ctx.register` returns the disposer that makes this cheap; the tree
+    // keeps the pane's spot, so re-registering re-adopts it where it was.
+    // host.paneVisibility is feature-detected: older desktops without the SDK
+    // export keep the always-registered behavior.
+    const registerRoutinesPane = () =>
+      ctx.register({
+        id: 'routines',
+        area: 'panes',
+        title: 'Cronjobs',
+        data: {
+          placement: 'main',
+          dock: { pane: 'workspace', pos: 'right' },
+          width: '250px'
+        },
+        render: () => jsx(RoutinesPane, {})
+      })
+
+    if (typeof host.paneVisibility === 'function') {
+      // The contribution-scoped pane id (`register` prefixes `${ID}:`).
+      const $botsPaneVisible = host.paneVisibility(`${ID}:pane`)
+      let unregisterRoutines = null
+
+      const syncRoutinesPane = visible => {
+        if (visible) {
+          unregisterRoutines ??= registerRoutinesPane()
+        } else if (unregisterRoutines) {
+          unregisterRoutines()
+          unregisterRoutines = null
+        }
+      }
+
+      const stopRoutinesSync = $botsPaneVisible.listen(syncRoutinesPane)
+      syncRoutinesPane($botsPaneVisible.get())
+
+      if (typeof ctx.onDispose === 'function') {
+        // The registration disposer is already tracked by ctx.register; only
+        // the listener needs explicit teardown or it survives plugin disable.
+        ctx.onDispose(stopRoutinesSync)
+      }
+    } else {
+      registerRoutinesPane()
+    }
 
     ctx.register({
       id: 'new-agent',

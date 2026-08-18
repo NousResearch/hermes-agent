@@ -24,7 +24,13 @@ import type { ReactNode } from 'react'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
-import { $narrowViewport, registerPaneCloser, removeTreePane, revealTreePane } from '@/components/pane-shell/tree/store'
+import {
+  $narrowViewport,
+  $paneVisible,
+  registerPaneCloser,
+  removeTreePane,
+  revealTreePane
+} from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
@@ -456,6 +462,14 @@ export const host = {
     newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get())
     window.location.hash = '#/'
   },
+
+  /** Reactive on-screen visibility of a contributed pane: true while it is in
+   *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding
+   *  its zone's active tab slot (a lone pane in its own zone counts). The
+   *  contribution-scoped pane id is `<pluginId>:<paneId>`. Memoized per id —
+   *  safe to call in render. Feature-detect on older desktops
+   *  (`typeof host.paneVisibility === 'function'`). */
+  paneVisibility: (paneId: string): ReadableAtom<boolean> => $paneVisible(paneId),
 
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.

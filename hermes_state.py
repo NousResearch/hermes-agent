@@ -2511,7 +2511,7 @@ def _repair_state_db_schema_locked(
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db dedup repair pass failed: %s", exc)
 
-    # ── Strategy 2: drop all FTS schema, VACUUM, rebuild on next open ──
+    # ── Strategy 2: drop all FTS schema, VACUUM, defer rebuild ──
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
@@ -2524,15 +2524,25 @@ def _repair_state_db_schema_locked(
         finally:
             conn.close()
         reason = _db_opens_cleanly(db_path)
-        if reason is None:
-            report["repaired"] = True
-            report["strategy"] = "drop_fts_rebuild"
-            logger.warning(
-                "state.db schema repaired by dropping FTS schema; indexes "
-                "will rebuild from messages on next open: %s", db_path
-            )
-            return report
-        report["error"] = reason
+        # Dropping the derived schema is not a repair: allowing an ordinary
+        # SessionDB open to notice missing triggers and rebuild synchronously
+        # would reintroduce the outage this path is meant to prevent. Leave a
+        # durable marker and keep the index detached even when the remaining
+        # structural damage makes the final probe fail.
+        try:
+            marker_conn = sqlite3.connect(str(db_path), isolation_level=None)
+            try:
+                marker_conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (FTS_STALE_KEY,),
+                )
+                marker_conn.commit()
+            finally:
+                marker_conn.close()
+        except sqlite3.DatabaseError as marker_exc:
+            logger.warning("Could not persist stale FTS marker after drop: %s", marker_exc)
+        report["error"] = reason or FTS_STALE_HEALTH_REASON
     except sqlite3.DatabaseError as exc:
         report["error"] = str(exc)
 

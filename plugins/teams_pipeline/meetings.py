@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 import tempfile
 from pathlib import Path
@@ -88,7 +90,32 @@ def looks_like_transcript_id(value: str, *, odata_type: str | None = None) -> bo
 
     if "calltranscript" in str(odata_type or "").lower():
         return True
-    return "transcript" in str(value or "").lower()
+    text = str(value or "")
+    if "transcript" in text.lower():
+        return True
+    return "transcript" in _decoded_id_hint(text)
+
+
+def _decoded_id_hint(value: str) -> str:
+    """Best-effort base64 decode of a Graph id for artifact-marker sniffing.
+
+    Graph transcript ids are base64url blobs whose *decoded* payload carries a
+    ``...-TranscriptV2`` suffix while the encoded form contains no readable
+    marker (this is exactly the id shape from getAllTranscripts
+    ``resourceData.id``). Returns lowercase decoded text, or "" when the value
+    does not decode.
+    """
+
+    stripped = value.strip()
+    if len(stripped) < 16:
+        return ""
+    padded = stripped + "=" * (-len(stripped) % 4)
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            return decoder(padded).decode("utf-8", "ignore").lower()
+        except (binascii.Error, ValueError):
+            continue
+    return ""
 
 
 def _meeting_path(meeting_ref: TeamsMeetingRef | str) -> str:

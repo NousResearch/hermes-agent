@@ -461,6 +461,24 @@ def test_looks_like_transcript_id_detects_graph_call_transcripts():
     assert not looks_like_transcript_id("MSo-meeting")
 
 
+def test_looks_like_transcript_id_detects_base64_encoded_marker():
+    # Real-world getAllTranscripts resourceData.id shape: base64url blob whose
+    # DECODED payload ends in "-TranscriptV2" while the encoded form has no
+    # readable marker (from a field report, Aug 2026).
+    import base64
+
+    encoded = base64.urlsafe_b64encode(
+        b"...meeting_ABC@thread.v2#55d6e479-2db7-4297-8590-98f6011a9613-1787004872-TranscriptV2"
+    ).decode().rstrip("=") + "="
+    assert "transcript" not in encoded.lower()
+    assert looks_like_transcript_id(encoded)
+    # Meeting ids (base64 of "0#...#0**19:meeting_...@thread.v2") must NOT match.
+    meeting_encoded = base64.b64encode(
+        b"0#af8b854e-e592-4d5a-b04c-6e63a3b502e7#0**19:meeting_ABC@thread.v2"
+    ).decode()
+    assert not looks_like_transcript_id(meeting_encoded)
+
+
 def test_create_job_from_get_all_transcripts_uses_meeting_id_not_transcript_id(tmp_path):
     store = TeamsPipelineStore(tmp_path / "teams-store.json")
     pipeline = TeamsMeetingPipeline(graph_client=FakeGraphClient(), store=store)

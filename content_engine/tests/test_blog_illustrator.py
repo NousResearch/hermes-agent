@@ -62,7 +62,7 @@ def reviewed_reference_catalog(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def stub_art_brief(monkeypatch):
     """Force a deterministic brief so tests never hit the LLM."""
-    def fake_brief(draft, headings, recent_styles=None, llm=None):
+    def fake_brief(draft, headings, recent_styles=None, recent_concept_fingerprints=None, llm=None):
         return {
             "style": "ninth-observatory",
             "palette": "stone grey, brass, warm amber",
@@ -220,7 +220,7 @@ def test_hard_fails_when_art_director_unavailable(monkeypatch, tmp_path):
     The illustrator must now refuse to generate instead of shipping bad images.
     """
     monkeypatch.setattr(bi, "build_art_brief",
-                        lambda draft, headings, recent_styles=None, llm=None: None)
+                        lambda draft, headings, recent_styles=None, recent_concept_fingerprints=None, llm=None: None)
     prompts = []
     def fake_generate(prompt, out_path, **kw):
         prompts.append(prompt)
@@ -235,7 +235,7 @@ def test_hard_fails_when_art_director_unavailable(monkeypatch, tmp_path):
 
 
 def test_art_brief_log_includes_seed_and_layout(monkeypatch, tmp_path, capsys):
-    def fake_brief(draft, headings, recent_styles=None, llm=None):
+    def fake_brief(draft, headings, recent_styles=None, recent_concept_fingerprints=None, llm=None):
         return {
             "style": "baoyu-infographic",
             "selection_seed": "abc123seed000000",
@@ -266,6 +266,12 @@ def test_records_style_to_rotation_state(monkeypatch, tmp_path):
     bi.illustrate(_DRAFT, out_dir=tmp_path, max_sections=0)
     assert (tmp_path / "skill_rotation.json").exists()
     assert "ninth-observatory" in bi._load_recent_styles()
+
+
+def test_rotation_state_retains_recent_concept_fingerprint():
+    bi._record_selection("ninth-observatory", ["clockwork theatre", "origami futures", "deep sea"])
+
+    assert bi._load_recent_concept_fingerprints() == ["clockwork theatre|origami futures|deep sea"]
 
 
 def test_no_fal_imports():

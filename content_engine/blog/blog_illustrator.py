@@ -28,25 +28,47 @@ ROTATION_STATE_PATH = Path(__file__).parent.parent / "blog_topics" / "skill_rota
 ROTATION_HISTORY_LIMIT = 6
 
 
-def _load_recent_styles() -> list[str]:
+def _load_rotation_state() -> dict:
     try:
         data = json.loads(ROTATION_STATE_PATH.read_text())
     except Exception:
-        return []
-    history = data.get("history", []) if isinstance(data, dict) else data
+        return {}
+    return data if isinstance(data, dict) else {"history": data}
+
+
+def _load_recent_styles() -> list[str]:
+    history = _load_rotation_state().get("history", [])
     if not isinstance(history, list):
         return []
     valid = art_director.STYLE_IDS
     return [x for x in history if isinstance(x, str) and x in valid][-ROTATION_HISTORY_LIMIT:]
 
 
-def _record_style(style_id: str) -> None:
+def _load_recent_concept_fingerprints() -> list[str]:
+    values = _load_rotation_state().get("concept_fingerprints", [])
+    if not isinstance(values, list):
+        return []
+    return [value for value in values if isinstance(value, str) and value.strip()][-ROTATION_HISTORY_LIMIT:]
+
+
+def _record_selection(style_id: str, fingerprint: object = None) -> None:
     history = _load_recent_styles()
     history.append(style_id)
+    fingerprints = _load_recent_concept_fingerprints()
+    if isinstance(fingerprint, (list, tuple)):
+        key = "|".join(str(term).strip().lower() for term in fingerprint if str(term).strip())
+        if key:
+            fingerprints.append(key)
     ROTATION_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {"history": history[-ROTATION_HISTORY_LIMIT:],
+               "concept_fingerprints": fingerprints[-ROTATION_HISTORY_LIMIT:],
                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
     ROTATION_STATE_PATH.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _record_style(style_id: str) -> None:
+    """Backward-compatible style-only recorder for callers outside illustrate()."""
+    _record_selection(style_id)
 
 
 # ── Codex CLI generation ────────────────────────────────────────
@@ -257,7 +279,13 @@ def illustrate(
     # palette, motif, or per-section art direction. Silently using it shipped
     # dozens of terrible images to production. Now we stop and report instead.
     recent = _load_recent_styles()
-    brief = build_art_brief(draft, headings, recent_styles=recent)
+    recent_fingerprints = _load_recent_concept_fingerprints()
+    brief = build_art_brief(
+        draft,
+        headings,
+        recent_styles=recent,
+        recent_concept_fingerprints=recent_fingerprints,
+    )
     if brief is None:
         print("[blog_illustrator] ⚠️  ART DIRECTOR FAILED — refusing to generate images.")
         print("[blog_illustrator] The LLM art brief is mandatory. Fallback brief produces")
@@ -268,7 +296,8 @@ def illustrate(
           f"seed={brief.get('selection_seed', 'n/a')} "
           f"layout={brief.get('layout', '')[:80]!r} "
           f"palette={brief.get('palette','')[:60]!r} motif={brief.get('motif','')[:60]!r}")
-    _record_style(brief["style"])
+    concept_plan = brief.get("concept_plan") if isinstance(brief.get("concept_plan"), dict) else {}
+    _record_selection(brief["style"], concept_plan.get("fingerprint"))
 
     # P11 contract seam: select only reviewed core references, write the plan
     # and planned provenance before the unchanged legacy generator is reached.

@@ -285,7 +285,21 @@ def _normalise_layout(brief: dict, style_id: str) -> tuple[str, list[str]]:
 def _native_compiler_for(style_id: str) -> str:
     return STYLE_NATIVE_COMPILERS.get(style_id, "Redraft the concept in the native language of the chosen visual style, with concrete composition, material, label, and reading-path decisions.")
 
-def _brief_system_prompt(recent_styles: list[str]) -> str:
+def _brief_system_prompt(
+    recent_styles: list[str], recent_concept_fingerprints: list[str] | None = None
+) -> str:
+    recent_style_rule = (
+        "Recently used rendering styles (prefer a materially different one unless article fit requires it): "
+        + ", ".join(recent_styles)
+        + ".\n\n"
+        if recent_styles else ""
+    )
+    recent_world_rule = (
+        "Recently used creative-world fingerprints (do not repeat these worlds): "
+        + "; ".join(recent_concept_fingerprints or [])
+        + ".\n\n"
+        if recent_concept_fingerprints else ""
+    )
     return (
         "You are the concept director for a technical publication. Each article earns its own "
         "rendering language: cinematic scene, comic, infographic, retro artefact, documentary "
@@ -294,7 +308,9 @@ def _brief_system_prompt(recent_styles: list[str]) -> str:
         "memorable, or more emotionally precise — never as random decoration.\n\n"
         f"Choose one inspiration_category per candidate from: {', '.join(sorted(INSPIRATION_CATEGORIES))}.\n\n"
         f"Available rendering styles (use the exact id in the style field):\n{_styles_catalogue()}\n\n"
-        "Your job is to create controlled conceptual variation. First identify the article truth. "
+        + recent_style_rule
+        + recent_world_rule
+        + "Your job is to create controlled conceptual variation. First identify the article truth. "
         "Then produce 3-5 candidate shared worlds by combining it with an unexpected world, a "
         "narrative rule, and a story moment. Every candidate must visibly explain the article; "
         "randomness is only the translation, never the reason for the image. The three asset "
@@ -405,7 +421,8 @@ def _scene_image_concept(world: str, scene) -> str:
 
 
 def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
-              recent_styles: Optional[list[str]] = None) -> Optional[dict]:
+              recent_styles: Optional[list[str]] = None,
+              recent_concept_fingerprints: Optional[list[str]] = None) -> Optional[dict]:
     """Coerce/validate an LLM brief into a usable shape, or None if unusable."""
     if not isinstance(brief, dict):
         return None
@@ -430,7 +447,7 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
                 draft,
                 headings,
                 candidates=raw_candidates,
-                recent_concept_fingerprints=brief.get("recent_concept_fingerprints") or [],
+                recent_concept_fingerprints=recent_concept_fingerprints or [],
             )
         except ConceptPlanError:
             return None
@@ -553,6 +570,7 @@ def build_art_brief(
     draft: dict,
     headings: list[str],
     recent_styles: Optional[list[str]] = None,
+    recent_concept_fingerprints: Optional[list[str]] = None,
     llm=None,
 ) -> Optional[dict]:
     """Produce a validated art brief for a post via one LLM pass."""
@@ -572,7 +590,8 @@ def build_art_brief(
                     # Continue to the next provider unless this exact response
                     # is both parseable and contract-valid for this article.
                     parsed = _extract_json(body or "")
-                    if parsed and _validate(parsed, headings, draft=draft, recent_styles=recent_styles):
+                    if parsed and _validate(parsed, headings, draft=draft, recent_styles=recent_styles,
+                                            recent_concept_fingerprints=recent_concept_fingerprints):
                         return body
                 return None
 
@@ -580,7 +599,7 @@ def build_art_brief(
         except Exception:
             return None
 
-    system = _brief_system_prompt(recent_styles)
+    system = _brief_system_prompt(recent_styles, recent_concept_fingerprints)
     user = _brief_user_prompt(
         draft.get("title", ""), draft.get("description", ""),
         draft.get("body_md", ""), draft.get("stream", "ai"), headings,
@@ -592,7 +611,8 @@ def build_art_brief(
     brief = _extract_json(raw or "")
     if brief is None:
         return None
-    return _validate(brief, headings, draft=draft, recent_styles=recent_styles)
+    return _validate(brief, headings, draft=draft, recent_styles=recent_styles,
+                     recent_concept_fingerprints=recent_concept_fingerprints)
 
 
 def fallback_brief(draft: dict, headings: list[str],
@@ -670,7 +690,7 @@ def _planned_layouts(
     return candidates[:count]
 
 
-def _core_record_ids(catalog: ReferenceCatalog, visual_role: str, count: int) -> list[str]:
+def _core_record_ids(catalog: ReferenceCatalog, visual_role: str, count: int, *, selection_seed: str = "") -> list[str]:
     candidates = [
         record.reference_id
         for record in catalog.records_for_contract()
@@ -678,7 +698,8 @@ def _core_record_ids(catalog: ReferenceCatalog, visual_role: str, count: int) ->
     ]
     if not candidates:
         raise ValueError(f"canonical core pack has no {visual_role!r} reference")
-    return [candidates[index % len(candidates)] for index in range(count)]
+    offset = int(selection_seed or "0", 16) % len(candidates)
+    return [candidates[(offset + index) % len(candidates)] for index in range(count)]
 
 
 def build_visual_plan_from_brief(
@@ -695,10 +716,11 @@ def build_visual_plan_from_brief(
     """
     catalog = ReferenceCatalog.load(Path(catalog_root))
     asset_count = 1 + len(headings)
-    layout_ids = _core_record_ids(catalog, "layout", asset_count)
+    selection_seed = str(brief.get("selection_seed", ""))
+    layout_ids = _core_record_ids(catalog, "layout", asset_count, selection_seed=selection_seed)
     layouts = _planned_layouts(brief, asset_count, layout_ids)
-    style_ids = _core_record_ids(catalog, "style", asset_count)
-    composition_ids = _core_record_ids(catalog, "composition", asset_count)
+    style_ids = _core_record_ids(catalog, "style", asset_count, selection_seed=selection_seed)
+    composition_ids = _core_record_ids(catalog, "composition", asset_count, selection_seed=selection_seed)
     style = str(brief.get("style", "")).strip()
     palette = str(brief.get("palette", "")).strip()
     motif = str(brief.get("motif", "")).strip()

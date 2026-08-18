@@ -122,6 +122,40 @@ def test_prompt_allows_article_fit_rendering_variation():
     assert "Do not default to one house style" in captured["system"]
 
 
+def test_prompt_names_recent_visual_choices_to_avoid_repeating():
+    captured = {}
+
+    def spy(system, user):
+        captured["system"] = system
+        return _good_brief_json()
+
+    ad.build_art_brief(
+        _DRAFT,
+        _HEADINGS,
+        recent_styles=["saga-noir", "pixel-art"],
+        recent_concept_fingerprints=["clockwork theatre|deep sea|origami futures"],
+        llm=spy,
+    )
+
+    assert "Recently used rendering styles" in captured["system"]
+    assert "saga-noir" in captured["system"]
+    assert "Recently used creative-world fingerprints" in captured["system"]
+    assert "clockwork theatre|deep sea|origami futures" in captured["system"]
+
+
+def test_core_references_rotate_from_article_seed():
+    class Record:
+        def __init__(self, reference_id):
+            self.reference_id = reference_id
+            self.allowed_roles = ["layout"]
+
+    class Catalog:
+        def records_for_contract(self):
+            return [Record("a"), Record("b"), Record("c")]
+
+    assert ad._core_record_ids(Catalog(), "layout", 2, selection_seed="0000000000000001") == ["b", "c"]
+
+
 def test_full_article_in_user_prompt():
     captured = {}
     def spy(system, user):

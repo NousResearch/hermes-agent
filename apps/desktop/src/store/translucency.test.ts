@@ -125,7 +125,11 @@ describe('window translucency lever', () => {
     }
   })
 
-  it('mirrors the whole state to the desktop bridge, coalesced across a drag', () => {
+  // Flipped from an earlier version that asserted the bridge was debounced:
+  // in clear mode the native window fade IS the effect, and main can only
+  // move it when told — a debounced send froze the fade mid-drag. Main diffs
+  // and debounces its own disk write, so per-tick sends are cheap.
+  it('mirrors every tick to the desktop bridge so the clear-mode fade tracks the drag', () => {
     vi.useFakeTimers()
     const calls: unknown[] = []
     window.hermesDesktop = { setTranslucency: (payload: unknown) => calls.push(payload) } as never
@@ -135,12 +139,7 @@ describe('window translucency lever', () => {
         setTranslucency(intensity)
       }
 
-      // Each tick would otherwise wake the main process.
-      expect(calls).toHaveLength(0)
-
-      vi.advanceTimersByTime(200)
-
-      expect(calls).toHaveLength(1)
+      expect(calls).toHaveLength(5)
       expect(calls.at(-1)).toEqual({
         intensity: 40,
         mode: 'clear',

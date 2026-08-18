@@ -251,39 +251,36 @@ const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void
 }
 
 if (typeof window !== 'undefined') {
-  // The intensity slider fires ~100 updates per drag, and two of the three
-  // things a sync does are expensive per-tick: localStorage.setItem is
-  // synchronous, and the IPC send wakes the main process. Only the page paint
-  // has to keep up with the hand — nothing reads the persisted value until a
-  // cold launch, and main's own work is diffed anyway.
-  //
-  // So: paint every tick, persist and notify on a trailing edge.
-  let flushTimer: null | number = null
+  // The intensity slider fires ~100 updates per drag. The expensive per-tick
+  // work is the synchronous localStorage.setItem — so THAT is debounced.
+  // Everything the user can see must track the hand: the page paint (glass is
+  // rendered here) AND the IPC send, because in clear mode the effect is the
+  // native window opacity and main can only move it when told. Main diffs the
+  // state and debounces its own disk write, so per-tick sends cost one
+  // setOpacity in clear mode and nothing at all under glass.
+  let storageTimer: null | number = null
 
-  const flush = () => {
-    flushTimer = null
-
-    const state = $translucency.get()
-
-    writeJson(KEY, state)
-    window.hermesDesktop?.setTranslucency?.(state)
+  const persist = () => {
+    storageTimer = null
+    writeJson(KEY, $translucency.get())
   }
 
   $translucency.subscribe(state => {
     applyGlassSurfaces(state)
+    window.hermesDesktop?.setTranslucency?.(state)
 
-    if (flushTimer !== null) {
-      window.clearTimeout(flushTimer)
+    if (storageTimer !== null) {
+      window.clearTimeout(storageTimer)
     }
 
-    flushTimer = window.setTimeout(flush, 120)
+    storageTimer = window.setTimeout(persist, 120)
   })
 
   // A window closing mid-drag must not lose the setting.
   window.addEventListener('pagehide', () => {
-    if (flushTimer !== null) {
-      window.clearTimeout(flushTimer)
-      flush()
+    if (storageTimer !== null) {
+      window.clearTimeout(storageTimer)
+      persist()
     }
   })
 

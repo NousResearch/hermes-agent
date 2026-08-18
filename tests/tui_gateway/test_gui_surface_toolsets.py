@@ -115,6 +115,35 @@ class TestResolverPlumbing:
 
         assert desktop is not None and tui is not None
         assert "desktop_ui" in desktop
+
+    def test_config_path_resolves_the_session_platform(self, no_desktop_env):
+        """A toolset granted under platform_toolsets.<session platform> but
+        not under cli must reach that session's agent (#89547): the resolver
+        hardcoded "cli" at the resolution call, silently filtering every
+        non-cli grant from the per-turn tool definitions."""
+        import agent.coding_context as cc
+        import hermes_cli.config as config_mod
+
+        no_desktop_env.setattr(cc, "coding_selection", lambda **_: None)
+        no_desktop_env.setattr(
+            config_mod,
+            "load_config",
+            lambda: {
+                "platform_toolsets": {
+                    "cli": ["terminal"],
+                    "desktop": ["terminal", "memory"],
+                }
+            },
+        )
+
+        desktop = server._load_enabled_toolsets("desktop")
+        tui = server._load_enabled_toolsets("tui")
+
+        # desktop resolves against platform_toolsets.desktop: memory rides.
+        assert desktop is not None and "memory" in desktop
+        # tui resolves against platform_toolsets.tui (absent → cli default
+        # expansion): no desktop-only grant leaks in.
+        assert tui is not None and "memory" not in tui
         assert "desktop_ui" not in tui
 
     def test_explicit_env_pin_still_wins(self, no_desktop_env):

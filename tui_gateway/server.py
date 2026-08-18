@@ -1841,7 +1841,16 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         # Passing ``False`` here is the config-editing variant — used when we need to persist a toolset list
         # without baking in implicit MCP defaults. Using the wrong variant at agent creation time makes MCP
         # tools silently missing from the TUI. See PR #3252 for the original design split.
-        enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
+        #
+        # Resolve for the SESSION's platform, not a hardcoded "cli": a
+        # toolset granted under platform_toolsets.<platform> (e.g. desktop,
+        # api_server) but not under cli was silently filtered from the
+        # agent's tool definitions on every turn — _get_platform_tools(cfg,
+        # "desktop") lists it, "cli" doesn't, and the agent narrated the
+        # tools as unavailable (#89547). The client-surface fold below
+        # already keyed off session_platform; the platform resolution now
+        # does too.
+        enabled = _get_platform_tools(cfg, session_platform, include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
         return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else None

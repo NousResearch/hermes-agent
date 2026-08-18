@@ -9,7 +9,7 @@ import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $activeSessionId } from '@/store/session'
 
-import { ClarifyTool, readClarifyResult } from './clarify-tool'
+import { ClarifyTool, readClarifyBatchResult, readClarifyResult } from './clarify-tool'
 
 // The live pending card only renders while its message is running. Force that so
 // keyboard-navigation tests can exercise ClarifyToolPending directly.
@@ -446,5 +446,186 @@ describe('ClarifyTool pending marker', () => {
 
     // No shortcuts → nothing to protect → composer type-to-focus stays live.
     expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+  })
+})
+
+// ─── Batch (multi-question) clarify ─────────────────────────────────────────
+
+function batchArgs(): { questions: { question: string; choices?: string[] }[] } {
+  return {
+    questions: [
+      { choices: ['red', 'blue'], question: 'Color?' },
+      { question: 'Name?' }
+    ]
+  }
+}
+
+function liveBatchProps(): ToolCallMessagePartProps {
+  const args = batchArgs()
+
+  return {
+    addResult: vi.fn(),
+    args,
+    argsText: JSON.stringify(args),
+    isError: false,
+    respondToApproval: vi.fn(),
+    result: undefined,
+    resume: vi.fn(),
+    status: { type: 'running' },
+    toolCallId: 'clarify-batch',
+    toolName: 'clarify',
+    type: 'tool-call'
+  }
+}
+
+function renderLiveBatch(lockedAnswers?: Record<string, string>) {
+  const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+
+  $activeSessionId.set('session-1')
+  $gateway.set({ request } as never)
+  setClarifyRequest({
+    choices: null,
+    lockedAnswers,
+    multiSelect: false,
+    question: '',
+    questions: [
+      { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+      { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+    ],
+    requestId: 'request-batch',
+    sessionId: 'session-1'
+  })
+  renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+  return request
+}
+
+describe('readClarifyBatchResult', () => {
+  it('parses responses with string and list answers plus timed_out', () => {
+    const parsed = readClarifyBatchResult(
+      JSON.stringify({
+        responses: [
+          { question: 'Color?', user_response: 'red' },
+          { question: 'Tools?', user_response: ['a', 'b'] },
+          { question: 'Name?', user_response: '' }
+        ],
+        timed_out: true
+      })
+    )
+
+    expect(parsed.timedOut).toBe(true)
+    expect(parsed.responses).toHaveLength(3)
+    expect(parsed.responses[1]?.answer).toEqual(['a', 'b'])
+    expect(parsed.responses[2]?.answer).toBe('')
+  })
+
+  it('returns empty responses for single-question payloads', () => {
+    expect(readClarifyBatchResult({ question: 'Q?', user_response: 'a' }).responses).toEqual([])
+  })
+})
+
+describe('ClarifyTool batch card', () => {
+  it('renders every question at once', () => {
+    renderLiveBatch()
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
+  })
+
+  it('locks a picked choice via Continue, keyed by qid', async () => {
+    const request = renderLiveBatch()
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'red',
+        question_id: 'q0',
+        request_id: 'request-batch'
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+    })
+  })
+
+  it('answers in any order: free-text question first', async () => {
+    const request = renderLiveBatch()
+
+    const nameBox = screen.getByPlaceholderText('Type your answer…')
+    fireEvent.change(nameBox, { target: { value: 'packet' } })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'packet',
+        question_id: 'q1',
+        request_id: 'request-batch'
+      })
+    })
+  })
+
+  it('relabels the button to Confirm and continue when one question remains', async () => {
+    renderLiveBatch({ q1: 'already locked' })
+
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Confirm and continue/ })).toBeTruthy()
+  })
+
+  it('re-staging a locked answer un-locks it and a re-lock overwrites', async () => {
+    const request = renderLiveBatch({ q0: 'red' })
+
+    // q0 arrived locked from replay. Picking blue un-locks it locally…
+    fireEvent.click(screen.getByRole('button', { name: /blue/ }))
+    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
+
+    // …and Continue re-locks with the new answer.
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'blue',
+        question_id: 'q0',
+        request_id: 'request-batch'
+      })
+    })
+  })
+
+  it('Skip cancels the whole batch without a question_id', async () => {
+    const request = renderLiveBatch()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: '',
+        request_id: 'request-batch'
+      })
+    })
+  })
+
+  it('renders the settled batch with all questions and answers', () => {
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          batchArgs(),
+          JSON.stringify({
+            responses: [
+              { choices_offered: ['red', 'blue'], question: 'Color?', user_response: 'red' },
+              { choices_offered: null, question: 'Name?', user_response: '' }
+            ]
+          }),
+          'clarify-batch-settled'
+        )}
+      />
+    )
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('red')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+    expect(screen.getByText('Skipped')).toBeTruthy()
   })
 })

@@ -27,6 +27,8 @@ import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   bareChoice,
+  type ClarifyQuestion,
+  type ClarifyRequest,
   clearClarifyRequest,
   normalizeChoices,
   RECOMMENDED_LABEL,
@@ -43,6 +45,7 @@ interface ClarifyArgs {
   question?: string
   choices?: string[] | null
   multiSelect?: boolean
+  questions?: { question: string; choices?: string[] | null; multiSelect?: boolean }[]
 }
 
 interface ClarifyResult {
@@ -72,11 +75,72 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
     warnDroppedChoices('tool_args', question, rawChoices)
   }
 
+  // Batch form: tool args carry the model's questions array. Entries are
+  // normalized leniently here (qid comes from the gateway request, not args).
+  let questions: ClarifyArgs['questions']
+
+  if (Array.isArray(row.questions)) {
+    const parsed = row.questions
+      .map(entry => {
+        const item = parseMaybeObject(entry)
+        const text = stringField(item, 'question')
+
+        if (!text) {
+          return null
+        }
+
+        const itemChoices = normalizeChoices(item.choices)
+
+        return {
+          choices: itemChoices.length > 0 ? itemChoices : null,
+          multiSelect: item.multi_select === true && itemChoices.length > 0,
+          question: text
+        }
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+
+    if (parsed.length > 0) {
+      questions = parsed
+    }
+  }
+
   return {
     question,
     choices: choices.length > 0 ? choices : null,
-    multiSelect: row.multi_select === true
+    multiSelect: row.multi_select === true,
+    questions
   }
+}
+
+interface ClarifyBatchResponse {
+  id?: string
+  question?: string
+  answer?: string | string[]
+}
+
+/** Parse batch clarify tool JSON (`responses` array + optional timed_out). */
+export function readClarifyBatchResult(result: unknown): {
+  responses: ClarifyBatchResponse[]
+  timedOut: boolean
+} {
+  const row = parseMaybeObject(result)
+
+  if (!Array.isArray(row.responses)) {
+    return { responses: [], timedOut: false }
+  }
+
+  const responses = row.responses.map((entry): ClarifyBatchResponse => {
+    const item = parseMaybeObject(entry)
+    const answer = item.user_response
+
+    return {
+      answer: Array.isArray(answer) ? answer.map(String) : typeof answer === 'string' ? answer : undefined,
+      id: stringField(item, 'id'),
+      question: stringField(item, 'question')
+    }
+  })
+
+  return { responses, timedOut: row.timed_out === true }
 }
 
 /** Parse clarify tool JSON (`question` + `user_response`). */
@@ -236,7 +300,17 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   return <ClarifyToolPending {...props} />
 }
 
-function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
+function ClarifyToolSettled(props: ToolCallMessagePartProps) {
+  const batch = readClarifyBatchResult(props.result)
+
+  if (batch.responses.length > 0) {
+    return <ClarifyToolBatchSettled responses={batch.responses} />
+  }
+
+  return <ClarifyToolSingleSettled {...props} />
+}
+
+function ClarifyToolSingleSettled({ args, result }: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const fromArgs = useMemo(() => readClarifyArgs(args), [args])
@@ -303,19 +377,36 @@ function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
   )
 }
 
-function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
-  const { t } = useI18n()
-  const copy = t.assistant.clarify
+function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's clarify (primary or tile), not the globally-active one.
   const sessionId = useStore(useSessionView().$runtimeId)
   const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
   const request = useStore($request)
+  const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
+
+  // Batch: the gateway request carries qid-keyed questions. Args alone can't
+  // drive the form (no qids to respond with), so batch waits for the request.
+  if (request?.questions?.length || fromArgs.questions) {
+    return <ClarifyToolBatchPending request={request} />
+  }
+
+  return <ClarifyToolSinglePending fromArgs={fromArgs} request={request} />
+}
+
+function ClarifyToolSinglePending({
+  fromArgs,
+  request
+}: {
+  fromArgs: ClarifyArgs
+  request: ClarifyRequest | null
+}) {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
   const gateway = useStore($gateway)
-  const fromArgs = useMemo(() => readClarifyArgs(args), [args])
 
   const matchingRequest = useMemo(() => {
-    if (!request) {
+    if (!request || request.questions?.length) {
       return null
     }
 
@@ -689,6 +780,349 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           ) : (
             <>
               {copy.continueLabel}
+              <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
+                ⏎
+              </span>
+            </>
+          )}
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+// ─── Batch (multi-question) clarify ─────────────────────────────────────────
+
+/** Settled batch card: every question with its locked (or absent) answer. */
+function ClarifyToolBatchSettled({ responses }: { responses: { question?: string; answer?: string | string[] }[] }) {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
+
+  return (
+    <ClarifyShell className="my-1.5 grid gap-2.5" data-clarify-settled="">
+      {responses.map((row, index) => {
+        const answer = Array.isArray(row.answer) ? row.answer.join(', ') : (row.answer ?? '')
+        const blank = !answer.trim()
+
+        return (
+          <div className="grid gap-1" key={`${index}-${row.question ?? ''}`}>
+            {row.question ? (
+              <ClarifyLine icon={MessageQuestion}>
+                <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
+                  {row.question}
+                </span>
+              </ClarifyLine>
+            ) : null}
+            <ClarifyLine icon={CircleLetterA}>
+              <p
+                className={cn(
+                  'whitespace-pre-wrap leading-(--conversation-line-height)',
+                  blank ? 'italic text-(--ui-text-tertiary)' : 'text-(--ui-text-secondary)'
+                )}
+                data-clarify-answer=""
+              >
+                {blank ? copy.skipped : answer}
+              </p>
+            </ClarifyLine>
+          </div>
+        )
+      })}
+    </ClarifyShell>
+  )
+}
+
+/** One question's interactive block inside the live batch card. */
+function BatchQuestionBlock({
+  disabled,
+  locked,
+  onDraft,
+  onToggle,
+  question,
+  staged
+}: {
+  disabled: boolean
+  locked: boolean
+  onDraft: (value: string) => void
+  onToggle: (choice: string) => void
+  question: ClarifyQuestion
+  staged: { choices: string[]; draft: string }
+}) {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
+  const choices = question.choices ?? []
+
+  return (
+    <div className="grid gap-1" data-clarify-batch-question={question.qid} data-locked={locked || undefined}>
+      <div className="flex items-start gap-2">
+        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
+          {question.question}
+        </span>
+        {locked ? (
+          <span className="shrink-0 rounded-sm bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] text-(--ui-text-tertiary)">
+            ✓ {copy.answeredBadge}
+          </span>
+        ) : null}
+      </div>
+
+      {choices.length > 0 ? (
+        <div className="grid gap-px" role="group">
+          {choices.map((choice, index) => (
+            <ChoiceButton
+              char={letterFor(index)}
+              choice={choice}
+              disabled={disabled}
+              key={`${index}-${choice}`}
+              onClick={() => onToggle(choice)}
+              selected={staged.choices.includes(choice)}
+            />
+          ))}
+          <label className={cn(OPTION_ROW_CLASS, 'items-center')}>
+            <KeyBadge char={letterFor(choices.length)} selected={Boolean(staged.draft.trim())} />
+            <Textarea
+              className={CLARIFY_TEXTAREA_CLASS}
+              disabled={disabled}
+              onChange={event => onDraft(event.target.value)}
+              placeholder={copy.other}
+              rows={1}
+              size="sm"
+              value={staged.draft}
+            />
+          </label>
+        </div>
+      ) : (
+        <Textarea
+          className={CLARIFY_TEXTAREA_CLASS}
+          disabled={disabled}
+          onChange={event => onDraft(event.target.value)}
+          placeholder={copy.placeholder}
+          rows={1}
+          size="sm"
+          value={staged.draft}
+        />
+      )}
+    </div>
+  )
+}
+
+const emptyStage = { choices: [] as string[], draft: '' }
+
+/** Live batch card (B lock-in): all questions at once, staging per question,
+ * one footer button that locks the focused answer. Locked answers stay
+ * editable (a re-lock overwrites server-side) until the final confirm — the
+ * last unanswered question's lock IS the confirm, so the button relabels to
+ * "Confirm and continue" when exactly one remains. */
+function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }) {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
+  const gateway = useStore($gateway)
+
+  // qids only exist on the gateway request — args are a hydration-race
+  // fallback for display, never answerable (no ids to respond with).
+  const questions = request?.questions ?? []
+  const ready = Boolean(request?.requestId) && questions.length > 0
+
+  const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
+  // Locked = accepted by the server (clarify.respond succeeded). Seeded from
+  // the reconnect replay so a reattached window shows its earlier locks.
+  const [locked, setLocked] = useState<Record<string, string>>(() => request?.lockedAnswers ?? {})
+  // The question the footer button acts on: last interacted-with, unlocked.
+  const [focusedQid, setFocusedQid] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (request?.lockedAnswers) {
+      setLocked(current => ({ ...request.lockedAnswers, ...current }))
+    }
+  }, [request?.lockedAnswers])
+
+  const stageFor = (qid: string) => staged[qid] ?? emptyStage
+
+  const stagedAnswer = useCallback(
+    (question: ClarifyQuestion): string | null => {
+      const stage = staged[question.qid] ?? emptyStage
+
+      if (stage.choices.length > 0) {
+        return question.multiSelect ? JSON.stringify(stage.choices.map(bareChoice)) : bareChoice(stage.choices[0])
+      }
+
+      const draft = stage.draft.trim()
+
+      return draft ? draft : null
+    },
+    [staged]
+  )
+
+  const unansweredCount = questions.filter(q => locked[q.qid] === undefined).length
+
+  // The button targets the focused question when it has something staged;
+  // otherwise the first unlocked question with a staged answer.
+  const target = useMemo(() => {
+    const focused = questions.find(q => q.qid === focusedQid)
+
+    if (focused && stagedAnswer(focused) !== null) {
+      return focused
+    }
+
+    return questions.find(q => stagedAnswer(q) !== null) ?? null
+  }, [focusedQid, questions, stagedAnswer])
+
+  const lockAnswer = useCallback(
+    async (question: ClarifyQuestion, answer: string) => {
+      if (!request || !gateway) {
+        notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
+
+        return
+      }
+
+      setSubmitting(true)
+
+      try {
+        await gateway.request<{ ok?: boolean }>('clarify.respond', {
+          answer,
+          question_id: question.qid,
+          request_id: request.requestId
+        })
+        triggerHaptic('submit')
+        setLocked(current => ({ ...current, [question.qid]: answer }))
+        setStaged(current => ({ ...current, [question.qid]: emptyStage }))
+        setFocusedQid(null)
+
+        // Locking the last unanswered question completes the batch: the
+        // server resolves the blocked tool and tool.complete lands next
+        // (→ ClarifyToolBatchSettled). Drop the store entry now, mirroring
+        // the single-question card.
+        const remaining = questions.filter(q => q.qid !== question.qid && locked[q.qid] === undefined)
+
+        if (remaining.length === 0) {
+          clearClarifyRequest(request.requestId, request.sessionId)
+        }
+      } catch (error) {
+        notifyError(error, copy.sendFailed)
+      } finally {
+        setSubmitting(false)
+      }
+    },
+    [copy, gateway, locked, questions, request]
+  )
+
+  const submitTarget = useCallback(() => {
+    if (!target) {
+      return
+    }
+
+    const answer = stagedAnswer(target)
+
+    if (answer !== null) {
+      void lockAnswer(target, answer)
+    }
+  }, [lockAnswer, stagedAnswer, target])
+
+  const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
+    setFocusedQid(question.qid)
+    setStaged(current => {
+      const stage = current[question.qid] ?? emptyStage
+      const next = question.multiSelect
+        ? stage.choices.includes(choice)
+          ? stage.choices.filter(value => value !== choice)
+          : [...stage.choices, choice]
+        : [choice]
+
+      return { ...current, [question.qid]: { choices: next, draft: '' } }
+    })
+    // A fresh pick un-locks the question for editing: the old answer stays on
+    // the server until the re-lock overwrites it.
+    setLocked(current => {
+      if (current[question.qid] === undefined) {
+        return current
+      }
+
+      const next = { ...current }
+      delete next[question.qid]
+
+      return next
+    })
+  }, [])
+
+  const draftFor = useCallback((question: ClarifyQuestion, value: string) => {
+    setFocusedQid(question.qid)
+    setStaged(current => ({ ...current, [question.qid]: { choices: [], draft: value } }))
+    setLocked(current => {
+      if (current[question.qid] === undefined || !value.trim()) {
+        return current
+      }
+
+      const next = { ...current }
+      delete next[question.qid]
+
+      return next
+    })
+  }, [])
+
+  const cancelAll = useCallback(async () => {
+    if (!request) {
+      return
+    }
+
+    clearClarifyRequest(request.requestId, request.sessionId)
+
+    try {
+      await gateway?.request('clarify.respond', { answer: '', request_id: request.requestId })
+    } catch {
+      // The tool times out on its own; a failed skip must never block the UI.
+    }
+  }, [gateway, request])
+
+  const handleSubmit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+      submitTarget()
+    },
+    [submitTarget]
+  )
+
+  if (!ready) {
+    return (
+      <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
+        <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
+      </ClarifyShell>
+    )
+  }
+
+  const answeredCount = questions.length - unansweredCount
+  const lastOne = unansweredCount === 1
+
+  return (
+    <form className="my-1.5 grid gap-4" data-clarify-batch={questions.length} onSubmit={handleSubmit}>
+      <ClarifyShell className="grid gap-3">
+        <div className="flex items-start gap-2">
+          <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
+            {copy.questionProgress(answeredCount, questions.length)}
+          </span>
+          <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
+        </div>
+        {questions.map(question => (
+          <BatchQuestionBlock
+            disabled={submitting}
+            key={question.qid}
+            locked={locked[question.qid] !== undefined}
+            onDraft={value => draftFor(question, value)}
+            onToggle={choice => toggleChoice(question, choice)}
+            question={question}
+            staged={stageFor(question.qid)}
+          />
+        ))}
+      </ClarifyShell>
+
+      <div className="flex items-center justify-end gap-1">
+        <Button disabled={submitting} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
+          {copy.skip}
+        </Button>
+        <Button disabled={submitting || !target} size="xs" type="submit">
+          {submitting ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            <>
+              {lastOne ? copy.confirmAndContinueLabel : copy.continueLabel}
               <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
                 ⏎
               </span>

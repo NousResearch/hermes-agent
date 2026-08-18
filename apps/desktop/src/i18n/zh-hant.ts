@@ -2637,6 +2637,9 @@ export const zhHant = defineLocale({
       skip: '略過',
       skipped: '已略過',
       continueLabel: '繼續',
+      confirmAndContinueLabel: '確認並繼續',
+      answeredBadge: '已回答',
+      questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
       lateAnswerTip: '將此回答起草為後續訊息',
       lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'

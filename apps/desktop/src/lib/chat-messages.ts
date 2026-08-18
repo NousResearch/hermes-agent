@@ -91,6 +91,10 @@ export type GatewayEventPayload = {
   question?: string
   choices?: string[] | null
   multi_select?: boolean
+  // clarify.request batch form: questions replaces question/choices, and
+  // answers (qid → locked answer) rides along on reconnect replay only.
+  questions?: unknown
+  answers?: Record<string, unknown>
   // mcp.setup.request (setup_mcp tool — inline MCP consent card)
   server?: string
   action?: string

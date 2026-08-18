@@ -3072,6 +3072,9 @@ export const en: Translations = {
       skip: 'Skip',
       skipped: 'Skipped',
       continueLabel: 'Continue',
+      confirmAndContinueLabel: 'Confirm and continue',
+      answeredBadge: 'Answered',
+      questionProgress: (answered, total) => `${answered} of ${total} answered`,
       lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
       lateAnswerTip: 'Draft this answer as a follow-up message',
       lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'

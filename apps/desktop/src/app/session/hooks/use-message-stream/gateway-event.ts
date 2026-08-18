@@ -25,7 +25,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
-import { clearClarifyRequest, normalizeChoices, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import { clearClarifyRequest, normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
@@ -1165,8 +1165,65 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const rawChoices = payload?.choices
         const choices = normalizeChoices(rawChoices)
         const multiSelect = payload?.multi_select === true
+        // Batch (multi-question) clarify: `questions` replaces question/choices
+        // on the wire. `answers` rides along only on reconnect replay, carrying
+        // the per-question locks the server already accepted.
+        const questions = normalizeQuestions(payload?.questions)
+        const lockedAnswers =
+          typeof payload?.answers === 'object' && payload?.answers !== null
+            ? Object.fromEntries(
+                Object.entries(payload.answers as Record<string, unknown>).filter(
+                  (entry): entry is [string, string] => typeof entry[1] === 'string'
+                )
+              )
+            : undefined
 
-        if (requestId && question) {
+        if (requestId && questions.length > 0) {
+          setClarifyRequest({
+            choices: null,
+            lockedAnswers,
+            multiSelect: false,
+            question: '',
+            questions,
+            requestId,
+            sessionId: sessionId ?? null
+          })
+
+          if (sessionId) {
+            // Same hydration-race guard as the single-question path below: the
+            // form mounts from the tool row, so upsert a stable one keyed by
+            // the request id in case tool.start was missed.
+            upsertToolCall(
+              sessionId,
+              {
+                args: {
+                  questions: questions.map(q => ({
+                    choices: q.choices ?? undefined,
+                    multi_select: q.multiSelect || undefined,
+                    question: q.question
+                  }))
+                },
+                name: 'clarify',
+                tool_id: requestId
+              },
+              'running',
+              event.type,
+              occurredAt
+            )
+            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+
+            if (sessionId === activeSessionIdRef.current) {
+              requestScrollToBottom()
+            }
+          }
+
+          dispatchNativeNotification({
+            body: questions.map(q => q.question).join(' · '),
+            kind: 'input',
+            sessionId,
+            title: translateNow('notifications.native.inputTitle')
+          })
+        } else if (requestId && question) {
           if (rawChoices != null && choices.length === 0) {
             warnDroppedChoices('gateway', question, rawChoices)
           }

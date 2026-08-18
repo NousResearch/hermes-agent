@@ -9977,6 +9977,54 @@ def _fail_inflight_turn(
     session["inflight_turn"] = turn
 
 
+_TURN_FAILURE_DETAIL_LIMIT = 240
+
+
+def _turn_failure_detail(error: Any, reason: Any = None) -> str:
+    """Render why a turn failed, for the ``tui turn finished`` bookend.
+
+    Returns ``""`` when there is nothing to say, otherwise a fragment that
+    already carries its own leading space, so the caller can append it to the
+    record unconditionally.
+
+    #86865 added the bookend to trace compression rotations, so it logs
+    identities and a coarse ``status`` and deliberately logs no content.
+    #89117 is what the missing cause costs: a report consisting of two lines
+    reading ``status=error error_retained=True duration=0.9s`` with no way to
+    tell a provider 4xx from a budget wall from a crashed finalizer. The
+    returned-error path -- the one a 0.9 s failure almost always takes --
+    emits no other log line at all; only the exception path prints to stderr,
+    which is why the quiet failures are the ones that get filed.
+
+    Content discipline follows #86865's: the prompt is never logged, and the
+    provider's message is redacted and truncated before it reaches a log file,
+    because a 4xx body can quote the request that produced it.
+    """
+    reason_text = str(reason or "").strip()
+    message = str(error or "").strip()
+    if isinstance(error, BaseException):
+        message = message or type(error).__name__
+    if not message and not reason_text:
+        return ""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        message = redact_sensitive_text(message, force=True)
+    except Exception:
+        # A redactor that cannot run must not be able to leak the raw
+        # message into the log by failing open.
+        message = "<unredactable>"
+    message = " ".join(message.split())
+    if len(message) > _TURN_FAILURE_DETAIL_LIMIT:
+        message = message[:_TURN_FAILURE_DETAIL_LIMIT] + "\u2026"
+    out = ""
+    if reason_text:
+        out += " failure_reason=%s" % " ".join(reason_text.split())
+    if message:
+        out += " cause=%r" % message
+    return out
+
+
 # ── Auto-continue: resume a turn killed by a process/machine death ────
 #
 # A turn that concludes — success, handled error, interrupt — clears its
@@ -12988,6 +13036,11 @@ def _run_prompt_submit(
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
         turn_error_retained = False
+        # One-line cause for the "tui turn finished" bookend below. The record
+        # fires from a `finally`, where neither `result` nor the caught
+        # exception is reliably in scope, so both failure paths stash their
+        # cause here on the way past.
+        turn_error_detail = ""
         # Durable crash marker: written before the turn runs, retired the
         # moment its outcome reaches the client (see _retire_turn_marker).
         # Any concluded turn — success, handled error, interrupt — retires
@@ -13507,6 +13560,10 @@ def _run_prompt_submit(
                         error_surface=_error_surface,
                     )
                     turn_error_retained = True
+                    turn_error_detail = _turn_failure_detail(
+                        (result.get("error") if isinstance(result, dict) else raw),
+                        (result.get("failure_reason") if isinstance(result, dict) else None),
+                    )
                 else:
                     _clear_inflight_turn(session)
             if status == "error":
@@ -13735,6 +13792,7 @@ def _run_prompt_submit(
                     retire_marker=terminal_receipt_committed,
                 )
                 turn_error_retained = True
+                turn_error_detail = _turn_failure_detail(e, type(e).__name__)
             except Exception as emit_exc:
                 print(
                     f"[gateway-turn] terminal error emit failed: "
@@ -13810,7 +13868,8 @@ def _run_prompt_submit(
             # without reaching this finally.
             logger.info(
                 "tui turn finished: ui_session=%s session_key=%s "
-                "agent_session_id=%s status=%s error_retained=%s duration=%.1fs",
+                "agent_session_id=%s status=%s error_retained=%s duration=%.1fs"
+                "%s",
                 sid,
                 session.get("session_key") or "",
                 getattr(agent, "session_id", "") or "",
@@ -13825,6 +13884,7 @@ def _run_prompt_submit(
                 else ("error" if turn_error_retained else "complete"),
                 turn_error_retained,
                 time.monotonic() - _turn_started_monotonic,
+                turn_error_detail,
             )
             # Backstop for turns that never reached a terminal frame (the
             # frame paths retire the marker as they emit).

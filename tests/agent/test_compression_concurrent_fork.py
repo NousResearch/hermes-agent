@@ -593,7 +593,7 @@ def test_durable_message_committed_before_lease_is_adopted(
 
     # Frontend takes its snapshot, then another producer commits before this
     # compressor acquires the lease.
-    stale_snapshot = [{"role": "user", "content": "old durable"}]
+    stale_snapshot = db.get_messages_as_conversation(parent_sid, include_row_ids=True)
     db.append_message(parent_sid, "assistant", "late committed before lease")
     agent = _build_agent_with_db(db, parent_sid)
 

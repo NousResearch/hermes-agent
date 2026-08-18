@@ -3990,8 +3990,18 @@ class SessionStore:
             # user;user wedge (e.g. a turn that persisted no assistant row)
             # would otherwise re-trigger the pre-request repair on every
             # request forever — heal it once at the restore boundary.
+            #
+            # include_row_ids: the transcript feeds compress_context's
+            # preflight durable-adoption watermark (_snap_max_id over
+            # _row_id, conversation_compression.py). Without row ids the
+            # watermark is unreachable and adoption is silently dead on
+            # every gateway surface that builds its history here
+            # (run_conversation, /compress msgs, hygiene _hyg_msgs) — the
+            # #14694 wedge shape. _row_id is underscore-prefixed and
+            # stripped by every transport before the wire, so this changes
+            # only in-process identity.
             return self._db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                session_id, repair_alternation=True, include_row_ids=True
             )
         except Exception as e:
             # A failed read must be distinguishable from an empty transcript:

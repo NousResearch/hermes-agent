@@ -8584,6 +8584,11 @@ class AIAgent:
                     conversation_history = _turn_db.get_messages_as_conversation(
                         self.session_id,
                         repair_alternation=True,
+                        # Row ids feed compress_context's preflight adoption
+                        # watermark (_snap_max_id); without them a lease-wait
+                        # reload can never prove durable freshness and the
+                        # crash-after-commit re-anchor (W1 class A) fails
+                        # closed on this surface.
                         include_row_ids=True,
                     )
 

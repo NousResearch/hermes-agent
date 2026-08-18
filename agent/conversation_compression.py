@@ -2855,47 +2855,139 @@ def compress_context(
                 type(_lock_db), "get_messages_as_conversation", None
             )
             if callable(durable_loader):
-                durable_parent = durable_loader(_lock_db, _lock_sid)
-                if isinstance(durable_parent, list) and len(durable_parent) > len(messages):
-                    # The in-memory transcript carries the CURRENT turn's
-                    # un-persisted user tail (anchored by
-                    # _persist_user_message_idx) that the durable snapshot read
-                    # above does not contain yet. Flush that tail through the
-                    # normal rotation-boundary path (conversation_history = the
-                    # already-durable prefix, #68196 boundary) BEFORE adopting,
-                    # then re-read the durable parent so the adopted snapshot
-                    # includes the live input. If the flush fails (or the
-                    # anchor is unknown), skip adoption entirely: replacing
-                    # the in-memory transcript with a snapshot that lacks the
-                    # user's input would silently drop it from the summarized
-                    # and rotated history (#adopt-live-tail).
-                    _preflush_idx = getattr(agent, "_persist_user_message_idx", None)
-                    _preflush_ok = False
-                    if (
-                        isinstance(_preflush_idx, int)
-                        and 0 <= _preflush_idx < len(messages)
+                # CHANGE 1 — monotonic row-id watermark (replaces bare length).
+                # The DB orders rows by AUTOINCREMENT id (hermes_state.py
+                # L10105-10113), so insertion order is id-monotonic while
+                # active-row COUNT is not (rotation ends a parent and publishes
+                # a child with fewer but strictly NEWER rows). "Longer" is
+                # therefore not "newer": capture the highest durable row id the
+                # caller's snapshot has seen, and adopt only when the durable
+                # reload proves strictly newer rows exist.
+                _snap_max_id = max(
+                    (
+                        m.get("_row_id")
+                        for m in messages
+                        if isinstance(m, dict) and m.get("_row_id") is not None
+                    ),
+                    default=None,
+                )
+
+                def _is_pure_append(durable_parent: Any) -> bool:
+                    """Strictly-newer durable rows than the snapshot's
+                    watermark, i.e. the durable side is a pure APPEND of rows
+                    the snapshot has never seen. No length comparison: a
+                    rotated CHILD is shorter but strictly newer, and adopting
+                    it is exactly the re-anchor a crash-after-commit retry
+                    needs (the snapshot references already-rotated content).
+                    A missing snapshot watermark (no _row_id on any in-memory
+                    dict — CLI restore path) cannot prove freshness: fail
+                    closed, never adopt."""
+                    if not isinstance(durable_parent, list):
+                        return False
+                    if _snap_max_id is None:
+                        return False
+                    _durable_max_id = max(
+                        (
+                            m.get("_row_id")
+                            for m in durable_parent
+                            if isinstance(m, dict)
+                            and m.get("_row_id") is not None
+                        ),
+                        default=None,
+                    )
+                    return (
+                        _durable_max_id is not None
+                        and _durable_max_id > _snap_max_id
+                    )
+
+                durable_parent = durable_loader(
+                    _lock_db, _lock_sid, include_row_ids=True  # CHANGE 2
+                )
+                if _is_pure_append(durable_parent):
+                    # CHANGE 3 — liveness re-check (W1 class B): the L2709 gate
+                    # deflects only end_reason == 'compression'. Re-verify the
+                    # parent is NOT ended by ANY path in this lock window
+                    # before adopting or flushing; an ended session's rows are
+                    # frozen/orphaned and must never become the compress input.
+                    _session_getter = getattr(type(_lock_db), "get_session", None)
+                    _parent_row = (
+                        _session_getter(_lock_db, _lock_sid)
+                        if callable(_session_getter)
+                        else None
+                    )
+                    if _parent_row is None:
+                        # CHANGE 7 — fail closed on an unreadable session row.
+                        # If the getter is unavailable or returns no row, we
+                        # cannot prove the session is live; adopting rows whose
+                        # liveness is unknown risks feeding an ended session's
+                        # frozen/orphaned rows to the summarizer. Skip adoption.
+                        logger.warning(
+                            "compression: session=%s liveness unverifiable "
+                            "(get_session returned no row); skipping "
+                            "durable-snapshot adoption",
+                            _lock_sid,
+                        )
+                        _preflush_ok = False
+                    elif (
+                        _parent_row is not None
+                        and _parent_row.get("ended_at") is not None
                     ):
-                        try:
-                            _preflush_ok = agent._flush_messages_to_session_db(
-                                messages,
-                                conversation_history=messages[:_preflush_idx],
-                            )
-                        except Exception:
-                            _preflush_ok = False
+                        logger.info(
+                            "compression: session=%s ended (end_reason=%s) "
+                            "after lease acquisition; skipping durable-snapshot "
+                            "adoption so ended-session rows are never fed to "
+                            "the summarizer",
+                            _lock_sid,
+                            _parent_row.get("end_reason"),
+                        )
+                        _preflush_ok = False
                     else:
-                        # No known un-persisted tail (anchor unset or already
-                        # at the end of the snapshot): the in-memory transcript
-                        # is fully durable, so adopting the longer parent
-                        # cannot drop live input — keep the legacy
-                        # adopt-directly behavior for that shape
-                        # (test_compression_concurrent_fork).
-                        _preflush_ok = True
+                        # The in-memory transcript carries the CURRENT turn's
+                        # un-persisted user tail (anchored by
+                        # _persist_user_message_idx) that the durable snapshot
+                        # read above does not contain yet. Flush that tail
+                        # through the normal rotation-boundary path
+                        # (conversation_history = the already-durable prefix,
+                        # #68196 boundary) BEFORE adopting, then re-read the
+                        # durable parent so the adopted snapshot includes the
+                        # live input. If the flush fails (or the anchor is
+                        # unknown), skip adoption entirely: replacing the
+                        # in-memory transcript with a snapshot that lacks the
+                        # user's input would silently drop it from the
+                        # summarized and rotated history (#adopt-live-tail).
+                        _preflush_idx = getattr(
+                            agent, "_persist_user_message_idx", None
+                        )
+                        _preflush_ok = False
+                        if (
+                            isinstance(_preflush_idx, int)
+                            and 0 <= _preflush_idx < len(messages)
+                        ):
+                            try:
+                                _preflush_ok = agent._flush_messages_to_session_db(
+                                    messages,
+                                    conversation_history=messages[:_preflush_idx],
+                                )
+                            except Exception:
+                                _preflush_ok = False
+                        else:
+                            # CHANGE 4 — fail-closed unset anchor (W1 class C).
+                            # No anchor: adopt-directly is safe ONLY when every
+                            # message is already durable, i.e. every dict
+                            # carries a _row_id. Otherwise an un-persisted live
+                            # tail exists and adoption would drop it — skip.
+                            _snap_fully_durable = all(
+                                isinstance(m, dict) and m.get("_row_id") is not None
+                                for m in messages
+                            )
+                            _preflush_ok = _snap_fully_durable
                     if not _preflush_ok:
                         logger.warning(
                             "compression: session=%s grew before lease "
                             "(%d → %d msgs) but the pre-adoption flush of the "
-                            "live tail failed; skipping durable-snapshot "
-                            "adoption so un-persisted user input is kept",
+                            "live tail failed (or the session ended); skipping "
+                            "durable-snapshot adoption so un-persisted user "
+                            "input is kept",
                             _lock_sid,
                             len(messages),
                             len(durable_parent),
@@ -2903,11 +2995,49 @@ def compress_context(
                     else:
                         # Re-read after the flush so the adopted snapshot
                         # carries the just-persisted tail.
-                        durable_parent = durable_loader(_lock_db, _lock_sid)
+                        durable_parent = durable_loader(
+                            _lock_db, _lock_sid, include_row_ids=True  # CHANGE 2
+                        )
                     if (
                         _preflush_ok
                         and isinstance(durable_parent, list)
-                        and len(durable_parent) > len(messages)
+                        and _is_pure_append(durable_parent)  # CHANGE 5
+                    ):
+                        # CHANGE 6 — re-verify liveness at the adopt decision.
+                        # The pre-flush ended_at check above ran before the
+                        # flush + re-read; end_session()/append_message() do
+                        # not take the compression lock, so a concurrent
+                        # gateway timeout/hygiene end can land between the
+                        # pre-flush check and here. Re-read the parent row in
+                        # this window and skip adoption if it ended — else an
+                        # ended session's rows (incl. the just-flushed tail)
+                        # would be fed to the summarizer.
+                        if callable(_session_getter):
+                            _parent_row_after = _session_getter(
+                                _lock_db, _lock_sid
+                            )
+                        else:
+                            _parent_row_after = None
+                        if (
+                            _parent_row_after is None
+                            or _parent_row_after.get("ended_at") is not None
+                        ):
+                            logger.info(
+                                "compression: session=%s ended or unreadable "
+                                "(end_reason=%s) after pre-adoption flush; "
+                                "skipping durable-snapshot adoption so "
+                                "ended-session rows are never fed to the "
+                                "summarizer",
+                                _lock_sid,
+                                _parent_row_after.get("end_reason")
+                                if _parent_row_after is not None
+                                else None,
+                            )
+                            _preflush_ok = False
+                    if (
+                        _preflush_ok
+                        and isinstance(durable_parent, list)
+                        and _is_pure_append(durable_parent)  # CHANGE 5
                     ):
                         logger.info(
                             "compression: session=%s grew before lease "

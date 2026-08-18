@@ -1296,6 +1296,14 @@ def _build_replay_entry(
     providers.
     """
     entry: Dict[str, Any] = {"role": role, "content": content}
+    # Carry the durable row id through replay: the preflight compression
+    # watermark needs _row_id on the in-memory snapshot to prove durable
+    # freshness (conversation_compression.py _snap_max_id). Without it the
+    # main-loop auto-compress surface stays watermark-dead for plain-text
+    # sessions. _row_id is underscore-prefixed and stripped by every
+    # transport before the wire, so this changes only in-process identity.
+    if "_row_id" in msg:
+        entry["_row_id"] = msg["_row_id"]
     # api_content sidecar (persist-what-you-send, prompt-cache stability):
     # forward the exact bytes previously sent to the API for this message so
     # the agent's api_messages build can substitute them and keep the request

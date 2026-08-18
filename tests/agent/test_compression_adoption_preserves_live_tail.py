@@ -97,7 +97,7 @@ def _seed_drifted_session(db: SessionDB, session_id: str):
     db.append_message(session_id, "user", "persisted question")
     db.append_message(session_id, "assistant", "persisted answer")
 
-    loaded = db.get_messages_as_conversation(session_id)
+    loaded = db.get_messages_as_conversation(session_id, include_row_ids=True)
     messages = [*loaded, {"role": "user", "content": "LIVE USER INSTRUCTION"}]
 
     agent = _build_agent_with_db(db, session_id)

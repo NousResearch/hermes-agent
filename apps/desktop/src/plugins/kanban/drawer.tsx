@@ -425,15 +425,20 @@ function AttachmentsSection({
 }) {
   const k = useKanban()
   const fileRef = useRef<HTMLInputElement>(null)
-  const [preview, setPreview] = useState<null | { dataUrl: string; filename: string }>(null)
+  const [preview, setPreview] = useState<null | { contentType: string; dataUrl: string; filename: string }>(null)
+  const [pendingId, setPendingId] = useState<null | number | string>(null)
 
   const openAttachment = async (attachment: KanbanAttachment) => {
+    setPendingId(attachment.id)
+
     try {
       const result = await previewAttachment(attachment.id)
 
-      setPreview({ dataUrl: result.data_url, filename: result.filename })
+      setPreview({ contentType: result.content_type, dataUrl: result.data_url, filename: result.filename })
     } catch (error) {
       host.notifyError(error, k.attachmentPreviewUnavailable)
+    } finally {
+      setPendingId(null)
     }
   }
 
@@ -474,12 +479,17 @@ function AttachmentsSection({
             <li className="flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-tertiary)" key={attachment.id}>
               <Codicon name="file" size="0.75rem" />
               <button
-                className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline"
+                aria-busy={pendingId === attachment.id}
+                className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline disabled:opacity-60"
+                disabled={pendingId === attachment.id}
                 onClick={() => void openAttachment(attachment)}
                 type="button"
               >
                 {attachment.filename}
               </button>
+              {pendingId === attachment.id ? (
+                <span className="shrink-0 text-(--ui-text-quaternary)">{k.attachmentPreviewLoading}</span>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -491,12 +501,20 @@ function AttachmentsSection({
           <DialogHeader>
             <DialogTitle>{preview?.filename ?? k.attachmentPreview}</DialogTitle>
           </DialogHeader>
-          {preview?.dataUrl.startsWith('data:image/') ? (
+          {preview?.contentType.startsWith('image/') ? (
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-md bg-(--ui-surface-inset) p-3">
               <img alt={preview.filename} className="max-h-full max-w-full object-contain" src={preview.dataUrl} />
             </div>
           ) : preview ? (
-            <iframe className="min-h-0 flex-1 rounded-md border border-border" src={preview.dataUrl} title={preview.filename} />
+            // The server only ever returns inert, whitelisted types here, and the
+            // sandbox keeps scripts, forms, and top-level navigation off the table
+            // even if that whitelist ever regresses.
+            <iframe
+              className="min-h-0 flex-1 rounded-md border border-border"
+              sandbox=""
+              src={preview.dataUrl}
+              title={preview.filename}
+            />
           ) : null}
         </DialogContent>
       </Dialog>

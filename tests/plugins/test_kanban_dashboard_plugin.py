@@ -98,9 +98,62 @@ def test_attachment_preview_streams_inline_without_exposing_storage_path(client)
     )
     assert preview.status_code == 200
     assert preview.json() == {
+        "content_type": "image/png",
         "data_url": "data:image/png;base64,iVBORw0KGgo=",
         "filename": "evidence.png",
     }
+
+
+def test_attachment_preview_rejects_active_content_types(client):
+    create = client.post("/api/plugins/kanban/tasks", json={"title": "Hostile evidence"})
+    task_id = create.json()["task"]["id"]
+
+    for filename, content_type in (
+        ("payload.html", "text/html"),
+        ("payload.svg", "image/svg+xml"),
+        ("payload.bin", "application/octet-stream"),
+    ):
+        upload = client.post(
+            f"/api/plugins/kanban/tasks/{task_id}/attachments",
+            files={"file": (filename, b"<script>alert(1)</script>", content_type)},
+        )
+        attachment_id = upload.json()["attachment"]["id"]
+
+        preview = client.get(f"/api/plugins/kanban/attachments/{attachment_id}/preview")
+        assert preview.status_code == 415, filename
+
+        # The blob is still retrievable through the download endpoint.
+        assert client.get(f"/api/plugins/kanban/attachments/{attachment_id}").status_code == 200
+
+
+def test_attachment_preview_rejects_payloads_over_the_preview_cap(client):
+    from plugins.kanban.dashboard.plugin_api import KANBAN_PREVIEW_MAX_BYTES
+
+    create = client.post("/api/plugins/kanban/tasks", json={"title": "Large evidence"})
+    task_id = create.json()["task"]["id"]
+    upload = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": ("big.png", b"\x00" * (KANBAN_PREVIEW_MAX_BYTES + 1), "image/png")},
+    )
+    attachment_id = upload.json()["attachment"]["id"]
+
+    preview = client.get(f"/api/plugins/kanban/attachments/{attachment_id}/preview")
+    assert preview.status_code == 413
+
+
+def test_attachment_preview_normalizes_content_type_parameters(client):
+    create = client.post("/api/plugins/kanban/tasks", json={"title": "Charset evidence"})
+    task_id = create.json()["task"]["id"]
+    upload = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": ("notes.txt", b"hello", "Text/Plain; charset=utf-8")},
+    )
+    attachment_id = upload.json()["attachment"]["id"]
+
+    preview = client.get(f"/api/plugins/kanban/attachments/{attachment_id}/preview")
+    assert preview.status_code == 200
+    assert preview.json()["content_type"] == "text/plain"
+    assert preview.json()["data_url"].startswith("data:text/plain;base64,")
 
 
 # ---------------------------------------------------------------------------

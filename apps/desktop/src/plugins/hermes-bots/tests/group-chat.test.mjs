@@ -16,7 +16,15 @@ function load(turnScript) {
     return slot
   }
   const calls = []
-  const transcripts = new Map()
+  const sessions = new Map()
+  const runtimeToStored = new Map()
+  const titleToStored = new Map()
+  let sessionSequence = 0
+
+  const resolveSession = (profile, target) => {
+    const stored = runtimeToStored.get(target) || (sessions.has(target) ? target : titleToStored.get(`${profile}::${target}`))
+    return stored ? sessions.get(stored) : null
+  }
   const context = {
     atom,
     setTimeout: fn => {
@@ -30,21 +38,44 @@ function load(turnScript) {
     host: {
       request: async (method, params) => {
         if (method === 'session.create') {
-          return { session_id: `rt-${params.profile}`, stored_session_id: `sid-${params.profile}`, message_count: 0, messages: [] }
+          sessionSequence += 1
+          const stored = `sid-${params.profile}-${sessionSequence}`
+          const runtime = `rt-${params.profile}-${sessionSequence}`
+          const session = { stored, runtime, profile: params.profile, title: params.title, messages: [] }
+          sessions.set(stored, session)
+          runtimeToStored.set(runtime, stored)
+          titleToStored.set(`${params.profile}::${params.title}`, stored)
+          return { session_id: runtime, stored_session_id: stored, message_count: 0, messages: [] }
         }
         if (method === 'session.resume') {
-          const profile = params.profile
-          const transcript = transcripts.get(profile) || []
-          return { session_id: `rt-${profile}`, messages: transcript, inflight: false, running: false }
+          const session = resolveSession(params.profile, params.session_id)
+          if (!session) {
+            throw new Error(`session not found: ${params.session_id}`)
+          }
+          return {
+            session_id: session.runtime,
+            session_key: session.stored,
+            message_count: session.messages.length,
+            messages: [...session.messages],
+            inflight: false,
+            running: false
+          }
         }
         if (method === 'prompt.submit') {
-          const profile = String(params.session_id).replace(/^rt-/, '')
-          const transcript = transcripts.get(profile) || []
-          transcript.push({ role: 'user', content: params.text })
-          calls.push({ profile, prompt: params.text })
-          const reply = turnScript(profile, params.text, calls.length)
-          transcript.push({ role: 'assistant', content: reply })
-          transcripts.set(profile, transcript)
+          const session = resolveSession(null, params.session_id)
+          if (!session) {
+            throw new Error(`runtime session not found: ${params.session_id}`)
+          }
+          session.messages.push({ role: 'user', content: params.text })
+          calls.push({
+            profile: session.profile,
+            prompt: params.text,
+            runtime: session.runtime,
+            stored: session.stored,
+            title: session.title
+          })
+          const reply = turnScript(session.profile, params.text, calls.length, session)
+          session.messages.push({ role: 'assistant', content: reply })
           return {}
         }
         return {}
@@ -70,7 +101,7 @@ function load(turnScript) {
     storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
     register: () => undefined
   })
-  return { ...context.__gc, calls, storageWrites, transcripts }
+  return { ...context.__gc, calls, sessions, storageWrites }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }, { name: 'ops', title: 'The Ops' }]
@@ -199,6 +230,67 @@ test('delta injection: a second user send only feeds members the NEW messages', 
   const second = prompts.slice(firstCount).find(p => p.prompt.includes('second message'))
   assert.ok(second, 'second turn ran')
   assert.equal(second.prompt.includes('first message'), false, 'first message was already seen — not re-injected')
+})
+
+test('concurrent groups sharing one member keep sessions, deltas, and context isolated', async () => {
+  const gc = load(() => '(pass)')
+  const sharedMember = [{ name: 'research', title: '' }]
+
+  // Start both rooms without waiting for either drive to finish.
+  gc.sendToGroupChat('Alpha', sharedMember, 'ALPHA_ONLY_1')
+  gc.sendToGroupChat('Beta', sharedMember, 'BETA_ONLY_1')
+  for (let i = 0; i < 400; i++) {
+    const rooms = gc.$groupChats.get()
+    if (!rooms.Alpha?.running && !rooms.Beta?.running) {
+      break
+    }
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  const alphaFirst = gc.calls.find(call => call.title === 'Group: Alpha')
+  const betaFirst = gc.calls.find(call => call.title === 'Group: Beta')
+  assert.ok(alphaFirst && betaFirst, 'the shared member took one turn in each room')
+  assert.notEqual(alphaFirst.stored, betaFirst.stored, 'each room owns a distinct stored session')
+  assert.notEqual(alphaFirst.runtime, betaFirst.runtime, 'each room owns a distinct runtime session')
+  assert.equal(alphaFirst.prompt.includes('ALPHA_ONLY_1'), true)
+  assert.equal(alphaFirst.prompt.includes('BETA_ONLY_1'), false)
+  assert.equal(betaFirst.prompt.includes('BETA_ONLY_1'), true)
+  assert.equal(betaFirst.prompt.includes('ALPHA_ONLY_1'), false)
+
+  const roomsAfterFirst = gc.$groupChats.get()
+  assert.equal(roomsAfterFirst.Alpha.sessions.research, alphaFirst.stored)
+  assert.equal(roomsAfterFirst.Beta.sessions.research, betaFirst.stored)
+
+  // Interleave a second pair. Each room resumes its own session and receives
+  // only its unseen room delta, never the sibling room's messages.
+  const firstCallCount = gc.calls.length
+  gc.sendToGroupChat('Alpha', sharedMember, 'ALPHA_ONLY_2')
+  gc.sendToGroupChat('Beta', sharedMember, 'BETA_ONLY_2')
+  for (let i = 0; i < 400; i++) {
+    const rooms = gc.$groupChats.get()
+    if (!rooms.Alpha?.running && !rooms.Beta?.running) {
+      break
+    }
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  const secondCalls = gc.calls.slice(firstCallCount)
+  const alphaSecond = secondCalls.find(call => call.title === 'Group: Alpha')
+  const betaSecond = secondCalls.find(call => call.title === 'Group: Beta')
+  assert.ok(alphaSecond && betaSecond, 'both rooms resumed for the second pair')
+  assert.equal(alphaSecond.stored, alphaFirst.stored)
+  assert.equal(betaSecond.stored, betaFirst.stored)
+  assert.equal(alphaSecond.prompt.includes('ALPHA_ONLY_2'), true)
+  assert.equal(alphaSecond.prompt.includes('ALPHA_ONLY_1'), false, 'Alpha first delta was already seen')
+  assert.equal(alphaSecond.prompt.includes('BETA_ONLY_2'), false)
+  assert.equal(betaSecond.prompt.includes('BETA_ONLY_2'), true)
+  assert.equal(betaSecond.prompt.includes('BETA_ONLY_1'), false, 'Beta first delta was already seen')
+  assert.equal(betaSecond.prompt.includes('ALPHA_ONLY_2'), false)
+
+  const alphaSession = gc.sessions.get(alphaFirst.stored)
+  const betaSession = gc.sessions.get(betaFirst.stored)
+  assert.equal(alphaSession.messages.some(message => String(message.content).includes('BETA_ONLY')), false)
+  assert.equal(betaSession.messages.some(message => String(message.content).includes('ALPHA_ONLY')), false)
 })
 
 test('needs-you: a member reply mentioning @user badges the group; user send clears it', async () => {
@@ -420,10 +512,16 @@ test('stranded harvest: a timed-out turn whose reply landed late posts into the 
     return r
   })
   // The member's session finished after we stopped waiting.
-  gc.transcripts.set('research', [
-    { role: 'user', content: 'the turn prompt' },
-    { role: 'assistant', content: 'Here is the full research result, delivered late.' }
-  ])
+  gc.sessions.set('sid-research', {
+    stored: 'sid-research',
+    runtime: 'rt-research',
+    profile: 'research',
+    title: 'Group: Late',
+    messages: [
+      { role: 'user', content: 'the turn prompt' },
+      { role: 'assistant', content: 'Here is the full research result, delivered late.' }
+    ]
+  })
 
   await gc.harvestStrandedGroupReply('Late', { name: 'research', title: '' })
 
@@ -442,10 +540,17 @@ test('stranded harvest: a late (pass) or no-new-message consumes the marker with
     r.sessions = { builder: 'sid-builder' }
     return r
   })
-  gc.transcripts.set('builder', [
-    { role: 'user', content: 'prompt' },
-    { role: 'assistant', content: '(pass)' }
-  ])
+  gc.sessions.set('sid-builder', {
+    stored: 'sid-builder',
+    runtime: 'rt-builder',
+    profile: 'builder',
+    title: 'Group: Quiet2',
+    messages: [
+      { role: 'user', content: 'p1' },
+      { role: 'user', content: 'prompt' },
+      { role: 'assistant', content: '(pass)' }
+    ]
+  })
 
   await gc.harvestStrandedGroupReply('Quiet2', { name: 'builder', title: '' })
 

@@ -187,6 +187,10 @@ describe('createMediaProtocolHandler', () => {
 
     for (const rawUrl of [
       'hermes-media://plugin/studio-rail/outputs/%2e%2e/stream',
+      'hermes-media://plugin/%252e%252e/outputs/clip/stream',
+      'hermes-media://plugin/studio-rail/outputs/%252e%252e/stream',
+      'hermes-media://plugin/studio-rail/outputs/%252F/stream',
+      'hermes-media://plugin/studio-rail/outputs/%255c/stream',
       'hermes-media://plugin/studio-rail/outputs/%zz/stream',
       'hermes-media://plugin/studio-rail/outputs/clip/stream?unexpected=value',
       'hermes-media://plugin/studio-rail/outputs/clip/stream?profile=one&profile=two',

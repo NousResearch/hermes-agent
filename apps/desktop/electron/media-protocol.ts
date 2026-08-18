@@ -46,6 +46,30 @@ export interface MediaProtocolDependencies {
 
 const PLUGIN_MEDIA_QUERY_PARAMS = new Set(['connectionId', 'profile'])
 
+function assertSafePluginMediaSegment(segment: string, rawUrl: string): void {
+  let inspected = segment
+
+  while (true) {
+    if (!inspected || inspected === '.' || inspected === '..' || inspected.includes('/') || inspected.includes('\\')) {
+      throw new Error(`Unsafe plugin media URL: ${rawUrl}`)
+    }
+
+    // A raw `%252e` becomes `%2e` after the first decode. Inspect nested
+    // escapes solely for path syntax so a later URL/server decode cannot turn
+    // an accepted segment into traversal. A literal malformed percent is safe
+    // once the original URL segment itself decoded successfully.
+    if (!/%[0-9a-f]{2}/i.test(inspected)) {
+      return
+    }
+
+    try {
+      inspected = decodeURIComponent(inspected)
+    } catch {
+      return
+    }
+  }
+}
+
 function decodePluginMediaSegment(rawSegment: string, rawUrl: string): string {
   let segment: string
 
@@ -55,9 +79,7 @@ function decodePluginMediaSegment(rawSegment: string, rawUrl: string): string {
     throw new Error(`Malformed plugin media URL: ${rawUrl}`)
   }
 
-  if (!segment || segment === '.' || segment === '..' || segment.includes('/') || segment.includes('\\')) {
-    throw new Error(`Unsafe plugin media URL: ${rawUrl}`)
-  }
+  assertSafePluginMediaSegment(segment, rawUrl)
 
   return segment
 }

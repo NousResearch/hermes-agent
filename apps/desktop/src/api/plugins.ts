@@ -20,6 +20,29 @@ async function activeConnection(): Promise<HermesConnection> {
   return window.hermesDesktop.getConnection(getApiRequestProfile())
 }
 
+function assertSafePluginMediaSegment(segment: string, path: string, message: string): void {
+  let inspected = segment
+
+  while (true) {
+    if (!inspected || inspected === '.' || inspected === '..' || inspected.includes('/') || inspected.includes('\\')) {
+      throw new Error(`${message} in "${path}"`)
+    }
+
+    // `%252e` decodes once to `%2e`. Inspect nested escapes for path syntax
+    // before minting a URL, while preserving literal percent filenames whose
+    // follow-up decode is malformed.
+    if (!/%[0-9a-f]{2}/i.test(inspected)) {
+      return
+    }
+
+    try {
+      inspected = decodeURIComponent(inspected)
+    } catch {
+      return
+    }
+  }
+}
+
 function pluginMediaPathSuffix(path: string): string {
   if (path.includes('?') || path.includes('#')) {
     throw new Error(`pluginMediaUrl: query and fragment are not allowed in "${path}"`)
@@ -40,9 +63,7 @@ function pluginMediaPathSuffix(path: string): string {
       throw new Error(`pluginMediaUrl: malformed path encoding in "${path}"`)
     }
 
-    if (!decoded || decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\')) {
-      throw new Error(`pluginMediaUrl: illegal path traversal in "${path}"`)
-    }
+    assertSafePluginMediaSegment(decoded, path, 'pluginMediaUrl: illegal path traversal')
 
     return encodeURIComponent(decoded)
   })
@@ -59,9 +80,7 @@ function pluginMediaId(pluginId: string): string {
     throw new Error(`pluginMediaUrl: invalid plugin id "${pluginId}"`)
   }
 
-  if (!decoded || decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\')) {
-    throw new Error(`pluginMediaUrl: invalid plugin id "${pluginId}"`)
-  }
+  assertSafePluginMediaSegment(decoded, pluginId, 'pluginMediaUrl: invalid plugin id')
 
   return encodeURIComponent(pluginId)
 }

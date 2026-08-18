@@ -61,6 +61,7 @@ describe('createPluginContext.mediaUrl', () => {
       const ctx = createPluginContext('studio-rail')
 
       expect(() => ctx.mediaUrl('/outputs/%2e%2e/stream')).toThrow('illegal path traversal')
+      expect(() => ctx.mediaUrl('/outputs/%252e%252e/stream')).toThrow('illegal path traversal')
     } finally {
       delete host.hermesDesktop
     }
@@ -75,6 +76,7 @@ describe('createPluginContext.mediaUrl', () => {
       const ctx = createPluginContext('../other-plugin')
 
       expect(() => ctx.mediaUrl('/outputs/clip/stream')).toThrow('invalid plugin id')
+      expect(() => createPluginContext('%252e%252e').mediaUrl('/outputs/clip/stream')).toThrow('invalid plugin id')
     } finally {
       delete host.hermesDesktop
     }

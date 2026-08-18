@@ -19,8 +19,8 @@
  * reads/writes the same config the chat PTY was launched from.
  */
 
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
-import { Brain } from "lucide-react";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Brain, ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -29,6 +29,7 @@ import {
   normalizeEffort,
   VALID_EFFORTS,
 } from "@/lib/reasoning-effort";
+import { ReasoningPickerDialog } from "@/components/ReasoningPickerDialog";
 
 interface ReasoningPickerProps {
   /** Current model string from config — re-reads the saved effort when it
@@ -52,6 +53,7 @@ export function ReasoningPicker({
   const [effort, setEffort] = useState("medium");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const lastFetchKeyRef = useRef("");
 
   useEffect(() => {
@@ -102,24 +104,36 @@ export function ReasoningPicker({
     [effort, onChanged, profile],
   );
 
+  const currentLabel =
+    EFFORT_OPTIONS.find((o) => o.value === effort)?.label ?? effort;
+
   return (
     <div className="flex items-center gap-2 px-3 py-2 text-xs">
       <div className="flex items-center gap-1.5 text-text-tertiary">
         <Brain className="h-3.5 w-3.5" />
         <span className="text-display tracking-wider">reasoning</span>
       </div>
-      <Select
-        className="ml-auto min-w-0"
+      <Button
+        ghost
+        size="sm"
         disabled={!loaded || saving}
-        onValueChange={onSelect}
-        value={effort}
+        onClick={() => setPickerOpen(true)}
+        className="ml-auto min-w-0 max-w-full px-0 py-0 normal-case tracking-normal text-xs font-medium hover:underline disabled:no-underline"
+        title="change reasoning effort"
       >
-        {EFFORT_OPTIONS.map((opt) => (
-          <SelectOption key={opt.value} value={opt.value}>
-            {opt.label}
-          </SelectOption>
-        ))}
-      </Select>
+        <span className="flex min-w-0 max-w-full items-center gap-1">
+          <span className="truncate">{currentLabel}</span>
+          <ChevronDown className="size-3.5 shrink-0 text-text-secondary" />
+        </span>
+      </Button>
+
+      {pickerOpen && (
+        <ReasoningPickerDialog
+          currentEffort={effort}
+          onSelect={onSelect}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </div>
   );
 }

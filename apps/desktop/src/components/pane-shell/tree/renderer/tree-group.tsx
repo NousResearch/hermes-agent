@@ -41,7 +41,6 @@ import {
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
-  $stripToolsRevision,
   $treeDragging,
   $treePaneEpochs,
   activateTreePane,
@@ -196,9 +195,6 @@ export function TreeGroup({
   // Reload epochs: only an explicit tab-menu Reload writes here, so this
   // subscription costs nothing on a normal render.
   const paneEpochs = useStore($treePaneEpochs)
-  // Re-read the active pane's contributed strip glyphs when their state changes
-  // (a toggle flipped, a DevTools handle registered).
-  useStore($stripToolsRevision)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
@@ -556,15 +552,6 @@ export function TreeGroup({
               // tile tab); the wrapper needs the key since it's the root.
               return <Fragment key={paneId}>{chrome.tabWrap ? chrome.tabWrap(tab) : tab}</Fragment>
             })}
-
-            {/* Bare glyphs after the last tab: whatever the ACTIVE pane
-                contributes (a preview's console / DevTools), then the "+".
-                All of them are PaneStripGlyph — same size, colour and hover,
-                because they're the same button. */}
-            {!node.minimized &&
-              paneChrome(active)
-                .stripTools?.()
-                .map(tool => <PaneStripGlyph key={tool.id} {...tool} />)}
 
             {/* Plain "+" after the last tab of a CHAT strip (the workspace
                 zone, or any zone holding session tabs) — always shown. Creates

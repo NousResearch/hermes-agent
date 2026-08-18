@@ -9,7 +9,6 @@
 
 import type * as React from 'react'
 
-import type { PaneStripTool } from '@/components/ui/pane-tab'
 import type { Contribution } from '@/contrib/types'
 
 import type { GroupNode, LayoutNode } from '../model'
@@ -91,12 +90,6 @@ interface PaneChrome extends PaneSizing {
    *  whole panes area, so the label subscribes for itself instead. Absent, or
    *  returning nothing, falls back to `title`. */
   tabTitle?: () => React.ReactNode
-  /** Glyph buttons this pane contributes to the strip, rendered after the last
-   *  tab (where "+" sits) while the pane is ACTIVE — controls that act on the
-   *  pane, not on any one tab: a preview's console / DevTools toggles. DATA, not
-   *  markup: `PaneStripGlyph` owns the styling so every glyph on every strip
-   *  matches. Read on each render, so a live store drives `active`/`disabled`. */
-  stripTools?: () => readonly PaneStripTool[]
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome

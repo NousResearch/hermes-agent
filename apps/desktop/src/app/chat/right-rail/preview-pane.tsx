@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { PanelEmpty } from '@/app/overlays/panel'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
@@ -13,6 +14,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
 
 import { ArtifactPreview } from './preview-artifact'
+import { PreviewBrowserBar } from './preview-browser-bar'
 import {
   clampConsoleHeight,
   compactUrl,
@@ -21,16 +23,22 @@ import {
   PreviewConsolePanel
 } from './preview-console'
 import { type ConsoleEntry } from './preview-console-state'
+import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
 import { registerPreviewPageReader } from './preview-reader'
-import { previewConsoleState, registerPreviewDevTools } from './preview-strip-tools'
+import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 
 type PreviewWebview = HTMLElement & {
+  canGoBack?: () => boolean
+  canGoForward?: () => boolean
   closeDevTools?: () => void
   executeJavaScript?: (code: string) => Promise<unknown>
   getTitle?: () => string
   getURL?: () => string
+  goBack?: () => void
+  goForward?: () => void
   isDevToolsOpened?: () => boolean
+  loadURL?: (url: string) => Promise<void>
   openDevTools?: () => void
   reload?: () => void
   reloadIgnoringCache?: () => void
@@ -40,8 +48,8 @@ interface PreviewPaneProps {
   embedded?: boolean
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
-  /** The preview tab this pane renders. Keys the per-tab console store and the
-   *  DevTools handle the STRIP glyphs read (see preview-strip-tools). */
+  /** The preview tab this pane renders. Keys the per-tab console store the
+   *  browser bar's console toggle and the console panel both read. */
   tabId?: string
   target: PreviewTarget
 }
@@ -143,6 +151,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const consoleOpen = useStore(consoleState.$open)
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
+  const [history, setHistory] = useState({ back: false, forward: false })
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
@@ -164,6 +173,11 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   )
 
   const currentLabel = compactUrl(currentUrl)
+
+  // Nothing loaded: no address yet, or the blank page itself. A webview on
+  // `about:blank` paints a white void that reads as broken next to the app's
+  // dark chrome, so the pane says what it is instead.
+  const isBlankPage = isWebPreview && !isRemoteHtml && (!currentUrl || /^about:blank\/?$/i.test(currentUrl))
 
   const previewLabel =
     target.label && target.label.replace(/\/$/, '') !== currentLabel.replace(/\/$/, '') ? target.label : currentLabel
@@ -305,24 +319,47 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.openDevTools()
   }, [])
 
-  // Publish the DevTools handle for THIS tab so the tab's own toggle can drive
-  // the webview (which only exists in here). Registered on every open/close
-  // change so the button's active state stays truthful.
+  const navigateTo = useCallback((url: string) => {
+    setLoadError(null)
+    // loadURL, not a `src` swap: `src` only reloads when the value CHANGES, so
+    // re-entering the address you're already on would do nothing. A rejected
+    // load is a real navigation failure the user has to see — `did-fail-load`
+    // doesn't fire for every rejection (a bad scheme rejects outright).
+    void Promise.resolve(webviewRef.current?.loadURL?.(url)).catch((error: unknown) => {
+      setLoadError({
+        description: error instanceof Error ? error.message : copy.unreachableDescription,
+        url
+      })
+      setLoading(false)
+    })
+  }, [copy.unreachableDescription])
+
+  const goBack = useCallback(() => {
+    const webview = webviewRef.current
+
+    if (webview?.canGoBack?.()) {
+      webview.goBack?.()
+    }
+  }, [])
+
+  const goForward = useCallback(() => {
+    const webview = webviewRef.current
+
+    if (webview?.canGoForward?.()) {
+      webview.goForward?.()
+    }
+  }, [])
+
+  // Gestures that land on the app's chrome (⌘R from the address bar, a mouse
+  // button over the frame). A gesture made INSIDE the page is answered by main
+  // against the focused guest — this renderer can't see into a webview.
   useEffect(() => {
-    if (!isWebPreview || !tabId) {
+    if (!isWebPreview || isRemoteHtml || !tabId) {
       return
     }
 
-    // Remote HTML renders in a sandboxed iframe, not a webview — there is no
-    // console and no DevTools to offer (same guard the titlebar tools had).
-    if (isRemoteHtml) {
-      return
-    }
-
-    registerPreviewDevTools(tabId, { open: devtoolsOpen, toggle: toggleDevTools })
-
-    return () => registerPreviewDevTools(tabId, null)
-  }, [devtoolsOpen, isRemoteHtml, isWebPreview, tabId, toggleDevTools])
+    return registerPreviewNav(tabId, { back: goBack, forward: goForward, reload: reloadPreview })
+  }, [goBack, goForward, isRemoteHtml, isWebPreview, reloadPreview, tabId])
 
   // Publish the PAGE reader for this tab (the read_preview tool): extract the
   // rendered page's title + visible text from the webview. innerText (not
@@ -544,6 +581,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webviewRef.current = null
     setCurrentUrl(target.url)
     setDevtoolsOpen(false)
+    setHistory({ back: false, forward: false })
     setLoadError(null)
     consoleState.reset()
     setLoading(true)
@@ -586,6 +624,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       }
     }
 
+    const syncHistory = () =>
+      setHistory({ back: webview.canGoBack?.() ?? false, forward: webview.canGoForward?.() ?? false })
+
     const onNavigate = (event: Event) => {
       const detail = event as Event & { url?: string }
 
@@ -593,6 +634,12 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         setLoadError(null)
         setCurrentUrl(detail.url)
       }
+
+      // Ask the webview rather than counting navigations: the guest page can
+      // move itself (redirects, history.pushState, a link into a new document),
+      // so it is the only thing that knows what its history holds. Wired to
+      // `did-navigate-in-page` too, or SPA route changes never update it.
+      syncHistory()
     }
 
     const onFail = (event: Event) => {
@@ -621,7 +668,14 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     const onStart = () => setLoading(true)
-    const onStop = () => setLoading(false)
+
+    const onStop = () => {
+      setLoading(false)
+      // A load that ends without a `did-navigate` (an in-place reload, a
+      // cancelled navigation) still settles the history — resync so the
+      // buttons can't be left stale.
+      syncHistory()
+    }
     // The WEBVIEW is the source of truth for DevTools, not our click handler:
     // closing the DevTools window itself fires devtools-closed with no click,
     // and the glyph was left stuck "on" when we tracked it locally.
@@ -653,7 +707,27 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, target.url])
 
   return (
-    <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">
+    <aside
+      className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground"
+      // Buttons 3/4 are a mouse's back/forward. Chromium delivers them to the
+      // renderer as a normal mouse event inside the app's own chrome (the
+      // guest page gets its own via `app-command` in main), and unhandled they
+      // walk the HOST document's history.
+      onMouseDown={event => {
+        if (event.button !== 3 && event.button !== 4) {
+          return
+        }
+
+        event.preventDefault()
+
+        if (event.button === 3) {
+          goBack()
+        } else {
+          goForward()
+        }
+      }}
+      {...(isWebPreview && !isRemoteHtml && tabId ? { [PREVIEW_BROWSER_ATTR]: tabId } : {})}
+    >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {!embedded && (
           <div className="pointer-events-none flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
@@ -676,6 +750,23 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
               </Tip>
             </div>
           </div>
+        )}
+
+        {isWebPreview && !isRemoteHtml && (
+          <PreviewBrowserBar
+            canGoBack={history.back}
+            canGoForward={history.forward}
+            consoleOpen={consoleOpen}
+            devToolsOpen={devtoolsOpen}
+            loading={loading}
+            onBack={goBack}
+            onForward={goForward}
+            onNavigate={navigateTo}
+            onReload={reloadPreview}
+            onToggleConsole={() => consoleState.setOpen(open => !open)}
+            onToggleDevTools={toggleDevTools}
+            url={currentUrl}
+          />
         )}
 
         <div
@@ -704,6 +795,11 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             ) : (
               <LocalFilePreview reloadKey={localReloadKey} target={target} />
             ))}
+          {isBlankPage && (
+            <div className="absolute inset-0 grid bg-background">
+              <PanelEmpty description={copy.blankPageBody} icon="globe" />
+            </div>
+          )}
           {loadError && (
             <PreviewLoadError
               consoleHeight={consoleOpen ? consoleHeight : 0}

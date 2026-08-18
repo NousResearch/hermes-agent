@@ -315,16 +315,6 @@ export function registerLayoutResetHandler(fn: () => void): () => void {
  *  click lands on a non-focusable surface). Tracked by trackActiveTreeGroup. */
 export const $activeTreeGroup = atom<null | string>(null)
 
-/** Bumped whenever a pane's contributed STRIP TOOLS change shape (a toggle
- *  flipped, a handle registered). The strip reads `stripTools()` during render,
- *  so it needs one signal to re-read — generic on purpose: the tree knows
- *  nothing about what any pane's tools mean. */
-export const $stripToolsRevision = atom(0)
-
-export function invalidateStripTools() {
-  $stripToolsRevision.set($stripToolsRevision.get() + 1)
-}
-
 /** Record the interacted zone (pointerdown / focusin). Idempotent. */
 export function noteActiveTreeGroup(groupId: null | string) {
   if (groupId !== $activeTreeGroup.get()) {

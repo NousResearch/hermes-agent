@@ -3364,7 +3364,7 @@ function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }) {
     ...deltaLines.map(line => `  ${line}`),
     '',
     'Rules for this room:',
-    '- Reply with ONE short conversational message (1-3 sentences) ONLY if you have something new worth adding: build on what was just said, claim or hand off work, answer a question aimed at you, or report a real result.',
+    '- Reply with ONE conversational message ONLY if you have something new worth adding: build on what was just said, claim or hand off work, answer a question aimed at you, or report a real result. Keep chatter short (1-3 sentences) — but when you are delivering a result, an answer the user asked for, or substantive work, give it at full quality and length; never thin out real content to fit the room.',
     '- If you have nothing new to add, reply with exactly "(pass)". Passing is good — it lets the conversation settle.',
     '- Mention a teammate as @name to pull them in; mention @user only for a judgment call or a result the user needs. Do not repeat points already made.',
     '- Never reveal content from your private 1:1 chats. Your reply text goes to the room verbatim — no preamble, no meta-commentary.'
@@ -3408,6 +3408,10 @@ function updateGroupChat(group, mutate) {
         log: room.log,
         watermarks: room.watermarks,
         sessions: room.sessions || {},
+        // Timed-out turns awaiting a late reply — keyed by member, valued
+        // with the pre-turn message baseline. Survives reloads so finished
+        // work is still harvested after a window restart.
+        stranded: room.stranded || {},
         // Cross-connection member descriptors — remote bots can't ride
         // bot-meta, so the room record carries who they are.
         members: Array.isArray(room.members) ? room.members : []
@@ -3549,10 +3553,20 @@ async function ensureGroupChatSession(group, member) {
 
 const GROUP_TURN_TIMEOUT_MS = 180000
 const GROUP_TURN_POLL_MS = 2000
+// A member turn that is VISIBLY still working (session reports
+// inflight/running) keeps its slot alive up to this hard cap. The base
+// timeout alone silently dropped long real turns: a 7-minute research run
+// timed out at 3 minutes, read as a pass, and its finished result never
+// reached the room (db's Aug 2026 report).
+const GROUP_TURN_HARD_CAP_MS = 20 * 60000
 
 /** One member turn, gateway-native: submit the room delta as a prompt into
  *  the member's per-group session, then poll the session until a NEW
- *  assistant message lands (or timeout → pass). No shell composition. */
+ *  assistant message lands (or timeout → pass). While the session visibly
+ *  reports work in flight the deadline extends (bounded by the hard cap),
+ *  so slow models aren't cut off mid-run. A turn that still times out
+ *  records a stranded marker so the finished reply can be harvested into
+ *  the room at the member's next turn instead of being lost. */
 async function runGroupChatMemberTurn(group, member, prompt) {
   const { runtime, stored } = await ensureGroupChatSession(group, member)
 
@@ -3575,7 +3589,8 @@ async function runGroupChatMemberTurn(group, member, prompt) {
 
   await requestForBot(member, 'prompt.submit', { session_id: runtime, text: prompt })
 
-  const deadline = Date.now() + GROUP_TURN_TIMEOUT_MS
+  const started = Date.now()
+  let deadline = started + GROUP_TURN_TIMEOUT_MS
 
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, GROUP_TURN_POLL_MS))
@@ -3592,7 +3607,8 @@ async function runGroupChatMemberTurn(group, member, prompt) {
     }
 
     const messages = Array.isArray(state?.messages) ? state.messages : []
-    const done = !state?.inflight && !state?.running
+    const busy = Boolean(state?.inflight || state?.running)
+    const done = !busy
 
     if (messages.length > before && done) {
       for (let i = messages.length - 1; i >= 0; i--) {
@@ -3611,9 +3627,91 @@ async function runGroupChatMemberTurn(group, member, prompt) {
 
       return null
     }
+
+    // Still visibly working: extend the deadline (never past the hard cap).
+    if (busy) {
+      deadline = Math.min(started + GROUP_TURN_HARD_CAP_MS, Math.max(deadline, Date.now() + GROUP_TURN_TIMEOUT_MS))
+    }
   }
 
-  return null // timeout — reads as a pass
+  // Timeout — reads as a pass, but remember the baseline (runtime-only) so
+  // the finished reply can be posted late instead of vanishing.
+  updateGroupChat(group, r => {
+    r.stranded = { ...(r.stranded || {}), [groupMemberKey(member)]: before }
+    return r
+  })
+
+  return null
+}
+
+/** Post a timed-out member's finished reply into the room, if it landed
+ *  after we stopped waiting. Called at the member's next turn boundary and
+ *  on user sends, so long-running work is delivered late rather than lost. */
+async function harvestStrandedGroupReply(group, member) {
+  const memberKey = groupMemberKey(member)
+  const room = $groupChats.get()[group] || {}
+  const strandedBefore = room.stranded?.[memberKey]
+
+  if (typeof strandedBefore !== 'number') {
+    return
+  }
+
+  let state = null
+
+  try {
+    const stored = room.sessions?.[memberKey]
+    state = await requestForBot(member, 'session.resume', {
+      session_id: stored || `Group: ${group}`,
+      profile: member.name
+    })
+  } catch {
+    return // source unreachable — leave the marker for the next boundary
+  }
+
+  if (state?.inflight || state?.running) {
+    return // still grinding — keep waiting
+  }
+
+  // Done (or dead): the marker is consumed either way.
+  updateGroupChat(group, r => {
+    const next = { ...(r.stranded || {}) }
+    delete next[memberKey]
+    r.stranded = next
+    return r
+  })
+
+  const messages = Array.isArray(state?.messages) ? state.messages : []
+
+  if (messages.length <= strandedBefore) {
+    return
+  }
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+
+    if (msg?.role === 'assistant') {
+      const text = typeof msg.content === 'string'
+        ? msg.content
+        : Array.isArray(msg.content)
+          ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
+          : msg?.text || ''
+      const reply = String(text).trim()
+
+      if (reply && !isGroupPassText(reply)) {
+        appendGroupChatEntry(
+          group,
+          { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
+          reply
+        )
+        updateGroupChat(group, r => {
+          r.watermarks[memberKey] = r.log.length
+          return r
+        })
+      }
+
+      return
+    }
+  }
 }
 
 /** Drive one bounded round-robin room turn. Serial — one member at a time.
@@ -3626,6 +3724,17 @@ async function runGroupChatRounds(group, members) {
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
+      // Deliver any replies that finished after their turn timed out —
+      // every member, not just this round's responders, so long work is
+      // late, never lost.
+      for (const member of members) {
+        if (!isCurrent()) {
+          return
+        }
+
+        await harvestStrandedGroupReply(group, member)
+      }
+
       const roomLog = ($groupChats.get()[group] || {}).log || []
       const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round)
       let spokeThisRound = 0
@@ -3649,6 +3758,14 @@ async function runGroupChatRounds(group, members) {
           members,
           viewer: member,
           deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(e => formatGroupChatLine(e, member.name))
+        })
+
+        // Surface WHO is on turn (runtime-only, like running/epoch) so the
+        // room shows "Radar is thinking…" instead of a generic working line —
+        // long model turns otherwise read as the room being stuck.
+        updateGroupChat(group, r => {
+          r.turn = member.name
+          return r
         })
 
         let reply = null
@@ -3689,6 +3806,7 @@ async function runGroupChatRounds(group, members) {
     if (isCurrent()) {
       updateGroupChat(group, r => {
         r.running = false
+        r.turn = null
         return r
       })
     }
@@ -7203,10 +7321,35 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
 
   const create = () => {
-    const groupName = (name.trim() || placeholder).slice(0, 64)
+    let groupName = (name.trim() || placeholder).slice(0, 64)
 
     if (selected.length < 2 || !groupName) {
       return
+    }
+
+    // Creating a group is always a FRESH room. Without this, re-creating a
+    // group under an existing name (easy — the default name is just the
+    // member names) silently reopens the old room with its full log, which
+    // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
+    // both live rooms and any bot's current grouping.
+    const taken = new Set(Object.keys($groupChats.get()))
+
+    for (const meta of Object.values($botMeta.get() || {})) {
+      const existing = String(meta?.group || '').trim()
+
+      if (existing) {
+        taken.add(existing)
+      }
+    }
+
+    if (taken.has(groupName)) {
+      let n = 2
+
+      while (taken.has(`${groupName} ${n}`)) {
+        n += 1
+      }
+
+      groupName = `${groupName} ${n}`.slice(0, 64)
     }
 
     for (const bot of selected) {
@@ -7536,7 +7679,8 @@ function GroupChatWorkspace({ group, members, onBack }) {
                             ]
                           }),
                           jsx('div', {
-                            className: 'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0',
+                            className:
+                              'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto',
                             children: Streamdown ? jsx(Streamdown, { children: entry.text }) : entry.text
                           })
                         ]
@@ -7553,7 +7697,9 @@ function GroupChatWorkspace({ group, members, onBack }) {
             room.running
               ? jsx('div', {
                   className: 'px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)',
-                  children: 'The room is working…'
+                  children: room.turn
+                    ? `${groupSpeakerLabel(room.turn)} is thinking…`
+                    : 'The room is working…'
                 }, 'working')
               : null
           ]
@@ -8299,6 +8445,7 @@ export default {
                   log: room.log,
                   watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
+                  stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   epoch: 0,
                   running: false

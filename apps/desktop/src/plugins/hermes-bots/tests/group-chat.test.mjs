@@ -62,7 +62,7 @@ function load(turnScript) {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, $groupChats, $groupNeedsYou, $groupChatWorkspace, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, $groupChats, $groupNeedsYou, $groupChatWorkspace, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -70,7 +70,7 @@ function load(turnScript) {
     storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
     register: () => undefined
   })
-  return { ...context.__gc, calls, storageWrites }
+  return { ...context.__gc, calls, storageWrites, transcripts }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }, { name: 'ops', title: 'The Ops' }]
@@ -381,4 +381,88 @@ test('source contract: room messages carry the speaker avatar via the roster app
   // Header shows the member faces (capped) with a names tooltip.
   assert.match(workspace, /members\.slice\(0, 6\)\.map\(/)
   assert.match(workspace, /title: members\.map\(b => displayName\(b, botRosterMeta\(b, allMeta\)\)\)\.join\(', '\)/)
+})
+
+test('stranded harvest: a timed-out turn whose reply landed late posts into the room and clears the marker', async () => {
+  const gc = load(() => '(pass)')
+
+  // Room with a stranded marker for research: baseline 0 messages.
+  gc.updateGroupChat('Late', r => {
+    r.stranded = { research: 0 }
+    r.sessions = { research: 'sid-research' }
+    return r
+  })
+  // The member's session finished after we stopped waiting.
+  gc.transcripts.set('research', [
+    { role: 'user', content: 'the turn prompt' },
+    { role: 'assistant', content: 'Here is the full research result, delivered late.' }
+  ])
+
+  await gc.harvestStrandedGroupReply('Late', { name: 'research', title: '' })
+
+  const log = roomLog(gc, 'Late')
+  assert.equal(log.length, 1)
+  assert.equal(log[0].from.name, 'research')
+  assert.match(log[0].text, /delivered late/)
+  assert.equal(gc.$groupChats.get().Late.stranded.research, undefined, 'marker consumed')
+})
+
+test('stranded harvest: a late (pass) or no-new-message consumes the marker without posting', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.updateGroupChat('Quiet2', r => {
+    r.stranded = { builder: 2 }
+    r.sessions = { builder: 'sid-builder' }
+    return r
+  })
+  gc.transcripts.set('builder', [
+    { role: 'user', content: 'prompt' },
+    { role: 'assistant', content: '(pass)' }
+  ])
+
+  await gc.harvestStrandedGroupReply('Quiet2', { name: 'builder', title: '' })
+
+  assert.equal(roomLog(gc, 'Quiet2').length, 0)
+  assert.equal(gc.$groupChats.get().Quiet2.stranded.builder, undefined)
+})
+
+test('stranded markers persist so late replies survive a window reload', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.updateGroupChat('Persist', r => {
+    r.stranded = { research: 3 }
+    return r
+  })
+
+  const durable = gc.storageWrites.get('group-chats')
+  assert.ok(durable && durable.Persist, 'room persisted')
+  assert.equal(durable.Persist.stranded.research, 3, 'stranded marker rides the durable map')
+})
+
+test('source contract: long visible turns extend the deadline up to a hard cap', () => {
+  assert.match(pluginSource, /const GROUP_TURN_HARD_CAP_MS = /)
+  assert.match(pluginSource, /deadline = Math\.min\(started \+ GROUP_TURN_HARD_CAP_MS/)
+})
+
+test('source contract: the working line names the member on turn', () => {
+  assert.match(pluginSource, /is thinking…/)
+  assert.match(pluginSource, /r\.turn = member\.name/)
+  assert.match(pluginSource, /r\.turn = null/)
+})
+
+test('source contract: creating a group with a taken name mints a fresh room, never reopens the old log', () => {
+  assert.match(pluginSource, /const taken = new Set\(Object\.keys\(\$groupChats\.get\(\)\)\)/)
+  assert.match(pluginSource, /while \(taken\.has\(`\$\{groupName\} \$\{n\}`\)\)/)
+})
+
+test('turn prompt: results are full quality — only chatter is asked to stay short', () => {
+  const gc = load(() => '(pass)')
+  const prompt = gc.buildGroupChatTurnPrompt({
+    groupName: 'Core',
+    members: [{ name: 'research', title: '' }, { name: 'builder', title: '' }],
+    viewer: { name: 'research', title: '' },
+    deltaLines: []
+  })
+  assert.match(prompt, /never thin out real content/i)
+  assert.match(prompt, /Keep chatter short/i)
 })

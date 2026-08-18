@@ -1,6 +1,6 @@
 import { atom, map } from 'nanostores'
 
-import { getActionStatus, installSkillFromHub, uninstallSkillFromHub, updateSkillsFromHub } from '@/hermes'
+import { getActionStatus, installSkillFromHub, type ProfileScope, uninstallSkillFromHub, updateSkillsFromHub } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -70,7 +70,7 @@ async function runHubAction(
   key: string,
   kind: HubActionKind,
   spawn: () => Promise<{ name: string }>,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<void> {
   const epoch = _hubEpoch
   const switched = () => _hubEpoch !== epoch
@@ -137,15 +137,15 @@ async function runHubAction(
   }
 }
 
-export function installHubSkill(identifier: string, profile?: null | string): Promise<void> {
+export function installHubSkill(identifier: string, profile?: ProfileScope): Promise<void> {
   return runHubAction(identifier, 'install', () => installSkillFromHub(identifier, profile), profile)
 }
 
-export function uninstallHubSkill(identifier: string, name: string, profile?: null | string): Promise<void> {
+export function uninstallHubSkill(identifier: string, name: string, profile?: ProfileScope): Promise<void> {
   return runHubAction(identifier, 'uninstall', () => uninstallSkillFromHub(name, profile), profile)
 }
 
-export function updateHubSkills(profile?: null | string): Promise<void> {
+export function updateHubSkills(profile?: ProfileScope): Promise<void> {
   return runHubAction(UPDATE_ALL_KEY, 'update', () => updateSkillsFromHub(profile), profile)
 }
 

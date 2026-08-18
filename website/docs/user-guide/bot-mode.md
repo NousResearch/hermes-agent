@@ -49,7 +49,7 @@ With a single connection (the common case) the picker is hidden and the Bot is c
 Remote-creation notes:
 
 - **Clone source** is a profile of the *target* machine (its `default`) — a remote box doesn't have your local profiles to clone.
-- The live Capabilities tab binds to your active gateway, so a remote-target draft uses the staged Skills/Tools/MCP checklists instead; both read the target machine's catalog.
+- The live Capabilities tab pins to the target machine's backend, so skills, tools, and MCP servers you configure during creation land on the machine the Bot will live on. (Older desktop builds fall back to staged Skills/Tools/MCP checklists for remote targets; both read the target machine's catalog.)
 - Cancelling the dialog discards the draft profile on whichever machine it was created.
 
 **Edit Profile** (right-click a Bot) reopens the same surface on the live profile any time: avatar, title, description, model pin, skills, toolsets, MCP servers, and the full SOUL.md.

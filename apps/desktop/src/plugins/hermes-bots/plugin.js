@@ -67,6 +67,12 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const { McpTab, ToolsetConfigPanel } = sdk
 // Keep optional exports feature-detected; test harnesses may strip the SDK namespace.
 const SkillsView = typeof sdk === 'undefined' ? undefined : sdk.SkillsView
+// TRUE only on builds whose SkillsView routes `fixedConnection` to the pinned
+// registry connection's backend. Older builds export SkillsView WITHOUT the
+// prop — rendering it for a remote-target draft there would read/write the
+// ACTIVE gateway's skills under the remote bot's name (the wrong machine),
+// so those builds keep the staged checklists for remote targets.
+const skillsViewRoutesConnections = Boolean(SkillsView && SkillsView.supportsFixedConnection)
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 // Budgeted render loop (fps cap + observability pause + dormancy + teardown).
 // Feature-detected: older desktops fall back to the hand-rolled clock below.
@@ -5930,7 +5936,8 @@ function CreateAgentDialog({ open, onClose, roster }) {
                       setTargetConnection(value === (activeConnectionId || 'local') ? '' : value)
                       // The capability catalog and clone list belong to the
                       // target backend — refetch for the new home. The live
-                      // Capabilities tab only exists for the active gateway.
+                      // Capabilities tab re-pins to it via fixedConnection on
+                      // builds that route it (staged checklists otherwise).
                       setCaps(null)
                       setCapsFailed(false)
                       setAdvTab('general')
@@ -6008,10 +6015,13 @@ function CreateAgentDialog({ open, onClose, roster }) {
                       // Newer desktops export the whole Capabilities surface —
                       // one live tab replaces the three staged checklists.
                       // The live Capabilities surface (SkillsView) binds to
-                      // the ACTIVE gateway's backend — a remote-target draft
-                      // lives elsewhere, so it keeps the staged checklists
-                      // (their catalog reads already route to the target).
-                      children: (SkillsView && !remoteTarget
+                      // the ACTIVE gateway's backend unless this build routes
+                      // fixedConnection (skillsViewRoutesConnections) — then a
+                      // remote-target draft gets the live surface pinned to
+                      // ITS machine. Builds without that routing keep the
+                      // staged checklists for remote targets (their catalog
+                      // reads already route to the target).
+                      children: (SkillsView && (!remoteTarget || skillsViewRoutesConnections)
                         ? [
                             ['general', 'General'],
                             ['capabilities', 'Capabilities']
@@ -6154,9 +6164,15 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                 style: { height: 440, minHeight: 280, resize: 'vertical', overflow: 'auto' },
                                 // The REAL core Capabilities surface (skills +
                                 // one-click hub installs + tools + MCP), pinned
-                                // to the just-created profile. Writes land
+                                // to the just-created profile — and, for a
+                                // remote-target draft, to the target machine's
+                                // backend via fixedConnection. Writes land
                                 // immediately — no staging needed.
-                                children: jsx(SkillsView, { embedded: true, fixedProfile: createdForCaps })
+                                children: jsx(SkillsView, {
+                                  embedded: true,
+                                  fixedProfile: createdForCaps,
+                                  ...(remoteTarget ? { fixedConnection: targetConnection } : {})
+                                })
                               })
                       : capsFailed
                         ? jsx('div', {

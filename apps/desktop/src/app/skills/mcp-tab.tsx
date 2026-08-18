@@ -26,6 +26,8 @@ import {
   installMcpCatalogEntry,
   type McpCatalogEntry,
   type McpTestResult,
+  type ProfileScope,
+  profileScopeKey,
   saveMcpServers,
   testMcpServer
 } from '@/hermes'
@@ -130,7 +132,7 @@ interface ServerCost {
 const MCP_USAGE_TTL_MS = 10 * 60_000
 const mcpUsageCache = new Map<string, { at: number; value: Record<string, number> }>()
 
-async function loadMcpUsage(scopeKey: string, scopeProfile: null | string): Promise<null | Record<string, number>> {
+async function loadMcpUsage(scopeKey: string, scopeProfile: ProfileScope): Promise<null | Record<string, number>> {
   const cached = mcpUsageCache.get(scopeKey)
 
   if (cached && Date.now() - cached.at < MCP_USAGE_TTL_MS) {
@@ -367,7 +369,7 @@ function scanServerBlocks(text: string): ServerBlock[] {
   return blocks
 }
 
-export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; profile?: null | string }) {
+export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; profile?: ProfileScope }) {
   const { t } = useI18n()
   const m = t.settings.mcp
   const activeSessionId = useStore($activeSessionId)
@@ -379,7 +381,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // profile's servers (AGENTS.md scope-in-key). When no override is passed this
   // resolves to $activeGatewayProfile, so behavior is identical to before.
   const appProfile = useStore($activeGatewayProfile)
-  const scopeProfileKey = normalizeProfileKey(profile ?? appProfile)
+  const scopeProfileKey = profile != null ? profileScopeKey(profile) : normalizeProfileKey(appProfile)
 
   // Shared config cache (see use-config-record): revisiting the tab paints the
   // cached record instantly; mutations write through `setConfig` and stay
@@ -1551,7 +1553,7 @@ function McpCatalog({
   entries: McpCatalogEntry[]
   loading: boolean
   onInstalled: () => void
-  profile?: null | string
+  profile?: ProfileScope
 }) {
   const { t } = useI18n()
   const m = t.settings.mcp

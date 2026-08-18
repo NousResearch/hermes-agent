@@ -1163,6 +1163,49 @@ def build_turn_context(
                     agent._last_content_with_tools = None
                     agent._last_content_tools_all_housekeeping = False
                     agent._mute_post_response = False
+    elif not agent.compression_enabled:
+        # Uncompressed session guard (#89297): when compression is explicitly
+        # disabled, sessions can grow past the model's context window across
+        # hundreds of messages without compression to shrink them.
+        # Run a cheap character pre-check before computing rough tokens.
+        _raw_chars = sum(
+            len(m.get("content") or "") for m in messages if isinstance(m, dict)
+        )
+        if _raw_chars > 20_000:
+            _uncompressed_tokens = estimate_request_tokens_rough(
+                messages,
+                system_prompt=active_system_prompt or "",
+                tools=agent.tools or None,
+            )
+            _ctx_len = getattr(
+                getattr(agent, "context_compressor", None), "context_length", None
+            )
+            if not isinstance(_ctx_len, int) or _ctx_len <= 0:
+                try:
+                    from agent.model_metadata import get_model_context_length
+
+                    _ctx_len = get_model_context_length(
+                        agent.model,
+                        getattr(agent, "base_url", "") or "",
+                        provider=getattr(agent, "provider", "") or "",
+                    )
+                except Exception:
+                    _ctx_len = None
+            if _ctx_len and _uncompressed_tokens > _ctx_len:
+                _warn_fn = getattr(
+                    agent, "_warn_uncompressed_context_overflow", None
+                )
+                if callable(_warn_fn):
+                    _warn_fn(_uncompressed_tokens, _ctx_len)
+                else:
+                    _emit_w = getattr(agent, "_emit_warning", None)
+                    if callable(_emit_w):
+                        _emit_w(
+                            f"⚠️ Session context (~{_uncompressed_tokens:,} tokens) exceeds the "
+                            f"model context window (~{_ctx_len:,} tokens) with compression disabled "
+                            f"(compression.enabled: false). Use /compact to compress history or "
+                            f"enable compression in config.yaml."
+                        )
 
     if _preflight_compressed:
         # Compression rebuilt the list (tail messages are fresh compaction

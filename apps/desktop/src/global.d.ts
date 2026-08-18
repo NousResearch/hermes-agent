@@ -763,6 +763,11 @@ export interface DesktopRegistryConnection {
   // header VALUES are secrets and never cross the IPC boundary. Optional so
   // fixtures/older payloads without the field remain valid.
   headerNames?: string[]
+  // Last-known stable backend identity (the /api/status `install_id`).
+  // Present once a roster enumeration or connection test has seen it; two
+  // connections sharing it are one physical backend registered under two
+  // addresses (display-only "Same backend as …" hint in Settings).
+  installId?: string
 }
 
 export interface DesktopConnectionsRegistry {
@@ -817,6 +822,8 @@ export interface DesktopAgentRoster {
     kind: DesktopConnectionKind
     reachable: boolean
     error?: string
+    // Stable backend identity (/api/status install_id) when known.
+    installId?: string
   }[]
 }
 

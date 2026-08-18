@@ -242,6 +242,12 @@ export interface ConnectionAgents {
   profiles: null | string[]
   /** Present when profiles is null: why enumeration was skipped. */
   error?: string
+  /** Stable backend identity from the connection's /api/status (`install_id`).
+   * Two connections reporting the same id are the SAME physical install
+   * registered under two addresses (hostname + Tailscale IP), so the roster
+   * collapses their rows. Absent on older backends → no collapse (fully
+   * backward compatible). */
+  installId?: string
 }
 
 export interface RosterAgent {
@@ -333,33 +339,64 @@ export function parseRemoteProfileListing(text: string): string[] {
  * the duplicate-handle rule ONCE across all sources. Pure so the disambiguation
  * policy is testable without IPC; main.ts feeds it live enumerations.
  */
-export function buildAgentRoster(enumerations: ConnectionAgents[]): RosterAgent[] {
+export function buildAgentRoster(
+  enumerations: ConnectionAgents[],
+  opts: { primaryConnectionId?: string } = {}
+): RosterAgent[] {
   // A connection can transiently report the same profile more than once (or
   // arrive twice while registry state is reconciling). A roster row represents
   // one routable identity, so collapse strictly by connection + profile before
   // counting names for @name-device disambiguation.
-  const identities = new Map<string, { connection: RegistryConnection; profile: string }>()
+  const identities = new Map<
+    string,
+    { connection: RegistryConnection; installId?: string; order: number; profile: string }
+  >()
+  let order = 0
 
-  for (const { connection, profiles } of enumerations) {
+  for (const { connection, installId, profiles } of enumerations) {
     for (const profile of profiles || []) {
       const name = String(profile || '').trim() || 'default'
       const key = `${connection.id}\0${name}`
 
       if (!identities.has(key)) {
-        identities.set(key, { connection, profile: name })
+        identities.set(key, { connection, installId, order, profile: name })
       }
+    }
+
+    order += 1
+  }
+
+  // Backend-identity collapse: two connections reporting the same install_id
+  // are the SAME physical install registered under two addresses, so their
+  // (install, profile) rows are one bot, not two. Connections without an id
+  // (older backends, undialed ssh) keep a per-connection key — no collapse.
+  const backends = new Map<string, { connection: RegistryConnection; order: number; profile: string }[]>()
+
+  for (const { connection, installId, order: rank, profile } of identities.values()) {
+    const key = installId ? `id:${installId}\0${profile}` : `conn:${connection.id}\0${profile}`
+    const group = backends.get(key)
+
+    if (group) {
+      group.push({ connection, order: rank, profile })
+    } else {
+      backends.set(key, [{ connection, order: rank, profile }])
     }
   }
 
+  const rows = [...backends.values()].map(group => pickCanonicalConnection(group, opts.primaryConnectionId))
+
+  // The @name-device duplicate-handle rule runs AFTER the collapse, so a
+  // profile that only *looked* duplicated (one box, two addresses) keeps its
+  // bare name once the rows are recognized as one backend.
   const counts = new Map<string, number>()
 
-  for (const { profile } of identities.values()) {
+  for (const { profile } of rows) {
     counts.set(profile, (counts.get(profile) || 0) + 1)
   }
 
   const roster: RosterAgent[] = []
 
-  for (const { connection, profile } of identities.values()) {
+  for (const { connection, profile } of rows) {
     roster.push({
       connectionId: connection.id,
       connectionKind: connection.kind,
@@ -370,6 +407,32 @@ export function buildAgentRoster(enumerations: ConnectionAgents[]): RosterAgent[
   }
 
   return roster
+}
+
+/** Deterministic route priority for same-backend rows: local is definitionally
+ * this box; ssh beats HTTP remotes; cloud last. */
+const CANONICAL_KIND_PRIORITY: Record<ConnectionKind, number> = { cloud: 3, local: 0, remote: 2, ssh: 1 }
+
+/**
+ * Which connection represents a collapsed same-backend roster row: the ACTIVE
+ * (primary) connection when it is one of the candidates — the row should route
+ * where the window already routes — else the highest kind priority, else the
+ * earliest-registered (enumeration order follows registry order).
+ */
+function pickCanonicalConnection<T extends { connection: RegistryConnection; order: number }>(
+  candidates: T[],
+  primaryConnectionId?: string
+): T {
+  const active = primaryConnectionId ? candidates.find(c => c.connection.id === primaryConnectionId) : undefined
+
+  if (active) {
+    return active
+  }
+
+  return [...candidates].sort(
+    (a, b) =>
+      CANONICAL_KIND_PRIORITY[a.connection.kind] - CANONICAL_KIND_PRIORITY[b.connection.kind] || a.order - b.order
+  )[0]
 }
 
 // ── Fan-out update eligibility ──────────────────────────────────────────────

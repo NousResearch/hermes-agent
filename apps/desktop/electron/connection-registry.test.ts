@@ -284,6 +284,137 @@ test('roster: duplicate profiles from one connection remain one routable agent',
   )
 })
 
+// --- buildAgentRoster: same-backend (install_id) collapse ---
+
+test('roster: two connections with the same install_id collapse to one row per profile', () => {
+  const hostname = { id: 'spark', kind: 'remote' as const, label: 'Spark', url: 'http://spark:8642' }
+  const tailscale = { id: 'spark-ts', kind: 'remote' as const, label: 'Spark TS', url: 'http://100.1.2.3:8642' }
+
+  const roster = buildAgentRoster([
+    { connection: hostname, profiles: ['default', 'research'], installId: 'aaa' },
+    { connection: tailscale, profiles: ['default', 'research'], installId: 'aaa' }
+  ])
+
+  // One row per (install, profile) — no duplicate bots for the same box.
+  assert.deepEqual(
+    roster.map(agent => `${agent.connectionId}/${agent.profile}`).sort(),
+    ['spark/default', 'spark/research']
+  )
+  // Handle disambiguation runs AFTER the collapse: no more suffixed names.
+  assert.deepEqual(
+    roster.map(agent => agent.handle).sort(),
+    ['default', 'research']
+  )
+})
+
+test('roster: collapse prefers the active (primary) connection', () => {
+  const hostname = { id: 'spark', kind: 'remote' as const, label: 'Spark', url: 'http://spark:8642' }
+  const tailscale = { id: 'spark-ts', kind: 'remote' as const, label: 'Spark TS', url: 'http://100.1.2.3:8642' }
+
+  const roster = buildAgentRoster(
+    [
+      { connection: hostname, profiles: ['default'], installId: 'aaa' },
+      { connection: tailscale, profiles: ['default'], installId: 'aaa' }
+    ],
+    { primaryConnectionId: 'spark-ts' }
+  )
+
+  assert.equal(roster.length, 1)
+  assert.equal(roster[0].connectionId, 'spark-ts')
+})
+
+test('roster: collapse pick order is local > ssh > remote > cloud, then registration order', () => {
+  const local = { id: 'local', kind: 'local' as const, label: 'This device' }
+  const remote = { id: 'loop', kind: 'remote' as const, label: 'Loopback', url: 'http://127.0.0.1:8642' }
+  const cloud = { id: 'cl', kind: 'cloud' as const, label: 'Cloud twin', url: 'http://cl:1' }
+  const ssh = { id: 'tun', kind: 'ssh' as const, label: 'Tunnel', host: 'box' }
+
+  // Same box registered four ways; primary is NOT one of them (unset).
+  const roster = buildAgentRoster([
+    { connection: cloud, profiles: ['default'], installId: 'aaa' },
+    { connection: remote, profiles: ['default'], installId: 'aaa' },
+    { connection: ssh, profiles: ['default'], installId: 'aaa' },
+    { connection: local, profiles: ['default'], installId: 'aaa' }
+  ])
+
+  assert.equal(roster.length, 1)
+  assert.equal(roster[0].connectionId, 'local')
+
+  // Without the local candidate, ssh wins over remote/cloud.
+  const noLocal = buildAgentRoster([
+    { connection: cloud, profiles: ['default'], installId: 'aaa' },
+    { connection: remote, profiles: ['default'], installId: 'aaa' },
+    { connection: ssh, profiles: ['default'], installId: 'aaa' }
+  ])
+
+  assert.equal(noLocal[0].connectionId, 'tun')
+
+  // Same kind → earliest-registered (enumeration order) wins.
+  const twin = { id: 'loop2', kind: 'remote' as const, label: 'Loopback 2', url: 'http://[::1]:8642' }
+  const sameKind = buildAgentRoster([
+    { connection: remote, profiles: ['default'], installId: 'aaa' },
+    { connection: twin, profiles: ['default'], installId: 'aaa' }
+  ])
+
+  assert.equal(sameKind[0].connectionId, 'loop')
+})
+
+test('roster: missing install_id bypasses the collapse (older backends keep current behavior)', () => {
+  const hostname = { id: 'spark', kind: 'remote' as const, label: 'Spark', url: 'http://spark:8642' }
+  const tailscale = { id: 'spark-ts', kind: 'remote' as const, label: 'Spark TS', url: 'http://100.1.2.3:8642' }
+
+  // Neither reports an id → both rows survive, handles disambiguate.
+  const roster = buildAgentRoster([
+    { connection: hostname, profiles: ['default'] },
+    { connection: tailscale, profiles: ['default'] }
+  ])
+
+  assert.equal(roster.length, 2)
+  assert.deepEqual(roster.map(a => a.handle).sort(), ['default-spark', 'default-spark-ts'])
+
+  // One id + one missing must NOT collapse either (undefined never matches).
+  const mixed = buildAgentRoster([
+    { connection: hostname, profiles: ['default'], installId: 'aaa' },
+    { connection: tailscale, profiles: ['default'] }
+  ])
+
+  assert.equal(mixed.length, 2)
+})
+
+test('roster: different install_ids stay separate rows with disambiguated handles', () => {
+  const spark = { id: 'spark', kind: 'remote' as const, label: 'Spark', url: 'http://spark:8642' }
+  const mini = { id: 'mini', kind: 'remote' as const, label: 'Mini', url: 'http://mini:8642' }
+
+  const roster = buildAgentRoster([
+    { connection: spark, profiles: ['default'], installId: 'aaa' },
+    { connection: mini, profiles: ['default'], installId: 'bbb' }
+  ])
+
+  assert.equal(roster.length, 2)
+  assert.deepEqual(roster.map(a => a.handle).sort(), ['default-mini', 'default-spark'])
+})
+
+test('roster: collapse also folds a third same-box connection from a per-profile v1 override import', () => {
+  // The reporter's "profile with cron appears as another duplicate": the v1
+  // migration imports per-profile override blocks as EXTRA connections, so a
+  // cron profile pinned to the same box via a third URL becomes a third
+  // registry entry. Same install_id → still one row per profile.
+  const hostname = { id: 'spark', kind: 'remote' as const, label: 'Spark', url: 'http://spark:8642' }
+  const tailscale = { id: 'spark-ts', kind: 'remote' as const, label: 'Spark TS', url: 'http://100.1.2.3:8642' }
+  const override = { id: 'spark-lan', kind: 'remote' as const, label: 'Spark LAN', url: 'http://192.168.1.5:8642' }
+
+  const roster = buildAgentRoster([
+    { connection: hostname, profiles: ['default', 'cron-bot'], installId: 'aaa' },
+    { connection: tailscale, profiles: ['default', 'cron-bot'], installId: 'aaa' },
+    { connection: override, profiles: ['default', 'cron-bot'], installId: 'aaa' }
+  ])
+
+  assert.deepEqual(
+    roster.map(agent => `${agent.profile}:${agent.handle}`).sort(),
+    ['cron-bot:cron-bot', 'default:default']
+  )
+})
+
 // --- updateEligibility ---
 
 test('update fan-out: cloud is platform-managed, everything else eligible', () => {

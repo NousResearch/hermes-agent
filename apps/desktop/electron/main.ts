@@ -8200,11 +8200,16 @@ function writeDesktopConnectionsRegistry(registry) {
 function sanitizeRegistryConnection(entry) {
   const { token, headers, ...rest } = entry
   const decrypted = decryptDesktopSecret(token)
+  // Last-known stable backend identity (from roster enumeration / Test) so
+  // Settings can hint "Same backend as <label>" on connections that are two
+  // addresses for one box. Display-only; absent until a probe has seen it.
+  const knownInstallId = connectionInstallIds.get(entry.id)?.id
 
   return {
     ...rest,
     tokenSet: Boolean(decrypted),
     tokenPreview: tokenPreview(decrypted),
+    ...(knownInstallId ? { installId: knownInstallId } : {}),
     // Header VALUES are secrets (Cloudflare Access client secrets etc.) and
     // never cross the IPC boundary — the renderer only needs the names to
     // render the edit form.
@@ -12304,7 +12309,7 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
 
   const registry = readDesktopConnectionsRegistry()
   const enumerations = await enumerateRegistryAgentSources(registry)
-  let agents = buildAgentRoster(enumerations)
+  let agents = buildAgentRoster(enumerations, { primaryConnectionId: registry.primary })
 
   // Roster enumeration deliberately does not dial connect-on-demand SSH
   // sources. Publish one credential-free seed route so a plugin can be the
@@ -12494,6 +12499,10 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 
   const status = (await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000, headers: testHeaders })) as any
 
+  // The Test button is the cheapest moment to (re)learn this backend's stable
+  // identity for the same-backend roster collapse + Settings hint.
+  rememberConnectionInstallId(entry.id, status)
+
   // Same HTTP+WS two-leg check as testDesktopConnectionConfig: HTTP alone is
   // a false positive when the WebSocket leg is blocked.
   const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, {
@@ -12527,6 +12536,49 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 const sshRosterCache = new Map<string, string[]>()
 const sshInventoryAttemptedAt = new Map<string, number>()
 const SSH_INVENTORY_RETRY_MS = 60_000
+
+// Stable backend identity per registered connection: the `install_id` its
+// /api/status reports (absent on backends older than the field). Enumeration
+// runs on the ~5s Bot Mode roster poll and only hits /api/profiles, so the
+// status probe is cached per connection with a TTL to avoid doubling roster
+// traffic; the Test button refreshes it eagerly. A missing id simply bypasses
+// the same-backend roster collapse — fully backward compatible.
+const connectionInstallIds = new Map<string, { id?: string; ts: number }>()
+const INSTALL_ID_TTL_MS = 5 * 60_000
+const INSTALL_ID_NEGATIVE_TTL_MS = 60_000
+
+function rememberConnectionInstallId(connectionId: string, statusBody: any) {
+  const raw = statusBody && typeof statusBody === 'object' ? statusBody.install_id : undefined
+  const id = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined
+  connectionInstallIds.set(connectionId, { id, ts: Date.now() })
+
+  return id
+}
+
+async function probeConnectionInstallId(connectionId: string, descriptor: any): Promise<string | undefined> {
+  const cached = connectionInstallIds.get(connectionId)
+
+  if (cached && Date.now() - cached.ts < (cached.id ? INSTALL_ID_TTL_MS : INSTALL_ID_NEGATIVE_TTL_MS)) {
+    return cached.id
+  }
+
+  try {
+    const status: any = await getJsonForBackend(descriptor, '/api/status', { timeoutMs: 8_000 })
+
+    return rememberConnectionInstallId(connectionId, status)
+  } catch {
+    // Keep any previously-known id (identity is stable; a transient fetch
+    // failure must not flap the roster collapse), but do not cache a MISS
+    // over it.
+    if (cached?.id) {
+      return cached.id
+    }
+
+    connectionInstallIds.set(connectionId, { id: undefined, ts: Date.now() })
+
+    return undefined
+  }
+}
 
 async function probeSshProfileInventory(connection) {
   if (
@@ -12581,7 +12633,7 @@ async function probeSshProfileInventory(connection) {
 async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRegistry()) {
   return Promise.all(
     registry.connections.map(async connection => {
-      let raw: { connection: typeof connection; error?: string; profiles: null | string[] }
+      let raw: { connection: typeof connection; error?: string; installId?: string; profiles: null | string[] }
 
       try {
         // SSH roster listing must never spawn a dashboard. A stale
@@ -12615,6 +12667,10 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
           const descriptor: any = await ensureRegistryBackend(connection.id, null)
           const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
 
+          // Cached with a TTL, so the 5s roster poll usually pays zero extra
+          // requests for the backend-identity probe.
+          const installId = await probeConnectionInstallId(connection.id, descriptor)
+
           const profiles = Array.isArray(body?.profiles)
             ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
             : []
@@ -12625,7 +12681,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             profiles.unshift('default')
           }
 
-          raw = { connection, profiles }
+          raw = { connection, profiles, ...(installId ? { installId } : {}) }
         }
       } catch (error: any) {
         raw = { connection, profiles: null, error: String(error?.message || error) }
@@ -12637,7 +12693,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
 
       const remembered = rememberSshEnumeration(raw, sshRosterCache.get(connection.id), connection.kind)
 
-      return { connection, ...remembered }
+      return { connection, ...remembered, ...(raw.installId ? { installId: raw.installId } : {}) }
     })
   )
 }
@@ -12647,18 +12703,19 @@ ipcMain.handle('hermes:agents:roster', async () => {
   const enumerations = await enumerateRegistryAgentSources(registry)
 
   return {
-    agents: buildAgentRoster(enumerations),
+    agents: buildAgentRoster(enumerations, { primaryConnectionId: registry.primary }),
     // The active gateway owns the renderer's profiles.list — union agents
     // that report THIS connection are the same identities, not extra rows.
     // Expose the primary id so the plugin merger can annotate them in place
     // instead of appending duplicates (remote-only desktops doubled every
     // bot otherwise; see #88344).
     primaryConnectionId: registry.primary,
-    sources: enumerations.map(({ connection, profiles, error }) => ({
+    sources: enumerations.map(({ connection, error, installId, profiles }) => ({
       connectionId: connection.id,
       label: connection.label,
       kind: connection.kind,
       reachable: profiles !== null,
+      ...(installId ? { installId } : {}),
       ...(error ? { error } : {})
     }))
   }

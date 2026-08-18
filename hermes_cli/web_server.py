@@ -3318,6 +3318,78 @@ _TOPOLOGY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None, "fn": None}
 _TOPOLOGY_CACHE_LOCK = threading.Lock()
 _TOPOLOGY_CACHE_TTL = 10.0
 
+# Stable install identity for /api/status. One random opaque id per physical
+# install, minted on first read and persisted under the ROOT Hermes home
+# (get_default_hermes_root()) — NOT the profile-scoped HERMES_HOME — so every
+# profile served by the same install reports the same id. Clients (the desktop
+# connection registry) use it to recognize that two registered addresses
+# (hostname + Tailscale IP, LAN + WAN) are one backend and collapse duplicate
+# roster rows. Privacy: uuid4 hex, no hardware/user-derived material; the only
+# fact it reveals is "these addresses are the same box", which is the feature.
+# It must never change across restarts/updates, so reads are cached for the
+# process lifetime and the file is written once, atomically.
+_INSTALL_ID_FILENAME = "install_id"
+_INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_INSTALL_ID_CACHE: Dict[str, Optional[str]] = {"value": None}
+_INSTALL_ID_LOCK = threading.Lock()
+
+
+def _read_or_create_install_id() -> Optional[str]:
+    """Read (or mint + persist) the install id under the root Hermes home.
+
+    Returns ``None`` only when the id can neither be read nor persisted (e.g.
+    a read-only filesystem) — an unpersisted id would violate the stability
+    contract, so callers omit the field rather than emit a churning value.
+    """
+    import uuid
+
+    from hermes_constants import get_default_hermes_root
+
+    root = get_default_hermes_root()
+    path = root / _INSTALL_ID_FILENAME
+    try:
+        existing = path.read_text(encoding="utf-8").strip().lower()
+        if _INSTALL_ID_RE.match(existing):
+            return existing
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    minted = uuid.uuid4().hex
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        # Atomic replace so a crash mid-write can't leave a truncated id that
+        # would be regenerated (i.e. changed) on the next boot.
+        fd, tmp_name = tempfile.mkstemp(dir=str(root), prefix=".install_id-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(minted + "\n")
+            os.replace(tmp_name, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
+    except OSError:
+        return None
+    return minted
+
+
+def get_install_id() -> Optional[str]:
+    """Process-lifetime-cached stable install id (see _read_or_create_install_id)."""
+    cached = _INSTALL_ID_CACHE["value"]
+    if cached:
+        return cached
+    with _INSTALL_ID_LOCK:
+        cached = _INSTALL_ID_CACHE["value"]
+        if cached:
+            return cached
+        value = _read_or_create_install_id()
+        if value:
+            _INSTALL_ID_CACHE["value"] = value
+        return value
+
+
 # Serializes read-modify-write cycles over config.yaml for handlers that run
 # in worker threads (asyncio.to_thread). config.py's _CONFIG_LOCK covers each
 # load_config()/save_config() call individually, not the span between them —
@@ -3733,6 +3805,16 @@ async def get_status(profile: Optional[str] = None):
             "auth_flows": auth_flows,
             "nous_session_valid": nous_session_valid,
         }
+
+        # Stable per-install identity (see get_install_id above). First call
+        # may touch disk, so keep it off the event loop; afterwards it is a
+        # process-global cache hit. Omitted (not null) when unpersistable so
+        # older-client behavior and the no-identity fallback stay identical.
+        install_id = await asyncio.get_running_loop().run_in_executor(
+            None, get_install_id
+        )
+        if install_id:
+            status["install_id"] = install_id
 
         # Component-level health rollup. Counts and status enums only — this
         # payload is public (PUBLIC_API_PATHS), so no messages, paths, or

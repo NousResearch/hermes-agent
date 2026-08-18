@@ -903,6 +903,7 @@ export const zh: Translations = {
       duplicateLocal: '本应用已管理一个本地连接——只能有一个。',
       duplicateUrl: (label: string) => `已存在指向此网关 URL 的连接（“${label}”）。`,
       duplicateSsh: (label: string) => `已存在指向此 SSH 主机的连接（“${label}”）。`,
+      sameBackendHint: (label: string) => `与“${label}”是同一后端`,
       localAddHint: '“本地”不可用：应用管理的本地连接已存在（永远只有一个）。',
       cloudAddHint: '提示：在上方登录 Hermes Cloud 可自动发现你的智能体——此表单仅用于手动注册已知的实例 URL。',
       save: '保存连接',

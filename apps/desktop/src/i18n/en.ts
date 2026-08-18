@@ -699,6 +699,7 @@ export const en: Translations = {
       duplicateLocal: 'This app already manages a local connection — there can only be one.',
       duplicateUrl: (label: string) => `A connection to this gateway URL already exists (“${label}”).`,
       duplicateSsh: (label: string) => `A connection to this SSH host already exists (“${label}”).`,
+      sameBackendHint: (label: string) => `Same backend as “${label}”`,
       localAddHint: 'Local is unavailable: the managed local connection already exists (there is only ever one).',
       cloudAddHint:
         'Tip: signing in under Hermes Cloud above discovers your agents automatically — use this form only to register a known instance URL by hand.',

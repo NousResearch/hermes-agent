@@ -586,6 +586,7 @@ export interface Translations {
       duplicateLocal: string
       duplicateUrl: (label: string) => string
       duplicateSsh: (label: string) => string
+      sameBackendHint: (label: string) => string
       localAddHint: string
       cloudAddHint: string
       save: string

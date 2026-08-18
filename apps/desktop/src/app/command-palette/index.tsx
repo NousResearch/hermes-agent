@@ -128,6 +128,11 @@ interface PaletteItem {
   /** Label shown while ⌘/⌃ is held — previews the modifier-variant action. */
   modLabel?: string
   /**
+   * Runs when the row becomes the cmdk highlight (arrow keys or hover). When
+   * a row has no onHighlight, a highlight on it clears the live preview.
+   */
+  onHighlight?: () => void
+  /**
    * When set, ⌘/⌃-select (or ⌘-Enter) opens a new tab and ⇧⌘-select pops a
    * window — matching sidebar session rows. Plain select stays in-place.
    * Receives the last selector event so the modifiers can be read.
@@ -549,7 +554,10 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const projectTree = useStore($projectTree)
   const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
   const navigate = useNavigate()
-  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
+
+  const { availableThemes, clearThemePreview, mode, previewTheme, resolvedMode, setMode, setTheme, themeName } =
+    useTheme()
+
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1100,21 +1108,32 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // can't render the current light/dark mode, flip to the one it supports.
     result.push({
       heading: t.settings.appearance.themeTitle,
-      items: availableThemes.map(theme => ({
-        active: themeName === theme.name,
-        icon: Palette,
-        id: `search-theme-${theme.name}`,
-        keepOpen: true,
-        keywords: ['theme', 'appearance', 'color', 'skin', theme.name, theme.description],
-        label: theme.label,
-        run: () => {
-          setTheme(theme.name)
+      items: availableThemes.map(theme => {
+        // Same mode fixup as run(): if a theme cannot render the current
+        // light/dark, preview (and commit) in the one mode it supports.
+        const previewMode = themeSupportsMode(theme.name, resolvedMode)
+          ? resolvedMode
+          : resolvedMode === 'dark'
+            ? 'light'
+            : 'dark'
 
-          if (!themeSupportsMode(theme.name, resolvedMode)) {
-            setMode(resolvedMode === 'dark' ? 'light' : 'dark')
+        return {
+          active: themeName === theme.name,
+          icon: Palette,
+          id: `search-theme-${theme.name}`,
+          keepOpen: true,
+          keywords: ['theme', 'appearance', 'color', 'skin', theme.name, theme.description],
+          label: theme.label,
+          onHighlight: () => previewTheme(theme.name, previewMode),
+          run: () => {
+            setTheme(theme.name)
+
+            if (!themeSupportsMode(theme.name, resolvedMode)) {
+              setMode(previewMode)
+            }
           }
         }
-      }))
+      })
     })
 
     // Switch light/dark/system directly (typing "dark" shouldn't require the
@@ -1210,6 +1229,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     goSession,
     mcpServers,
     mode,
+    previewTheme,
     resolvedMode,
     search,
     sessions,
@@ -1318,6 +1338,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
                 keepOpen: true,
                 keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
                 label: theme.label,
+                onHighlight: () => previewTheme(theme.name, groupMode),
                 run: () => {
                   setTheme(theme.name)
                   setMode(groupMode)
@@ -1365,13 +1386,49 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         groups: settingsPageGroups
       }
     }),
-    [availableThemes, mode, resolvedMode, setMode, setTheme, settingsPageGroups, t, themeName]
+    [availableThemes, mode, previewTheme, resolvedMode, setMode, setTheme, settingsPageGroups, t, themeName]
   )
 
   const activePage = page ? subPages[page] : null
   const unrankedGroups = activePage ? activePage.groups : groups
   const visibleGroups = useMemo(() => rankGroups(unrankedGroups, search), [unrankedGroups, search])
   const placeholder = activePage ? activePage.placeholder : t.commandCenter.searchPlaceholder
+
+  // cmdk reports the highlighted row (arrows or hover) via the root's
+  // onValueChange. Resolve it back to its PaletteItem so preview-capable rows
+  // (the theme pickers) can paint live. Any other highlight clears the preview.
+  const itemByValue = useMemo(() => {
+    const map = new Map<string, PaletteItem>()
+
+    for (const group of visibleGroups) {
+      for (const item of group.items) {
+        map.set(paletteValue(item), item)
+      }
+    }
+
+    return map
+  }, [visibleGroups])
+
+  const handleHighlight = useCallback(
+    (value: string) => {
+      const item = itemByValue.get(value)
+
+      if (item?.onHighlight) {
+        item.onHighlight()
+      } else {
+        clearThemePreview()
+      }
+    },
+    [clearThemePreview, itemByValue]
+  )
+
+  // A preview lives only while its rows show. If the page changes or the
+  // palette retires, give the paint back to the committed appearance.
+  useEffect(() => {
+    clearThemePreview()
+  }, [page, clearThemePreview])
+
+  useEffect(() => clearThemePreview, [clearThemePreview])
 
   const handleSelect = (item: PaletteItem) => {
     if (item.to) {
@@ -1423,7 +1480,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         }}
       >
         <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
-        <Command className="bg-transparent" loop shouldFilter={false}>
+        <Command className="bg-transparent" loop onValueChange={handleHighlight} shouldFilter={false}>
           {activePage && (
             <button
               className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"

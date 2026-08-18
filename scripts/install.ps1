@@ -1643,10 +1643,10 @@ function Set-GitBashEnvVar {
     Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
-# The dependency tree supports Node 22.22+, 24, and 26+. nanoid 6 deliberately
-# excludes odd-numbered Node releases, so accepting Node 23/25 here only defers
-# the failure to `npm ci` under engine-strict. Keep this in sync with the root
-# package.json.
+# The dependency tree supports Node 22.22+, 24, and 26+. nanoid 6 excludes
+# Node 23 and 25 while its >=26 arm accepts later releases, so accepting 23/25
+# only defers the failure to `npm ci` under engine-strict. Keep this in sync
+# with the root package.json.
 function Test-NodeVersionOk {
     param([string]$Version)
     try {

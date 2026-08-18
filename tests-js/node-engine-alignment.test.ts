@@ -36,6 +36,11 @@ function compare(left: string, right: string): number {
 }
 
 function satisfiesClause(version: string, clause: string): boolean {
+  assert.match(
+    clause,
+    /^(?:\^|>=|<=|>|<|=)?\d+(?:\.\d+){0,2}$/,
+    `unsupported semver clause: ${clause}`
+  )
   if (clause.startsWith('^')) {
     const bound = clause.slice(1)
     return parseVersion(version)[0] === parseVersion(bound)[0] && compare(version, bound) >= 0

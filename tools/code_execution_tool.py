@@ -404,7 +404,8 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
         )
         if m:
             missing = m.group(1)
-            available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
+            available = sorted(_resolve_sandbox_tools(enabled_tools))
+            available_text = ", ".join(available) or "none"
             builtin = {"json_parse", "shell_quote", "retry"}
             if missing in builtin:
                 return (
@@ -413,7 +414,7 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
                 )
             return (
                 f"'{missing}' is not available inside the execute_code sandbox. "
-                f"Importable tools here: {', '.join(available)}. For anything "
+                f"Importable tools here: {available_text}. For anything "
                 "else, use the normal tool call instead of execute_code."
             )
         m = re.search(r"NameError: name '(json_parse|shell_quote|retry)' is not defined", window)

@@ -338,12 +338,7 @@ describe('useRouteResume', () => {
     const { rerender } = render(<RouteResumeHarness {...props} />)
     expect(resumeSession).not.toHaveBeenCalled()
 
-    rerender(
-      <RouteResumeHarness
-        {...props}
-        sessionResumeRequest={{ sequence: 1, sessionId: 'session-1' }}
-      />
-    )
+    rerender(<RouteResumeHarness {...props} sessionResumeRequest={{ sequence: 1, sessionId: 'session-1' }} />)
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-1', true)

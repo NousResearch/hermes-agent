@@ -101,23 +101,13 @@ const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } = await import('@/store/gateway')
 
-const {
-  $activeGatewayProfile,
-  $gatewaySwapTarget,
-  $profiles,
-  ensureGatewayProfile,
-  refreshProfiles
-} = await import('@/store/profile')
+const { $activeGatewayProfile, $gatewaySwapTarget, $profiles, ensureGatewayProfile, refreshProfiles } =
+  await import('@/store/profile')
 
 const { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } = await import('@/store/session-states')
 
-const {
-  $activeSessionId,
-  $messages,
-  $selectedStoredSessionId,
-  requestSessionResume,
-  setResumeExhaustedSessionId
-} = await import('@/store/session')
+const { $activeSessionId, $messages, $selectedStoredSessionId, requestSessionResume, setResumeExhaustedSessionId } =
+  await import('@/store/session')
 
 const setMockAtom = <T>(store: unknown, value: T) => (store as { set(next: T): void }).set(value)
 
@@ -448,7 +438,10 @@ describe('profile-aware plugin session opens', () => {
         expectHistory: true,
         hydrationTimeoutMs: 1_000
       })
-      .then(() => 'resolved', error => String(error))
+      .then(
+        () => 'resolved',
+        error => String(error)
+      )
 
     await Promise.resolve()
 

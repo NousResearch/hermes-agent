@@ -321,15 +321,7 @@ test('pidIsOurDashboard accepts the venv entrypoint an installer wrapper execs i
   ])
 
   assert.equal(
-    await pidIsOurDashboard(
-      ssh,
-      5,
-      SPAWN_NONCE,
-      '~/.local/bin/hermes',
-      '/Users/cd9c/.hermes',
-      OWNERSHIP_ID,
-      'ops'
-    ),
+    await pidIsOurDashboard(ssh, 5, SPAWN_NONCE, '~/.local/bin/hermes', '/Users/cd9c/.hermes', OWNERSHIP_ID, 'ops'),
     true
   )
   assert.match(ownershipProbe, /hermes-agent.*venv.*bin.*hermes/)
@@ -356,9 +348,14 @@ test.skipIf(process.platform === 'win32')(
     await chmod(launcher, 0o755)
 
     const backendFlags = [
-      '--host', '127.0.0.1', '--port', '0',
-      '--ssh-session-token-file', tokenPath,
-      '--ssh-owner-nonce', SPAWN_NONCE
+      '--host',
+      '127.0.0.1',
+      '--port',
+      '0',
+      '--ssh-session-token-file',
+      tokenPath,
+      '--ssh-owner-nonce',
+      SPAWN_NONCE
     ]
 
     const children: ReturnType<typeof spawn>[] = []
@@ -398,11 +395,27 @@ test.skipIf(process.platform === 'win32')(
         true
       )
       assert.equal(
-        await pidIsOurDashboard(ssh, child.pid, SPAWN_NONCE, launcher, '/unrelated/hermes-home', 'fedcba9876543210fedcba9876543210', 'ops'),
+        await pidIsOurDashboard(
+          ssh,
+          child.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          'fedcba9876543210fedcba9876543210',
+          'ops'
+        ),
         false
       )
       assert.equal(
-        await pidIsOurDashboard(ssh, child.pid, SPAWN_NONCE, launcher, '/unrelated/hermes-home', OWNERSHIP_ID, 'wrong-profile'),
+        await pidIsOurDashboard(
+          ssh,
+          child.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'wrong-profile'
+        ),
         false
       )
 
@@ -410,18 +423,40 @@ test.skipIf(process.platform === 'win32')(
 
       assert.equal(await waitForEntrypoint(misplacedIsolated), true)
       assert.equal(
-        await pidIsOurDashboard(ssh, misplacedIsolated.pid, SPAWN_NONCE, launcher, '/unrelated/hermes-home', OWNERSHIP_ID, 'ops'),
+        await pidIsOurDashboard(
+          ssh,
+          misplacedIsolated.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'ops'
+        ),
         false,
         '--isolated before serve must remain foreign'
       )
 
       const conflictingProfile = spawnInstaller([
-        '--profile', 'ops', 'serve', '--isolated', ...backendFlags, '--profile', 'foreign'
+        '--profile',
+        'ops',
+        'serve',
+        '--isolated',
+        ...backendFlags,
+        '--profile',
+        'foreign'
       ])
 
       assert.equal(await waitForEntrypoint(conflictingProfile), true)
       assert.equal(
-        await pidIsOurDashboard(ssh, conflictingProfile.pid, SPAWN_NONCE, launcher, '/unrelated/hermes-home', OWNERSHIP_ID, 'ops'),
+        await pidIsOurDashboard(
+          ssh,
+          conflictingProfile.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'ops'
+        ),
         false,
         'a duplicate conflicting profile must remain foreign'
       )

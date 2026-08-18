@@ -425,9 +425,7 @@ async function pidIsOurDashboard(
       'expected_entries={expected}\n' +
       'if hermes_home:\n' +
       ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","venv","bin","hermes"))\n' +
-      `expected_token=os.path.expanduser(${shq(
-        ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : ''
-      )})\n` +
+      `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
       `expected_profile=${shq(profile)}\n` +
       `nonce=${shq(spawnNonce)}\n` +
       'try:\n' +

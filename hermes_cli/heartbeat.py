@@ -184,6 +184,12 @@ def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
         return
     db = _get_session_db()
     if db is None:
+        logger.warning(
+            "HeartbeatManager: heartbeat for %s not persisted — session "
+            "DB unavailable (bootstrap window exceeded, in-memory state "
+            "still active)",
+            session_id,
+        )
         return
     try:
         db.set_meta(_meta_key(session_id), state.to_json())

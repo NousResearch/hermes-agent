@@ -109,30 +109,48 @@ def test_worker_thread_constructs_inline(monkeypatch):
 
 
 def test_slow_construction_does_not_block_the_loop(monkeypatch):
-    """A SessionDB whose init blocks (locked-DB migration) must not stall
-    the event loop past the watchdog probe window: bounded grace wait,
-    then degrade to None."""
+    """A SessionDB whose init blocks (locked-DB migration) must not
+    stall the event loop. The kick call is bounded by the one-time init
+    window. Every later call is bounded by the short per-call window.
+    Both calls degrade to None."""
     import hermes_state
 
     class _BlockingDB:
         def __init__(self):
-            time.sleep(2.0)  # simulated contended migration
+            # Far past both wait windows. The margin keeps the "still
+            # None" assertions from racing the bootstrap thread on a
+            # loaded runner (negative-timing race, flake policy).
+            time.sleep(6.0)  # simulated contended migration
 
         def get_meta(self, key):
             return None
 
     monkeypatch.setattr(hermes_state, "SessionDB", _BlockingDB)
     elapsed = None
+    elapsed2 = None
     result = "UNSET"
+    result2 = "UNSET"
 
     async def main():
-        nonlocal elapsed, result
+        nonlocal elapsed, elapsed2, result, result2
         t0 = time.monotonic()
         result = goals._get_session_db()
         elapsed = time.monotonic() - t0
+        t0 = time.monotonic()
+        result2 = goals._get_session_db()
+        elapsed2 = time.monotonic() - t0
 
     asyncio.run(main())
     assert result is None, "contended init must degrade to None"
-    assert elapsed is not None and elapsed < 1.0, (
-        f"loop-thread call blocked for {elapsed:.2f}s — watchdog territory"
+    # The slack on each ceiling is 2.0s, the loose-bound floor from the
+    # flake policy. The windows are 1.5s and 0.25s, so the two ceilings
+    # stay far apart and a loaded runner does not cross either one.
+    assert elapsed is not None and elapsed < goals._DB_BOOTSTRAP_INIT_WAIT_S + 2.0, (
+        f"kick call blocked for {elapsed:.2f}s — past the one-time init window"
+    )
+    # The in-flight call waits the short window, not the init window.
+    # A contended migration must not stall the loop repeatedly.
+    assert result2 is None, "contended init must keep degrading to None"
+    assert elapsed2 is not None and elapsed2 < goals._DB_BOOTSTRAP_LOOP_WAIT_S + 2.0, (
+        f"in-flight call blocked for {elapsed2:.2f}s — watchdog territory"
     )

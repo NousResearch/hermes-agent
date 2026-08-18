@@ -2972,7 +2972,7 @@ def _get_model_config_dict() -> dict[str, Any]:
         model_cfg = config.get("model", {})
         if isinstance(model_cfg, dict):
             return model_cfg
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError):
+    except Exception:
         pass
     return {}
 
@@ -3994,7 +3994,7 @@ def _credential_fingerprint(provider: str) -> str:
             bev = getattr(pcfg, "base_url_env_var", "") or ""
             if bev:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
-    except (ImportError, AttributeError):
+    except Exception:
         pass
 
     # Effective configured endpoint: config.yaml's model.base_url changes the

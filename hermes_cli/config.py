@@ -1370,6 +1370,7 @@ def _normalize_custom_provider_entry(
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "key_cmd",
         "api_mode", "transport", "model", "default_model", "models",
+        "models_discovered",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
@@ -1456,12 +1457,24 @@ def _normalize_custom_provider_entry(
     if isinstance(model_name, str) and model_name.strip():
         normalized["model"] = model_name.strip()
 
+    # Entry-level marker: the ``models`` mapping was auto-discovered by
+    # Hermes (``_save_discovered_models_to_config``), not hand-curated.
+    # Older Hermes versions wrote an in-mapping ``__discovered_model_catalog__``
+    # sentinel instead; accept it on read and strip it from the models
+    # mapping so sentinel keys never surface as model IDs.
+    models_discovered = entry.get("models_discovered") is True
+
     models = entry.get("models")
     if isinstance(models, dict) and models:
         # Shallow-copy: `entry` may alias a cached config sub-dict, and the
         # normalized entry escapes into long-lived runtime state
         # (agent._custom_providers) — don't share the cached models mapping.
-        normalized["models"] = dict(models)
+        models_copy = dict(models)
+        if models_copy.pop("__discovered_model_catalog__", None) is True:
+            models_discovered = True
+        models_copy.pop("__explicit_model_allowlist__", None)
+        if models_copy:
+            normalized["models"] = models_copy
     elif isinstance(models, list) and models:
         # Hand-edited configs (and older Hermes versions) may write
         # ``models`` as a plain list of ids or as ``[{id: ...}]`` rows.
@@ -1485,11 +1498,10 @@ def _normalize_custom_provider_entry(
             }
             normalized_models[model_id.strip()] = model_meta
         if normalized_models:
-            if normalized_models.get("__discovered_model_catalog__"):
-                normalized_models.pop("__explicit_model_allowlist__", None)
-            else:
-                normalized_models["__explicit_model_allowlist__"] = True
             normalized["models"] = normalized_models
+
+    if models_discovered:
+        normalized["models_discovered"] = True
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:
@@ -1547,6 +1559,7 @@ def _custom_provider_entry_to_provider_config(
         "api_key",
         "key_env",
         "models",
+        "models_discovered",
         "context_length",
         "rate_limit_delay",
         "discover_models",

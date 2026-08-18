@@ -117,6 +117,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
         from hermes_cli.model_switch import (
             _NativePickerModelList,
             _declared_model_ids,
+            _entry_models_discovered,
             _fetch_picker_live_models,
             _models_config_is_allowlist,
         )
@@ -180,7 +181,9 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
         is_native_ollama = should_use_ollama_native_catalog(
             native_catalog_provider, base_url, headers=native_headers
         )
-        explicit_catalog = _models_config_is_allowlist(models_cfg)
+        explicit_catalog = _models_config_is_allowlist(
+            models_cfg, _entry_models_discovered(entry)
+        )
         if not api_key and not declared and not is_native_ollama:
             # No credential to discover with and nothing declared:
             # not addressable from the selector.
@@ -755,7 +758,7 @@ class HermesACPAgent(acp.Agent):
                 capabilities=False,
                 refresh=False,
                 probe_custom_providers=False,
-                probe_current_custom_provider=True,
+                probe_current_custom_provider=False,
                 max_models=ACP_MAX_MODELS_PER_PROVIDER,
             )
 

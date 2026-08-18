@@ -1513,7 +1513,10 @@ def _model_flow_named_custom(config, provider_info):
     from hermes_cli.main import _custom_provider_api_key_config_value, _custom_provider_base_url_config_value, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import load_config, normalize_extra_headers, save_config
-    from hermes_cli.model_switch import _models_config_is_allowlist
+    from hermes_cli.model_switch import (
+        _entry_models_discovered,
+        _models_config_is_allowlist,
+    )
     from hermes_cli.models import (
         fetch_api_models,
         fetch_ollama_local_models,
@@ -1548,7 +1551,9 @@ def _model_flow_named_custom(config, provider_info):
     configured_models: list[str] = []
     native_catalog_empty = False
     cfg_models = provider_info.get("models", {})
-    explicit_catalog = _models_config_is_allowlist(cfg_models)
+    explicit_catalog = _models_config_is_allowlist(
+        cfg_models, _entry_models_discovered(provider_info)
+    )
     if isinstance(cfg_models, dict):
         configured_models = [
             str(m)

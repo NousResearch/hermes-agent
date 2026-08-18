@@ -88,6 +88,8 @@ def _declared_model_ids(value: Any) -> list[str]:
 
     if isinstance(value, dict):
         for model_id in value:
+            # Backward compat: pre-fix Hermes wrote sentinel keys inside the
+            # user-facing ``models`` mapping. Never list them as model IDs.
             if model_id in {
                 "__explicit_model_allowlist__",
                 "__discovered_model_catalog__",
@@ -111,7 +113,27 @@ def _declared_model_ids(value: Any) -> list[str]:
     return ids
 
 
-def _models_config_is_allowlist(value: Any) -> bool:
+def _entry_models_discovered(entry: Any) -> bool:
+    """True when the entry's ``models`` mapping was auto-discovered by Hermes.
+
+    The current shape is an entry-level ``models_discovered: true`` sibling of
+    ``models``. Older Hermes versions wrote an in-mapping
+    ``__discovered_model_catalog__: true`` sentinel instead — accept that on
+    read for backward compatibility (the next discovery save migrates the
+    entry to the clean shape).
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("models_discovered") is True:
+        return True
+    models = entry.get("models")
+    return (
+        isinstance(models, dict)
+        and models.get("__discovered_model_catalog__") is True
+    )
+
+
+def _models_config_is_allowlist(value: Any, discovered: bool = False) -> bool:
     """Return True when ``models:`` is an intentional ID allowlist.
 
     A mapping like ``{model_id: {context_length: N}}`` is per-model *metadata*
@@ -123,16 +145,19 @@ def _models_config_is_allowlist(value: Any) -> bool:
 
     List/string shapes remain allowlists for no-key endpoints. To pin a
     dict-shaped catalog, set ``discover_models: false``.
+
+    ``discovered`` is the entry-level ``models_discovered`` flag (see
+    ``_entry_models_discovered``): a catalog Hermes itself persisted after a
+    successful probe is never a user pin, whatever its shape.
     """
+    if discovered:
+        return False
     if value is None:
         return False
     if isinstance(value, str):
         return bool(value.strip())
     if isinstance(value, dict):
-        return bool(
-            value.get("__explicit_model_allowlist__")
-            and not value.get("__discovered_model_catalog__")
-        )
+        return False
     if isinstance(value, (list, tuple)):
         return bool(_declared_model_ids(value))
     return False
@@ -183,35 +208,40 @@ def _save_discovered_models_to_config(
                 if entry_headers != headers:
                     continue
             existing = entry.get("models")
+            legacy_discovered = (
+                isinstance(existing, dict)
+                and existing.get("__discovered_model_catalog__") is True
+            )
+            entry_discovered = (
+                entry.get("models_discovered") is True or legacy_discovered
+            )
             # Preserve per-model metadata: when ``models`` is a mapping
             # (e.g. ``{"model-a": {"context_length": 8192}}``) or a list of
             # dicts (e.g. ``[{"id": "model-a", "context_length": 8192}]``),
             # the user has curated metadata per model — do not replace it.
-            if isinstance(existing, dict):
+            # A mapping Hermes itself discovered (``models_discovered: true``
+            # or the legacy in-mapping sentinel) is ours to refresh.
+            if isinstance(existing, dict) and not entry_discovered:
                 continue
             if isinstance(existing, list) and any(
                 isinstance(m, dict) for m in existing
             ):
                 continue
             # Only update when models are stale — avoids unnecessary
-            # config writes on every picker open.
+            # config writes on every picker open.  A legacy-shape entry
+            # (sentinel inside ``models``) is always rewritten so the next
+            # save migrates it to the clean entry-level flag.
             if isinstance(existing, list) and existing == model_ids:
                 continue
-            if isinstance(existing, dict):
-                existing_ids = [
-                    model_id
-                    for model_id in existing
-                    if model_id != "__discovered_model_catalog__"
-                ]
-                if (
-                    existing.get("__discovered_model_catalog__") is True
-                    and existing_ids == model_ids
-                ):
-                    continue
-            entry["models"] = {
-                "__discovered_model_catalog__": True,
-                **{model_id: {} for model_id in model_ids},
-            }
+            if (
+                isinstance(existing, dict)
+                and entry_discovered
+                and not legacy_discovered
+                and list(existing) == model_ids
+            ):
+                continue
+            entry["models"] = {model_id: {} for model_id in model_ids}
+            entry["models_discovered"] = True
             changed = True
 
         if changed:
@@ -1940,7 +1970,7 @@ def switch_model(
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
                 validation_headers = runtime.get("extra_headers") or validation_headers
-            except (OSError, RuntimeError, TypeError, ValueError):
+            except Exception:
                 pass
 
     # --- Direct alias override: use exact base_url from the alias if set ---
@@ -3288,7 +3318,9 @@ def list_authenticated_providers(
             # #61928). Dict-shaped ``models:`` is context_length metadata from
             # ``hermes model``, not an allowlist — see
             # ``_models_config_is_allowlist``.
-            if _models_config_is_allowlist(ep_cfg.get("models")):
+            if _models_config_is_allowlist(
+                ep_cfg.get("models"), _entry_models_discovered(ep_cfg)
+            ):
                 ep_groups[group_key]["has_explicit_models"] = True
             ep_groups[group_key]["raw_names"].append(display_name)
             ep_groups[group_key]["aliases"].update(
@@ -3391,7 +3423,7 @@ def list_authenticated_providers(
                         or isinstance(live_models, _NativePickerModelList)
                     ):
                         models_list = live_models
-                except _MODEL_DISCOVERY_ERRORS:
+                except Exception:
                     pass
             elif _discovery_allowed:
                 try:
@@ -3494,7 +3526,7 @@ def list_authenticated_providers(
                     _live_models, _NativePickerModelList
                 ) and not _live_models
                 _models = _live_models
-        except _MODEL_DISCOVERY_ERRORS:
+        except Exception:
             pass
         results.append({
             "slug": "custom",
@@ -3638,7 +3670,9 @@ def list_authenticated_providers(
             # Dict-shaped models: is context_length metadata from
             # ``_save_custom_provider``, not an allowlist — see
             # ``_models_config_is_allowlist``.
-            if _models_config_is_allowlist(models_field):
+            if _models_config_is_allowlist(
+                models_field, _entry_models_discovered(entry)
+            ):
                 groups[group_key]["has_explicit_models"] = True
             for model_id in declared_models:
                 if model_id not in groups[group_key]["models"]:
@@ -3785,7 +3819,7 @@ def list_authenticated_providers(
                             api_mode=grp.get("api_mode"),
                             headers=grp.get("extra_headers") or None,
                         )
-                except _MODEL_DISCOVERY_ERRORS:
+                except Exception:
                     pass
             elif _discovery_allowed:
                 try:

@@ -221,6 +221,7 @@ export function ConnectionsRegistrySection() {
   const bridge = window.hermesDesktop?.connections
 
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
+
   const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
     setRegistry(next)
     setConnectionsRegistry(next)

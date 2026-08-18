@@ -904,20 +904,20 @@ export const zh: Translations = {
       set: '设置',
       clear: '清除'
     },
-    // v2 多连接注册表：设置 → 连接。
+    // v2 多连接注册表：设置 → 网关。
     connections: {
-      title: '连接',
-      intro: '注册你的智能体所在的每个位置——本机、局域网中的远程网关、Hermes Cloud 实例——全部保存在这里。',
+      title: '已注册网关',
+      intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
       stagedNote:
-        '可在“会话”侧边栏切换来源。配置档案、聊天、消息和定时任务始终限定在所选来源；“主连接”是注册表的默认值，不会切换当前工作区。',
+        '可在“会话”侧边栏切换网关。配置档案、聊天、消息和定时任务归属于各自网关；其他网关上的工作会继续运行。',
       launchModeTitle: '启动时打开',
-      launchModeDesc: '始终打开主连接，或恢复上次成功连接的来源。',
-      launchPrimary: '主连接',
+      launchModeDesc: '选择 Hermes 启动时打开主网关，或上次成功连接的网关。',
+      launchPrimary: '主网关',
       launchLastUsed: '上次使用',
       loadFailed: '无法加载连接',
       currentPill: '当前',
       primaryPill: '主连接',
-      managedPill: '本机',
+      managedPill: '应用管理',
       addConnection: '添加连接',
       editConnection: '编辑',
       removeConnection: '移除',

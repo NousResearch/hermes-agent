@@ -699,21 +699,21 @@ export const en: Translations = {
       set: 'Set',
       clear: 'Clear'
     },
-    // v2 multi-connection registry: Settings → Connections.
+    // v2 multi-connection registry: Settings → Gateways.
     connections: {
-      title: 'Connections',
-      intro:
-        'Manage this device, remote gateways, SSH hosts, and Hermes Cloud sources.',
+      title: 'Registered gateways',
+      intro: 'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
       stagedNote:
-        'Switch sources from Sessions. Profiles, chats, messaging, and cron jobs stay with their source; work on other sources keeps running.',
+        'Switch gateways from Sessions. Profiles, chats, messaging, and cron jobs stay with their gateway; work on other gateways keeps running.',
       launchModeTitle: 'Open on launch',
-      launchModeDesc: 'Choose whether Hermes opens your primary source or the last source that connected successfully.',
-      launchPrimary: 'Primary source',
+      launchModeDesc:
+        'Choose whether Hermes opens your primary gateway or the last gateway that connected successfully.',
+      launchPrimary: 'Primary gateway',
       launchLastUsed: 'Last used',
       loadFailed: 'Could not load connections',
       currentPill: 'Current',
       primaryPill: 'Primary',
-      managedPill: 'This device',
+      managedPill: 'App-managed',
       addConnection: 'Add connection',
       editConnection: 'Edit',
       removeConnection: 'Remove',

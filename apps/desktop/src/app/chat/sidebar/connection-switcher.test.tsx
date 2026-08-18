@@ -41,7 +41,7 @@ vi.mock('@/i18n', () => ({
         switchToConnection: (name: string) => `Switch to ${name}`,
         connectGateway: 'Connect another Hermes gateway…'
       },
-      settings: { connections: { title: 'Connections' } }
+      settings: { connections: { title: 'Registered gateways' } }
     }
   })
 }))
@@ -113,7 +113,7 @@ describe('ConnectionSwitcher', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local')]))
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    expect(screen.queryByRole('group', { name: 'Connections' })).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Registered gateways' })).toBeNull()
   })
 
   it('shows a named source selector instead of profile-like gateway glyphs', () => {
@@ -126,7 +126,7 @@ describe('ConnectionSwitcher', () => {
     )
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    const trigger = screen.getByRole('button', { name: 'Connections: This device' })
+    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
 
     expect(trigger.textContent).toContain('This device')
     expect(trigger.getAttribute('data-variant')).toBe('ghost')
@@ -148,8 +148,10 @@ describe('ConnectionSwitcher', () => {
     $pendingConnectionId.set('homelab')
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    expect(screen.getByRole('group', { name: 'Connections' }).getAttribute('aria-busy')).toBe('true')
-    expect(screen.getByRole('button', { name: 'Connections: This device' }).querySelector('.animate-spin')).toBeTruthy()
+    expect(screen.getByRole('group', { name: 'Registered gateways' }).getAttribute('aria-busy')).toBe('true')
+    expect(
+      screen.getByRole('button', { name: 'Registered gateways: This device' }).querySelector('.animate-spin')
+    ).toBeTruthy()
   })
 
   it.each([2, 20])('uses the same stable source selector for %i registered backends', count => {
@@ -161,7 +163,7 @@ describe('ConnectionSwitcher', () => {
     )
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    expect(screen.getByRole('button', { name: 'Connections: This device' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Registered gateways: This device' })).toBeTruthy()
   })
 
   it('announces a pending switch in the compact source menu', () => {
@@ -174,6 +176,6 @@ describe('ConnectionSwitcher', () => {
     $pendingConnectionId.set('remote-3')
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    expect(screen.getByRole('group', { name: 'Connections' }).getAttribute('aria-busy')).toBe('true')
+    expect(screen.getByRole('group', { name: 'Registered gateways' }).getAttribute('aria-busy')).toBe('true')
   })
 })

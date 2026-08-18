@@ -535,7 +535,13 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
         from providers import get_provider_profile as _profile
 
         _prof = _profile(canonical)
-        if _prof is not None:
+        # Only profiles with a concrete endpoint resolve here. Placeholder
+        # profiles like ``custom`` (aliases: ollama/local/vllm) ship with an
+        # empty base_url and are completed by config.yaml custom_providers —
+        # resolving them here would preempt resolve_provider_full's
+        # custom-provider step and collapse keyed IDs
+        # (``custom:local-...``) back to a bare, endpoint-less ``custom``.
+        if _prof is not None and (_prof.base_url or "").strip():
             _api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
             _transport = _api_mode_to_transport.get(_prof.api_mode, "openai_chat")
             return ProviderDef(

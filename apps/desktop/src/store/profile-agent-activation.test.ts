@@ -15,7 +15,7 @@ import type { HermesConnection } from '@/global'
 //     EARLIER setActive() landed last.
 
 const ensureGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => true)
-const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
+const ensureGatewayForProfile = vi.fn(async (_profile: string) => true)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()

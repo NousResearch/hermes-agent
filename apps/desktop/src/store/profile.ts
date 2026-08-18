@@ -304,7 +304,12 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   const target = normalizeProfileKey(profile)
 
-  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+  // #79005: a non-null socket that is NOT open is a dead dial — the no-op
+  // guard must not treat it as an already-active profile.
+  if (
+    normalizeProfileKey($activeGatewayProfile.get()) === target &&
+    $gateway.get()?.connectionState === 'open'
+  ) {
     return
   }
 

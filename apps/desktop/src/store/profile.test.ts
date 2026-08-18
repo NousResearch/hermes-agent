@@ -248,7 +248,7 @@ describe('#79005 dead-socket swap guard', () => {
     // Same profile, but the socket died: the old non-null guard no-oped here
     // and left the UI showing a live profile on a dead dial.
     $activeGatewayProfile.set('vps-remote')
-    $gateway.set({ id: 'live-socket', connectionState: 'closed' })
+    $gateway.set({ connectionState: 'closed' } as never)
 
     const { ensureGatewayProfile } = await import('@/store/profile')
 

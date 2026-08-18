@@ -169,4 +169,45 @@ describe('clarify.request stream hydration', () => {
 
     expect(clarifyParts()).toHaveLength(1)
   })
+
+  it('merges a BATCH tool.start row with its clarify.request (no top-level question)', async () => {
+    await mountStream()
+
+    // The batch shape: tool args carry `questions`, no top-level `question`.
+    // The correlation key must come from the question list, or the two ids
+    // mount two cards (the duplicate seen in the field).
+    toolStart({
+      args: { questions: [{ question: 'Drink?' }, { question: 'Productive when?' }] },
+      name: 'clarify',
+      tool_id: 'call-batch'
+    })
+    clarifyRequest({
+      questions: [
+        { qid: 'q0', question: 'Drink?' },
+        { qid: 'q1', question: 'Productive when?' }
+      ],
+      request_id: 'req-batch'
+    })
+
+    expect(clarifyParts()).toHaveLength(1)
+  })
+
+  it('does not duplicate when the batch clarify.request arrives before tool.start', async () => {
+    await mountStream()
+
+    clarifyRequest({
+      questions: [
+        { qid: 'q0', question: 'Drink?' },
+        { qid: 'q1', question: 'Productive when?' }
+      ],
+      request_id: 'req-batch-2'
+    })
+    toolStart({
+      args: { questions: [{ question: 'Drink?' }, { question: 'Productive when?' }] },
+      name: 'clarify',
+      tool_id: 'call-batch-2'
+    })
+
+    expect(clarifyParts()).toHaveLength(1)
+  })
 })

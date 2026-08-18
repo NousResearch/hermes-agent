@@ -339,6 +339,40 @@ const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
 }
 
+/**
+ * A marker that makes the mock emit a blocking BATCH clarify tool call
+ * (multi-question form). Regression coverage for the duplicated-card bug:
+ * the tool.start row and the clarify.request row carry different ids and a
+ * batch payload has no top-level question, so the correlation key must come
+ * from the question list or the card mounts twice.
+ */
+export const BATCH_CLARIFY_TRIGGER = 'E2E_BATCH_CLARIFY_TRIGGER'
+export const BATCH_CLARIFY_QUESTIONS = [
+  { question: 'Pick a batch drink?', choices: ['Coffee', 'Tea'] },
+  { question: 'Pick a batch time?', choices: ['Morning', 'Night'] },
+]
+
+const BATCH_CLARIFY_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'clarify', args: { questions: BATCH_CLARIFY_QUESTIONS } }],
+}
+
+function includesBatchClarifyTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(BATCH_CLARIFY_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesBatchClarifyTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesBatchClarifyTrigger)
+  }
+
+  return false
+}
+
 function includesBlockingClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BLOCKING_CLARIFY_TRIGGER)
@@ -480,6 +514,15 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               void heldStreamReleased.then(respond)
             } else {
               respond()
+            }
+            return
+          }
+
+          if (includesBatchClarifyTrigger(parsed.messages)) {
+            if (stream) {
+              streamScriptedTurn(res, model, BATCH_CLARIFY_TURN)
+            } else {
+              nonStreamingScriptedTurn(res, model, BATCH_CLARIFY_TURN)
             }
             return
           }

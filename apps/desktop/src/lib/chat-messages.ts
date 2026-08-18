@@ -624,11 +624,42 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
   // row (the model's tool_call_id) so the two ids don't produce a duplicate
   // clarify card — same correlation ClarifyToolPending uses for request↔args.
   // `server` is setup_mcp's identifying arg, for the identical reason.
-  const query = firstStringField(payloadArgs, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path'])
+  const query =
+    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path']) ||
+    batchClarifyMatchValue(payloadArgs.questions)
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
   const preview = typeof payload?.preview === 'string' ? payload.preview.trim() : ''
 
   return collectToolMatchValues(query, context, preview)
+}
+
+/**
+ * The batch-clarify counterpart of the `question` correlation key: a batch
+ * payload has no top-level `question`, only `questions[]`, so without this
+ * the request row and the tool.start row never match and the card mounts
+ * twice. The joined per-question texts identify the batch the same way one
+ * question text identifies a single prompt. The `\u0000` separator cannot
+ * appear in real question text, so a batch key can never collide with a
+ * single-question key.
+ */
+function batchClarifyMatchValue(questions: unknown): string {
+  if (!Array.isArray(questions)) {
+    return ''
+  }
+
+  const texts = questions
+    .map(entry => {
+      if (!entry || typeof entry !== 'object') {
+        return ''
+      }
+
+      const question = (entry as Record<string, unknown>).question
+
+      return typeof question === 'string' ? question.trim() : ''
+    })
+    .filter(Boolean)
+
+  return texts.length > 0 ? texts.join('\u0000') : ''
 }
 
 function toolPartMatchValues(part: ChatMessagePart): string[] {
@@ -637,7 +668,9 @@ function toolPartMatchValues(part: ChatMessagePart): string[] {
   }
 
   const args = part.args as Record<string, unknown>
-  const query = firstStringField(args, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path'])
+  const query =
+    firstStringField(args, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path']) ||
+    batchClarifyMatchValue(args.questions)
   const context = typeof args.context === 'string' ? args.context.trim() : ''
   const preview = typeof args.preview === 'string' ? args.preview.trim() : ''
 

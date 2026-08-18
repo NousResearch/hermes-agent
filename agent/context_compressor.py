@@ -997,7 +997,7 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
         "session history. If you need any detail this summary does not carry "
         "(exact command output, file contents, error text, earlier "
         "reasoning), recover it with: "
-        f"session_search(query='<keywords>', session_id='{session_id}') — "
+        f"session_search(query='<keywords>') — "
         "do not guess at lost specifics when you can look them up."
     )
 

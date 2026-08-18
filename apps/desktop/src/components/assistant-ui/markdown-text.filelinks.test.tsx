@@ -27,10 +27,7 @@ describe('MarkdownLink filesystem hrefs', () => {
 
   it('routes file:// and ~/ links the same way', async () => {
     render(
-      <MarkdownTextContent
-        isRunning={false}
-        text={'See [notes](file:///srv/data/notes.txt) and [todo](~/todo.md)'}
-      />
+      <MarkdownTextContent isRunning={false} text={'See [notes](file:///srv/data/notes.txt) and [todo](~/todo.md)'} />
     )
 
     await screen.findByText('notes.txt')

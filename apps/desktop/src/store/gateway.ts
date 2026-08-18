@@ -248,6 +248,7 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   // through the same source of truth every activation path maintains here —
   // registry-agent activations included, not just profile switches.
   setApiRequestConnection(activeGatewayConnectionId())
+
   // Publish the BARE profile this route serves, in the same synchronous step
   // as the socket selection. activeKey may be a composite registry scope
   // (connectionId::profile); consumers route RPCs by profile, so resolve it

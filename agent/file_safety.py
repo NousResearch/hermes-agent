@@ -438,6 +438,10 @@ _DID_SUFFIX = (
 _CREDENTIAL_FILE_NAMES = (
     "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
     os.path.join("auth", "google_oauth.json"), *SECRET_CACHE_STORES,
+    # Live Google Workspace OAuth stores at the HERMES_HOME root: the skill's token and its
+    # in-flight PKCE exchange state. Only the skill's own scripts read them (direct file I/O);
+    # tools.credential_files keeps the token mountable via _MOUNTABLE_SERVICE_TOKENS.
+    "google_token.json", "google_oauth_pending.json",
 )
 
 # Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for

@@ -205,6 +205,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("FIREWORKS_API_KEY",),
         base_url_override="https://api.fireworks.ai/inference/v1",
     ),
+    "ssycloud": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("SSYCLOUD_API_KEY",),
+        base_url_override="https://router.shengsuanyun.com/api/v1",
+    ),
     "actual": HermesOverlay(
         transport="codex_responses",
         extra_env_vars=("ACTUAL_API_KEY", "ACTUAL_BASE_URL"),
@@ -386,6 +392,10 @@ ALIASES: Dict[str, str] = {
     "fireworks-ai": "fireworks",
     "fw": "fireworks",
 
+    # SSYCloud / 胜算云
+    "shengsuanyun": "ssycloud",
+    "ssy-cloud": "ssycloud",
+
     # upstage
     "solar": "upstage",
 
@@ -418,6 +428,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
+    "ssycloud": "SSYCloud (胜算云)",
     "upstage": "Upstage Solar",
     "actual": "Actual Computer",
     "tencent-tokenhub": "Tencent TokenHub",

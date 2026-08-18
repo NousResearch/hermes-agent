@@ -1,0 +1,5 @@
+name: ssycloud-provider
+kind: model-provider
+version: 1.0.0
+description: SSYCloud (胜算云) — 300+ LLM and multimodel API router
+author: Hermes Agent contributors

@@ -71,6 +71,7 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "nous",
     "ai-gateway",
     "kilocode",
+    "ssycloud",
 })
 
 # Providers that want bare names with dots replaced by hyphens.
@@ -579,4 +580,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-

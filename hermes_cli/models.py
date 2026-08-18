@@ -1346,6 +1346,8 @@ _PROVIDER_ALIASES = {
     "arceeai": "arcee",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "shengsuanyun": "ssycloud",
+    "ssy-cloud": "ssycloud",
     "fireworks-ai": "fireworks",
     "fw": "fireworks",
     "actual-computer": "actual",
@@ -2604,7 +2606,7 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
 
 
 _AGGREGATOR_PROVIDERS = frozenset(
-    {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
+    {"nous", "openrouter", "ai-gateway", "copilot", "kilocode", "ssycloud"}
 )
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models

@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
@@ -230,9 +231,72 @@ def classify(files: list[str]) -> dict[str, bool]:
     return ret
 
 
+def _pull_request_number() -> str | None:
+    """Read the PR number from the Actions event payload, if present."""
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        return None
+    try:
+        with open(event_path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    number = (payload.get("pull_request") or {}).get("number")
+    return str(number) if number else None
+
+
+def pull_request_changed_files() -> list[str]:
+    """Recover the PR file list when the compare API returned nothing.
+
+    ``detect-changes`` calls ``repos/.../compare/base...head`` with raw SHAs.
+    A fork force-push can 404 for ~30s until GitHub attaches the new head SHA
+    to the base repo, so the action fails open with an empty file list. That
+    forces ``ci_review=true`` and blocks the PR on a ``ci-reviewed`` label
+    even when no CI-sensitive file changed.
+
+    The pull-request files endpoint already knows the PR's files (it is how
+    this action used to classify), so use it as a fallback on pull_request
+    events only. Push/dispatch keep the empty-diff fail-open.
+    """
+    if os.environ.get("EVENT_NAME") != "pull_request":
+        return []
+    repo = os.environ.get("REPO") or os.environ.get("GITHUB_REPOSITORY") or ""
+    pr = _pull_request_number()
+    if not repo or not pr:
+        return []
+    try:
+        completed = subprocess.run(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                f"repos/{repo}/pulls/{pr}/files",
+                "--jq",
+                ".[].filename",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
 
 def main() -> int:
     files = sys.stdin.read().splitlines()
+    if not any(f.strip() for f in files):
+        recovered = pull_request_changed_files()
+        if recovered:
+            print(
+                f"compare API returned no files; recovered {len(recovered)} "
+                "path(s) from the pull request files endpoint",
+                file=sys.stderr,
+            )
+            files = recovered
     lanes = classify(files)
     out = "\n".join([
         *(f"{key}={str(value).lower()}" for key, value in lanes.items()),

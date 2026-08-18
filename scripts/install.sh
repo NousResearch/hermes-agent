@@ -2531,6 +2531,36 @@ configure_browser_env_from_system_browser() {
     log_success "Configured browser tools to use $browser_path"
 }
 
+# Select the npm workspaces a CLI install actually needs, into the
+# NODE_DEPS_WORKSPACE_ARGS array.
+#
+# A bare `npm install` at the repo root resolves package.json's `apps/*`
+# glob, which materializes apps/desktop — and with it node-pty, which ships
+# no Linux prebuild and falls back to `node-gyp rebuild`. On a host without
+# make/gcc that rebuild fails, and since #85297 made a failed npm install
+# fatal it aborts the whole install of a machine that will never launch
+# Electron or a PTY addon (#38311, #38772). Desktop dependencies are
+# installed by install_desktop(), reachable only via --include-desktop.
+#
+# Naming ui-tui/web excludes the unnamed apps/* workspaces, and
+# --include-workspace-root keeps the root's own devDependencies (the shared
+# ESLint flat config each workspace imports) from being pruned by the scoped
+# install — the same closure `hermes update` installs
+# (hermes_cli/main.py::_update_node_dependencies). Prebuilt/partial checkouts
+# can lack a workspace, and naming a missing one makes npm fail hard, so fall
+# back to a root-only install that still skips apps/*.
+node_deps_workspace_args() {
+    local install_dir="$1"
+    NODE_DEPS_WORKSPACE_ARGS=()
+    [ -f "$install_dir/ui-tui/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--workspace ui-tui)
+    [ -f "$install_dir/web/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--workspace web)
+    if [ "${#NODE_DEPS_WORKSPACE_ARGS[@]}" -eq 0 ]; then
+        NODE_DEPS_WORKSPACE_ARGS=(--workspaces=false)
+        return 0
+    fi
+    NODE_DEPS_WORKSPACE_ARGS+=(--include-workspace-root)
+}
+
 install_node_deps() {
     if [ "$HAS_NODE" = false ]; then
         log_info "Skipping Node.js dependencies (Node not installed)"
@@ -2553,9 +2583,12 @@ install_node_deps() {
         # installed", hiding the degradation from the user (#77003). Now it
         # fails the install outright instead of burying the warning (#85297).
         # Capture npm output so failures are diagnosable (#87340).
+        # Scoped to the workspaces a CLI install needs so apps/desktop's
+        # node-pty is never built here — see node_deps_workspace_args().
+        node_deps_workspace_args "$INSTALL_DIR"
         local npm_log
         npm_log="$(mktemp)"
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent \
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install "${NODE_DEPS_WORKSPACE_ARGS[@]}" --silent \
                 >"$npm_log" 2>&1; then
             log_error "npm install failed or timed out; Node.js dependencies were not installed"
             if [ -s "$npm_log" ]; then

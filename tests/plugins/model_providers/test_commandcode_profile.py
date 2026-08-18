@@ -232,3 +232,27 @@ class TestCommandCodeModelFiltering:
         assert "startswith(\"claude-\")" in source or '"claude-" in m' in source, (
             "CommandCodeAnthropicProfile.fetch_models should filter to claude-* models"
         )
+
+
+# ── Picker contract ──────────────────────────────────────────────────────────
+
+class TestCommandCodeFetchModelsPickerContract:
+    """``fetch_models`` must accept the kwargs the model picker passes.
+
+    Regression: the generic live-fetch path in ``hermes_cli/models.py``
+    (``provider_model_ids``) calls ``profile.fetch_models(api_key=...,
+    base_url=...)``. The original CommandCode overrides only accepted
+    ``api_key``/``timeout``, so every picker open raised TypeError, which
+    was swallowed, leaving the provider with zero models.
+    """
+
+    @pytest.mark.parametrize("profile_name", ["commandcode", "commandcode-anthropic"])
+    def test_accepts_base_url_kwarg(self, profile_name):
+        import inspect
+
+        import model_tools  # noqa: F401 — triggers discovery
+        import providers
+
+        profile = providers.get_provider_profile(profile_name)
+        assert profile is not None
+        assert "base_url" in inspect.signature(profile.fetch_models).parameters

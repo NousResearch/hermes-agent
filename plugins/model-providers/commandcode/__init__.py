@@ -79,6 +79,7 @@ class CommandCodeProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch from the public CommandCode /models endpoint."""
@@ -126,6 +127,7 @@ class CommandCodeAnthropicProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch from the public CommandCode /models endpoint.

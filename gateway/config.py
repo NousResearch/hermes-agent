@@ -18,6 +18,7 @@ from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
 )
+from gateway.stale_override_notice import StaleOverrideNoticeConfig
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -587,6 +588,7 @@ class GatewayConfig:
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
     profile_routes: list = field(default_factory=list)  # gateway/profile_routing.py
+    stale_override_notice: StaleOverrideNoticeConfig = field(default_factory=StaleOverrideNoticeConfig)
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
@@ -670,6 +672,7 @@ class GatewayConfig:
             **{name: getattr(self, name) for name in self._SCALAR_DICT_FIELDS},
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "stale_override_notice": self.stale_override_notice.to_dict(),
             "profile_routes": [
                 asdict(r) if is_dataclass(r) and not isinstance(r, type) else r for r in self.profile_routes
             ],
@@ -766,6 +769,10 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
+            stale_override_notice=StaleOverrideNoticeConfig.from_dict(
+                data.get("stale_override_notice") if "stale_override_notice" in data
+                else nested_gateway.get("stale_override_notice")
+            ),
         )
 
     def _extra_choice(self, platform: Optional[Platform], key: str, choices: set, default: str) -> Optional[str]:

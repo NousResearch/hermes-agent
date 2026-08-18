@@ -511,7 +511,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # getFile cap: 20MB on the public Bot API, 2GB on a local telegram-bot-api (base_url).
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: Dict[str, dict] = {}  # per-chat interactive picker state
-        self._choice_picker_state: Dict[str, dict] = {}
+        self._choice_picker_state: Dict[tuple[str, str], dict] = {}
         self._approval_state: Dict[int, str] = {}  # message_id → session_key
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
@@ -3894,11 +3894,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 buttons.append(InlineKeyboardButton(label, callback_data=f"cp:{i}"))
             if not buttons:
                 return SendResult(success=False, error="No choices")
-            keyboard = InlineKeyboardMarkup(self._rows_of_two(buttons))
+            rows = [[button] for button in buttons] if (metadata or {}).get("choice_layout") == "vertical" else self._rows_of_two(buttons)
+            keyboard = InlineKeyboardMarkup(rows)
 
             def _remember(msg):
-                self._choice_picker_state[str(chat_id)] = {
-                    "msg_id": msg.message_id, "choices": choices, "session_key": session_key, "on_choice_selected": on_choice_selected}
+                state_key = (str(chat_id), str(msg.message_id))
+                state = {"msg_id": msg.message_id, "choices": choices, "session_key": session_key, "on_choice_selected": on_choice_selected}
+                if metadata is not None and "requester_user_id" in metadata:
+                    state["owner_user_id"] = str(metadata.get("requester_user_id") or "").strip()
+                self._choice_picker_state[state_key] = state
+                timeout = (metadata or {}).get("choice_timeout_seconds")
+                if timeout is not None:
+                    try:
+                        timeout = max(0.0, float(timeout))
+                    except (TypeError, ValueError):
+                        return
+                    async def expire():
+                        await asyncio.sleep(timeout)
+                        if self._choice_picker_state.get(state_key) is state:
+                            self._choice_picker_state.pop(state_key, None)
+                    task = asyncio.create_task(expire())
+                    if not hasattr(self, "_choice_picker_cleanup_tasks"):
+                        self._choice_picker_cleanup_tasks = set()
+                    self._choice_picker_cleanup_tasks.add(task)
+                    task.add_done_callback(self._choice_picker_cleanup_tasks.discard)
             return self.format_message(title), keyboard, _remember
         return await self._send_prompt(
             "send_choice_picker", chat_id, metadata, build, thread_id=metadata.get("thread_id") if metadata else None,
@@ -3914,13 +3933,19 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_choice_picker_callback(self, query, data: str, chat_id: str) -> None:
         """Handle choice picker button taps (cp:<index>)."""
-        state = self._choice_picker_state.get(chat_id)
+        state_key = (str(chat_id), str(getattr(getattr(query, "message", None), "message_id", "") or ""))
+        state = self._choice_picker_state.get(state_key)
         if not state:
             await query.answer(text="Picker expired — run the command again.")
             return
         # Same auth gate as approval buttons: strangers in a shared group must not flip session state.
         if not await self._callback_authorized(query, self._callback_ctx(query), "⛔ You are not authorized to change this setting."):
             return
+        if "owner_user_id" in state:
+            actor = str(getattr(query.from_user, "id", "") or "").strip()
+            if not actor or actor != state["owner_user_id"]:
+                await query.answer(text="⛔ Only the user who opened this picker can use it.")
+                return
         try:
             choice = state["choices"][int(data[3:])]
         except (ValueError, IndexError):
@@ -3937,7 +3962,7 @@ class TelegramAdapter(BasePlatformAdapter):
             result_text = f"Error applying selection: {exc}"
         await self._edit_result_text(query, result_text)
         await query.answer()
-        self._choice_picker_state.pop(chat_id, None)
+        self._choice_picker_state.pop(state_key, None)
 
     _MODEL_PAGE_SIZE = 8
 

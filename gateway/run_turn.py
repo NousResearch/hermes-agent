@@ -47,7 +47,7 @@ class GatewayTurnMixin:
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
-        user_config: Optional[dict] = None,
+        user_config: Optional[dict] = None, include_session_override: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
@@ -60,9 +60,9 @@ class GatewayTurnMixin:
         skey = self._resolve_session_key_or_none(source, session_key)
 
         model = _resolve_gateway_model(user_config)
-        if skey:
+        if skey and include_session_override:
             self._rehydrate_session_model_override(skey)
-        _override_state = self._peek_session_state(skey) if skey else None
+        _override_state = self._peek_session_state(skey) if skey and include_session_override else None
         override = _override_state.conversation.model_override if _override_state else None
         if override:
             override_model = override.get("model", model)

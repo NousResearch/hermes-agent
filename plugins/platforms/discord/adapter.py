@@ -5688,6 +5688,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             view = ChoicePickerView(
                 choices=choices, on_choice_selected=on_choice_selected,
+                requester_user_id=(metadata or {}).get("requester_user_id"),
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
             return {"embed": embed, "view": view}, view
@@ -6651,10 +6652,11 @@ def _define_discord_view_classes() -> None:
     class ChoicePickerView(_HermesView):
         """Flat single-select picker for finite-choice commands (/reasoning, /fast); 2-minute timeout."""
 
-        def __init__(self, choices: list, on_choice_selected, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+        def __init__(self, choices: list, on_choice_selected, allowed_user_ids: set, allowed_role_ids: Optional[set] = None, requester_user_id: Optional[Any] = None):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=120)
             self.choices = list(choices)[:_DISCORD_SELECT_MAX_OPTIONS]
             self.on_choice_selected = on_choice_selected
+            self.requester_user_id = str(requester_user_id or "").strip() if requester_user_id is not None else None
             options = []
             for choice in self.choices:
                 label = str(choice.get("label") or choice.get("value") or "")
@@ -6673,6 +6675,11 @@ def _define_discord_view_classes() -> None:
             if not self._check_auth(interaction):
                 await interaction.response.send_message("⛔ You are not authorized to change this setting.", ephemeral=True)
                 return
+            if self.requester_user_id is not None:
+                actor = str(getattr(getattr(interaction, "user", None), "id", "") or "").strip()
+                if not actor or actor != self.requester_user_id:
+                    await interaction.response.send_message("⛔ Only the user who opened this picker can use it.", ephemeral=True)
+                    return
             if self.resolved:
                 await interaction.response.defer()
                 return

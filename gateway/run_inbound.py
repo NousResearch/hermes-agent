@@ -1186,6 +1186,9 @@ class GatewayInboundMixin:
         if _paused_notice is not None:
             return _paused_notice
 
+        if not is_internal and source.platform == Platform.TELEGRAM and not event.is_command():
+            source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
+            event.source = source
         _quick_key = self._session_key_for_source(source)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
@@ -1220,6 +1223,10 @@ class GatewayInboundMixin:
                     "accepting new turns right now. It'll be back in a moment — "
                     "please resend shortly."
                 )
+
+        handled, response = await self._maybe_handle_stale_override_notice(event, _quick_key)
+        if handled:
+            return response
 
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
@@ -1256,6 +1263,9 @@ class GatewayInboundMixin:
                     "protect the transcript, this message was not processed. "
                     "Wait for the active turn to finish, then resend it."
                 )
+            await self._defer_stale_override_turn_completed(
+                _quick_key, source=source, run_generation=_run_generation, is_internal=is_internal,
+            )
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,

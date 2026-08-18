@@ -1553,6 +1553,32 @@ def is_malformed_db_error(exc: BaseException) -> bool:
     return any(marker in str(exc).lower() for marker in _MALFORMED_SCHEMA_MARKERS)
 
 
+def _stat_file_identity(path) -> "tuple[int, int] | None":
+    """Return ``(st_dev, st_ino)`` for *path*, or ``None`` when unknowable.
+
+    This is the identity of the FILE, not of its contents: it changes when
+    something replaces the path with a different file (``cp`` onto the live
+    path, a restore script, a ``mv`` of a new inode over it) and does not
+    change when the same file is written to.
+
+    ``None`` is the fail-open answer and callers must treat it as "no
+    opinion", never as "changed". A missing file, a stat error, or a
+    filesystem that reports ``st_ino == 0`` (some network and FUSE mounts, and
+    Windows volumes where the file index is unavailable) must not be able to
+    make a healthy database look replaced -- a guard that fires on absent
+    evidence would turn a working store into an outage, which is the failure
+    it exists to prevent.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    dev, ino = getattr(st, "st_dev", 0), getattr(st, "st_ino", 0)
+    if not ino:
+        return None
+    return (dev, ino)
+
+
 def _is_not_a_database_error(exc: BaseException) -> bool:
     """True if *exc* is SQLite's 'file is not a database' error.
 
@@ -3459,6 +3485,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # SessionDB instance so a genuinely unrecoverable database can't put
         # writers into a reconnect loop.
         self._notadb_reconnect_attempted = False
+        # File identity (st_dev, st_ino) of the database this connection was
+        # opened against, recorded by _connect_and_init and refreshed by
+        # _reconnect_after_notadb. None means "could not be determined" and
+        # disables the guard rather than arming it -- see
+        # _stat_file_identity and _backing_file_was_replaced.
+        self._file_identity: "tuple[int, int] | None" = None
         # One-shot guard for the usermerge-floor config write on the
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
@@ -3595,6 +3627,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()
+                self._file_identity = _stat_file_identity(self.db_path)
 
             def _connect_and_init_with_lock_patience():
                 # Lock contention during open: _init_schema's DDL/reconcile
@@ -4247,6 +4280,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # and swap grows without bound until the process is killed.
                 # Close the broken connection, reopen the DB file, and retry
                 # the write once.
+                # Identity check BEFORE any recovery rung. A file swapped at
+                # the same path surfaces as this same corruption class, and
+                # the reporter's incident (#89332) shows what happens when it
+                # is misrouted into the FTS ladder: three repair attempts that
+                # cannot succeed, the last of which mutates the database, and
+                # every append_message failing for 17 minutes with nothing in
+                # the log naming the actual cause. The reconnect branch below
+                # already anticipated "backing file was replaced" -- it was
+                # simply wired to only ONE of the two error classes this
+                # produces.
+                if self._refuse_repair_on_replaced_file(exc):
+                    raise
                 if _is_not_a_database_error(exc):
                     if not self._reconnect_after_notadb():
                         raise
@@ -4347,6 +4392,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 new_conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(new_conn)
                 self._init_schema()
+                # Re-record: this branch exists precisely because the backing
+                # file may have been replaced, so the file we just opened is
+                # the new baseline. Without this the replacement stays
+                # "detected" forever and every later corruption error would be
+                # blamed on a swap that has already been reconciled.
+                self._file_identity = _stat_file_identity(self.db_path)
         except Exception as exc:
             logger.error(
                 "state.db reconnect after 'file is not a database' failed (%s); "
@@ -4356,6 +4407,52 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return False
         logger.warning(
             "state.db connection reopened successfully; retrying the failed write."
+        )
+        return True
+
+    def _backing_file_was_replaced(self) -> bool:
+        """True when state.db is a DIFFERENT file than the one we opened.
+
+        Fail-open: unknown identity at open time, unknown identity now, or a
+        path that cannot be stat'ed all answer False. The guard only fires on
+        two identities that are both known and differ.
+        """
+        if self._file_identity is None:
+            return False
+        current = _stat_file_identity(self.db_path)
+        if current is None:
+            return False
+        return current != self._file_identity
+
+    def _refuse_repair_on_replaced_file(self, exc: sqlite3.DatabaseError) -> bool:
+        """Log and refuse in-file repair when the database was swapped out.
+
+        Returns True when the caller must NOT run its recovery ladder.
+
+        Every rung of that ladder assumes the damage is inside the file we
+        opened: reopen-and-retry, an in-place FTS rebuild, and finally
+        detaching the FTS indexes. None of them can fix a file that was
+        replaced underneath the process, and the last one is not inert -- it
+        drops the sync triggers, so canonical rows written afterwards create
+        an index gap of unknown extent. Running damage-repair against a file
+        whose damage is not in it can only add damage.
+
+        The write still fails; it fails immediately and by name instead of
+        after three futile recovery attempts. That is the whole difference
+        between the 17-minute silent outage reported in #89332 and a
+        30-second diagnosis.
+        """
+        if not self._backing_file_was_replaced():
+            return False
+        logger.error(
+            "state.db was REPLACED underneath this process (opened %s, now "
+            "%s at the same path). In-file repair cannot help and will not be "
+            "attempted; the original error was: %s. A new SessionDB will pick "
+            "up the current file -- restart the process that owns this "
+            "connection.",
+            self._file_identity,
+            _stat_file_identity(self.db_path),
+            exc,
         )
         return True
 

@@ -3579,8 +3579,8 @@ async function disbandGroupChat(group, members) {
   }
 }
 
-function appendGroupChatEntry(group, from, text) {
-  const entry = { from, text: String(text).trim(), at: Date.now() }
+function appendGroupChatEntry(group, from, text, thread) {
+  const entry = { at: Date.now(), from, text: String(text).trim(), thread: thread || 'legacy' }
 
   updateGroupChat(group, room => {
     room.log.push(entry)
@@ -3662,7 +3662,7 @@ const GROUP_TURN_HARD_CAP_MS = 20 * 60000
  *  so slow models aren't cut off mid-run. A turn that still times out
  *  records a stranded marker so the finished reply can be harvested into
  *  the room at the member's next turn instead of being lost. */
-async function runGroupChatMemberTurn(group, member, prompt) {
+async function runGroupChatMemberTurn(group, member, prompt, thread) {
   const { runtime, stored } = await ensureGroupChatSession(group, member)
 
   if (!runtime) {
@@ -3729,10 +3729,11 @@ async function runGroupChatMemberTurn(group, member, prompt) {
     }
   }
 
-  // Timeout — reads as a pass, but remember the baseline (runtime-only) so
-  // the finished reply can be posted late instead of vanishing.
+  // Timeout — reads as a pass, but remember the baseline + thread
+  // (runtime-only) so the finished reply can be posted late into the RIGHT
+  // thread instead of vanishing.
   updateGroupChat(group, r => {
-    r.stranded = { ...(r.stranded || {}), [groupMemberKey(member)]: before }
+    r.stranded = { ...(r.stranded || {}), [groupMemberKey(member)]: { before, thread } }
     return r
   })
 
@@ -3745,7 +3746,10 @@ async function runGroupChatMemberTurn(group, member, prompt) {
 async function harvestStrandedGroupReply(group, member) {
   const memberKey = groupMemberKey(member)
   const room = $groupChats.get()[group] || {}
-  const strandedBefore = room.stranded?.[memberKey]
+  const marker = room.stranded?.[memberKey]
+  // Markers were a bare number before threads; normalize both shapes.
+  const strandedBefore = typeof marker === 'number' ? marker : marker?.before
+  const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
 
   if (typeof strandedBefore !== 'number') {
     return
@@ -3796,10 +3800,11 @@ async function harvestStrandedGroupReply(group, member) {
         appendGroupChatEntry(
           group,
           { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
-          reply
+          reply,
+          strandedThread
         )
         updateGroupChat(group, r => {
-          r.watermarks[memberKey] = r.log.length
+          r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
           return r
         })
       }
@@ -3809,10 +3814,12 @@ async function harvestStrandedGroupReply(group, member) {
   }
 }
 
-/** Drive one bounded round-robin room turn. Serial — one member at a time.
- *  A newer user send bumps the room epoch; this loop notices at the next
- *  member boundary, bails, and the newest send's own loop takes over. */
-async function runGroupChatRounds(group, members) {
+/** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
+ *  a time. A newer user send bumps the room epoch; this loop notices at the
+ *  next member boundary, bails, and the newest send's own loop takes over.
+ *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
+ *  topics never eat each other's deltas. */
+async function runGroupChatRounds(group, members, thread) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
@@ -3830,7 +3837,7 @@ async function runGroupChatRounds(group, members) {
         await harvestStrandedGroupReply(group, member)
       }
 
-      const roomLog = ($groupChats.get()[group] || {}).log || []
+      const roomLog = (($groupChats.get()[group] || {}).log || []).filter(e => groupThreadOf(e) === thread)
       const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round)
       let spokeThisRound = 0
 
@@ -3841,8 +3848,11 @@ async function runGroupChatRounds(group, members) {
 
         const room = $groupChats.get()[group] || { log: [], watermarks: {} }
         const memberKey = groupMemberKey(member)
-        const seen = room.watermarks[memberKey] || 0
-        const delta = room.log.slice(seen)
+        const markKey = `${thread}::${memberKey}`
+        const seen = room.watermarks[markKey] || 0
+        // Delta: NEW room entries, narrowed to this thread — the member's
+        // turn sees only the conversation it's part of.
+        const delta = room.log.slice(seen).filter(e => groupThreadOf(e) === thread)
 
         if (!delta.length) {
           continue
@@ -3866,14 +3876,14 @@ async function runGroupChatRounds(group, members) {
         let reply = null
 
         try {
-          reply = await runGroupChatMemberTurn(group, member, prompt)
+          reply = await runGroupChatMemberTurn(group, member, prompt, thread)
         } catch {
           reply = null // a failed turn is a pass, never a room error
         }
 
         // The member has now seen everything up to the pre-reply log length.
         updateGroupChat(group, r => {
-          r.watermarks[memberKey] = r.log.length
+          r.watermarks[markKey] = r.log.length
           return r
         })
 
@@ -3881,11 +3891,12 @@ async function runGroupChatRounds(group, members) {
           appendGroupChatEntry(
             group,
             { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
-            reply
+            reply,
+            thread
           )
           // Its own message counts as seen too.
           updateGroupChat(group, r => {
-            r.watermarks[memberKey] = r.log.length
+            r.watermarks[markKey] = r.log.length
             return r
           })
           posted += 1
@@ -3908,18 +3919,22 @@ async function runGroupChatRounds(group, members) {
   }
 }
 
-/** User send into a group room: append, bump epoch (supersedes any running
- *  loop at its next member boundary), and start the room turn unless one is
- *  already running under the new epoch semantics. */
-function sendToGroupChat(group, members, text) {
+/** User send into a group room. `thread` continues that thread (its reply
+ *  box); omitted/null mints a NEW thread — the main composer's Slack shape.
+ *  Appends, bumps the room epoch (supersedes any running loop at its next
+ *  member boundary), and starts the turn drive for the target thread.
+ *  Returns the thread id the message landed in. */
+function sendToGroupChat(group, members, text, thread) {
   const trimmed = String(text || '').trim()
 
   if (!trimmed || !members.length) {
-    return
+    return null
   }
 
+  const target = thread || mintGroupThreadId()
+
   $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: false })
-  appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed)
+  appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target)
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true
 
@@ -3930,7 +3945,7 @@ function sendToGroupChat(group, members, text) {
   })
 
   if (!wasRunning) {
-    void runGroupChatRounds(group, members).catch(() => {
+    void runGroupChatRounds(group, members, target).catch(() => {
       updateGroupChat(group, r => {
         r.running = false
         return r
@@ -3940,7 +3955,7 @@ function sendToGroupChat(group, members, text) {
     // A loop is live; it bails at its next boundary. Chain the fresh loop
     // after a short settle so exactly one drive owns the room.
     setTimeout(() => {
-      void runGroupChatRounds(group, members).catch(() => {
+      void runGroupChatRounds(group, members, target).catch(() => {
         updateGroupChat(group, r => {
           r.running = false
           return r
@@ -3948,6 +3963,8 @@ function sendToGroupChat(group, members, text) {
       })
     }, 250)
   }
+
+  return target
 }
 
 /** Share one in-flight async operation across concurrent callers. Failures
@@ -7608,26 +7625,45 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
   })
 }
 
-/** Split a room log into conversations: each USER entry starts one (the same
- *  boundary the turn engine's delta scoping keys on); a leading run of member
- *  entries (log trimmed mid-conversation) forms a headless first block.
- *  Returns [{ head, entries, startIndex }] — head is the user entry or null. */
-function groupChatConversations(log) {
-  const conversations = []
+// ── threads: the Slack/Discord shape ─────────────────────────────────────────
+// Every room entry belongs to a THREAD. Messaging the room composer starts a
+// new thread with the whole group; replying inside a thread continues that
+// work. Member turns are scoped to the thread that triggered them — deltas,
+// watermarks, and responder resolution all key on the thread id.
+
+function groupThreadOf(entry) {
+  return entry?.thread || 'legacy'
+}
+
+function mintGroupThreadId() {
+  return `t${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+// Pre-thread logs (hydrated from storage) get synthetic thread ids: a user
+// entry after a real lull starts one, so multi-turn tasks stay whole instead
+// of splitting on every follow-up.
+const GROUP_THREAD_GAP_MS = 15 * 60000
+
+function assignLegacyThreads(log) {
   let current = null
+  let n = 0
 
-  for (let i = 0; i < log.length; i++) {
-    const entry = log[i]
+  return (log || []).map((entry, i) => {
+    if (entry?.thread) {
+      current = null
 
-    if (entry.from.kind === 'user' || !current) {
-      current = { entries: [], head: entry.from.kind === 'user' ? entry : null, startIndex: i }
-      conversations.push(current)
+      return entry
     }
 
-    current.entries.push(entry)
-  }
+    const prev = log[i - 1]
+    const lull = !prev || (entry.at || 0) - (prev.at || 0) > GROUP_THREAD_GAP_MS
 
-  return conversations
+    if (!current || (entry.from?.kind === 'user' && lull)) {
+      current = `legacy-${n++}`
+    }
+
+    return { ...entry, thread: current }
+  })
 }
 
 /** Merged room view for one group: shared timeline with per-member
@@ -7646,12 +7682,14 @@ function GroupChatWorkspace({ group, members, onBack }) {
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
   const [revealedSpeaker, setRevealedSpeaker] = useState(null)
-  // Conversation folding: each USER message starts a conversation (the same
-  // boundary the turn engine's delta scoping uses), and every older
-  // conversation collapses to a one-line summary so a busy room stays
-  // readable — the "threads per conversation" ask without changing the log
-  // model. Keys are the head entry's timestamp; presence = user override.
-  const [expandedThreads, setExpandedThreads] = useState({})
+  // Threads, the Slack/Discord shape: entries carry a thread id. The most
+  // recently active thread renders open; older ones collapse to summary rows.
+  // `openThreads` is the user's explicit expand/collapse overrides, and
+  // `replyThread` is the thread whose reply box currently owns the composer
+  // (null = the main composer, which STARTS a new thread).
+  const [openThreads, setOpenThreads] = useState({})
+  const [replyThread, setReplyThread] = useState(null)
+  const [replyDrafts, setReplyDrafts] = useState({})
 
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
@@ -7697,6 +7735,12 @@ function GroupChatWorkspace({ group, members, onBack }) {
     ]
   })
 
+  const memberDescriptors = () =>
+    members.map(b => ({
+      ...b,
+      title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
+    }))
+
   const submit = () => {
     const text = draft.trim()
 
@@ -7705,16 +7749,28 @@ function GroupChatWorkspace({ group, members, onBack }) {
     }
 
     setDraft('')
+    // Main composer = START A NEW THREAD with the whole group (Slack shape).
     // Full descriptors ride into the turn loop: remote members keep their
     // connection fields so their turns route to their own machines.
-    sendToGroupChat(
-      group,
-      members.map(b => ({
-        ...b,
-        title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
-      })),
-      text
-    )
+    const minted = sendToGroupChat(group, memberDescriptors(), text)
+
+    if (minted) {
+      setOpenThreads(prev => ({ ...prev, [minted]: true }))
+    }
+  }
+
+  const submitReply = thread => {
+    const text = (replyDrafts[thread] || '').trim()
+
+    if (!text) {
+      return
+    }
+
+    setReplyDrafts(prev => ({ ...prev, [thread]: '' }))
+    // Reply box = CONTINUE this thread; the member turns it triggers are
+    // scoped to it.
+    sendToGroupChat(group, memberDescriptors(), text, thread)
+    setOpenThreads(prev => ({ ...prev, [thread]: true }))
   }
 
   // One log entry, rendered exactly as before conversation folding existed.
@@ -7806,64 +7862,121 @@ function GroupChatWorkspace({ group, members, onBack }) {
                   }, entryKey)
   }
 
-  // Conversations: the LAST one always renders in full; older ones collapse
-  // to a one-line summary row (click to expand/collapse). Single-conversation
-  // rooms render exactly as before.
-  const conversations = groupChatConversations(room.log)
+  // Threads: group entries by thread id (hydration assigned legacy ids, but
+  // guard live pre-thread entries too), ordered by last activity — oldest
+  // first, so the busiest/newest thread sits at the bottom by the composer.
+  // The most recently ACTIVE thread renders open; older ones collapse to a
+  // Slack-style summary row unless explicitly opened. Every open thread gets
+  // its own reply box, which continues THAT thread.
+  const threadsById = new Map()
+
+  for (let i = 0; i < room.log.length; i++) {
+    const entry = room.log[i]
+    const id = groupThreadOf(entry)
+    let bucket = threadsById.get(id)
+
+    if (!bucket) {
+      bucket = { entries: [], id, startIndex: i }
+      threadsById.set(id, bucket)
+    }
+
+    bucket.entries.push({ entry, index: i })
+  }
+
+  const threads = [...threadsById.values()].sort(
+    (a, b) => (a.entries[a.entries.length - 1].entry.at || 0) - (b.entries[b.entries.length - 1].entry.at || 0)
+  )
+  const newestThread = threads.length ? threads[threads.length - 1].id : null
   const logChildren = []
 
-  conversations.forEach((convo, ci) => {
-    const isLast = ci === conversations.length - 1
-    const threadKey = `${convo.head?.at ?? 'head'}:${convo.startIndex}`
-    const expanded = isLast || Boolean(expandedThreads[threadKey])
+  threads.forEach(threadBucket => {
+    const { entries, id } = threadBucket
+    const head = entries.find(({ entry }) => entry.from.kind === 'user')?.entry || entries[0].entry
+    const isNewest = id === newestThread
+    const expanded = openThreads[id] ?? isNewest
 
     if (!expanded) {
-      const replies = convo.entries.length - 1
-      const headText = stripPreviewMarkdown(convo.head?.text || convo.entries[0]?.text || '').slice(0, 80)
+      const replies = entries.length - 1
+      const headText = stripPreviewMarkdown(head?.text || '').slice(0, 80)
 
       logChildren.push(
         jsxs('button', {
           type: 'button',
           className:
             'flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover)',
-          title: 'Show this conversation',
-          onClick: () => setExpandedThreads(prev => ({ ...prev, [threadKey]: true })),
+          title: 'Open this thread',
+          onClick: () => setOpenThreads(prev => ({ ...prev, [id]: true })),
           children: [
             jsx(Codicon, { name: 'chevron-right', className: 'shrink-0 text-[0.65rem]' }),
-            jsx('span', { className: 'min-w-0 flex-1 truncate', children: headText || 'Earlier conversation' }),
+            jsx('span', { className: 'min-w-0 flex-1 truncate', children: headText || 'Thread' }),
             jsx('span', {
               className: 'shrink-0 text-[0.625rem] text-(--ui-text-quaternary)',
-              children: `${replies} ${replies === 1 ? 'reply' : 'replies'} · ${relativeTime(convo.entries[convo.entries.length - 1].at)}`
+              children: `${replies} ${replies === 1 ? 'reply' : 'replies'} · ${relativeTime(entries[entries.length - 1].entry.at)}`
             })
           ]
-        }, `fold:${threadKey}`)
+        }, `fold:${id}`)
       )
 
       return
     }
 
-    if (!isLast) {
-      // Expanded older conversation: a subtle collapse affordance above it.
-      logChildren.push(
+    // Open thread: a rail-indented block — collapse affordance, its entries,
+    // and its own reply box (Slack's "reply in thread").
+    const threadRows = []
+
+    if (!isNewest || openThreads[id] !== undefined) {
+      threadRows.push(
         jsxs('button', {
           type: 'button',
           className:
             'flex w-full items-center gap-1.5 px-2 pt-1 text-left text-[0.65rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground',
-          title: 'Collapse this conversation',
-          onClick: () =>
-            setExpandedThreads(prev => {
-              const next = { ...prev }
-              delete next[threadKey]
-              return next
-            }),
-          children: [jsx(Codicon, { name: 'chevron-down', className: 'text-[0.6rem]' }), 'Collapse conversation']
-        }, `unfold:${threadKey}`)
+          title: 'Collapse this thread',
+          onClick: () => setOpenThreads(prev => ({ ...prev, [id]: false })),
+          children: [jsx(Codicon, { name: 'chevron-down', className: 'text-[0.6rem]' }), 'Collapse thread']
+        }, `unfold:${id}`)
       )
     }
 
-    for (let i = 0; i < convo.entries.length; i++) {
-      logChildren.push(renderEntry(convo.entries[i], convo.startIndex + i))
+    for (const { entry, index } of entries) {
+      threadRows.push(renderEntry(entry, index))
     }
+
+    // Reply-in-thread: the newest thread's continuation ALSO lives here, so
+    // the main composer below can stay "new thread" without ambiguity.
+    threadRows.push(
+      replyThread === id
+        ? jsxs('form', {
+            className: 'flex items-center gap-1.5 px-2 pb-1',
+            onSubmit: event => {
+              event.preventDefault()
+              submitReply(id)
+            },
+            children: [
+              jsx(Input, {
+                'aria-label': 'Reply in thread',
+                autoFocus: true,
+                placeholder: 'Reply in thread…',
+                value: replyDrafts[id] || '',
+                onChange: event => setReplyDrafts(prev => ({ ...prev, [id]: event.target.value }))
+              }),
+              jsx(Button, { type: 'submit', size: 'sm', disabled: !(replyDrafts[id] || '').trim(), children: 'Reply' })
+            ]
+          }, `replybox:${id}`)
+        : jsx('button', {
+            type: 'button',
+            className:
+              'w-fit px-2 pb-1 text-left text-[0.65rem] text-(--ui-accent,#4f9cf9) transition-colors hover:underline',
+            onClick: () => setReplyThread(id),
+            children: 'Reply in thread'
+          }, `replylink:${id}`)
+    )
+
+    logChildren.push(
+      jsx('div', {
+        className: 'grid gap-1.5 border-l-2 border-(--ui-stroke-secondary) pl-1.5',
+        children: threadRows
+      }, `thread:${id}`)
+    )
   })
 
   return jsxs('div', {
@@ -7905,11 +8018,11 @@ function GroupChatWorkspace({ group, members, onBack }) {
           children: [
             jsx(Input, {
               'aria-label': `Message ${group}`,
-              placeholder: `Message ${group}… (@name to direct, @everyone for all)`,
+              placeholder: `New thread in ${group}… (@name to direct, @everyone for all)`,
               value: draft,
               onChange: event => setDraft(event.target.value)
             }),
-            jsx(Button, { type: 'submit', size: 'sm', disabled: !draft.trim(), children: 'Send' })
+            jsx(Button, { type: 'submit', size: 'sm', disabled: !draft.trim(), children: 'New Thread' })
           ]
         })
       }),
@@ -8631,7 +8744,9 @@ export default {
             for (const [name, room] of Object.entries(value)) {
               if (room && Array.isArray(room.log)) {
                 rooms[name] = {
-                  log: room.log,
+                  // Pre-thread entries get synthetic thread ids on hydrate so
+                  // every UI/engine path can assume entry.thread exists.
+                  log: assignLegacyThreads(room.log),
                   watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
                   stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},

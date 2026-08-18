@@ -307,7 +307,11 @@ const MD_TAG_CLASSES = {
   ol: 'mb-4 list-decimal pl-6 marker:text-muted-foreground/70 last:mb-0',
   li: 'mt-1 leading-relaxed',
   blockquote: 'mb-4 border-l-2 border-border pl-3 text-muted-foreground italic last:mb-0',
-  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono'
+  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono',
+  hr: 'my-6 border-border',
+  th: 'px-3 py-2 text-left text-sm font-semibold text-foreground',
+  td: 'px-3 py-2 align-top text-sm leading-relaxed',
+  thead: 'bg-muted/35 text-muted-foreground'
 } as const
 
 function tagged<T extends keyof typeof MD_TAG_CLASSES>(Tag: T) {
@@ -362,6 +366,47 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
   return <RichCodeBlock code={code} fallback={highlighted} language={language} />
 }
 
+function MarkdownTable({ className, ...rest }: ComponentProps<'table'>) {
+  return (
+    <div className="mb-4 w-full overflow-x-auto rounded-lg border border-border last:mb-0">
+      <table
+        className={cn(
+          'm-0 w-full min-w-[18rem] border-collapse [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
+          className
+        )}
+        {...rest}
+      />
+    </div>
+  )
+}
+
+function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
+  return (
+    <img
+      alt={alt ?? ''}
+      className="my-3 max-h-96 w-auto max-w-full rounded-lg border border-border object-contain shadow-sm"
+      src={src}
+      {...rest}
+    />
+  )
+}
+
+function MarkdownLink({ children, className, href, ...rest }: ComponentProps<'a'>) {
+  const isExternal = /^https?:\/\//i.test(href || '')
+
+  return (
+    <a
+      className={cn('text-foreground underline underline-offset-2 hover:text-primary', className)}
+      href={href}
+      rel={isExternal ? 'noopener noreferrer' : undefined}
+      target={isExternal ? '_blank' : undefined}
+      {...rest}
+    >
+      {children}
+    </a>
+  )
+}
+
 const MARKDOWN_COMPONENTS = {
   h1: tagged('h1'),
   h2: tagged('h2'),
@@ -373,7 +418,14 @@ const MARKDOWN_COMPONENTS = {
   li: tagged('li'),
   blockquote: tagged('blockquote'),
   pre: tagged('pre'),
-  code: MarkdownCode
+  code: MarkdownCode,
+  hr: tagged('hr'),
+  table: MarkdownTable,
+  th: tagged('th'),
+  td: tagged('td'),
+  thead: tagged('thead'),
+  img: MarkdownImage,
+  a: MarkdownLink
 }
 
 function MarkdownPreview({ text }: { text: string }) {

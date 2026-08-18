@@ -313,6 +313,7 @@ const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
 const GROUP_CHAT_SYNC_MAX_BYTES = 48000
 const GROUP_CHAT_SYNC_MESSAGES = 16
 const GROUP_CHAT_SYNC_TEXT_CHARS = 1200
+const GROUP_CHAT_SYNC_IMAGE_CHARS = 24000
 let groupChatSyncTimer = null
 let groupChatSyncRetryTimer = null
 let groupChatSyncPending = null
@@ -364,7 +365,7 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
       .slice(0, 64)
   )
   const envelope = {
-    version: 1,
+    version: 2,
     updatedAt: Date.now(),
     rooms,
     ...(Object.keys(boundedDeleted).length ? { deleted: boundedDeleted } : {})
@@ -372,6 +373,7 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
 
   for (const [name, room] of ranked) {
     const log = room.log.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => ({
+      ...(entry?.id ? { id: String(entry.id).slice(0, 160) } : {}),
       from: {
         kind: entry?.from?.kind === 'member' ? 'member' : 'user',
         name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
@@ -383,6 +385,7 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
     }))
     const compact = {
       log,
+      revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
         ...(member?.handle ? { handle: String(member.handle).slice(0, 128) } : {}),
@@ -390,12 +393,18 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
         ...(member?.connectionKind ? { connectionKind: String(member.connectionKind).slice(0, 64) } : {}),
         ...(member?.connectionLabel ? { connectionLabel: String(member.connectionLabel).slice(0, 128) } : {}),
         ...(member?.sourceScoped ? { sourceScoped: true } : {})
-      }))
+      })),
+      ...(typeof room?.image === 'string' && room.image.length <= GROUP_CHAT_SYNC_IMAGE_CHARS
+        ? { image: room.image }
+        : {})
     }
 
     rooms[name] = compact
     while (compact.log.length > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       compact.log.shift()
+    }
+    if (compact.image && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
+      delete compact.image
     }
     if (groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       delete rooms[name]
@@ -406,6 +415,9 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
 }
 
 function groupChatSyncEntryKey(entry) {
+  if (entry?.id) {
+    return `id:${String(entry.id)}`
+  }
   return JSON.stringify([
     Number(entry?.at || 0),
     String(entry?.from?.kind || ''),
@@ -426,47 +438,76 @@ function groupChatSyncMemberKey(member) {
   ])
 }
 
+function groupChatSyncDeletedRevision(source, value) {
+  return Number(source?.version || 0) >= 2 ? Math.max(0, Number(value || 0)) : 0
+}
+
 /** Merge two bounded projections without treating an absent room/message as
- *  deletion. Explicit tombstones win until a genuinely newer room message
- *  recreates the same name. */
-function mergeGroupChatSyncSnapshots(remote, local) {
+ *  deletion. Gateway revisions order room identity/membership/picture and
+ *  tombstones; stable message ids make concurrent log union idempotent. */
+function mergeGroupChatSyncSnapshots(
+  remote,
+  local,
+  { changedRooms = [], deletedRooms = [], writeRevision = 0 } = {}
+) {
   const rooms = {}
   const deleted = {}
+  const changed = new Set(changedRooms)
 
   for (const source of [remote, local]) {
     for (const [name, at] of Object.entries(source?.deleted || {})) {
-      deleted[name] = Math.max(Number(deleted[name] || 0), Number(at || 0))
+      deleted[name] = Math.max(Number(deleted[name] || 0), groupChatSyncDeletedRevision(source, at))
+    }
+  }
+  for (const name of deletedRooms) {
+    deleted[name] = Math.max(Number(deleted[name] || 0), Number(writeRevision || 0))
+  }
+
+  const roomNames = new Set([...Object.keys(remote?.rooms || {}), ...Object.keys(local?.rooms || {})])
+  for (const name of roomNames) {
+    const remoteRoom = remote?.rooms?.[name]
+    const localRoom = local?.rooms?.[name]
+    if ((!remoteRoom || !Array.isArray(remoteRoom.log)) && (!localRoom || !Array.isArray(localRoom.log))) {
+      continue
+    }
+    const remoteRevision = Math.max(0, Number(remoteRoom?.revision || 0))
+    const localRevision = changed.has(name)
+      ? Math.max(0, Number(writeRevision || 0))
+      : Math.max(0, Number(localRoom?.revision || 0))
+    const entries = new Map()
+    for (const entry of [...(remoteRoom?.log || []), ...(localRoom?.log || [])]) {
+      entries.set(groupChatSyncEntryKey(entry), entry)
+    }
+
+    let members
+    let image
+    if (localRevision > remoteRevision) {
+      members = [...(localRoom?.members || [])]
+      image = localRoom?.image
+    } else if (remoteRevision > localRevision) {
+      members = [...(remoteRoom?.members || [])]
+      image = remoteRoom?.image
+    } else {
+      const byId = new Map()
+      for (const member of [...(remoteRoom?.members || []), ...(localRoom?.members || [])]) {
+        byId.set(groupChatSyncMemberKey(member), member)
+      }
+      members = [...byId.values()]
+      image = Object.prototype.hasOwnProperty.call(localRoom || {}, 'image') ? localRoom.image : remoteRoom?.image
+    }
+    rooms[name] = {
+      log: [...entries.values()].sort((left, right) => {
+        const byTime = Number(left?.at || 0) - Number(right?.at || 0)
+        return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
+      }),
+      members,
+      revision: Math.max(remoteRevision, localRevision),
+      ...(typeof image === 'string' && image ? { image } : {})
     }
   }
 
-  for (const source of [remote, local]) {
-    for (const [name, room] of Object.entries(source?.rooms || {})) {
-      if (!room || !Array.isArray(room.log)) {
-        continue
-      }
-      const current = rooms[name] || { log: [], members: [] }
-      const entries = new Map(current.log.map(entry => [groupChatSyncEntryKey(entry), entry]))
-      const members = new Map(current.members.map(member => [groupChatSyncMemberKey(member), member]))
-
-      for (const entry of room.log) {
-        entries.set(groupChatSyncEntryKey(entry), entry)
-      }
-      for (const member of Array.isArray(room.members) ? room.members : []) {
-        members.set(groupChatSyncMemberKey(member), member)
-      }
-      rooms[name] = {
-        log: [...entries.values()].sort((left, right) => {
-          const byTime = Number(left?.at || 0) - Number(right?.at || 0)
-          return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
-        }),
-        members: [...members.values()]
-      }
-    }
-  }
-
-  for (const [name, deletedAt] of Object.entries(deleted)) {
-    const latestMessageAt = Math.max(0, ...(rooms[name]?.log || []).map(entry => Number(entry?.at || 0)))
-    if (Number(deletedAt || 0) >= latestMessageAt) {
+  for (const [name, deletedRevision] of Object.entries(deleted)) {
+    if (Number(deletedRevision || 0) >= Number(rooms[name]?.revision || 0)) {
       delete rooms[name]
     } else {
       delete deleted[name]
@@ -480,14 +521,26 @@ function mergeGroupChatSyncSnapshots(remote, local) {
  *  state without discarding local session/watermark/runtime fields. Missing
  *  remote rooms/messages are not deletions; only explicit tombstones remove a
  *  room, and a genuinely newer local message wins over a stale tombstone. */
-function mergeRemoteGroupChatSnapshotIntoRooms(remote, current = $groupChats.get()) {
+function mergeRemoteGroupChatSnapshotIntoRooms(
+  remote,
+  current = $groupChats.get(),
+  { preserveRooms = [], deletedRooms = [] } = {}
+) {
   const rooms = { ...(current || {}) }
+  const preserved = new Set(preserveRooms)
+  const locallyDeleted = new Set(deletedRooms)
 
   for (const [name, projected] of Object.entries(remote?.rooms || {})) {
     if (!projected || !Array.isArray(projected.log)) {
       continue
     }
+    if (locallyDeleted.has(name)) {
+      delete rooms[name]
+      continue
+    }
     const existing = rooms[name] || {}
+    const remoteRevision = Math.max(0, Number(projected.revision || 0))
+    const localRevision = Math.max(0, Number(existing.syncRevision || 0))
     const entries = new Map(
       (Array.isArray(existing.log) ? existing.log : []).map(entry => [groupChatSyncEntryKey(entry), entry])
     )
@@ -498,8 +551,13 @@ function mergeRemoteGroupChatSnapshotIntoRooms(remote, current = $groupChats.get
     for (const entry of projected.log) {
       entries.set(groupChatSyncEntryKey(entry), entry)
     }
-    for (const member of Array.isArray(projected.members) ? projected.members : []) {
-      members.set(groupChatSyncMemberKey(member), { ...member, remoteSource: true })
+    if (!preserved.has(name)) {
+      if (remoteRevision > localRevision) {
+        members.clear()
+      }
+      for (const member of Array.isArray(projected.members) ? projected.members : []) {
+        members.set(groupChatSyncMemberKey(member), { ...member, remoteSource: true })
+      }
     }
 
     const log = assignLegacyThreads(
@@ -517,16 +575,28 @@ function mergeRemoteGroupChatSnapshotIntoRooms(remote, current = $groupChats.get
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
       members: [...members.values()],
+      image: preserved.has(name)
+        ? existing.image || null
+        : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'image')
+          ? projected.image || null
+          : existing.image || null,
+      syncRevision: preserved.has(name) ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
     }
   }
 
   for (const [name, deletedAt] of Object.entries(remote?.deleted || {})) {
-    const latestMessageAt = Math.max(0, ...(rooms[name]?.log || []).map(entry => Number(entry?.at || 0)))
-    if (Number(deletedAt || 0) >= latestMessageAt) {
+    if (preserved.has(name)) {
+      continue
+    }
+    const deletedRevision = groupChatSyncDeletedRevision(remote, deletedAt)
+    if (deletedRevision >= Number(rooms[name]?.syncRevision || 0)) {
       delete rooms[name]
     }
+  }
+  for (const name of locallyDeleted) {
+    delete rooms[name]
   }
 
   return rooms
@@ -544,7 +614,9 @@ function durableGroupChatRooms(all = $groupChats.get()) {
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
       stranded: room.stranded || {},
-      members: Array.isArray(room.members) ? room.members : []
+      members: Array.isArray(room.members) ? room.members : [],
+      image: room.image || null,
+      syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
   }
 
@@ -590,18 +662,26 @@ async function groupChatRemoteSnapshot(job) {
   const result = await groupChatSyncRequest(job, 'profiles.list', { include_sessions: false })
   const profile = (Array.isArray(result?.profiles) ? result.profiles : []).find(row => row?.name === 'default')
   const snapshot = profile?.ui_meta?.[GROUP_CHAT_SYNC_META_KEY]
-  return snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot) ? snapshot : null
+  const supportsCas = Boolean(profile && Object.prototype.hasOwnProperty.call(profile, 'ui_meta_revisions'))
+  return {
+    snapshot: snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot) ? snapshot : null,
+    revision: Math.max(0, Number(profile?.ui_meta_revisions?.[GROUP_CHAT_SYNC_META_KEY] || 0)),
+    supportsCas
+  }
 }
 
 /** Pull the shared room projection into this Desktop before it publishes any
  *  local state. This is the receive half of the client-only sync contract. */
 async function pullGroupChatServerState(connectionId = groupChatSyncConnectionId()) {
-  const remote = await groupChatRemoteSnapshot({ connectionId })
+  const { snapshot: remote } = await groupChatRemoteSnapshot({ connectionId })
 
   if (!remote) {
     return false
   }
-  const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote, $groupChats.get())
+  const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote, $groupChats.get(), {
+    preserveRooms: groupChatSyncPending?.changedRooms || [],
+    deletedRooms: groupChatSyncPending?.deletedRooms || []
+  })
   $groupChats.set(merged)
   await persistGroupChatRooms(merged)
   return true
@@ -609,6 +689,25 @@ async function pullGroupChatServerState(connectionId = groupChatSyncConnectionId
 
 function groupChatSyncBackoff() {
   return Math.min(30000, 1000 * 2 ** Math.min(groupChatSyncRetryCount, 5))
+}
+
+function mergeGroupChatSyncJobs(existing, incoming) {
+  if (!existing || existing.connectionId !== incoming.connectionId) {
+    return incoming
+  }
+  return {
+    connectionId: incoming.connectionId,
+    allowEmpty: Boolean(existing.allowEmpty || incoming.allowEmpty),
+    changedRooms: [...new Set([...(existing.changedRooms || []), ...(incoming.changedRooms || [])])],
+    deletedRooms: [...new Set([...(existing.deletedRooms || []), ...(incoming.deletedRooms || [])])]
+  }
+}
+
+function groupChatSyncPayloadEqual(left, right) {
+  return (
+    JSON.stringify(left?.rooms || {}) === JSON.stringify(right?.rooms || {}) &&
+    JSON.stringify(left?.deleted || {}) === JSON.stringify(right?.deleted || {})
+  )
 }
 
 async function flushGroupChatServerSync() {
@@ -620,35 +719,66 @@ async function flushGroupChatServerSync() {
   groupChatSyncInFlight = true
 
   try {
-    const remote = await groupChatRemoteSnapshot(job)
-    if (remote) {
-      const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(remote, $groupChats.get())
-      $groupChats.set(mergedRooms)
-      await persistGroupChatRooms(mergedRooms)
-    }
-    const snapshot = mergeGroupChatSyncSnapshots(remote, job.snapshot)
-    const result = await groupChatSyncRequest(job, 'profiles.configure', {
-      name: 'default',
-      ui_meta: { [GROUP_CHAT_SYNC_META_KEY]: snapshot }
+    const remoteState = await groupChatRemoteSnapshot(job)
+    const local = groupChatSyncSnapshot($groupChats.get())
+    const writeRevision = remoteState.revision + 1
+    const snapshot = mergeGroupChatSyncSnapshots(remoteState.snapshot, local, {
+      changedRooms: job.changedRooms,
+      deletedRooms: job.deletedRooms,
+      writeRevision
     })
 
-    if (result?.applied && result.applied.ui_meta !== true) {
-      throw new Error('Gateway rejected group chat ui_meta')
+    // Reconnect/startup reconciliation often discovers that the gateway
+    // already holds the exact merged projection. Avoid advancing a revision
+    // merely because a view reopened.
+    if (!(job.changedRooms || []).length && !(job.deletedRooms || []).length && groupChatSyncPayloadEqual(snapshot, remoteState.snapshot)) {
+      if (remoteState.snapshot) {
+        const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(remoteState.snapshot, $groupChats.get(), {
+          preserveRooms: groupChatSyncPending?.changedRooms || [],
+          deletedRooms: groupChatSyncPending?.deletedRooms || []
+        })
+        $groupChats.set(mergedRooms)
+        await persistGroupChatRooms(mergedRooms)
+      }
+      groupChatSyncRetryCount = 0
+      return
     }
 
-    const confirmed = await groupChatRemoteSnapshot(job)
-    if (confirmed && Number(confirmed.updatedAt || 0) !== Number(snapshot.updatedAt || 0)) {
-      throw new Error('Group chat ui_meta changed before read-back')
+    const configureParams = {
+      name: 'default',
+      ui_meta: { [GROUP_CHAT_SYNC_META_KEY]: snapshot }
     }
-    if (confirmed) {
-      const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(confirmed, $groupChats.get())
+    if (remoteState.supportsCas) {
+      configureParams.ui_meta_expected_revisions = { [GROUP_CHAT_SYNC_META_KEY]: remoteState.revision }
+    }
+    const result = await groupChatSyncRequest(job, 'profiles.configure', configureParams)
+
+    if (result?.applied?.ui_meta !== true) {
+      throw new Error('Gateway rejected group chat ui_meta')
+    }
+    if (
+      remoteState.supportsCas &&
+      Number(result?.applied?.ui_meta_revisions?.[GROUP_CHAT_SYNC_META_KEY] || 0) !== writeRevision
+    ) {
+      throw new Error('Gateway did not advance group chat ui_meta revision')
+    }
+
+    const confirmedState = await groupChatRemoteSnapshot(job)
+    if (remoteState.supportsCas && confirmedState.revision < writeRevision) {
+      throw new Error('Group chat ui_meta revision missing after read-back')
+    }
+    if (confirmedState.snapshot) {
+      const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(confirmedState.snapshot, $groupChats.get(), {
+        preserveRooms: groupChatSyncPending?.changedRooms || [],
+        deletedRooms: groupChatSyncPending?.deletedRooms || []
+      })
       $groupChats.set(mergedRooms)
       await persistGroupChatRooms(mergedRooms)
     }
     groupChatSyncRetryCount = 0
   } catch {
     if (!groupChatSyncDisposed) {
-      groupChatSyncPending ||= job
+      groupChatSyncPending = mergeGroupChatSyncJobs(groupChatSyncPending, job)
       groupChatSyncRetryCount += 1
       if (typeof setTimeout === 'function' && groupChatSyncRetryTimer === null) {
         groupChatSyncRetryTimer = setTimeout(() => {
@@ -680,15 +810,17 @@ function stopGroupChatServerSync() {
 
 /** Debounced, pull-merge-write server mirror. Local storage keeps the complete
  *  orchestration log; ui_meta is a bounded cross-client projection. */
-function scheduleGroupChatServerSync(all = $groupChats.get(), { allowEmpty = false, deletedRooms = [] } = {}) {
+function scheduleGroupChatServerSync(
+  all = $groupChats.get(),
+  { allowEmpty = false, changedRooms = [], deletedRooms = [] } = {}
+) {
   // Browser shells provide timers; source-level VM tests and older embedded
   // hosts may not. Room persistence must never break the surrounding gateway
   // lifecycle when the optional mirror cannot be scheduled.
   if (typeof setTimeout !== 'function') {
     return
   }
-  const deleted = Object.fromEntries(deletedRooms.map(name => [name, Date.now()]))
-  const snapshot = groupChatSyncSnapshot(all, deleted)
+  const snapshot = groupChatSyncSnapshot(all)
   // A newly installed Desktop has no local room cache. Publishing that empty
   // state on hydrate/reconnect would erase a valid mirror produced elsewhere.
   // Only an explicit final-room disband is allowed to clear the projection.
@@ -702,7 +834,12 @@ function scheduleGroupChatServerSync(all = $groupChats.get(), { allowEmpty = fal
     clearTimeout(groupChatSyncRetryTimer)
     groupChatSyncRetryTimer = null
   }
-  groupChatSyncPending = { snapshot, connectionId: groupChatSyncConnectionId() }
+  groupChatSyncPending = mergeGroupChatSyncJobs(groupChatSyncPending, {
+    connectionId: groupChatSyncConnectionId(),
+    allowEmpty,
+    changedRooms,
+    deletedRooms
+  })
   groupChatSyncTimer = setTimeout(() => {
     groupChatSyncTimer = null
     void flushGroupChatServerSync()
@@ -4584,7 +4721,7 @@ function trimGroupChatLog(log, watermarks, limit = GROUP_CHAT_HISTORY_LIMIT * 4)
 }
 
 /** Mutate one group's room state through the atom + persist the durable part. */
-function updateGroupChat(group, mutate) {
+function updateGroupChat(group, mutate, { sync = true } = {}) {
   const all = { ...$groupChats.get() }
   const current = all[group] || { log: [], watermarks: {}, epoch: 0, running: false }
   const next = mutate({ ...current, log: [...current.log], watermarks: { ...current.watermarks } })
@@ -4621,7 +4758,8 @@ function updateGroupChat(group, mutate) {
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         // Room picture (small data URL, same normalization as bot avatars).
-        image: room.image || null
+        image: room.image || null,
+        syncRevision: Math.max(0, Number(room.syncRevision || 0))
       }
     }
 
@@ -4629,7 +4767,9 @@ function updateGroupChat(group, mutate) {
   } catch {
     /* storage unavailable — room survives for this window only */
   }
-  scheduleGroupChatServerSync(all)
+  if (sync) {
+    scheduleGroupChatServerSync(all, { changedRooms: [group] })
+  }
 
   return next
 }
@@ -4684,7 +4824,8 @@ async function disbandGroupChat(group, members) {
           sessions: room.sessions || {},
           members: Array.isArray(room.members) ? room.members : [],
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-          image: room.image || null
+          image: room.image || null,
+          syncRevision: Math.max(0, Number(room.syncRevision || 0))
         }
       }
     }
@@ -4797,7 +4938,14 @@ async function renameGroupChat(oldName, newName, members) {
   }
 
   // Persist the re-keyed map (updateGroupChat writes the whole durable map).
-  updateGroupChat(next, r => r)
+  updateGroupChat(next, r => r, { sync: false })
+  // A rename is one revisioned state transition: the new identity is updated
+  // and the old identity is tombstoned together, so cold hydration cannot
+  // merge the pre-rename room back into the roster.
+  scheduleGroupChatServerSync($groupChats.get(), {
+    changedRooms: [next],
+    deletedRooms: [oldName]
+  })
 
   // Follow the open views to the new identity.
   if ($groupChatWorkspace.get() === oldName) {
@@ -4818,8 +4966,21 @@ async function renameGroupChat(oldName, newName, members) {
   return next
 }
 
+function groupChatEntryId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID()
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
 function appendGroupChatEntry(group, from, text, thread, images) {
-  const entry = { at: Date.now(), from, text: String(text).trim(), thread: thread || 'legacy' }
+  const entry = {
+    id: groupChatEntryId(),
+    at: Date.now(),
+    from,
+    text: String(text).trim(),
+    thread: thread || 'legacy'
+  }
 
   if (Array.isArray(images) && images.length) {
     // [{ name, data }] — data URLs. Persisted with the room log so reloads
@@ -11318,6 +11479,7 @@ export default {
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
+                  syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,
                   running: false
                 }

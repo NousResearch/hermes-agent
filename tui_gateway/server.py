@@ -153,6 +153,10 @@ _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
+# Shared profile UI metadata can be updated concurrently by Desktop, mobile,
+# and multiple worker-pool RPCs.  Its compare/check/write transaction needs a
+# dedicated lock rather than the unrelated process-config cache lock.
+_profile_ui_meta_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None

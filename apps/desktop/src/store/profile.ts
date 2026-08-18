@@ -313,7 +313,12 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
   if (gatewaySwitch) {
     await gatewaySwitch.catch(() => undefined)
 
-    if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+    // #79005: a non-null socket that is NOT open is a dead dial — the no-op
+    // guard must not treat it as an already-active profile.
+    if (
+      normalizeProfileKey($activeGatewayProfile.get()) === target &&
+      $gateway.get()?.connectionState === 'open'
+    ) {
       return
     }
   }
@@ -322,7 +327,11 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
   gatewaySwitch = (async () => {
     // ensureGatewayForProfile opens (or reuses) the target's socket and points
     // the active gateway at it — without closing the profile you came from.
-    await ensureGatewayForProfile(target)
+    // #79005: only mark the profile active when its socket actually opened.
+    if (!(await ensureGatewayForProfile(target))) {
+      return
+    }
+
     $activeGatewayProfile.set(target)
     // The active backend just changed; resync $connection so remote-aware
     // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.

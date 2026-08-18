@@ -676,14 +676,18 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+/**
+ * Ensure the profile's gateway socket is open and active. Resolves TRUE when
+ * the target is actually active on an OPEN socket; FALSE when the dial failed
+ * (reconnect scheduled) so callers never mark a profile active on a dead
+ * socket (#79005).
+ */
+export async function ensureGatewayForProfile(profile: string): Promise<boolean> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
-    applyActive(key, activationEpoch)
-
-    return
+    return applyActive(key, activationEpoch) && isOpen(g.primaryGateway)
   }
 
   // Global-remote share (routing case 3): one remote host serves every
@@ -692,9 +696,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // descriptor — $activeGatewayProfile still moves to `key`, so request
   // scoping and profile-aware surfaces behave identically.
   if (await sharedPrimaryRoute(key)) {
-    applyActive(g.primaryProfile, activationEpoch)
-
-    return
+    return applyActive(g.primaryProfile, activationEpoch) && isOpen(g.primaryGateway)
   }
 
   let entry = g.secondaries.get(key)
@@ -717,9 +719,23 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     }
   }
 
-  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
-    publishActiveConnection(entry.connection)
+  // #79005: never activate a dead socket — applyActive only when the
+  // secondary is actually OPEN; otherwise the swap reports a live profile
+  // on a socket that never dialed.
+  if (
+    entry.wantOpen &&
+    g.secondaries.get(key) === entry &&
+    isOpen(entry.gateway) &&
+    applyActive(key, activationEpoch)
+  ) {
+    if (entry.connection) {
+      publishActiveConnection(entry.connection)
+    }
+
+    return true
   }
+
+  return false
 }
 
 // Reconnect the active gateway after a transient request failure. Primary

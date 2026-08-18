@@ -57,7 +57,12 @@ vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() 
 vi.mock('@/store/profile', async () => {
   const { atom } = await import('nanostores')
 
-  return { $activeGatewayProfile: atom('default') }
+  return {
+    $activeGatewayProfile: atom('default'),
+    $profiles: atom([]),
+    normalizeProfileKey: (value: string) => value.trim() || 'default',
+    refreshProfiles: vi.fn().mockResolvedValue([])
+  }
 })
 
 vi.mock('@/store/projects', () => ({

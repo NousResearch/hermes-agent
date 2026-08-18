@@ -185,11 +185,7 @@ describe('ProviderConfigPanel', () => {
     fireEvent.blur(baseUrl)
 
     await waitFor(() =>
-      expect(saveMemoryProviderConfig).toHaveBeenCalledWith(
-        'honcho',
-        { baseUrl: 'http://localhost:8000' },
-        null
-      )
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { baseUrl: 'http://localhost:8000' }, null)
     )
     expect(saveMemoryProviderConfig).toHaveBeenCalledTimes(1)
   })

@@ -112,12 +112,14 @@ function ConfigSettingsInner({
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
+
   const {
     data: loadedConfig,
     dataUpdatedAt: configUpdatedAt,
     isError: configLoadFailed,
     refetch: refetchConfig
   } = useHermesConfigRecord(scopeProfile)
+
   // Writes land on the same cache key the query above reads (base key when
   // following the active profile, suffixed when a scope override is set).
   const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])

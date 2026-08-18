@@ -8,6 +8,8 @@ for must still be returned.  Previously any of those raised straight out of
 traceback and lost the whole turn.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from agent.turn_finalizer import finalize_turn
@@ -37,6 +39,8 @@ class _StubAgent:
         self.session_id = "sess-1"
         self.quiet_mode = True
         self.platform = "cli"
+        self._gateway_session_key = ""
+        self._gateway_session_source = {}
         self._interrupt_requested = False
         self._interrupt_message = None
         self._tool_guardrail_halt_decision = None
@@ -164,3 +168,25 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert "cleanup_errors" not in result
 
 
+@patch("hermes_cli.lifecycle.invoke_hook")
+def test_session_end_hook_includes_stable_gateway_context(mock_invoke_hook):
+    agent = _StubAgent(raise_in=())
+    agent._gateway_session_key = "agent:main:slack:channel:C1:thread:1700.1"
+    agent._gateway_session_source = {
+        "platform": "slack",
+        "scope_id": "T1",
+        "chat_id": "C1",
+        "thread_id": "1700.1",
+        "user_id": "U2",
+    }
+
+    _run(agent)
+
+    [end_call] = [
+        call
+        for call in mock_invoke_hook.call_args_list
+        if call.args and call.args[0] == "on_session_end"
+    ]
+    assert end_call.kwargs["session_key"] == agent._gateway_session_key
+    assert end_call.kwargs["source"] == agent._gateway_session_source
+    assert end_call.kwargs["source"] is not agent._gateway_session_source

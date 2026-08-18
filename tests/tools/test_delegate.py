@@ -43,6 +43,8 @@ def _make_mock_parent(depth=0):
     parent.api_mode = "chat_completions"
     parent.model = "anthropic/claude-sonnet-4"
     parent.platform = "cli"
+    parent._gateway_session_key = None
+    parent._gateway_session_source = {}
     parent.providers_allowed = None
     parent.providers_ignored = None
     parent.providers_order = None
@@ -58,6 +60,36 @@ def _make_mock_parent(depth=0):
 
 
 class TestDelegateRequirements(unittest.TestCase):
+
+    def test_child_inherits_stable_gateway_route_context(self):
+        parent = _make_mock_parent()
+        parent._gateway_session_key = "agent:main:slack:channel:C1:thread:1700.1"
+        parent._gateway_session_source = {
+            "platform": "slack",
+            "scope_id": "T1",
+            "chat_id": "C1",
+            "thread_id": "1700.1",
+            "user_id": "U2",
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Inspect the workspace",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+
+        kwargs = MockAgent.call_args.kwargs
+        self.assertEqual(kwargs["gateway_session_key"], parent._gateway_session_key)
+        self.assertEqual(kwargs["gateway_session_source"], parent._gateway_session_source)
+        self.assertIsNot(kwargs["gateway_session_source"], parent._gateway_session_source)
 
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_task")

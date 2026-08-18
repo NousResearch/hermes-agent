@@ -105,6 +105,8 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             seen["session_store"] = kwargs.get("session_store", "MISSING")
+            seen["session_key"] = kwargs.get("session_key")
+            seen["source"] = kwargs.get("source")
             return [{"action": "skip", "reason": "plugin-handled"}]
         return []
 
@@ -113,8 +115,13 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     runner, adapter = _make_runner(Platform.WHATSAPP)
     del runner.session_store
 
-    result = await runner._handle_message(_make_event("hi"))
-    assert result is None
     # Hook actually fired (skip short-circuited before auth) with a None store.
-    assert seen == {"session_store": None}
+    event = _make_event("hi")
+    result = await runner._handle_message(event)
+    assert result is None
+    assert seen == {
+        "session_store": None,
+        "session_key": runner._session_key_for_source(event.source),
+        "source": event.source.to_dict(),
+    }
     adapter.send.assert_not_awaited()

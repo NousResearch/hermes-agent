@@ -1,7 +1,7 @@
 """Tests that /new (and its /reset alias) clears session-scoped overrides."""
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -100,3 +100,20 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.lifecycle.invoke_hook")
+async def test_new_command_hook_includes_stable_gateway_context(mock_invoke_hook):
+    runner = _make_runner()
+    event = _make_event("/new")
+
+    await runner._handle_reset_command(event)
+
+    [reset_call] = [
+        call
+        for call in mock_invoke_hook.call_args_list
+        if call.args and call.args[0] == "on_session_reset"
+    ]
+    assert reset_call.kwargs["session_key"] == build_session_key(event.source)
+    assert reset_call.kwargs["source"] == event.source.to_dict()

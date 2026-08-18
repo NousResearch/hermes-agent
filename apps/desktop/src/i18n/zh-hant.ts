@@ -2483,7 +2483,8 @@ export const zhHant = defineLocale({
     web: {
       appFailedToBoot: '預覽應用程式啟動失敗',
       serverNotFound: '找不到伺服器',
-      remoteLoopback: '這個位址指向執行代理的那台機器，而不是本機。瀏覽器窗格會在本機載入頁面，因此遠端開發伺服器需要連接埠轉送或可連線的主機名稱。',
+      remoteLoopback:
+        '這個位址指向執行代理的那台機器，而不是本機。瀏覽器窗格會在本機載入頁面，因此遠端開發伺服器需要連接埠轉送或可連線的主機名稱。',
       failedToLoad: '預覽載入失敗',
       tryAgain: '重試',
       restarting: 'Hermes 正在重新啟動...',

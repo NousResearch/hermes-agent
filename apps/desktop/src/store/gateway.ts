@@ -719,20 +719,25 @@ export async function ensureGatewayForProfile(profile: string): Promise<boolean>
     }
   }
 
-  // #79005: never activate a dead socket — applyActive only when the
-  // secondary is actually OPEN; otherwise the swap reports a live profile
-  // on a socket that never dialed.
-  if (
-    entry.wantOpen &&
-    g.secondaries.get(key) === entry &&
-    isOpen(entry.gateway) &&
-    applyActive(key, activationEpoch)
-  ) {
-    if (entry.connection) {
-      publishActiveConnection(entry.connection)
+  // #79005: a failed dial must not publish a live connection, but the
+  // active KEY still points at the target so retry machinery
+  // (ensureActiveGatewayOpen) reconnects the right entry. The socket state
+  // stays honest (closed) — the UI reads connectionState, so a dead dial
+  // never presents as an active profile.
+  if (entry.wantOpen && g.secondaries.get(key) === entry) {
+    if (isOpen(entry.gateway) && applyActive(key, activationEpoch)) {
+      if (entry.connection) {
+        publishActiveConnection(entry.connection)
+      }
+
+      return true
     }
 
-    return true
+    // Dial failed (or epoch moved on): still retarget the active key, but
+    // report failure so the swap flow skips the connection sync.
+    applyActive(key, activationEpoch)
+
+    return false
   }
 
   return false

@@ -688,6 +688,21 @@ only locally installed packages contribute a desktop half (same rule as the
 standalone door).
 :::
 
+### Distributing with an install link {#install-link}
+
+Ship your plugin repo (agent half, desktop half, or both) and link to it with
+the `hermes://` scheme — a plain anchor on your website or README:
+
+```html
+<a href="hermes://plugin/install?repo=owner/repo&enable=1">Install in Hermes</a>
+```
+
+The user gets a confirmation dialog (repo id, source links, a probe of what
+the repo ships) and picks components before anything is installed — deep links
+never auto-install. `force=1` replaces an existing install; dev builds use
+`hermes-dev://`. Full link reference:
+[One-click install links](/user-guide/features/plugins#one-click-install-links-desktop).
+
 ### The Python side
 
 Desktop plugins reuse the dashboard plugin backend mount. Put the backend in a

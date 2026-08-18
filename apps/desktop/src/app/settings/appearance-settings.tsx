@@ -300,6 +300,20 @@ export function AppearanceSettings() {
   // every outstanding hold.
   useEffect(() => resetTranslucencyPeek, [])
 
+  // Shared by the mode/frost/area pickers: apply the choice, then show it
+  // through the overlay it just altered (a pulse, not a hold — see the peek
+  // notes on the slider itself).
+  const pickTranslucency =
+    <T,>(set: (value: T) => void) =>
+    (value: T) => {
+      triggerHaptic('selection')
+      set(value)
+
+      if (translucency.intensity > 0) {
+        pulseTranslucencyPeek()
+      }
+    }
+
   const [query, setQuery] = useState('')
 
   // One box does double duty: filter installed themes live (below), and run a
@@ -506,15 +520,7 @@ export function AppearanceSettings() {
               >
                 {GLASS_SUPPORTED && (
                   <SegmentedControl
-                    onChange={id => {
-                      triggerHaptic('selection')
-                      setTranslucencyMode(id)
-
-                      // Show the change through the overlay it just altered.
-                      if (translucency.intensity > 0) {
-                        pulseTranslucencyPeek()
-                      }
-                    }}
+                    onChange={pickTranslucency(setTranslucencyMode)}
                     options={[
                       { id: 'clear' as const, label: a.translucencyModeClear },
                       { id: 'glass' as const, label: a.translucencyModeGlass }
@@ -563,14 +569,7 @@ export function AppearanceSettings() {
                       {a.translucencyFrostTitle}
                     </span>
                     <SegmentedControl
-                      onChange={id => {
-                        triggerHaptic('selection')
-                        setTranslucencyMaterial(id)
-
-                        if (translucency.intensity > 0) {
-                          pulseTranslucencyPeek()
-                        }
-                      }}
+                      onChange={pickTranslucency(setTranslucencyMaterial)}
                       options={GLASS_MATERIALS.map(material => ({
                         id: material,
                         label: a.translucencyFrost[material]
@@ -583,14 +582,7 @@ export function AppearanceSettings() {
                       {a.translucencyScopeTitle}
                     </span>
                     <SegmentedControl
-                      onChange={id => {
-                        triggerHaptic('selection')
-                        setTranslucencyScope(id)
-
-                        if (translucency.intensity > 0) {
-                          pulseTranslucencyPeek()
-                        }
-                      }}
+                      onChange={pickTranslucency(setTranslucencyScope)}
                       options={GLASS_SCOPES.map(scope => ({
                         id: scope,
                         label: a.translucencyScope[scope]

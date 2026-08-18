@@ -21,7 +21,6 @@ export {
   GLASS_SCOPES,
   glassActive,
   type GlassMaterial,
-  type GlassScope,
   glassSurfaceKeep,
   normalizeMaterial,
   normalizeMode,
@@ -31,8 +30,6 @@ export {
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_OPACITY_FLOOR,
-  TRANSLUCENCY_STEP,
-  type TranslucencyMode,
   type TranslucencyState,
   vibrancyFor,
   windowOpacityFor

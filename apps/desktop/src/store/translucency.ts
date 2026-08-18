@@ -33,19 +33,7 @@ import { atom } from 'nanostores'
 import { isMacPlatform } from '@/lib/platform'
 import { readJson, writeJson } from '@/lib/storage'
 
-export {
-  DEFAULT_GLASS_MATERIAL,
-  DEFAULT_GLASS_SCOPE,
-  GLASS_MATERIALS,
-  GLASS_SCOPES,
-  type GlassMaterial,
-  type GlassScope,
-  glassSurfaceKeep,
-  TRANSLUCENCY_MAX,
-  TRANSLUCENCY_MIN,
-  TRANSLUCENCY_STEP,
-  type TranslucencyMode
-}
+export { GLASS_MATERIALS, GLASS_SCOPES, TRANSLUCENCY_MAX, TRANSLUCENCY_MIN, TRANSLUCENCY_STEP }
 
 /** Glass rides on the macOS vibrancy material; other platforms only have Clear. */
 export const GLASS_SUPPORTED = isMacPlatform()

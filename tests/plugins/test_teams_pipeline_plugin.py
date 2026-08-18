@@ -11,9 +11,15 @@ import pytest
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from plugins.teams_pipeline import register
+from plugins.teams_pipeline.meetings import (
+    TeamsMeetingError,
+    looks_like_transcript_id,
+    parse_graph_meeting_resource,
+    resolve_meeting_reference,
+)
+from plugins.teams_pipeline.models import MeetingArtifact
 from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore
-from plugins.teams_pipeline.models import MeetingArtifact
 
 
 class FakeGraphClient:
@@ -21,11 +27,14 @@ class FakeGraphClient:
         self.downloaded = False
 
 
-async def _transcript_meeting_resolver(client, *, meeting_id=None, join_web_url=None, tenant_id=None):
+async def _transcript_meeting_resolver(
+    client, *, meeting_id=None, join_web_url=None, tenant_id=None, organizer_user_id=None
+):
     from plugins.teams_pipeline.models import TeamsMeetingRef
 
     return TeamsMeetingRef(
         meeting_id=str(meeting_id),
+        organizer_user_id=organizer_user_id,
         tenant_id=tenant_id,
         metadata={"subject": "Weekly Sync", "participants": [{"displayName": "Ada"}]},
     )
@@ -422,3 +431,122 @@ class TestTeamsMeetingPipeline:
         assert len(store.list_jobs()) == 1
         receipt_key = TeamsPipelineStore.build_notification_receipt_key(notification)
         assert store.has_notification_receipt(receipt_key) is True
+
+
+def test_parse_graph_meeting_resource_reads_quoted_users_transcript_path():
+    parsed = parse_graph_meeting_resource(
+        "users/org-1/onlineMeetings('MSo-meeting')/transcripts('ktViz-transcript-TranscriptV2=')"
+    )
+
+    assert parsed["organizer_user_id"] == "org-1"
+    assert parsed["meeting_id"] == "MSo-meeting"
+    assert parsed["transcript_id"] == "ktViz-transcript-TranscriptV2="
+    assert parsed["recording_id"] is None
+
+
+def test_parse_graph_meeting_resource_ignores_get_all_transcripts_sentinel():
+    parsed = parse_graph_meeting_resource("communications/onlineMeetings/getAllTranscripts")
+
+    assert parsed["meeting_id"] is None
+    assert parsed["organizer_user_id"] is None
+    assert parsed["transcript_id"] is None
+
+
+def test_looks_like_transcript_id_detects_graph_call_transcripts():
+    assert looks_like_transcript_id(
+        "ktVizInGAAAA-TranscriptV2=",
+        odata_type="#Microsoft.Graph.callTranscript",
+    )
+    assert looks_like_transcript_id("abcTranscriptV2=")
+    assert not looks_like_transcript_id("MSo-meeting")
+
+
+def test_create_job_from_get_all_transcripts_uses_meeting_id_not_transcript_id(tmp_path):
+    store = TeamsPipelineStore(tmp_path / "teams-store.json")
+    pipeline = TeamsMeetingPipeline(graph_client=FakeGraphClient(), store=store)
+    transcript_id = "ktVizInGAAAAi_B6lATZRTE5Om1lZXRpbmdfTranscriptV2="
+
+    job = pipeline.create_job_from_notification(
+        {
+            "id": "notif-tx",
+            "changeType": "created",
+            "resource": "communications/onlineMeetings/getAllTranscripts",
+            "resourceData": {
+                "id": transcript_id,
+                "@odata.type": "#Microsoft.Graph.callTranscript",
+                "@odata.id": (
+                    "users/976f4b31-fd01-4e0b-9178-29cc40c14438/"
+                    f"onlineMeetings('MSo-meeting-id')/transcripts('{transcript_id}')"
+                ),
+            },
+            "tenantId": "tenant-1",
+        }
+    )
+
+    assert job.meeting_ref is not None
+    assert job.meeting_ref.meeting_id == "MSo-meeting-id"
+    assert job.meeting_ref.organizer_user_id == "976f4b31-fd01-4e0b-9178-29cc40c14438"
+    assert job.meeting_ref.meeting_id != transcript_id
+    assert job.meeting_ref.metadata.get("transcript_id") == transcript_id
+
+
+def test_create_job_from_users_resource_path_without_odata_id(tmp_path):
+    store = TeamsPipelineStore(tmp_path / "teams-store.json")
+    pipeline = TeamsMeetingPipeline(graph_client=FakeGraphClient(), store=store)
+
+    job = pipeline.create_job_from_notification(
+        {
+            "id": "notif-resource-path",
+            "changeType": "created",
+            "resource": "users/org-2/onlineMeetings('MSo-from-resource')/transcripts('tx-99')",
+            "resourceData": {
+                "id": "tx-99",
+                "@odata.type": "#Microsoft.Graph.callTranscript",
+            },
+        }
+    )
+
+    assert job.meeting_ref is not None
+    assert job.meeting_ref.meeting_id == "MSo-from-resource"
+    assert job.meeting_ref.organizer_user_id == "org-2"
+    assert job.meeting_ref.metadata.get("transcript_id") == "tx-99"
+
+
+@pytest.mark.anyio
+async def test_resolve_meeting_reference_uses_organizer_scoped_graph_path():
+    class RecordingGraphClient:
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        async def get_json(self, path, *, params=None, headers=None):
+            self.paths.append(path)
+            return {
+                "id": "MSo-meeting-id",
+                "subject": "Standup",
+                "organizer": {"identity": {"user": {"id": "org-1"}}},
+            }
+
+    client = RecordingGraphClient()
+    meeting_ref = await resolve_meeting_reference(
+        client,
+        meeting_id="MSo-meeting-id",
+        organizer_user_id="org-1",
+        tenant_id="tenant-1",
+    )
+
+    assert client.paths == ["/users/org-1/onlineMeetings/MSo-meeting-id"]
+    assert meeting_ref.meeting_id == "MSo-meeting-id"
+    assert meeting_ref.organizer_user_id == "org-1"
+
+
+@pytest.mark.anyio
+async def test_resolve_meeting_reference_refuses_transcript_id_without_join_url():
+    class BoomGraphClient:
+        async def get_json(self, path, *, params=None, headers=None):
+            raise AssertionError(f"Graph should not be called, got {path}")
+
+    with pytest.raises(TeamsMeetingError, match="transcript id"):
+        await resolve_meeting_reference(
+            BoomGraphClient(),
+            meeting_id="ktVizInGAAAA-TranscriptV2=",
+        )

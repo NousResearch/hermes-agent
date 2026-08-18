@@ -102,6 +102,13 @@ class TestRemoteIpGate:
         # ... but only over https.
         assert remote_ip_blocked("198.18.0.5", "http://multimedia.nt.qq.com.cn/x") is True
 
+    def test_bracketed_ipv6_remote_ip(self):
+        """Chrome reports IPv6 remoteIPAddress bracketed — never a false block."""
+        assert remote_ip_blocked("[2606:4700:10::6814:179a]", "https://example.com/") is False
+        assert remote_ip_blocked("[2606:4700:10::6814:179a]", "http://example.com/") is False
+        # Bracketed IPv4-mapped private is still blocked.
+        assert remote_ip_blocked("[::ffff:192.168.1.1]", "https://z.example/") is True
+
 
 class TestGuardJsSourceInvariants:
     def test_source_invariants(self):
@@ -272,7 +279,11 @@ class TestArmAndDecisions:
         assert fetch_enables
         stages = {stage for p in fetch_enables
                   for stage in (pt.get("requestStage") for pt in p.get("patterns", []))}
-        assert stages == {"Request", "Response"}
+        # Request-stage interception ONLY: a Response-stage pause suppresses
+        # Network.responseReceived for intercepted requests and deadlocks
+        # every legitimate public request against real Chrome (the remote-IP
+        # gate is async off responseReceived instead).
+        assert stages == {"Request"}
         assert ("Network.enable", {}, sid) in cdp_server.commands
         # Browser-level auto-attach (root session, no sessionId).
         assert any(m == "Target.setAutoAttach"
@@ -316,57 +327,67 @@ class TestArmAndDecisions:
         assert idx_fetch < idx_resume
         assert "r-new" in cdp_server.failed
 
-    def test_remote_ip_gate_response_stage(self, cdp_server):
-        async def script(guard):
-            # Public remote IP → continue.
-            cdp_server.push("Network.responseReceived",
-                            {"requestId": "rp", "response": {
-                                "url": "https://public.example/x",
-                                "remoteIPAddress": "93.184.216.34"}})
-            cdp_server.push("Fetch.requestPaused",
-                            {"requestId": "rp", "responseStatusCode": 200,
-                             "request": {"url": "https://public.example/x"}},
-                            session_id="s-t1")
-            # Private remote IP → fail at Response stage.
-            cdp_server.push("Network.responseReceived",
-                            {"requestId": "rpriv", "response": {
-                                "url": "https://host.example/x",
-                                "remoteIPAddress": "10.0.0.5"}})
-            cdp_server.push("Fetch.requestPaused",
-                            {"requestId": "rpriv", "responseStatusCode": 200,
-                             "request": {"url": "https://host.example/x"}},
-                            session_id="s-t1")
-            # IMDS remote IP → fail.
-            cdp_server.push("Network.responseReceived",
-                            {"requestId": "rimds", "response": {
-                                "url": "https://host2.example/x",
-                                "remoteIPAddress": "169.254.169.254"}})
-            cdp_server.push("Fetch.requestPaused",
-                            {"requestId": "rimds", "responseStatusCode": 200,
-                             "request": {"url": "https://host2.example/x"}},
-                            session_id="s-t1")
-            # IPv4-mapped private → fail.
-            cdp_server.push("Network.responseReceived",
-                            {"requestId": "rmap", "response": {
-                                "url": "https://host3.example/x",
-                                "remoteIPAddress": "::ffff:192.168.1.1"}})
-            cdp_server.push("Fetch.requestPaused",
-                            {"requestId": "rmap", "responseStatusCode": 200,
-                             "request": {"url": "https://host3.example/x"}},
-                            session_id="s-t1")
-            # Missing remote-IP at Response stage → fail closed.
-            cdp_server.push("Fetch.requestPaused",
-                            {"requestId": "rnomap", "responseStatusCode": 200,
-                             "request": {"url": "https://host4.example/x"}},
-                            session_id="s-t1")
-            await asyncio.sleep(1.2)
+    def test_async_remote_ip_gate_emits_block_marker(self, cdp_server):
+        """Response-stage pausing is gone: the remote-IP gate is async.
 
-        _drive_guard(cdp_server, script)
-        assert "rp" in cdp_server.continued
-        assert "rpriv" in cdp_server.failed
-        assert "rimds" in cdp_server.failed
-        assert "rmap" in cdp_server.failed
-        assert "rnomap" in cdp_server.failed
+        Fetch.enable arms Request-stage interception only, so
+        Network.responseReceived flows for every request; the guard emits
+        the block marker (parent kills the CLI + withholds) when the
+        browser-observed remote IP is private/IMDS and NEVER pauses a
+        response (the old response-stage pause deadlocked real Chrome by
+        waiting on a remote IP that Request+Response interception never
+        delivers). Public remote IPs produce no marker.
+        """
+        markers = []
+        original = ssrf.BrowserSsrfGuard._emit_block
+
+        def _capture(self, url, stage):
+            markers.append((url, stage))
+            original(self, url, stage)
+
+        ssrf.BrowserSsrfGuard._emit_block = _capture
+        try:
+            async def script(guard):
+                # Public remote IP → no marker.
+                cdp_server.push("Network.responseReceived",
+                                {"requestId": "rp", "response": {
+                                    "url": "https://public.example/x",
+                                    "remoteIPAddress": "93.184.216.34"}})
+                # Private remote IP → async block marker.
+                cdp_server.push("Network.responseReceived",
+                                {"requestId": "rpriv", "response": {
+                                    "url": "https://host.example/x",
+                                    "remoteIPAddress": "10.0.0.5"}})
+                # IMDS remote IP → async block marker.
+                cdp_server.push("Network.responseReceived",
+                                {"requestId": "rimds", "response": {
+                                    "url": "https://host2.example/x",
+                                    "remoteIPAddress": "169.254.169.254"}})
+                # IPv4-mapped private → async block marker.
+                cdp_server.push("Network.responseReceived",
+                                {"requestId": "rmap", "response": {
+                                    "url": "https://host3.example/x",
+                                    "remoteIPAddress": "::ffff:192.168.1.1"}})
+                # A Request-stage pause for a public URL is still continued
+                # (public literal IP — passes the request-stage gate with no
+                # DNS; no response-stage fail exists anymore).
+                cdp_server.push("Fetch.requestPaused",
+                                {"requestId": "rpub2",
+                                 "request": {"url": "http://93.184.216.34/x"}},
+                                session_id="s-t1")
+                await asyncio.sleep(0.8)
+
+            _drive_guard(cdp_server, script)
+        finally:
+            ssrf.BrowserSsrfGuard._emit_block = original
+        assert not any(url == "https://public.example/x" for url, _ in markers)
+        assert ("https://host.example/x", "response:10.0.0.5") in markers
+        assert any(url == "https://host2.example/x" for url, _ in markers)
+        assert any(url == "https://host3.example/x" for url, _ in markers)
+        # The Request-stage pause was continued — nothing was failRequest'd
+        # (the async gate never pauses or fails a response).
+        assert "rpub2" in cdp_server.continued
+        assert cdp_server.failed == []
 
     def test_ws_handshake_private_remote_ip_marker(self, cdp_server):
         async def script(guard):
@@ -686,6 +707,44 @@ class TestArmEveryTargetType:
         assert idx_fetch < idx_resume
         assert "rwk" in server.failed
 
+    @pytest.mark.parametrize("ttype", [
+        "fencedframe", "auction_worklet", "interest_group_worklet",
+        "shared_storage_worklet",
+    ])
+    def test_fencedframe_and_worklet_targets_armed(self, ttype):
+        """Fix-2 regression: fencedframe + worklet targets are armed.
+
+        These network-capable target types used to be absent from
+        ``_GUARD_ARMED_TARGET_TYPES``, so their requests were never
+        intercepted. They now get the authoritative Fetch + Network gates
+        (Fetch.enable/Network.enable per session); page-JS Layer 1 applies
+        only to the DOM-bearing fenced frame, never to worklets.
+        """
+        server = FakeCdpServer(
+            targets=("tx",), target_types={"tx": ttype}
+        ).start()
+        try:
+            async def script(guard):
+                server.push("Fetch.requestPaused",
+                            {"requestId": "rx",
+                             "request": {"url": "http://169.254.169.254/latest/meta-data/"}},
+                            session_id="s-tx")
+                await asyncio.sleep(0.4)
+
+            _drive_guard(server, script)
+        finally:
+            server.stop()
+        sid = server.sessions.get("tx")
+        assert sid == "s-tx"
+        assert any(m == "Fetch.enable" and s == sid for m, _, s in server.commands)
+        assert any(m == "Network.enable" and s == sid for m, _, s in server.commands)
+        if ttype == "fencedframe":
+            assert any(m == "Page.enable" and s == sid for m, _, s in server.commands)
+        else:
+            assert not any(m == "Page.enable" and s == sid for m, _, s in server.commands)
+        # A metadata fetch from the armed session is blocked at the boundary.
+        assert "rx" in server.failed
+
 
 # ── Defect 2: READY/ARMED emitted only after arm() completes ──────────────
 
@@ -790,3 +849,151 @@ class TestSpawnSsrfGuard:
             if guard is not None:
                 bug._teardown_ssrf_guard(guard)
             server.stop()
+
+
+# ── Fix: request-stage-only interception + async remote-IP gate (real browser) ──
+
+class TestRealBrowserRequestStageFlow:
+    """Env-gated (HERMES_E2E_BROWSER=1) real-Chrome regression for the
+    response-stage deadlock.
+
+    With the old Request+Response Fetch.enable the guard paused every
+    response and waited 300ms for a ``Network.responseReceived`` remote IP
+    that Request+Response interception never delivered — so every
+    legitimate public request was failed and navigations landed on
+    ``chrome-error://chromewebdata/``. This test drives a REAL headless
+    Chrome through the armed guard and asserts the opposite:
+
+    * a public request (https://example.com/) passes — the Request-stage
+      pause is continued, no block marker is emitted, and the page actually
+      lands on example.com (NOT chrome-error://chromewebdata/);
+    * a private/IMDS request (http://169.254.169.254/...) is blocked — the
+      request-stage gate fails it and the guard emits the block marker.
+
+    Skipped unless ``HERMES_E2E_BROWSER=1`` (and a Chrome binary + internet
+    access exist); the FakeCdpServer tests above cover the unit surface.
+    """
+
+    def test_public_request_passes_private_request_blocked(self):
+        if not os.environ.get("HERMES_E2E_BROWSER"):
+            pytest.skip("set HERMES_E2E_BROWSER=1 to run the real-browser SSRF guard test")
+        from tools.browser_exec_monitor import _find_chrome_binary, spawn_supervised_chrome
+
+        if not _find_chrome_binary():
+            pytest.skip("no Chrome/Chromium binary available for the E2E test")
+        # The public half of the test needs real internet; skip cleanly when
+        # the host is offline rather than failing on the network itself.
+        try:
+            socket.create_connection(("example.com", 443), timeout=5).close()
+        except OSError:
+            pytest.skip("no internet access for the public-request half of the E2E test")
+
+        try:
+            ws_url = spawn_supervised_chrome("e2e-ssrf-request-stage")
+        except RuntimeError as e:
+            # e.g. the host runs an elevated shell, which Chromium refuses to
+            # start under (browser exits immediately, no CDP endpoint).
+            pytest.skip(f"could not spawn a real browser for the E2E test: {e}")
+        markers: list = []
+
+        async def _main() -> bool:
+            guard = BrowserSsrfGuard(ws_url, None, task_id="e2e-request-stage")
+            orig_emit = guard._emit_block
+
+            def _capture(url, stage):
+                markers.append((url, stage))
+                orig_emit(url, stage)
+
+            guard._emit_block = _capture
+            await guard.arm()
+            driver = await websockets.connect(ws_url, max_size=50 * 1024 * 1024)
+            next_id = [1]
+            pending: dict = {}
+
+            async def _cdp(method, params=None, session_id=None):
+                cid = next_id[0]
+                next_id[0] += 1
+                payload = {"id": cid, "method": method}
+                if params:
+                    payload["params"] = params
+                if session_id:
+                    payload["sessionId"] = session_id
+                fut = asyncio.get_running_loop().create_future()
+                pending[cid] = fut
+                await driver.send(json.dumps(payload))
+                return await asyncio.wait_for(fut, timeout=20.0)
+
+            async def _reader():
+                async for raw in driver:
+                    msg = json.loads(raw)
+                    if "id" in msg:
+                        fut = pending.pop(msg["id"], None)
+                        if fut is not None and not fut.done():
+                            fut.set_result(msg)
+
+            reader = asyncio.create_task(_reader())
+            try:
+                created = await _cdp("Target.createTarget", {"url": "about:blank"})
+                target_id = created["result"]["targetId"]
+                # The guard's auto-attach pauses the new target
+                # (waitForDebuggerOnStart) and arms + resumes it; wait for the
+                # arming to land so Fetch.enable precedes any navigation.
+                await asyncio.sleep(1.5)
+                assert guard._sessions_armed, "guard never armed a session"
+                attach = await _cdp("Target.attachToTarget",
+                                    {"targetId": target_id, "flatten": True})
+                sess = attach["result"]["sessionId"]
+                await _cdp("Page.enable", session_id=sess)
+
+                # 1. Public request must PASS — never chrome-error.
+                await _cdp("Page.navigate", {"url": "https://example.com/"}, session_id=sess)
+                title = ""
+                url_now = ""
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    try:
+                        ev = await _cdp(
+                            "Runtime.evaluate",
+                            {"expression": "document.title + '|' + location.href",
+                             "returnByValue": True},
+                            session_id=sess,
+                        )
+                        val = (ev.get("result", {}).get("result", {}) or {}).get("value", "")
+                        if val:
+                            title, url_now = str(val).split("|", 1)
+                    except Exception:
+                        pass
+                    if "Example Domain" in title or "example.com" in url_now:
+                        break
+                    await asyncio.sleep(0.5)
+                assert "chromewebdata" not in url_now, (
+                    f"public request was failed by the guard (deadlock): landed on {url_now}"
+                )
+                assert "example.com" in url_now, f"public navigation did not land: {url_now}"
+                assert not any("example.com" in u for u, _ in markers), markers
+
+                # 2. Private/IMDS request must be BLOCKED (request-stage gate).
+                try:
+                    await _cdp("Page.navigate",
+                               {"url": "http://169.254.169.254/latest/meta-data/"},
+                               session_id=sess)
+                except Exception:
+                    pass
+                await asyncio.sleep(2.0)
+                assert any("169.254.169.254" in u for u, _ in markers), (
+                    "IMDS navigation was not blocked by the armed guard"
+                )
+                return True
+            finally:
+                reader.cancel()
+                try:
+                    await reader
+                except (asyncio.CancelledError, Exception):
+                    pass
+                try:
+                    await driver.close()
+                except Exception:
+                    pass
+                await guard.teardown()
+
+        assert asyncio.run(_main()) is True

@@ -250,6 +250,45 @@ class TestMonitorLatches:
         assert any(method == "Network.enable" and sid == "s-sw1" for method, sid in sent)
         assert any(method == "Network.enable" and sid == "s-p1" for method, sid in sent)
 
+    def test_fencedframe_and_worklet_targets_armed(self):
+        """Fix-2 regression: fencedframe + worklet targets get Network.enable.
+
+        These network-capable target types were absent from
+        ``_MONITOR_ARMED_TARGET_TYPES``, so their requests were never
+        observed (and therefore never blocked). Every one of them must get a
+        per-session ``Network.enable`` like any page/worker target.
+        """
+        m = _make_monitor()
+        sent = []
+
+        async def _cdp(method, params=None, **kw):
+            if method == "Target.getTargets":
+                return {"result": {"targetInfos": [
+                    {"type": "fencedframe", "targetId": "ff1", "url": "about:blank"},
+                    {"type": "auction_worklet", "targetId": "aw1", "url": "worklet.js"},
+                    {"type": "interest_group_worklet", "targetId": "igw1", "url": "worklet.js"},
+                    {"type": "shared_storage_worklet", "targetId": "ssw1", "url": "worklet.js"},
+                ]}}
+            if method == "Target.attachToTarget":
+                target_id = str(params["targetId"])
+                return {"result": {"sessionId": f"s-{target_id}"}}
+            sent.append((method, kw.get("session_id")))
+            return {"result": {}}
+
+        m._cdp = _cdp
+        asyncio.run(m._attach_initial_pages())
+        for tid in ("ff1", "aw1", "igw1", "ssw1"):
+            assert any(
+                method == "Network.enable" and sid == f"s-{tid}" for method, sid in sent
+            ), tid
+        # A fenced-frame fetch to the IMDS address is observed → latched.
+        asyncio.run(_feed(m, "Network.requestWillBeSent", {
+            "requestId": "rff", "url": "http://169.254.169.254/latest/meta-data/",
+            "type": "Fetch",
+        }, "s-ff1"))
+        v = m.violation()
+        assert v is not None and v["policy"] == "metadata"
+
     def test_violation_latch_write_once_and_reset(self):
         m = _make_monitor()
         asyncio.run(_feed(m, "Network.requestWillBeSent", _rwbs({"url": "http://10.0.0.1/a"})))

@@ -55,12 +55,14 @@ _EVENT_TARGET_ATTACHED = "Target.attachedToTarget"
 
 # Target types the monitor arms (per-session Network.enable). Every
 # auto-attached target — page, OOPIF iframe, dedicated/shared/service
-# worker — can make network requests, so every one of them must be
-# observed: a worker fetch to 169.254.169.254 is unobserved (and therefore
-# unblocked) if its session is never Network.enable'd.
+# worker, fenced frame, and the worklet family (auction / interest-group /
+# shared storage) — can make network requests, so every one of them must be
+# observed: a worker or fenced-frame fetch to 169.254.169.254 is unobserved
+# (and therefore unblocked) if its session is never Network.enable'd.
 _MONITOR_ARMED_TARGET_TYPES = frozenset({
     "page", "iframe", "worker", "service_worker", "shared_worker",
-    "background_page", "webview",
+    "background_page", "webview", "fencedframe",
+    "auction_worklet", "interest_group_worklet", "shared_storage_worklet",
 })
 
 # Policy tags produced by exec_url_violation.

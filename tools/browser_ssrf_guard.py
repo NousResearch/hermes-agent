@@ -13,17 +13,25 @@ Two cooperating layers:
 
 * **Layer 2 — CDP Fetch guard (authoritative, remote-IP-gated)**:
   ``BrowserSsrfGuard`` is a trusted Hermes-side process holding its own CDP
-  session per page target (existing + new + OOPIF), enforcing per-request at
-  the network boundary with two gates:
+  session per page target (existing + new + OOPIF + worker family),
+  enforcing per-request at the network boundary with two gates:
 
   1. **Pre-connect gate (Request stage)** — literal-IP URLs and guard-side
      DNS resolution, fail-closed on DNS failure in ALL modes (no
-     proxy-delegation allowance at the guard layer).
-  2. **Authoritative gate (Response stage)** — correlates
-     ``Network.responseReceived.response.remoteIPAddress`` by ``requestId``
-     and fails the request at the Response-stage ``Fetch`` pause (body never
-     delivered to the page) if the browser-observed remote IP is
-     private/IMDS. Missing remote-IP observation → fail closed.
+     proxy-delegation allowance at the guard layer). The request is failed
+     (``Fetch.failRequest``) before any byte leaves the browser.
+  2. **Async authoritative gate (browser-observed remote IP)** —
+     ``Fetch.enable`` arms REQUEST-stage interception ONLY (a Response-stage
+     pause would suppress ``Network.responseReceived`` for intercepted
+     requests and deadlock every legitimate public request against real
+     Chrome). ``Network.responseReceived`` flows unimpeded and is correlated
+     per ``requestId``; when the browser-observed ``remoteIPAddress`` for a
+     request is private/IMDS (split-horizon DNS / DNS-rebinding where the
+     browser actually connected somewhere private), the guard emits the
+     block marker on the report channel and the parent kills the CLI and
+     withholds all output. No response-stage pausing: the marker is the
+     enforcement, and the request-stage gate still fails closed on any
+     private URL.
 
 The guard is fail-closed in every mode: arm failure → ``browser_exec``
 errors before spawn; a mid-exec block or guard death → exec terminates with
@@ -66,19 +74,23 @@ _GUARD_SHAPE_RE = re.compile(
 
 
 # Target types the Fetch guard arms. Worker-family targets (dedicated /
-# service / shared workers) cannot carry the page-JS Layer 1 interceptor
-# (no DOM) but still get the authoritative Fetch + Network + remote-IP
-# gates: a worker fetch to 169.254.169.254 is just as much SSRF as a page
-# fetch, and OOPIF iframes are separate CDP sessions that must be armed too.
+# service / shared workers), worklets (auction / interest-group / shared
+# storage), and fenced frames cannot always carry the page-JS Layer 1
+# interceptor (no DOM for worklets) but still get the authoritative Fetch +
+# Network + remote-IP gates: a worker or fenced-frame fetch to
+# 169.254.169.254 is just as much SSRF as a page fetch, and OOPIF iframes /
+# fenced frames are separate CDP sessions that must be armed too.
 _GUARD_ARMED_TARGET_TYPES = frozenset({
     "page", "iframe", "worker", "service_worker", "shared_worker",
-    "background_page", "webview",
+    "background_page", "webview", "fencedframe",
+    "auction_worklet", "interest_group_worklet", "shared_storage_worklet",
 })
 
 # Target types that have a DOM and therefore get the Layer 1 page-JS
-# interceptor injected (worker sessions would reject Page.* anyway).
+# interceptor injected (worker/worklet sessions would reject Page.* anyway;
+# fenced frames are document-bearing and get the JS interceptor too).
 _GUARD_JS_TARGET_TYPES = frozenset({
-    "page", "iframe", "webview", "background_page",
+    "page", "iframe", "webview", "background_page", "fencedframe",
 })
 
 
@@ -152,9 +164,16 @@ def remote_ip_blocked(remote_ip: str, url: str) -> bool:
     cloud, local, and CDP-override modes, and closes split-horizon DNS
     rebinding. Honors ``_TRUSTED_PRIVATE_IP_HOSTS`` consistently (https
     only).
+
+    Chrome reports IPv6 ``remoteIPAddress`` values bracketed (``[2606:4700:
+    ...]``); the brackets are stripped before parsing so a public IPv6 peer
+    is never misclassified as unparseable (fail-closed false positive).
     """
+    raw = str(remote_ip or "").strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
     try:
-        ip = ipaddress.ip_address(str(remote_ip or "").strip())
+        ip = ipaddress.ip_address(raw)
     except ValueError:
         return True  # missing/unparseable remote IP → fail closed
     from tools.url_safety import (
@@ -350,7 +369,6 @@ class BrowserSsrfGuard:
         self._ws = None
         self._next_call_id = 1
         self._pending: Dict[int, asyncio.Future] = {}
-        self._remote_ips: Dict[str, str] = {}
         self._verdict_cache: Dict[str, tuple[float, bool]] = {}
         self._sessions_armed: set[str] = set()
         self._reader: Optional[asyncio.Task] = None
@@ -508,12 +526,17 @@ class BrowserSsrfGuard:
                 )
             except Exception:
                 pass
+        # REQUEST-stage interception ONLY. A Response-stage pause would
+        # suppress Network.responseReceived for intercepted requests, so the
+        # remote-IP gate would wait on an event that never arrives and fail
+        # every legitimate public request (deadlock fix); the async gate runs
+        # off Network.responseReceived, which flows unimpeded with
+        # Request-stage-only Fetch.enable.
         await self._cdp(
             "Fetch.enable",
             {
                 "patterns": [
                     {"urlPattern": "*", "requestStage": "Request"},
-                    {"urlPattern": "*", "requestStage": "Response"},
                 ],
                 "handleAuthRequests": False,
             },
@@ -527,53 +550,39 @@ class BrowserSsrfGuard:
     async def on_request_paused(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
         request = params.get("request") or {}
         url = str(request.get("url") or "")
-        stage = params.get("responseStatusCode") is not None
         request_id = str(params.get("requestId") or "")
 
-        if not stage:
-            # Pre-connect gate.
-            scheme = _scheme_of(url)
-            if scheme not in ("http", "https", "ws", "wss"):
-                # Non-http(s) schemes cannot reach private TCP endpoints.
-                await self._continue(params, request_id, session_id)
-                return
-            if await asyncio.to_thread(self._cached_blocked, url):
-                await self._fail(params, request_id, session_id)
-                self._emit_block(url, "request")
-                return
+        # Pre-connect gate (Request stage only — see arm_session: Fetch.enable
+        # arms Request-stage interception exclusively, so every pause is a
+        # pre-connect decision; the remote-IP gate is async off
+        # Network.responseReceived and never pauses a response).
+        scheme = _scheme_of(url)
+        if scheme not in ("http", "https", "ws", "wss"):
+            # Non-http(s) schemes cannot reach private TCP endpoints.
             await self._continue(params, request_id, session_id)
             return
-
-        # Response stage — authoritative remote-IP gate.
-        remote_ip = self._remote_ips.get(request_id)
-        if remote_ip is None:
-            # Network.responseReceived may still be in flight; wait briefly,
-            # then fail closed if still missing.
-            for _ in range(6):
-                await asyncio.sleep(0.05)
-                remote_ip = self._remote_ips.get(request_id)
-                if remote_ip is not None:
-                    break
-        if remote_ip is None:
+        if await asyncio.to_thread(self._cached_blocked, url):
             await self._fail(params, request_id, session_id)
-            self._emit_block(url, "response:no-remote-ip")
-            return
-        if await asyncio.to_thread(remote_ip_blocked, remote_ip, url):
-            await self._fail(params, request_id, session_id)
-            self._emit_block(url, f"response:{remote_ip}")
+            self._emit_block(url, "request")
             return
         await self._continue(params, request_id, session_id)
 
     async def on_response_received(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
-        request_id = str(params.get("requestId") or "")
         response = params.get("response") or {}
         remote_ip = str(response.get("remoteIPAddress") or "").strip()
-        if remote_ip:
-            self._remote_ips[request_id] = remote_ip
         url = str(response.get("url") or "")
-        if remote_ip and params.get("type") == "WebSocket":
+        # Async authoritative remote-IP gate: the browser-observed remote IP
+        # of ANY request (Document navigation, XHR/fetch, WebSocket
+        # handshake, worker/fenced-frame fetch, …) is checked WITHOUT
+        # pausing the request (Response-stage Fetch pauses are gone — see
+        # arm_session). A private/IMDS remote IP emits the block marker on
+        # the report channel; the parent kills the CLI and withholds all
+        # output. This catches split-horizon DNS / DNS-rebinding cases where
+        # the request-stage resolution looked public but the browser
+        # actually connected somewhere private.
+        if remote_ip and url:
             if await asyncio.to_thread(remote_ip_blocked, remote_ip, url):
-                self._emit_block(url, f"ws-handshake:{remote_ip}")
+                self._emit_block(url, f"response:{remote_ip}")
 
     async def _continue(self, params: Dict[str, Any], request_id: str,
                         session_id: Optional[str]) -> None:

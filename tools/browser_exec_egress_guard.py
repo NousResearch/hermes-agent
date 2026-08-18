@@ -14,6 +14,14 @@ between spawns is repaired; a forged marker cannot carry the next spawn's
 nonce). ``HERMES_BROWSER_EXEC_EGRESS_GUARD=0`` (config
 ``browser.exec_egress_guard: off``) disables the guard: the parent logs a
 warning, installs nothing, and does no marker checks.
+
+Threat model — coverage boundary (accepted residual, see the child
+interposer docstring for the full note): the interposer covers ONLY the CLI
+process and the proxy pinning covers only proxy-honoring spawned tools.
+Model-spawned env-stripped or native children (no PYTHONPATH → no
+sitecustomize → no socket guard; proxy vars dropped; no markers emitted)
+bypass both. OS-level egress enforcement (firewall, seccomp, network
+namespaces) is out of scope for this PR.
 """
 
 import hashlib

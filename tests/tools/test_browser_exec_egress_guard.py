@@ -501,3 +501,77 @@ class TestCapturedPrimitiveHygiene:
         assert "BLOCKED True" in out
         assert "PRIMITIVE-HIDDEN" in out
         assert f"__HERMES_EGRESS_GUARD__:installed:{NONCE}" in err
+
+
+# ── Reviewer item 1: closure-introspection bypass ──────────────────────────
+
+class TestClosureIntrospectionBypass:
+    def test_no_raw_primitive_reachable_via_closure_of_exported_callables(self, guard_env):
+        """Adversarial-reviewer regression: ``__closure__`` walks find nothing.
+
+        The pre-fix design captured the raw C primitives
+        (``_socket.socket.connect`` & co.) in the closure of the exported
+        factory functions (``install``/``_check_and_resolve``/
+        ``_g_create_connection``/``_g_getaddrinfo``), so a ~6-line
+        introspection snippet walked ``f.__closure__`` and recovered
+        ``<method 'connect' of '_socket.socket' objects>`` to dial a private
+        IP with zero enforcement and no marker. The module now keeps the
+        primitives in a hidden indirection (``_PRIMS``) referenced only
+        through module globals: every exported callable is a plain
+        module-level function whose ``__closure__`` is None. The deliberate
+        MRO/ctypes walk (``socket.socket.__bases__[0].__bases__[0]``) remains
+        the accepted residual — this test intentionally does NOT walk it
+        (it only uses it to identify raw primitives if any were leaked).
+        """
+        _, env = guard_env
+        body = (
+            "import browser_exec_egress_guard as g, _socket, socket, types\n"
+            "raw_c_type = socket.socket.__bases__[0].__bases__[0]\n"
+            "RAW_NAMES = {'connect', 'connect_ex', 'sendto', 'sendmsg', 'create'}\n"
+            "def _is_raw(obj):\n"
+            "    if getattr(obj, '__objclass__', None) is raw_c_type:\n"
+            "        return getattr(obj, '__name__', '') in RAW_NAMES\n"
+            "    return (isinstance(obj, types.FunctionType)\n"
+            "            and getattr(obj, '__module__', '') == 'socket'\n"
+            "            and getattr(obj, '__name__', '') in ('create_connection', 'getaddrinfo'))\n"
+            "found = []\n"
+            "seen = set()\n"
+            "def _walk(obj, path):\n"
+            "    if id(obj) in seen:\n"
+            "        return\n"
+            "    seen.add(id(obj))\n"
+            "    for cell in (getattr(obj, '__closure__', None) or ()):\n"
+            "        try:\n"
+            "            value = cell.cell_contents\n"
+            "        except ValueError:\n"
+            "            continue\n"
+            "        if _is_raw(value):\n"
+            "            found.append(path)\n"
+            "        elif callable(value) and not isinstance(value, type):\n"
+            "            _walk(value, path + '.<closure>')\n"
+            "for name in g.__all__:\n"
+            "    obj = getattr(g, name)\n"
+            "    if callable(obj):\n"
+            "        _walk(obj, name)\n"
+            "    elif isinstance(obj, type):\n"
+            "        for mname in dir(obj):\n"
+            "            mobj = getattr(obj, mname, None)\n"
+            "            if callable(mobj) and not isinstance(mobj, type):\n"
+            "                _walk(mobj, name + '.' + mname)\n"
+            "print('CLOSURE-RAW', sorted(found))\n"
+            "print('SOCK', socket.socket.__name__)\n"
+            "try:\n"
+            "    g._PRIMS\n"
+            "    print('PRIMS-VISIBLE')\n"
+            "except AttributeError:\n"
+            "    print('PRIMS-HIDDEN')\n"
+        )
+        rc, out, err = run_child(body, env)
+        assert rc == 0, err
+        import ast
+
+        raw_line = next(ln for ln in out.splitlines() if ln.startswith("CLOSURE-RAW "))
+        assert ast.literal_eval(raw_line.split("CLOSURE-RAW ")[1]) == []
+        assert "SOCK _GuardedSocket" in out
+        assert "PRIMS-HIDDEN" in out
+        assert f"__HERMES_EGRESS_GUARD__:installed:{NONCE}" in err

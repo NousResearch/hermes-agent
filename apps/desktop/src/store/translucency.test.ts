@@ -21,6 +21,7 @@ import {
   endTranslucencyPeek,
   GLASS_SUPPORTED,
   isChatWindow,
+  resetTranslucencyPeek,
   setTranslucency,
   setTranslucencyMaterial,
   setTranslucencyMode,
@@ -308,6 +309,57 @@ describe('translucency peek', () => {
     expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(true)
     endTranslucencyPeek()
     expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(false)
+  })
+})
+
+describe('peek reset', () => {
+  // Escape mid-drag unmounts the slider before its pointerup ever fires; the
+  // settings surface calls reset on unmount so the counter can't stay wedged
+  // and ghost the next overlay at 8% opacity.
+  it('drops every outstanding hold at once', () => {
+    beginTranslucencyPeek()
+    beginTranslucencyPeek()
+    beginTranslucencyPeek()
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(true)
+
+    resetTranslucencyPeek()
+    expect($translucencyPeek.get()).toBe(0)
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(false)
+
+    // A pulse timer expiring after the reset must not push the counter negative
+    // or resurrect the attribute.
+    endTranslucencyPeek()
+    expect($translucencyPeek.get()).toBe(0)
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(false)
+  })
+})
+
+describe('cross-window sync', () => {
+  afterEach(() => {
+    setTranslucencyMode('clear')
+    setTranslucency(TRANSLUCENCY_MIN)
+  })
+
+  // Under glass main touches nothing native on an intensity change, so a
+  // sibling window's storage event is the ONLY way this window hears about it.
+  it("adopts a sibling window's persisted state", () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({ intensity: 77, mode: 'clear', material: DEFAULT_GLASS_MATERIAL, scope: DEFAULT_GLASS_SCOPE })
+    )
+
+    window.dispatchEvent(new StorageEvent('storage', { key: KEY, newValue: 'x' }))
+
+    expect($translucency.get().intensity).toBe(77)
+  })
+
+  it('ignores storage events for other keys', () => {
+    setTranslucency(12)
+    window.localStorage.setItem(KEY, JSON.stringify({ intensity: 99, mode: 'clear' }))
+
+    window.dispatchEvent(new StorageEvent('storage', { key: 'hermes.desktop.zoom.v1', newValue: 'x' }))
+
+    expect($translucency.get().intensity).toBe(12)
   })
 })
 

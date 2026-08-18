@@ -152,7 +152,18 @@ const measureRailEdge = (): void => {
 
 const startRailTracking = (): void => {
   if (railTrackingOn) {
-    measureRailEdge()
+    // Already tracking: the ResizeObserver on the rail and the window resize
+    // listener own every geometry change from here. Re-measuring per store
+    // sync would force a layout read (getBoundingClientRect) right after the
+    // tint's style write, once per slider tick — write/read thrash on the
+    // drag's hot path for a seam that isn't moving. Two exceptions re-acquire:
+    // a rail we haven't FOUND yet (scope enabled before the sidebar mounted),
+    // and a rail that REMOUNTED (layout reset swaps the element) — the
+    // observer sits on the detached node and never fires again. isConnected
+    // is a flag read, so the settled hot path stays a single boolean check.
+    if (!railTarget || !railTarget.isConnected) {
+      measureRailEdge()
+    }
 
     return
   }
@@ -200,6 +211,19 @@ export function beginTranslucencyPeek(): void {
 
 export function endTranslucencyPeek(): void {
   $translucencyPeek.set(Math.max(0, $translucencyPeek.get() - 1))
+}
+
+/**
+ * Drop every outstanding hold at once. The settings surface calls this on
+ * unmount: a pointer held on the slider when the overlay closes (Escape
+ * mid-drag) never delivers its pointerup to the unmounted element, and a
+ * counter stuck above zero would leave the peek attribute on <html> —
+ * rendering the NEXT settings overlay ghosted at 8% opacity. Outstanding
+ * pulse timers still fire endTranslucencyPeek later; the zero floor makes
+ * them no-ops.
+ */
+export function resetTranslucencyPeek(): void {
+  $translucencyPeek.set(0)
 }
 
 /**
@@ -281,6 +305,29 @@ if (typeof window !== 'undefined') {
     if (storageTimer !== null) {
       window.clearTimeout(storageTimer)
       persist()
+    }
+  })
+
+  // Cross-window sync (same pattern as themes/context and store/session):
+  // under glass an intensity change is painted entirely by each renderer —
+  // main deliberately touches nothing native — so a second chat window only
+  // learns about it through the storage event its sibling's debounced write
+  // fires. Without this, window B's tint freezes until reload.
+  window.addEventListener('storage', event => {
+    if (event.key !== KEY) {
+      return
+    }
+
+    const next = read()
+    const current = $translucency.get()
+
+    if (
+      next.intensity !== current.intensity ||
+      next.mode !== current.mode ||
+      next.material !== current.material ||
+      next.scope !== current.scope
+    ) {
+      $translucency.set(next)
     }
   })
 

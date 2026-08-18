@@ -28,6 +28,7 @@ import {
   GLASS_SCOPES,
   GLASS_SUPPORTED,
   pulseTranslucencyPeek,
+  resetTranslucencyPeek,
   setTranslucency,
   setTranslucencyMaterial,
   setTranslucencyMode,
@@ -292,6 +293,12 @@ export function AppearanceSettings() {
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
+
+  // A pointer held on the intensity slider when this overlay closes (Escape
+  // mid-drag) never delivers its pointerup here, which would strand the peek
+  // counter above zero and ghost the NEXT settings overlay. Unmount drops
+  // every outstanding hold.
+  useEffect(() => resetTranslucencyPeek, [])
 
   const [query, setQuery] = useState('')
 

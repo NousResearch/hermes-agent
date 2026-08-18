@@ -1288,6 +1288,7 @@ export const ja = defineLocale({
     gatewayStopped: 'メッセージングゲートウェイが停止中',
     hermesActiveSessions: (version, count) => `Hermes ${version} · アクティブセッション ${count}`,
     restartGateway: 'ゲートウェイを再起動',
+    openBrowser: 'ブラウザを開く',
     gatewayRestartFailed: 'ゲートウェイの再起動に失敗しました。',
     updateHermes: 'Hermes を更新',
     reloadWindow: 'ウィンドウを再読み込み',

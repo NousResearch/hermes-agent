@@ -226,6 +226,15 @@ export function openPreview(target: PreviewTarget, source: PreviewRecordSource =
   selectRightRailTab(id)
 }
 
+/** Open the Browser tab — the surface, not a page. Keeps whatever it was last
+ *  showing so the hotkey re-fronts your page instead of wiping it; a fresh tab
+ *  lands on `about:blank`, where the pane's empty state invites an address. */
+export function openBrowserTab() {
+  const existing = $previewTabs.get().find(tab => tab.id === BROWSER_TAB_ID)
+
+  openPreview(existing?.target ?? { kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' })
+}
+
 export function closeRightRailTab(tabId: string) {
   const current = $previewTabs.get()
   const index = current.findIndex(tab => tab.id === tabId)

@@ -1250,6 +1250,7 @@ export const zhHant = defineLocale({
     gatewayStopped: '訊息閘道已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活躍工作階段 ${count}`,
     restartGateway: '重新啟動閘道',
+    openBrowser: '開啟瀏覽器',
     gatewayRestartFailed: '閘道重新啟動失敗。',
     updateHermes: '更新 Hermes',
     reloadWindow: '重新載入視窗',

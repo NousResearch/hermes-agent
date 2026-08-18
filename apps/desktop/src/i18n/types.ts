@@ -1239,6 +1239,7 @@ export interface Translations {
     gatewayStopped: string
     hermesActiveSessions: (version: string, count: number) => string
     restartGateway: string
+    openBrowser: string
     gatewayRestartFailed: string
     updateHermes: string
     reloadWindow: string

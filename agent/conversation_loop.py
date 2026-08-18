@@ -331,6 +331,19 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         }
         if not visible:
             placeholder["display_kind"] = "hidden"
+            # Keep the transcript hidden and empty, but give the historical
+            # API projection a non-empty neutral assistant turn so the
+            # pre-call sanitizer (repair_empty_non_final_messages) does not
+            # re-heal this row on every later call (#88955). display_kind is
+            # stripped before sanitization, while api_content is projected
+            # back into content for historical assistant rows. Use the
+            # canonical neutral interruption placeholder, never
+            # _INTERRUPT_SCAFFOLD_MARKER: replaying the scaffold as assistant
+            # text made the model echo it and self-replicate ghost rows
+            # (#81841).
+            from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+            placeholder["api_content"] = _INTERRUPTED_PLACEHOLDER
         append_message(messages, placeholder)
         append_message(
             messages,

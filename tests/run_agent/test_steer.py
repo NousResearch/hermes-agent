@@ -327,7 +327,9 @@ class TestActiveTurnRedirectCheckpoint:
         assert placeholder["role"] == "assistant"
         assert placeholder["display_kind"] == "hidden"
         assert placeholder.get("content") == ""
-        assert not placeholder.get("api_content")
+        # Neutral provider-replay payload (#88955): keeps the row out of the
+        # re-heal sanitizer loop; the interrupt scaffold is still never here.
+        assert placeholder.get("api_content") == "[response interrupted]"
         assert correction["content"] == "New direction."
         assert (
             "[This response was interrupted by a user correction.]"
@@ -353,13 +355,134 @@ class TestActiveTurnRedirectCheckpoint:
         assert placeholder["role"] == "assistant"
         assert placeholder.get("display_kind") == "hidden"
         assert placeholder.get("content") == ""
-        assert not placeholder.get("api_content")
+        # Neutral provider-replay payload (#88955), NOT the interrupt scaffold.
+        assert placeholder.get("api_content") == "[response interrupted]"
         assert correction["role"] == "user"
         assert correction["content"] == "Stop and do X instead."
         assert correction["api_content"].startswith(
             "[Context from the interrupted assistant response]\n"
             "[This response was interrupted by a user correction.]"
         )
+
+
+class TestEmptyHiddenAssistantRehealRegression:
+    """#88955: a no-visible-text redirect persisted an empty
+    ``display_kind="hidden"`` assistant placeholder that the pre-call sanitizer
+    re-healed on every later call (wire copy only, so the loop never converged).
+    The placeholder must carry a neutral provider-replay ``api_content`` so the
+    historical API projection fills ``content`` and the sanitizer stops
+    touching the row — while the durable transcript stays hidden and empty."""
+
+    def test_active_turn_redirect_hidden_placeholder_has_provider_replay_payload(self):
+        from agent.conversation_loop import _apply_active_turn_redirect
+
+        agent = _bare_agent()
+        agent._current_streamed_assistant_text = ""
+        messages = [{"role": "user", "content": "start"}]
+
+        _apply_active_turn_redirect(agent, messages, "Use Postgres instead.")
+
+        placeholder = messages[-2]
+        correction = messages[-1]
+        assert placeholder["role"] == "assistant"
+        assert placeholder["content"] == ""
+        assert placeholder["display_kind"] == "hidden"
+        assert placeholder["api_content"] == "[response interrupted]"
+        # The user correction keeps clean text in content and the interruption
+        # context only in its own api_content sidecar.
+        assert correction["role"] == "user"
+        assert correction["content"] == "Use Postgres instead."
+        assert (
+            "[This response was interrupted by a user correction.]"
+            in correction["api_content"]
+        )
+        # #81841: the interrupt scaffold must never reach assistant content or
+        # api_content (API replay substitutes api_content back into content).
+        assert (
+            "[This response was interrupted by a user correction.]"
+            not in str(placeholder.get("content") or "")
+            + str(placeholder.get("api_content") or "")
+        )
+
+    def test_hidden_redirect_placeholder_does_not_reheal_on_repeated_projection(self):
+        from agent.agent_runtime_helpers import (
+            _msg_has_payload,
+            repair_empty_non_final_messages,
+        )
+        from agent.conversation_loop import _apply_active_turn_redirect
+
+        agent = _bare_agent()
+        agent._current_streamed_assistant_text = ""
+        messages = [{"role": "user", "content": "start"}]
+        _apply_active_turn_redirect(agent, messages, "Do X instead.")
+        durable = list(messages)
+
+        def project(rows):
+            """Mirror the real send-time projection (conversation_loop.py):
+            api_content -> content for historical user/assistant rows, and the
+            display/row bookkeeping stripped from every outgoing copy."""
+            out = []
+            for msg in rows:
+                api_msg = dict(msg)
+                _api_content = api_msg.pop("api_content", None)
+                api_msg.pop("display_kind", None)
+                api_msg.pop("display_metadata", None)
+                api_msg.pop("_row_id", None)
+                if (
+                    isinstance(_api_content, str)
+                    and _api_content
+                    and msg.get("role") in ("user", "assistant")
+                ):
+                    api_msg["content"] = _api_content
+                out.append(api_msg)
+            return out
+
+        for _pass in range(2):
+            projected = project(durable)
+            hidden_assistant = next(
+                m for m in projected if m.get("role") == "assistant"
+            )
+            # The provider replay sidecar was projected into content, so the
+            # row already carries payload and the sanitizer has nothing to heal.
+            assert _msg_has_payload(hidden_assistant) is True
+            assert hidden_assistant["content"] == "[response interrupted]"
+            assert "display_kind" not in hidden_assistant
+            assert "api_content" not in hidden_assistant
+
+            healed = repair_empty_non_final_messages(projected)
+            healed_assistant = next(
+                m for m in healed if m.get("role") == "assistant"
+            )
+            assert healed_assistant["content"] == "[response interrupted]"
+            assert "display_kind" not in healed_assistant
+            assert "api_content" not in healed_assistant
+            # Durable transcript is never mutated by projection or sanitizer.
+            assert durable == messages
+            assert durable[1]["content"] == ""
+            assert durable[1]["display_kind"] == "hidden"
+            assert durable[1]["api_content"] == "[response interrupted]"
+
+        # #81841 scaffold never appears on the assistant wire.
+        assert (
+            "[This response was interrupted by a user correction.]"
+            not in healed_assistant["content"]
+        )
+
+    def test_empty_non_final_sanitizer_still_repairs_unmarked_empty_assistant(self):
+        """Control: a genuinely empty non-final assistant with no provider-replay
+        sidecar is still healed — the fix must not disable the generic net."""
+        from agent.agent_runtime_helpers import repair_empty_non_final_messages
+
+        rows = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "", "display_kind": "hidden"},
+            {"role": "user", "content": "correction"},
+        ]
+        healed = repair_empty_non_final_messages(rows)
+        assistant = next(m for m in healed if m.get("role") == "assistant")
+        assert assistant["content"] == "[response interrupted]"
+        # The durable list is not mutated (wire-copy-only design).
+        assert rows[1]["content"] == ""
 
 
 class TestSteerInjection:

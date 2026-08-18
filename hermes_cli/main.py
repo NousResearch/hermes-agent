@@ -8174,6 +8174,37 @@ def _desktop_linux_needs_no_sandbox() -> bool:
         return False
 
 
+def _desktop_linux_userns_sandbox_available() -> bool:
+    """Return True when Chromium's unprivileged user-namespace sandbox works.
+
+    When an unprivileged process can create a user namespace, Chromium uses the
+    namespace sandbox and never consults the setuid ``chrome-sandbox`` helper,
+    so requiring the helper to be root-owned 4755 (and prompting for sudo) is
+    unnecessary. Probe the real capability with ``unshare`` instead of reading
+    distro-specific sysctls: the probe fails closed on hosts where user
+    namespaces are disabled or AppArmor-restricted, which then follow the
+    existing setuid-helper path.
+    """
+    if sys.platform != "linux":
+        return False
+    unshare = shutil.which("unshare")
+    if not unshare:
+        return False
+    try:
+        return (
+            subprocess.run(
+                [unshare, "--user", "--map-root-user", "true"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
     """Return True when ``chrome-sandbox`` exists as a regular file."""
     if sys.platform != "linux":
@@ -8210,6 +8241,10 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         return False
 
     if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
+        return True
+
+    if _desktop_linux_userns_sandbox_available():
+        print("✓ Using Chromium's user-namespace sandbox (setuid helper not needed).")
         return True
 
     sudo = shutil.which("sudo")

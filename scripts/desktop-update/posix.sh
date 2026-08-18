@@ -316,6 +316,10 @@ linux_gate() {
   sb="$unpacked/chrome-sandbox"
   if [ ! -e "$sb" ]; then GATE=relaunch; return; fi
   if [ -u "$sb" ] && [ "$(stat -c %u "$sb" 2>/dev/null)" = "0" ]; then GATE=relaunch; return; fi
+  # Namespace sandbox usable => Electron never consults the setuid helper,
+  # so a non-root chrome-sandbox does not block relaunch (mirrors the
+  # _desktop_linux_userns_sandbox_available() probe in hermes_cli/main.py).
+  if unshare --user --map-root-user true 2>/dev/null; then GATE=relaunch; return; fi
 
   case "${ELECTRON_DISABLE_SANDBOX:-}" in 1|true|TRUE|True) GATE=relaunch; return ;; esac
   [ "$SANDBOX_FALLBACK" -eq 1 ] && { GATE=relaunch; return; }

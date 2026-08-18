@@ -11,6 +11,7 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from tools import browser_tool_eval_policy as bt_eval_policy
 from tools import browser_tool_session as bt_session
 
 
@@ -174,7 +175,7 @@ class TestSupervisorDaemonPageSplit:
         _patch_supervisor(monkeypatch, sup)
         _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
-            bt,
+            bt_session,
             "_run_browser_command",
             lambda *a, **kw: {"success": True, "data": {"result": "Example Domain"}},
         )
@@ -193,7 +194,7 @@ class TestSupervisorDaemonPageSplit:
         _patch_supervisor(monkeypatch, sup)
         _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
-            bt,
+            bt_session,
             "_run_browser_command",
             lambda *a, **kw: pytest.fail("subprocess must not run on a matching page"),
         )
@@ -211,7 +212,7 @@ class TestSupervisorDaemonPageSplit:
         _patch_supervisor(monkeypatch, sup)
         _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
-            bt,
+            bt_session,
             "_run_browser_command",
             lambda *a, **kw: pytest.fail("subprocess must not run for fragment diffs"),
         )
@@ -230,7 +231,7 @@ class TestSupervisorDaemonPageSplit:
         bt._last_navigated_urls.pop("test-task", None)
         bt._page_bound_frame_ids.pop("test-task", None)
         monkeypatch.setattr(
-            bt,
+            bt_session,
             "_run_browser_command",
             lambda *a, **kw: {"success": True, "data": {"result": "SUBPROCESS-RESULT"}},
         )
@@ -253,7 +254,7 @@ class TestSupervisorDaemonPageSplit:
         _patch_supervisor(monkeypatch, sup)
         _trust_supervisor_page(monkeypatch, url, frame_id="BOUND-AT-NAVIGATE")
         monkeypatch.setattr(
-            bt,
+            bt_session,
             "_run_browser_command",
             lambda *a, **kw: {"success": True, "data": {"result": "DAEMON-RESULT"}},
         )
@@ -275,7 +276,7 @@ class TestSupervisorDaemonPageSplit:
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", url)
         monkeypatch.delitem(bt._page_bound_frame_ids, "test-task", raising=False)
         monkeypatch.setattr(
-            bt,
+            bt_session,
             "_run_browser_command",
             lambda *a, **kw: {"success": True, "data": {"result": "DAEMON-RESULT"}},
         )
@@ -328,7 +329,7 @@ class TestSupervisorDaemonPageSplit:
         _patch_supervisor(monkeypatch, sup)
         _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
-            bt,
+            bt_session,
             "_run_browser_command",
             lambda *a, **kw: {"success": True, "data": {"result": "safe"}},
         )
@@ -365,7 +366,7 @@ class TestPageDivergenceAfterInteractions:
         monkeypatch.setattr(bt, "_page_maybe_diverged", set(), raising=False)
         monkeypatch.setattr(bt, "_last_navigated_urls", {})
         monkeypatch.setattr(bt, "_page_bound_frame_ids", {}, raising=False)
-        monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda *a, **kw: False)
+        monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda *a, **kw: False)
 
     @staticmethod
     def _sup_with_page(url, result="WRONG-TAB-RESULT"):
@@ -396,7 +397,7 @@ class TestPageDivergenceAfterInteractions:
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
         monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
-        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+        monkeypatch.setattr(bt_session, "_run_browser_command", self._command_mux({
             "click": {"success": True},
             "eval": {"success": True, "data": {"result": "NEW-TAB-RESULT"}},
         }))
@@ -416,7 +417,7 @@ class TestPageDivergenceAfterInteractions:
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
         monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
-        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+        monkeypatch.setattr(bt_session, "_run_browser_command", self._command_mux({
             "press": {"success": True},
             "eval": {"success": True, "data": {"result": "POST-SUBMIT-RESULT"}},
         }))
@@ -424,6 +425,28 @@ class TestPageDivergenceAfterInteractions:
         assert json.loads(bt.browser_press("Enter"))["success"] is True
         out = json.loads(bt._browser_eval("document.title"))
         assert out["result"] == "POST-SUBMIT-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    @pytest.mark.parametrize("space_key", ["Space", " "])
+    def test_press_space_then_eval_falls_through_to_subprocess(
+        self, monkeypatch, space_key
+    ):
+        """Space activates a focused button/link — it can navigate like Enter."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page(self.URL)
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
+        monkeypatch.setattr(bt_session, "_run_browser_command", self._command_mux({
+            "press": {"success": True},
+            "eval": {"success": True, "data": {"result": "POST-ACTIVATE-RESULT"}},
+        }))
+
+        assert json.loads(bt.browser_press(space_key))["success"] is True
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "POST-ACTIVATE-RESULT"
         assert out.get("method") != "cdp_supervisor"
         sup.evaluate_runtime.assert_not_called()
 
@@ -435,7 +458,7 @@ class TestPageDivergenceAfterInteractions:
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
         monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
-        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+        monkeypatch.setattr(bt_session, "_run_browser_command", self._command_mux({
             "press": {"success": True},
         }))
 
@@ -452,7 +475,7 @@ class TestPageDivergenceAfterInteractions:
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
         monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
-        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+        monkeypatch.setattr(bt_session, "_run_browser_command", self._command_mux({
             "click": {"success": False, "error": "no such ref"},
         }))
 
@@ -471,7 +494,7 @@ class TestPageDivergenceAfterInteractions:
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
         monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
-        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+        monkeypatch.setattr(bt_session, "_run_browser_command", self._command_mux({
             "click": {"success": True},
             "back": {"success": True, "data": {"url": landing}},
         }))
@@ -490,7 +513,7 @@ class TestPageDivergenceAfterInteractions:
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
         monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
-        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+        monkeypatch.setattr(bt_session, "_run_browser_command", self._command_mux({
             "back": {"success": True, "data": {}},
             "eval": {"success": True, "data": {"result": "SUBPROCESS-RESULT"}},
         }))

@@ -4955,7 +4955,13 @@ _mcp_thread: Optional[threading.Thread] = None
 # _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
 
-# Serialize only the stdio spawn-attribution window (snapshot → spawn → delta)
+# Prevent a replacement MCP loop from being published while the old loop is
+# draining and performing its final active-PID sweep. The condition shares
+# _lock so loop publication and the stopping flag change atomically.
+_mcp_loop_state_condition = threading.Condition(_lock)
+_mcp_loop_stopping = False
+
+# Serialize only the stdio spawn-attribution window (snapshot → spawn → delta
 # → registration) so concurrent _run_stdio() coroutines cannot claim each
 # other's child PIDs. Unexpected loop failure can leave an old thread unwinding
 # while _ensure_mcp_loop() publishes a replacement, so this guard must work
@@ -5224,7 +5230,9 @@ def _mcp_loop_exception_handler(loop, context):
 def _ensure_mcp_loop():
     """Start the background event loop thread if not already running."""
     global _mcp_loop, _mcp_thread
-    with _lock:
+    with _mcp_loop_state_condition:
+        while _mcp_loop_stopping:
+            _mcp_loop_state_condition.wait()
         if _mcp_loop is not None and _mcp_loop.is_running():
             return
         _mcp_loop = asyncio.new_event_loop()
@@ -8149,9 +8157,11 @@ async def _drain_and_stop_mcp_loop() -> None:
 
 
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
-    """Stop the background event loop and join its thread."""
-    global _mcp_loop, _mcp_thread
-    with _lock:
+    """Stop the old loop before allowing a replacement loop to be published."""
+    global _mcp_loop, _mcp_thread, _mcp_loop_stopping
+    with _mcp_loop_state_condition:
+        while _mcp_loop_stopping:
+            _mcp_loop_state_condition.wait()
         if only_if_idle and (_servers or _server_connecting):
             logger.debug("Leaving MCP event loop running; active servers are registered or connecting")
             return False
@@ -8159,6 +8169,20 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         thread = _mcp_thread
         _mcp_loop = None
         _mcp_thread = None
+        _mcp_loop_stopping = True
+    try:
+        return _finish_stopping_mcp_loop(loop, thread)
+    finally:
+        with _mcp_loop_state_condition:
+            _mcp_loop_stopping = False
+            _mcp_loop_state_condition.notify_all()
+
+
+def _finish_stopping_mcp_loop(
+    loop: Optional[asyncio.AbstractEventLoop],
+    thread: Optional[threading.Thread],
+) -> bool:
+    """Drain/close one detached MCP loop and reap only before replacement."""
     if loop is not None:
         # Drain before stopping: closing the loop with tasks still suspended
         # leaves their coroutines for the GC, whose finalizer then resumes them

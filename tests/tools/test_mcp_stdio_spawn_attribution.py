@@ -13,11 +13,14 @@ import pytest
 
 from tools.mcp_tool import (
     MCPServerTask,
+    _ensure_mcp_loop,
     _lock,
     _orphan_stdio_pid_servers,
     _orphan_stdio_pids,
     _stdio_pgids,
     _stdio_pids,
+    _stdio_spawn_attribution_guard,
+    _stop_mcp_loop,
 )
 
 
@@ -71,6 +74,9 @@ class _ConcurrentSpawnRig:
         self.enter_attempts[server_name] += 1
 
         if self._force_spawn_overlap:
+            # Used only with the production guard patched out. Do not let either
+            # fake transport spawn until both unguarded _run_stdio tasks have
+            # taken their pre-spawn PID snapshots and reached __aenter__.
             if self._both_entered is None:
                 self._both_entered = asyncio.Event()
             self._enter_count += 1
@@ -114,6 +120,8 @@ def _patched_stdio_runtime(rig):
         try:
             yield streams
         finally:
+            # Match the real transport's ownership boundary: exiting srv_a's
+            # transport terminates A's child, but must not touch B's live child.
             rig.stop(server_name)
 
     @asynccontextmanager
@@ -153,6 +161,9 @@ async def _running_server_pair(*, force_spawn_overlap=False):
     config = {"command": "dummy", "args": []}
 
     async def start(server):
+        # MCPServerTask.start() creates its long-lived run task while this
+        # context is active, so the label is copied into that task without
+        # making the two production configs artificially different.
         token = _FAKE_SERVER_NAME.set(server.name)
         try:
             await server.start(config)
@@ -221,5 +232,142 @@ def test_teardown_of_one_server_does_not_orphan_siblings():
                 f"srv_b PID {sibling_pid} lost its active ownership after "
                 f"srv_a teardown; active_owners={active_owners}"
             )
+
+    asyncio.run(run_test())
+
+
+def test_fixture_deterministically_reproduces_race_without_guard():
+    @asynccontextmanager
+    async def no_spawn_guard():
+        yield
+
+    async def run_test():
+        with patch(
+            "tools.mcp_tool._stdio_spawn_attribution_guard",
+            side_effect=no_spawn_guard,
+        ):
+            async with _running_server_pair(force_spawn_overlap=True) as (
+                _rig,
+                _srv_a,
+                _srv_b,
+            ):
+                with _lock:
+                    owner_counts = {
+                        name: sum(owner == name for owner in _stdio_pids.values())
+                        for name in ("srv_a", "srv_b")
+                    }
+                assert sorted(owner_counts.values()) == [0, 2]
+
+    asyncio.run(run_test())
+
+
+def test_spawn_guard_serializes_overlapping_event_loops():
+    """Old and replacement MCP loops must share one attribution guard."""
+    rendezvous = threading.Barrier(2, timeout=10)
+    state_lock = threading.Lock()
+    errors = []
+    active = 0
+    max_active = 0
+
+    async def worker():
+        nonlocal active, max_active
+        await asyncio.to_thread(rendezvous.wait)
+        async with _stdio_spawn_attribution_guard():
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            await asyncio.sleep(0.05)
+            with state_lock:
+                active -= 1
+
+    def run_worker():
+        try:
+            asyncio.run(worker())
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run_worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert max_active == 1
+
+
+def test_loop_stop_blocks_replacement_loop_until_final_cleanup():
+    """The old loop's final PID sweep must finish before publishing a new loop."""
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+    ensure_done = threading.Event()
+    stop_result = []
+
+    def fake_finish_stopping(_loop, _thread):
+        cleanup_started.set()
+        assert release_cleanup.wait(timeout=10)
+        return True
+
+    def stop_loop():
+        stop_result.append(_stop_mcp_loop())
+
+    def ensure_replacement_loop():
+        _ensure_mcp_loop()
+        ensure_done.set()
+
+    with patch(
+        "tools.mcp_tool._finish_stopping_mcp_loop",
+        side_effect=fake_finish_stopping,
+    ):
+        stop_thread = threading.Thread(target=stop_loop)
+        stop_thread.start()
+        assert cleanup_started.wait(timeout=10)
+        ensure_thread = threading.Thread(target=ensure_replacement_loop)
+        ensure_thread.start()
+        assert not ensure_done.wait(timeout=0.05)
+        release_cleanup.set()
+        stop_thread.join(timeout=10)
+        ensure_thread.join(timeout=10)
+
+    assert not stop_thread.is_alive()
+    assert not ensure_thread.is_alive()
+    assert stop_result == [True]
+    assert ensure_done.is_set()
+    assert _stop_mcp_loop()
+
+
+def test_cancelled_spawn_guard_waiter_does_not_strand_lock():
+    async def run_test():
+        holder_started = asyncio.Event()
+        release_holder = asyncio.Event()
+
+        async def hold_guard():
+            async with _stdio_spawn_attribution_guard():
+                holder_started.set()
+                await release_holder.wait()
+
+        async def wait_for_guard():
+            async with _stdio_spawn_attribution_guard():
+                pass
+
+        holder = asyncio.create_task(hold_guard())
+        await holder_started.wait()
+        waiter = asyncio.create_task(wait_for_guard())
+        await asyncio.sleep(0.03)
+        assert not waiter.done()
+
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        release_holder.set()
+        await holder
+
+        # Cancellation while queued must not acquire the threading lock later
+        # and strand it after the cancelled coroutine is gone.
+        async with asyncio.timeout(1):
+            async with _stdio_spawn_attribution_guard():
+                pass
 
     asyncio.run(run_test())

@@ -308,4 +308,47 @@ describe('reconnect fail-stop on a removed connection', () => {
     await ensureActiveGatewayOpen()
     expect(getConnection.mock.calls.length).toBe(callsAfterFailStop)
   })
+
+  it('waits out an in-flight secondary activation instead of failing instantly (#88880)', async () => {
+    // A remote secondary whose activation is ALREADY in flight from another
+    // path (wake sweep, agent activation) used to make ensureActiveGatewayOpen
+    // return null immediately: reconnectSecondary early-returns on
+    // `reconnecting`, the socket is still closed, and the caller surfaced
+    // "Hermes gateway is not connected" on the Sessions + action. The drive
+    // must ride out the in-flight activation and hand back the opened socket.
+    let releaseDial: (() => void) | undefined
+    const dialGate = new Promise<void>(resolve => {
+      releaseDial = resolve
+    })
+
+    const getConnectionFor = vi.fn(async () => descriptorFor('homelab', 'default'))
+
+    installDesktop({ getConnectionFor })
+
+    gatewayMocks.connect
+      .mockImplementationOnce(async () => undefined) // initial open
+      .mockImplementationOnce(async () => {
+        await dialGate // the sweep-driven reconnect dial hangs until released
+      })
+
+    await ensureGatewayForAgent('homelab', 'default')
+
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // Another path (the wake sweep) starts the reconnect first — the drive
+    // below meets an entry that is already `reconnecting`.
+    reconnectSecondaryGateways()
+    await Promise.resolve()
+
+    const driving = ensureActiveGatewayOpen()
+
+    await new Promise(resolve => setTimeout(resolve, 300))
+    releaseDial?.()
+
+    const result = await driving
+
+    expect(result).not.toBeNull()
+    expect((result as unknown as { connectionState: string }).connectionState).toBe('open')
+  })
 })

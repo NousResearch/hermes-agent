@@ -782,8 +782,29 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
     await reconnectSecondary(entry)
   }
 
+  if (!isOpen(entry.gateway)) {
+    // A remote/registry secondary can still be ACTIVATING (backend waking,
+    // socket dialing). Failing instantly turned a routine cold start into
+    // "Hermes gateway is not connected" on the Sessions `+` action (#88880).
+    // Wait a bounded beat for the in-flight activation instead of erroring;
+    // a genuinely dead gateway still returns null when the window closes.
+    const deadline = Date.now() + ACTIVE_GATEWAY_OPEN_WAIT_MS
+
+    while (Date.now() < deadline && entry.wantOpen && g.secondaries.get(g.activeKey) === entry) {
+      if (isOpen(entry.gateway)) {
+        break
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+  }
+
   return isOpen(entry.gateway) ? entry.gateway : null
 }
+
+// How long ensureActiveGatewayOpen waits out an in-flight secondary
+// activation before reporting the gateway as unavailable.
+const ACTIVE_GATEWAY_OPEN_WAIT_MS = 8_000
 
 // Wake signal (sleep/network/visibility): nudge every live secondary back open.
 export function reconnectSecondaryGateways(): void {

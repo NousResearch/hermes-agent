@@ -534,6 +534,11 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Registry connection that owns this row when it came from a CONNECTED
+   *  non-primary gateway (Electron's unified-list splice, #88880). Absent for
+   *  rows served by the primary/local backend. Opens must route through the
+   *  connection-scoped gateway (`ensureGatewayAgent`) when present. */
+  connection_id?: string
 }
 
 export type TimelineDisplayMetadata =

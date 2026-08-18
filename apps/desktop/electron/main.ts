@@ -260,8 +260,11 @@ import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profi
 import {
   buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
+  fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
-  mergeProfileSessionWindow
+  mergeProfileSessionWindow,
+  type RegistrySessionSource,
+  spliceRegistrySessionRows
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
@@ -13275,9 +13278,10 @@ async function interceptSessionRequestForRemote(request) {
 
   if (method === 'GET' && pathname === '/api/profiles/sessions') {
     const remoteProfiles = configuredRemoteProfileNames()
+    const registrySources = await pooledRegistrySessionSources()
 
-    if (remoteProfiles.length === 0) {
-      return undefined // no remote profiles → local fast path
+    if (remoteProfiles.length === 0 && registrySources.length === 0) {
+      return undefined // no remote profiles and no connected registry gateways → local fast path
     }
 
     const requested = (searchParams.get('profile') || 'all').trim() || 'all'
@@ -13297,8 +13301,9 @@ async function interceptSessionRequestForRemote(request) {
   // remote correctness is preserved.
   if (method === 'GET' && pathname === '/api/profiles/sessions/sidebar') {
     const remoteProfiles = configuredRemoteProfileNames()
+    const registrySources = await pooledRegistrySessionSources()
 
-    if (remoteProfiles.length === 0) {
+    if (remoteProfiles.length === 0 && registrySources.length === 0) {
       return undefined // local fast path → batched endpoint's single DB open
     }
 
@@ -13416,7 +13421,9 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
 // Unified list: primary's local aggregate, with each remote profile's stale local
 // rows/totals swapped for the remote's real ones, re-sorted by recency and
 // re-windowed to the requested page. A dead remote contributes nothing rather
-// than breaking the sidebar.
+// than breaking the sidebar. Connected registry gateways' sessions are spliced
+// in too (#88880) — the unified Sessions list shows EVERY connected gateway's
+// chats, tagged with connection_id + profile so opens route correctly.
 async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
@@ -13453,6 +13460,22 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
     })
   )
 
+  // Registry gateways (v2 connections): splice every CONNECTED gateway's rows
+  // into the unified list. Only already-pooled backends are read — a sidebar
+  // refresh must never dial or spawn a backend (the Bot Mode roster-respawn
+  // trap). Reads omit include_hidden, so Bot Mode's hidden canonical chats
+  // stay out of the global list, same as local sessions.
+  const registrySources = await pooledRegistrySessionSources()
+
+  if (registrySources.length) {
+    const registryRows = await fetchRegistrySessionRows(registrySources, remoteParams, (descriptor, path) =>
+      getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
+    )
+
+    const { added } = spliceRegistrySessionRows(merged, registryRows, profileTotals)
+    total += added
+  }
+
   const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
 
@@ -13462,6 +13485,59 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
     total,
     profile_totals: profileTotals
   }
+}
+
+// Every CONNECTED registry gateway as a session source: resolved descriptors
+// straight from the backend pool, never dialing. SSH sources contribute one
+// backend per pooled (connection, profile) scope; remote/cloud sources are one
+// shared host (any pooled scope's descriptor serves the cross-profile read).
+// The primary local connection is excluded — the primary aggregate already
+// carries local rows.
+async function pooledRegistrySessionSources(): Promise<RegistrySessionSource[]> {
+  const registry = readDesktopConnectionsRegistry()
+  const sources: RegistrySessionSource[] = []
+
+  for (const connection of registry.connections) {
+    if (connection.kind === 'local') {
+      continue
+    }
+
+    const prefix = backendScopePrefix(connection.id)
+
+    const pooled = [...backendPool.entries()].filter(
+      ([key, entry]) => key.startsWith(prefix) && entry.connectionPromise
+    )
+
+    if (pooled.length === 0) {
+      continue
+    }
+
+    const backends: Array<{ descriptor: unknown; profileLabel: null | string }> = []
+
+    for (const [key, entry] of connection.kind === 'ssh' ? pooled : pooled.slice(0, 1)) {
+      try {
+        // Already-resolved for a connected backend; a still-dialing entry is
+        // skipped via the timeout guard rather than blocking the sidebar.
+        const descriptor = await Promise.race([
+          entry.connectionPromise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
+        ])
+
+        backends.push({
+          descriptor,
+          profileLabel: connection.kind === 'ssh' ? key.slice(prefix.length) || 'default' : null
+        })
+      } catch {
+        // Dead or still-connecting backend — contributes nothing this refresh.
+      }
+    }
+
+    if (backends.length) {
+      sources.push({ backends, connectionId: connection.id, kind: connection.kind })
+    }
+  }
+
+  return sources
 }
 
 async function handleHermesApiRequest(request) {

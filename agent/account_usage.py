@@ -881,6 +881,115 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _zai_reset_ms(value: Any) -> Optional[datetime]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Z.AI returns epoch milliseconds for quota reset times.
+        return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+    return _parse_dt(value)
+
+
+_ZAI_WINDOW_LABELS = {
+    # unit 3 + number 5 = rolling 5-hour credit window (Coding Plan).
+    (3, 5): "5h credits",
+    # unit 6 + number 1 = weekly/long-window credit quota.
+    (6, 1): "Weekly credits",
+}
+
+
+def _zai_window_label(item: dict[str, Any]) -> str:
+    kind = str(item.get("type") or "").strip().upper()
+    try:
+        unit = int(item.get("unit"))
+        number = int(item.get("number"))
+    except (TypeError, ValueError):
+        unit = number = -1
+    mapped = _ZAI_WINDOW_LABELS.get((unit, number))
+    if mapped:
+        return mapped
+    if kind == "TIME_LIMIT":
+        return "MCP/tools"
+    return kind.replace("_", " ").title() or "Quota"
+
+
+def _fetch_zai_account_usage(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    """Z.AI (GLM Coding Plan) quota snapshot.
+
+    Uses the monitor endpoint consumed by the Z.AI usage dashboard. The
+    endpoint returns the plan tier plus per-window credit usage for rolling
+    5-hour and weekly quotas. Verified live 2026-08-19: the Coding Plan key
+    returns CREDIT_LIMIT entries (not TOKENS_LIMIT). If Z.AI changes or
+    disables the endpoint, failures are caught by fetch_account_usage and the
+    quota block disappears rather than displaying invented numbers.
+    """
+    runtime = resolve_runtime_provider(
+        requested="zai",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(
+            "https://api.z.ai/api/monitor/usage/quota/limit", headers=headers
+        )
+        response.raise_for_status()
+    payload = response.json() or {}
+    if payload.get("success") is False:
+        return AccountUsageSnapshot(
+            provider="zai",
+            source="quota_api",
+            fetched_at=_utc_now(),
+            title="Z.AI (GLM) quotas",
+            unavailable_reason=str(payload.get("msg") or "quota API unavailable"),
+        )
+    data = payload.get("data") or {}
+    windows: list[AccountUsageWindow] = []
+    details: list[str] = []
+    for item in data.get("limits") or ():
+        if not isinstance(item, dict):
+            continue
+        pct = item.get("percentage")
+        try:
+            used_percent = float(pct) if pct is not None else None
+        except (TypeError, ValueError):
+            used_percent = None
+        detail = None
+        if item.get("remaining") is not None and item.get("currentValue") is not None:
+            detail = f"remaining {item.get('remaining')} / used {item.get('currentValue')}"
+        windows.append(
+            AccountUsageWindow(
+                label=_zai_window_label(item),
+                used_percent=used_percent,
+                reset_at=_zai_reset_ms(item.get("nextResetTime")),
+                detail=detail,
+            )
+        )
+        for usage_detail in item.get("usageDetails") or ():
+            if isinstance(usage_detail, dict) and usage_detail.get("modelCode"):
+                details.append(
+                    f"{usage_detail.get('modelCode')}: {usage_detail.get('usage', 0)}"
+                )
+
+    details.append("Usage dashboard: https://z.ai/manage-apikey/subscription")
+    return AccountUsageSnapshot(
+        provider="zai",
+        source="quota_api",
+        fetched_at=_utc_now(),
+        title="Z.AI (GLM) quotas",
+        plan=_title_case_slug(data.get("level")),
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -897,6 +1006,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized in {"zai", "glm", "z-ai", "z.ai", "zhipu", "zai-coding"}:
+            return _fetch_zai_account_usage(base_url, api_key)
     except Exception:
         return None
     return None

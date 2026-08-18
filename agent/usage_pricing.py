@@ -1069,6 +1069,16 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
+    # Z.AI GLM Coding Plan (api.z.ai/api/coding/paas/v4) is a flat
+    # credit-window subscription like Codex/Kimi — no per-token billing
+    # applies. The metered api.z.ai/api/paas/v4 key path stays on
+    # official pricing; only the coding endpoint and the zai-coding slug
+    # route as subscription_included.
+    if provider_name in {"zai-coding", "zai-coding-plan", "glm-coding"} or (
+        provider_name in {"zai", "glm", "z-ai", "z.ai", "zhipu"}
+        and "/api/coding/" in base
+    ):
+        return BillingRoute(provider="zai-coding", model=model.split("/")[-1], base_url=base_url or "", billing_mode="subscription_included")
     if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):

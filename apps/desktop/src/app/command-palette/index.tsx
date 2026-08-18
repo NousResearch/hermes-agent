@@ -895,6 +895,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['update', 'upgrade', 'hermes', 'version', 'system', 'restart'],
             label: cc.updateHermes,
             run: () => requestActiveUpdate()
+          },
+          {
+            icon: RefreshCw,
+            id: 'cc-reload-window',
+            keywords: ['reload', 'window', 'refresh', 'restart', 'ui', 'stuck'],
+            label: cc.reloadWindow,
+            run: () => window.location.reload()
           }
         ]
       },

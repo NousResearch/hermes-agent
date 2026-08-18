@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
+import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
@@ -241,6 +242,20 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [navigate])
+
+  // Native browser gestures (⌘R, a mouse's back/forward buttons, a trackpad
+  // swipe) that landed on the app's own chrome rather than inside a page — main
+  // answers those against the focused guest and never asks. Only ⌘R has an
+  // app-level meaning to fall back to; an unfocused swipe is a no-op.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onPreviewNav?.(command => {
+      if (!commandFocusedPreview(command) && command === 'reload') {
+        window.location.reload()
+      }
+    })
+
+    return () => unsubscribe?.()
+  }, [])
 
   // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
   useEffect(() => {

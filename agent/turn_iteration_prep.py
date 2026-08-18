@@ -431,6 +431,7 @@ class RetryRestartVerdict:
     restart_count: Any
     api_call_count: Any
     _preflight_compression_blocked: Any
+    _preflight_blocked_at_tokens: Any
     _turn_exit_reason: Any
 
 
@@ -439,7 +440,8 @@ def apply_retry_restarts(
     conversation_history: Any, user_message: Any, api_kwargs: Any, current_turn_user_idx: Any,
     final_response: Any, retry_count: Any, max_retries: Any, api_call_count: Any,
     restart_count: Any, length_continue_retries: Any,
-    _preflight_compression_blocked: Any, _turn_exit_reason: Any,
+    _preflight_compression_blocked: Any, _preflight_blocked_at_tokens: Any,
+    _turn_exit_reason: Any,
 ) -> RetryRestartVerdict:
     """Consume the ``TurnRetryState`` restart flags after the retry loop, in the original
     priority order. Refunds the iteration budget/count for restarts that produced no valid
@@ -461,6 +463,7 @@ def apply_retry_restarts(
             final_response=final_response, retry_count=retry_count, restart_count=restart_count,
             api_call_count=api_call_count,
             _preflight_compression_blocked=_preflight_compression_blocked,
+            _preflight_blocked_at_tokens=_preflight_blocked_at_tokens,
             _turn_exit_reason=_turn_exit_reason,
         )
 
@@ -543,6 +546,7 @@ def apply_retry_restarts(
         # Failover shrank the compressor window: clear the preflight block so
         # preflight re-runs before the first fallback call (single consumer).
         _preflight_compression_blocked = False
+        _preflight_blocked_at_tokens = 0
         return _verdict("continue")
 
     if _retry.restart_with_length_continuation:

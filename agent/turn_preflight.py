@@ -50,6 +50,7 @@ class PreflightGateVerdict:
     _turn_exit_reason: Any
     _compression_timeout_exhausted: Any
     _preflight_compression_blocked: Any
+    _preflight_blocked_at_tokens: Any
     _provider_overflow_recovery_pending: Any
     _last_preflight_pressure: Any
     result: Optional[dict[str, Any]] = None

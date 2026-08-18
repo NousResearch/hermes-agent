@@ -47,6 +47,7 @@ class FinalResponseVerdict:
     final_response: Any
     _turn_exit_reason: Any
     _preflight_compression_blocked: Any
+    _preflight_blocked_at_tokens: Any
     codex_ack_continuations: Any
     truncated_response_parts: Any
     length_continue_retries: Any
@@ -107,7 +108,8 @@ def finish_text_response(
     agent: Any, *, assistant_message: Any, response: Any, finish_reason: Any, messages: Any,
     api_messages: Any, conversation_history: Any, api_call_count: Any, user_message: Any,
     active_system_prompt: Any, final_response: Any, _turn_exit_reason: Any,
-    _preflight_compression_blocked: Any, codex_ack_continuations: Any,
+    _preflight_compression_blocked: Any, _preflight_blocked_at_tokens: Any,
+    codex_ack_continuations: Any,
     truncated_response_parts: Any, length_continue_retries: Any,
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
     effective_task_id: Any,
@@ -125,6 +127,7 @@ def finish_text_response(
             action=action, active_system_prompt=active_system_prompt, final_response=final_response,
             _turn_exit_reason=_turn_exit_reason,
             _preflight_compression_blocked=_preflight_compression_blocked,
+            _preflight_blocked_at_tokens=_preflight_blocked_at_tokens,
             codex_ack_continuations=codex_ack_continuations,
             truncated_response_parts=truncated_response_parts,
             length_continue_retries=length_continue_retries,
@@ -184,11 +187,13 @@ def finish_text_response(
             active_system_prompt=active_system_prompt, api_call_count=api_call_count,
             turn_exit_reason=_turn_exit_reason,
             preflight_compression_blocked=_preflight_compression_blocked,
+            preflight_blocked_at_tokens=_preflight_blocked_at_tokens,
         )
         final_response = _ev.final_response
         _turn_exit_reason = _ev.turn_exit_reason
         active_system_prompt = _ev.active_system_prompt
         _preflight_compression_blocked = _ev.preflight_compression_blocked
+        _preflight_blocked_at_tokens = _ev.preflight_blocked_at_tokens
         api_call_count = _ev.api_call_count
         return _verdict(_ev.action, _ev.result)
 

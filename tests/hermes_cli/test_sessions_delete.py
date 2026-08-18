@@ -127,3 +127,58 @@ def test_sessions_prune_surfaces_matching_open_sessions(monkeypatch, capsys):
     assert "prune only deletes ended sessions" in out
     assert "hermes sessions delete <id>" in out
     assert "No sessions match" in out
+
+
+def test_sessions_export_bulk_includes_open_sessions(monkeypatch, capsys):
+    """Bulk ``sessions export`` selects open sessions too (#89223): the
+    ended-session guard is a destructive-prune safety net, not an export
+    filter — "export everything" must not silently drop every live session."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    seen = {}
+    rows = [
+        {
+            "id": "20260818_000000_openaaa",
+            "source": "desktop",
+            "title": "live session",
+            "started_at": 1_750_000_000.0,
+            "last_active": 1_750_000_050.0,
+            "ended_at": None,
+            "message_count": 41,
+            "archived": 0,
+        },
+    ]
+
+    class FakeDB:
+        def list_prune_candidates(self, **kwargs):
+            seen.update(kwargs)
+            return rows
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes", "sessions", "export", "--dry-run", "-",
+            "--newer-than", "7d",
+        ],
+    )
+    main_mod.main()
+
+    out = capsys.readouterr().out
+    assert seen.get("include_open") is True, (
+        "bulk export must neutralize the ended-session prune guard"
+    )
+    assert "Would export 1 session(s)" in out
+    assert "20260818_000000_openaaa" in out
+
+
+def test_sessions_prune_dry_run_keeps_ended_guard(monkeypatch, capsys):
+    """The destructive preview keeps the ended-session guard: include_open
+    is an export-only relaxation (#89223)."""
+    filters, _out = _run_prune(monkeypatch, capsys, ["--source", "cron", "--dry-run"])
+    assert "include_open" not in filters

@@ -23,6 +23,7 @@ import shlex
 import socket
 import tempfile
 import time
+from typing import Any, Callable, cast
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -722,6 +723,7 @@ class TestSandboxFailureHints(unittest.TestCase):
     def test_empty_grant_does_not_advertise_sandbox_tools(self):
         hint = _sandbox_failure_hint(self._IMPORT_ERROR, enabled_tools=[])
 
+        assert hint is not None
         self.assertIn("Importable tools here: none.", hint)
 
     def test_partial_grant_advertises_only_the_intersection(self):
@@ -730,6 +732,7 @@ class TestSandboxFailureHints(unittest.TestCase):
             enabled_tools=["terminal", "vision_analyze"],
         )
 
+        assert hint is not None
         self.assertIn("Importable tools here: terminal.", hint)
         self.assertNotIn("write_file", hint)
 
@@ -847,12 +850,16 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
                         ),
                         namespace,
                     )
+                    call = cast(
+                        Callable[[str, dict[str, str]], dict[str, Any]],
+                        namespace["_call"],
+                    )
                     responses = [
-                        namespace["_call"](tool_name, args)
+                        call(tool_name, args)
                         for tool_name, args in requests
                     ]
             finally:
-                client_sock = namespace.get("_sock")
+                client_sock = cast(Any, namespace.get("_sock"))
                 if client_sock is not None:
                     client_sock.close()
                 stop_event.set()
@@ -911,8 +918,12 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
                         ),
                         namespace,
                     )
+                    call = cast(
+                        Callable[[str, dict[str, str]], dict[str, Any]],
+                        namespace["_call"],
+                    )
                     responses = [
-                        namespace["_call"](tool_name, args)
+                        call(tool_name, args)
                         for tool_name, args in requests
                     ]
             finally:

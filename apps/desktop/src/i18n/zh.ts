@@ -3043,6 +3043,7 @@ export const zh: Translations = {
     web: {
       appFailedToBoot: '预览应用启动失败',
       serverNotFound: '未找到服务器',
+      remoteLoopback: '该地址指向运行代理的那台机器，而不是本机。浏览器面板在本地加载页面，因此远程开发服务器需要端口转发或可访问的主机名。',
       failedToLoad: '预览加载失败',
       tryAgain: '重试',
       restarting: 'Hermes 正在重启...',

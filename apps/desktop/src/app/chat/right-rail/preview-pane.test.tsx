@@ -189,6 +189,97 @@ describe('PreviewPane console state', () => {
     expect(webview.getAttribute('src')).toBe('http://localhost:5174')
   })
 
+  // The webview always runs on THIS machine, so a remote agent's localhost is
+  // a different computer's localhost. The failure is honest but baffling
+  // without saying so.
+  it('explains a failed loopback URL when the agent is on a remote gateway', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5173', url: 'http://localhost:5173' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+
+    await act(async () => {
+      webview.dispatchEvent(
+        Object.assign(new Event('did-fail-load'), {
+          errorCode: -102,
+          errorDescription: 'ERR_CONNECTION_REFUSED',
+          isMainFrame: true,
+          validatedURL: 'http://localhost:5173'
+        })
+      )
+    })
+
+    await waitFor(() => expect(rendered.container.textContent).toContain('machine running your agent'))
+  })
+
+  it('stays quiet about loopback when the gateway is local', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5173', url: 'http://localhost:5173' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+
+    await act(async () => {
+      webview.dispatchEvent(
+        Object.assign(new Event('did-fail-load'), {
+          errorCode: -102,
+          errorDescription: 'ERR_CONNECTION_REFUSED',
+          isMainFrame: true,
+          validatedURL: 'http://localhost:5173'
+        })
+      )
+    })
+
+    await waitFor(() => expect(rendered.container.textContent).toContain('ERR_CONNECTION_REFUSED'))
+    expect(rendered.container.textContent).not.toContain('machine running your agent')
+  })
+
+  // A public host fails for ordinary reasons; the remote-vs-local distinction
+  // has nothing to do with it.
+  it('stays quiet for a non-loopback host on a remote gateway', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'https://example.com', url: 'https://example.com' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+
+    await act(async () => {
+      webview.dispatchEvent(
+        Object.assign(new Event('did-fail-load'), {
+          errorCode: -105,
+          errorDescription: 'ERR_NAME_NOT_RESOLVED',
+          isMainFrame: true,
+          validatedURL: 'https://example.com'
+        })
+      )
+    })
+
+    await waitFor(() => expect(rendered.container.textContent).toContain('ERR_NAME_NOT_RESOLVED'))
+    expect(rendered.container.textContent).not.toContain('machine running your agent')
+  })
+
   it('surfaces a rejected navigation as a load error', async () => {
     let rendered!: ReturnType<typeof render>
     await act(async () => {

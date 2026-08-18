@@ -6417,6 +6417,7 @@ def run_one_job(
                 loop=loop,
                 verbose=verbose,
                 extra_prompt=extra_prompt,
+                profile_adapters=profile_adapters,
                 fire_claim_lost=(
                     _CombinedCancelEvent(lost_ownership, cancel_event)
                     if cancel_event is not None
@@ -6441,6 +6442,7 @@ def _run_one_job_body(
     loop=None,
     verbose: bool = False,
     extra_prompt: Optional[str] = None,
+    profile_adapters=None,
     fire_claim_lost: Optional[_CancelEventLike] = None,
     execution_token: Optional[object] = None,
 ) -> bool:

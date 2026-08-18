@@ -217,7 +217,11 @@ STYLE_LIBRARY = [
     },
 ]
 
-STYLE_IDS = {s["id"] for s in STYLE_LIBRARY}
+# Rejected from SahilBlog after visual review: their output was too repetitive
+# and too far from the editorial direction. Keep their definitions for legacy
+# plan readability, but never offer or validate them for new blog generation.
+BLOG_EXCLUDED_STYLE_IDS = frozenset({"ninth-observatory", "chromatic-institute"})
+STYLE_IDS = {s["id"] for s in STYLE_LIBRARY if s["id"] not in BLOG_EXCLUDED_STYLE_IDS}
 STYLE_BY_ID = {s["id"]: s for s in STYLE_LIBRARY}
 
 STYLE_NATIVE_COMPILERS = {
@@ -242,6 +246,8 @@ STYLE_NATIVE_COMPILERS = {
 def _styles_catalogue() -> str:
     lines = []
     for s in STYLE_LIBRARY:
+        if s["id"] in BLOG_EXCLUDED_STYLE_IDS:
+            continue
         lines.append(
             f"- {s['id']} ({s['label']}): kind={s['kind']}; look={s['look']} "
             f"Best for: {s['best_for']} Layout grammar: {s['layout']} "
@@ -622,7 +628,10 @@ def fallback_brief(draft: dict, headings: list[str],
     `blog_illustrator` deliberately does NOT call this when the LLM fails.
     """
     recent = recent_styles or []
-    ordered = [s["id"] for s in STYLE_LIBRARY if s["id"] not in recent] or list(STYLE_IDS)
+    ordered = [
+        s["id"] for s in STYLE_LIBRARY
+        if s["id"] not in recent and s["id"] not in BLOG_EXCLUDED_STYLE_IDS
+    ] or list(STYLE_IDS)
     style = ordered[0]
     style_meta = STYLE_BY_ID.get(style, {})
     title = draft.get("title", "")

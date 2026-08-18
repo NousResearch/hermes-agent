@@ -13,10 +13,17 @@ _DRAFT = {
 _HEADINGS = ["The mechanism"]
 
 
+def test_blog_style_catalogue_excludes_rejected_visual_modes():
+    assert "ninth-observatory" not in ad.STYLE_IDS
+    assert "chromatic-institute" not in ad.STYLE_IDS
+    assert "ninth-observatory" not in ad._styles_catalogue()
+    assert "chromatic-institute" not in ad._styles_catalogue()
+
+
 def _good_brief_json():
     return json.dumps({
-        "style": "ninth-observatory",
-        "style_candidates": ["ninth-observatory", "technical-diorama", "baoyu-infographic"],
+        "style": "technical-diorama",
+        "style_candidates": ["technical-diorama", "technical-diorama", "baoyu-infographic"],
         "layout": "architectural cross-section with labelled chambers",
         "layout_variants": ["architectural cross-section", "control hall", "vault map"],
         "text_policy": "labels",
@@ -62,13 +69,13 @@ def _good_brief_json():
 def test_build_art_brief_parses_valid_llm_output():
     brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: _good_brief_json())
     assert brief is not None
-    assert brief["style"] == "ninth-observatory"
+    assert brief["style"] == "technical-diorama"
     assert brief["layout"]
     assert brief["layout_variants"]
     assert brief["selection_seed"] == ad._selection_seed(_DRAFT)
     assert len(brief["selection_seed"]) == 16
     assert brief["style_candidates"]
-    assert "architecture" in brief["style_native_compiler"]
+    assert "physical mechanism" in brief["style_native_compiler"]
     assert brief["text_policy"] == "labels"
     assert brief["text_elements"] == ["API", "LOCAL", "CROSSOVER"]
     assert brief["palette"]
@@ -80,7 +87,7 @@ def test_build_art_brief_handles_fenced_json():
     fenced = "Here you go:\n```json\n" + _good_brief_json() + "\n```\n"
     brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: fenced)
     assert brief is not None
-    assert brief["style"] == "ninth-observatory"
+    assert brief["style"] == "technical-diorama"
 
 
 def test_build_art_brief_accepts_provider_shape_with_rendering_fields_inside_candidate():
@@ -92,12 +99,12 @@ def test_build_art_brief_accepts_provider_shape_with_rendering_fields_inside_can
     brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: json.dumps(payload))
 
     assert brief is not None
-    assert brief["style"] == "ninth-observatory"
+    assert brief["style"] == "technical-diorama"
     assert brief["hero_prompt"]
 
 
 def test_build_art_brief_rejects_unknown_style():
-    bad = _good_brief_json().replace("ninth-observatory", "not-a-real-style")
+    bad = _good_brief_json().replace("technical-diorama", "not-a-real-style")
     brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: bad)
     assert brief is None
 
@@ -171,7 +178,7 @@ def test_full_article_in_user_prompt():
 
 def test_compose_prompt_includes_shared_direction_and_labels():
     brief = {
-        "style": "ninth-observatory",
+        "style": "technical-diorama",
         "layout": "architectural cross-section",
         "text_policy": "labels",
         "text_elements": ["API", "LOCAL"],
@@ -182,7 +189,7 @@ def test_compose_prompt_includes_shared_direction_and_labels():
         "section_prompts": {},
     }
     p = ad.compose_prompt("two curves crossing", brief)
-    assert "The Ninth Observatory" in p
+    assert "Technical Diorama" in p
     assert "slate, brass" in p
     assert "rails" in p
     assert "two curves crossing" in p
@@ -192,7 +199,7 @@ def test_compose_prompt_includes_shared_direction_and_labels():
 
 
 def test_fallback_brief_picks_unused_style():
-    recent = ["ninth-observatory", "mythic-tech-codex"]
+    recent = ["technical-diorama", "mythic-tech-codex"]
     brief = ad.fallback_brief(_DRAFT, _HEADINGS, recent_styles=recent)
     assert brief["style"] in ad.STYLE_IDS
     assert brief["style"] not in recent
@@ -242,7 +249,7 @@ def test_art_director_system_prompt_requires_article_grounded_concept_candidates
     assert "inspiration_category" in system
     assert "systems-as-worlds" in system
     assert "Available rendering styles" in system
-    assert "ninth-observatory" in system
+    assert "technical-diorama" in system
 
 
 def test_text_capable_styles_do_not_inherit_blanket_text_ban():
@@ -401,7 +408,7 @@ def test_art_brief_compiles_a_grounded_shared_world_into_distinct_asset_layouts(
 
     assert brief is not None
     assert brief["concept_plan"]["world"].startswith("A travelling clockwork theatre")
-    assert brief["style"] == "ninth-observatory"
+    assert brief["style"] == "technical-diorama"
     assert brief["asset_layouts"] == {
         "hero": "wide proscenium collision",
         "section-01": "side-on process cutaway",

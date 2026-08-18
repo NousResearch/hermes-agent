@@ -64,7 +64,7 @@ def stub_art_brief(monkeypatch):
     """Force a deterministic brief so tests never hit the LLM."""
     def fake_brief(draft, headings, recent_styles=None, recent_concept_fingerprints=None, llm=None):
         return {
-            "style": "ninth-observatory",
+            "style": "technical-diorama",
             "palette": "stone grey, brass, warm amber",
             "motif": "a recurring archway",
             "art_direction": "vast, awe-of-scale, one warm focal light.",
@@ -185,8 +185,8 @@ def test_all_images_share_one_style(monkeypatch, tmp_path):
     monkeypatch.setattr(bi, "_generate_webp", lambda p: p)
     bi.illustrate(_DRAFT, out_dir=tmp_path, max_sections=2)
     assert len(prompts) == 3  # hero + 2 sections
-    # The Ninth Observatory label and the locked palette appear in every prompt.
-    assert all("Ninth Observatory" in p for p in prompts)
+    # The Technical Diorama label and the locked palette appear in every prompt.
+    assert all("Technical Diorama" in p for p in prompts)
     assert all("brass" in p for p in prompts)
 
 
@@ -265,11 +265,11 @@ def test_records_style_to_rotation_state(monkeypatch, tmp_path):
     monkeypatch.setattr(bi, "_generate_webp", lambda p: p)
     bi.illustrate(_DRAFT, out_dir=tmp_path, max_sections=0)
     assert (tmp_path / "skill_rotation.json").exists()
-    assert "ninth-observatory" in bi._load_recent_styles()
+    assert "technical-diorama" in bi._load_recent_styles()
 
 
 def test_rotation_state_retains_recent_concept_fingerprint():
-    bi._record_selection("ninth-observatory", ["clockwork theatre", "origami futures", "deep sea"])
+    bi._record_selection("technical-diorama", ["clockwork theatre", "origami futures", "deep sea"])
 
     assert bi._load_recent_concept_fingerprints() == ["clockwork theatre|origami futures|deep sea"]
 

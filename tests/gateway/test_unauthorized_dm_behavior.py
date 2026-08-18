@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, ProcessingOutcome
 from gateway.session import SessionSource
 
 
@@ -79,6 +79,21 @@ def _make_runner(platform: Platform, config: GatewayConfig):
     runner.hooks = SimpleNamespace(dispatch=AsyncMock(return_value=None))
     runner._sessions = {}
     return runner, adapter
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_slack_event_marks_processing_failure(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_ALLOWED")
+    config = GatewayConfig(
+        platforms={Platform.SLACK: PlatformConfig(enabled=True)}
+    )
+    runner, _adapter = _make_runner(Platform.SLACK, config)
+    event = _make_event(Platform.SLACK, "U_DENIED", "D_DENIED")
+
+    await runner._handle_message(event)
+
+    assert event.metadata["_hermes_processing_outcome"] is ProcessingOutcome.FAILURE
 
 
 def test_whatsapp_lid_user_matches_phone_allowlist_via_modern_session_mapping(

@@ -30,6 +30,26 @@ _MD_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", flags=re.MULTILINE)
 _MD_HR_RE = re.compile(r"^\s*[-*_]{3,}\s*$", flags=re.MULTILINE)
 _MD_TABLE_PIPE_RE = re.compile(r"\s*\|\s*")
 _URL_RE = re.compile(r"https?://\S+")
+# Local file links ("MEDIA:/Users/me/file.xlsx") are click targets on screen,
+# not speech. The client renders them as "Open <slug>"; nothing a voice can
+# say gracefully, and ElevenLabs-style models stutter/loop on the hyphenated
+# slug ("pt-es", "xlsx"). Keep the audio clean: the assistant's own prose says
+# "the files are below"; the token itself is silence.
+_MEDIA_PATH_RE = re.compile(r"MEDIA:\S+")
+# Bare filesystem paths in prose ("~/.config/himalaya/config.toml", "/etc/hosts",
+# "src/lib/app.ts") have no MEDIA: marker, so a shape match is the only guard.
+# A path is an address for the screen, not speech: ElevenLabs loops on "slash
+# dot config slash himalaya slash config dot toml". Tilde paths are unambiguous;
+# absolute paths and dot-slash paths need at least one letter (so "/06/02" is
+# left alone); bare relative paths must end in a file extension, which keeps
+# "and/or", "N/A", "2026/06/02", "1.5/2.5" and "5/month" intact. The replacement
+# is "the path": the surrounding prose carries the meaning, the path is on screen.
+_PATH_TOKEN_RE = re.compile(
+    r"~/(?:[\w.-]+/)*[\w.-]+(?:\.[A-Za-z]{1,8})?"
+    r"|(?:\./|/)(?=[\w.-]*[A-Za-z])(?:[\w.-]+/)+[\w.-]+(?:\.[A-Za-z]{1,8})?"
+    r"|(?:\./|/)[\w.-]+\.[A-Za-z]{1,8}"
+    r"|(?<![\w/])[\w.-]+(?:/[\w.-]+)+\.[A-Za-z]{1,8}",
+)
 
 _DEGREE_UNITS = (("C", "Celsius"), ("F", "Fahrenheit"))
 # Unit suffix (regex, after a digit) -> spoken word; km/h variants before the bare "m".
@@ -60,6 +80,7 @@ def strip_markdown_for_tts(text: str) -> str:
     text = _MD_IMAGE_RE.sub(lambda m: f" {m.group(1)} " if m.group(1) else " ", text)
     text = _MD_LINK_RE.sub(r"\1", text)
     text = _URL_RE.sub("", text)
+    text = _MEDIA_PATH_RE.sub(" ", text)
     text = _MD_INLINE_CODE_RE.sub(r"\1", text)
     text = _MD_BOLD_RE.sub(r"\1", text)
     text = _MD_UNDERSCORE_BOLD_RE.sub(r"\1", text)
@@ -115,9 +136,28 @@ def normalize_symbols_for_tts(text: str) -> str:
     # currencies run first so "$" doesn't eat "NZ$".
     for symbol, word, flags in _CURRENCY_WORDS:
         text = re.sub(symbol + r"\s*([\d,]*\d(?:\.\d+)?)", r"\1 " + word, text, flags=flags)
+    # PT/ES writes the sign after the amount ("1.499,90 €"); cover both
+    # placements, then any bare remainder ("prices in €").
+    text = re.sub(r"([\d,]*\d(?:\.\d+)?)\s*€", r"\1 euros", text)
+    text = text.replace("€", " euros")
     text = re.sub(r"(?<=\d)\s*%", " percent", text)
     # Operators and separators that commonly leak from formatted answers.
     text = re.sub("[•◦▪▫]", " ", text.replace("&", " and "))  # bullet glyphs
+    text = re.sub(r"(?<=\d)\s*×\s*", " times ", text)  # "2×5090" -> "2 times 5090"
+
+    # Bare paths first, before the tilde/approximation rules can eat bits of them.
+    text = _PATH_TOKEN_RE.sub(" the path ", text)
+
+    # Em/en dashes: a pause the voice cannot read, same family as the colon
+    # trigger. A digit-to-digit range becomes "to" ("pages 5–10" reads "pages
+    # 5 to 10"); a dash before an uppercase letter opens a new sentence; every
+    # other dash becomes a comma pause. The range pass runs first so the later
+    # rules can consume every remaining dash, including ones next to digits
+    # ("Step 1 — open the file") that a naive digit guard would leave raw.
+    text = re.sub(r"(\d)\s*[—–]\s*(\d)", r"\1 to \2", text)
+    text = re.sub(r"\s*[—–]\s*(?=[A-Z])", ". ", text)
+    text = re.sub(r"\s*[—–]\s*", ", ", text)
+
     for symbol, word in (("→", " to "), ("⇒", " to "), ("≈", " about "), ("~", " about ")):
         text = text.replace(symbol, word)
     return _EMOJI_RE.sub("", _VARIATION_SELECTOR_RE.sub("", text))
@@ -154,14 +194,24 @@ def smooth_whitespace_for_tts(text: str) -> str:
         if pending_heading is not None:
             line = f"{pending_heading.rstrip('.:;,')}, {line}"
             pending_heading = None
-        if add_sentence_pauses and line[-1] not in ".!?;:":
-            line += "."
+        if add_sentence_pauses:
+            if line[-1] in ":;":
+                # A trailing colon promises a continuation ("the list:"); the
+                # next raw token (file link, code fence) is gone from speech by
+                # now, so the voice would hang on the open pause. Close it.
+                line = line.rstrip(":;").rstrip() + "."
+            elif line[-1] not in ".!?":
+                line += "."
         lines.append(line)
     flush_pending()
     text = "\n".join(lines)
     for pattern, repl in ((r"\n{3,}", "\n\n"), (r"[ \t]{2,}", " "), (r"\s+([,.;:!?])", r"\1"),
                           (r"([,.;:!?])([A-Za-z])", r"\1 \2"), (r"\.{4,}", "...")):
         text = re.sub(pattern, repl, text)
+    # Single-line text ("Here is the list:") skips the per-line pause pass, so
+    # close a final colon here too. Only ever touches the very end of the text,
+    # and never a digit-preceded colon ("final score 3:2" stays a ratio).
+    text = re.sub(r"([^0-9])(?:[:;]\s*)+$", r"\1.", text)
     return text.strip()
 
 

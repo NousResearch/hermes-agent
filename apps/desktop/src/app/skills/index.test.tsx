@@ -395,13 +395,27 @@ describe('SkillsView toolset management', () => {
         ]
       })
     }
+
     const getAgentRoster = vi.fn().mockResolvedValue({
       agents: [
-        { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'default', handle: 'default' },
-        { connectionId: 'homelab', connectionKind: 'remote', connectionLabel: 'Homelab', profile: 'inbox-bot', handle: 'inbox-bot-homelab' }
+        {
+          connectionId: 'local',
+          connectionKind: 'local',
+          connectionLabel: 'This device',
+          profile: 'default',
+          handle: 'default'
+        },
+        {
+          connectionId: 'homelab',
+          connectionKind: 'remote',
+          connectionLabel: 'Homelab',
+          profile: 'inbox-bot',
+          handle: 'inbox-bot-homelab'
+        }
       ],
       sources: []
     })
+
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = { connections, getAgentRoster }
 
     try {

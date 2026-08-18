@@ -257,13 +257,12 @@ export function SkillsView({
   // The registry connection an explicit override pins — null for the ambient
   // active-profile path and for fixed-profile pins without a connection.
   const scopeConnectionId =
-    scopeProfile && typeof scopeProfile === 'object' ? ((scopeProfile.connectionId ?? '').trim() || 'local') : null
+    scopeProfile && typeof scopeProfile === 'object' ? (scopeProfile.connectionId ?? '').trim() || 'local' : null
 
   // Scoped to a DIFFERENT backend than the window's active gateway? The MCP
   // tab's live-reload RPC rides the active gateway socket, which would reload
   // the wrong machine — withhold it for cross-backend scopes.
-  const crossBackendScope =
-    scopeConnectionId !== null && scopeConnectionId !== (activeGatewayConnectionId() ?? 'local')
+  const crossBackendScope = scopeConnectionId !== null && scopeConnectionId !== (activeGatewayConnectionId() ?? 'local')
 
   const { data: profilesData } = useQuery({
     queryKey: ['capabilities-profiles'],
@@ -687,8 +686,7 @@ export function SkillsView({
     // Roster picks (`connectionId::profile`) stay objects — a `local::` pick
     // must PIN the local pool even while a remote gateway is active. Legacy
     // bare-name picks stay strings so cache keys and routing are unchanged.
-    const next: ProfileScope =
-      sep >= 0 ? { connectionId: value.slice(0, sep), profile: value.slice(sep + 2) } : value
+    const next: ProfileScope = sep >= 0 ? { connectionId: value.slice(0, sep), profile: value.slice(sep + 2) } : value
 
     if (profileScopeKey(next) === scopeKey) {
       return

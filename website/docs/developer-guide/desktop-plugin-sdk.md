@@ -465,6 +465,8 @@ host.newChat(profile?)                     // fresh chat draft, optionally in an
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN
                                            //   workspace zone and reveal it; returns a disposer
+host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
+                                           //   actually on screen (its zone's active tab)?
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
@@ -492,6 +494,18 @@ programmatically. Feature-detect it (`typeof host.openWorkspace ===
 'function'`) and fall back to a regular contributed pane on older desktop
 builds — Bot Mode's group-chat rooms are the reference consumer (main-window
 takeover when available, in-panel view otherwise).
+
+`host.paneVisibility(paneId)` returns a readonly reactive atom that is `true`
+while a contributed pane is actually on screen: present in the layout tree,
+not dismissed or hidden, its zone un-minimized, and holding its zone's active
+tab slot (a lone pane in its own zone counts). The id is the
+contribution-scoped pane id, `<pluginId>:<paneId>`. Atoms are memoized per id,
+so calling it in render is safe. Use it to register companion UI only while
+your pane is visible — Bot Mode's Cronjobs pane is the reference consumer: it
+registers while the Bots pane holds the sidebar tab and unregisters when the
+user tabs back to Sessions. Feature-detect on older desktops
+(`typeof host.paneVisibility === 'function'`) and fall back to
+always-registered behavior.
 
 `host.profileRoutes()` inventories every registered source in the current connection
 registry. Connect-on-demand SSH sources expose a credential-free `default` seed

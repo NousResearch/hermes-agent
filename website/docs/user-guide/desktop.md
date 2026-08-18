@@ -179,7 +179,16 @@ The app also surfaces the broader Hermes management surface so you don't have to
 roster where every [Hermes profile](./profiles.md) appears as a bot with its
 own avatar (geometric face, uploaded image, AI-generated portrait, or a pixel
 pet), its own canonical **Bot Chat** conversation, and its own **Routines**
-(recurring tasks backed by Hermes cron). Create new agents from the roster —
+(recurring tasks backed by Hermes cron). The roster lives in the left
+sidebar as a tab next to your conversations — a **Sessions | Bots** tab
+strip — rather than a second pane stacked below the session list. Installs
+that picked up the older stacked layout are re-homed into the tab strip
+automatically, once; if you've hand-placed panes yourself, your layout is
+left alone. The **Cronjobs** (Routines) pane docks beside the chat only
+while the Bots tab is active and disappears when you switch back to
+Sessions (older desktop builds keep it always visible).
+
+Create new agents from the roster —
 Name / Title / Description plus an Advanced disclosure with the full
 capabilities surface (model, SOUL, skills, toolsets, MCP servers) — group
 them into sections, and open group chats where several bots deliberate.
@@ -203,6 +212,15 @@ Bot Mode's sessions — each bot's canonical Bot Chat and every group-chat
 member session — are always hidden from the global Sessions sidebar. They
 live in the Bots pane (roster rows, room views, and each bot's session
 browser) instead of interleaving with your own conversations.
+
+Bots you don't use can be tucked away: right-click a bot row → **Hide
+Bot**. Hidden bots leave the roster but keep working — @mentions still
+resolve and group-chat membership is untouched. An eye toggle appears in
+the Bots header whenever at least one bot is hidden; click it to reveal
+hidden bots dimmed in place (right-click → **Unhide Bot** brings one back),
+and the eye shows a dot when a hidden bot has unread activity. Hidden
+state is stored in the bot's profile, so it follows the bot across
+machines.
 
 Don't want it? Flip it off in **Settings → Plugins → Bots** — the roster,
 routines pane, and composer middleware unregister live, no restart needed.

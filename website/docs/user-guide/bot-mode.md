@@ -7,7 +7,7 @@ description: "Turn your Hermes profiles into a roster of named Bots — each wit
 
 **Bot Mode** turns your [Hermes profiles](./profiles.md) into a roster of named **Bots**. Each Bot has its own role, model, memory, skills, and avatar; Bots run recurring routines, deliberate together in group chats, and message each other directly. Build a specialist Bot once and it is there forever, one click away.
 
-Bot Mode ships **built into the [desktop app](./desktop.md)** and is **on by default** — no install needed. It appears as a **Bots** tab next to Sessions, with a **Routines** tile docked beside the conversation.
+Bot Mode ships **built into the [desktop app](./desktop.md)** and is **on by default** — no install needed. It appears as a **Bots** tab next to Sessions in the left sidebar, with a **Routines** tile docked beside the conversation while the Bots tab is active.
 
 :::tip A Bot is a profile
 There is no new primitive to learn: a Bot **is** a Hermes profile — isolated config, memory, skills, credentials, and chat history under `~/.hermes/profiles/<name>/`. Bot Mode is a UI over that primitive, so everything you do in it is visible from the CLI too: `hermes -p <bot> chat` opens the same agent, and Bot routines appear in `hermes cron list`. No core patches, no background daemons, no extra storage.
@@ -21,6 +21,7 @@ The roster shows one row per agent profile: avatar, latest-message preview, and 
 - **Sessions** (from a Bot's context menu) browses and filters that profile's 200 most recent stored conversations, without changing the primary click-to-chat flow.
 - **Active now** — a presence strip above the roster shows every Bot currently working: the gateway-busy profile plus any Bot that wrote within the last 90 seconds. Each chip opens that Bot's chat. The strip never reorders the roster and disappears when the fleet is idle.
 - **Search** filters the roster as you type.
+- **Hide a Bot** — right-click a row → **Hide Bot** to take a Bot you don't use out of the roster and the Active-now strip. Hiding is display-only: @mentions still resolve, group-chat memberships are untouched, and routines keep running. Once at least one Bot is hidden, an **eye toggle** appears in the pane header — click it to reveal hidden Bots dimmed in place, then right-click → **Unhide Bot** to bring one back. Hidden Bots never toast, but they accumulate unread activity silently and the eye badges a dot so you know something happened. Hidden state is saved in the Bot's profile metadata, so it follows the Bot to every desktop connected to that backend.
 
 :::note The canonical Bot Chat is a forever-chat
 Typing `/new` (or `/reset`) inside a Bot's canonical chat would fork the relationship into a scratch session — the one thing Bot Mode promises never happens. The composer reroutes it to `/compact` instead: fresh working context, same conversation. Regular sessions on the same profile keep full `/new` freedom.
@@ -68,7 +69,7 @@ A Bot's look, title, and description are stored in the profile's metadata on the
 
 ## Routines
 
-The **Routines** pane attaches recurring tasks to the Bot that does them — "summarize my inbox every morning" lives next to the Bot responsible for it. A structured schedule picker builds the schedule (frequency first, then only the detail that matters), with an Advanced field exposing the raw Hermes schedule string.
+The **Routines** pane attaches recurring tasks to the Bot that does them — "summarize my inbox every morning" lives next to the Bot responsible for it. The pane docks beside the chat only while the Bots tab is active and steps aside when you switch back to Sessions (older desktop builds keep it always visible). A structured schedule picker builds the schedule (frequency first, then only the detail that matters), with an Advanced field exposing the raw Hermes schedule string.
 
 Routines are plain [Hermes cron jobs](./features/cron.md) namespaced `[bot:<name>] <routine>` — they also show up in `hermes cron list` and the core Cron page. Runs land in the Bot's own chat history, so the result is right where you would talk to that Bot anyway.
 

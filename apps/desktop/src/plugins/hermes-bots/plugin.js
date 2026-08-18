@@ -132,6 +132,12 @@ function trackInboundActivity(roster) {
 
     $botUnread.set({ ...$botUnread.get(), [bot.name]: true })
 
+    // Roster-hidden bots stay quiet: the unread flag above accumulates
+    // silently (unhiding reveals the badge) but a hidden bot never toasts.
+    if ($botMeta.get()[bot.name]?.hidden) {
+      continue
+    }
+
     // Toasts are opt-in: the unread badge is always set above, but the
     // per-message notification fires only when the user enabled it.
     if ($activityToasts.get()) {
@@ -267,6 +273,51 @@ async function saveBotMeta(name, patch) {
   }
 
   return { serverPersisted: serverOutcome === 'persisted', serverOutcome }
+}
+
+// ── hidden bots (right-click → Hide Bot) ────────────────────────────────────
+// Hiding is a ROSTER-DISPLAY concern only: a hidden bot keeps working —
+// @mentions still resolve, group-chat membership is untouched, its name
+// still counts as taken, and an open chat stays open. The flag lives in bot
+// meta (`hidden: true`), so it rides the same local-storage + server
+// ui_meta pipeline as pins/titles and follows the profile across machines.
+// Unhide writes `hidden: false` (never null): a null key survives the local
+// `{ ...prev, ...patch }` merge while the server DELETES None keys, and
+// that asymmetry lets mergeServerMeta resurrect a stale truthy copy. A
+// literal false round-trips identically through both stores.
+
+/** Session-only view toggle: reveal hidden bots (dimmed) in the roster. */
+const $showHiddenBots = atom(false)
+
+/** Hidden flag for a roster row. Thin remote-source rows never read local
+ *  meta (botRosterMeta returns null for them), so hide is by NAME on the
+ *  active source; remote rows of the same name stay visible. */
+function isBotHidden(bot, metaByName) {
+  return Boolean(botRosterMeta(bot, metaByName)?.hidden)
+}
+
+/** Hiding the selected bot re-homes the selection (the Routines pane
+ *  follows it): first visible bot wins, then 'default' — unless default is
+ *  itself hidden with nothing else visible, in which case the selection
+ *  stays put rather than pointing somewhere even less real. */
+function fallbackSelectionAfterHide(name) {
+  if ($selectedBot.get() !== name) {
+    return
+  }
+
+  const meta = $botMeta.get()
+  const visible = $lastRoster
+    .get()
+    .filter(bot => !bot.remoteSource && bot.name !== name && !meta[bot.name]?.hidden)
+
+  if (visible.length) {
+    $selectedBot.set(visible[0].name)
+    return
+  }
+
+  if (name !== 'default' && !meta.default?.hidden) {
+    $selectedBot.set('default')
+  }
 }
 
 /** One-time reconciliation: Bot Mode sessions are always hidden, but rooms
@@ -4026,7 +4077,10 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     className: cn(
       'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
       'hover:bg-(--chrome-action-hover)',
-      isActive && 'bg-(--chrome-action-hover)'
+      isActive && 'bg-(--chrome-action-hover)',
+      // Hidden bots only render while the header eye toggle is on — dimmed,
+      // so the temporary reveal reads as a different state from the roster.
+      meta?.hidden && 'opacity-60'
     ),
     children: [
       jsx('div', {
@@ -4047,6 +4101,13 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
                         className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
                         title: 'Pinned',
                         children: '📌'
+                      })
+                    : null,
+                  meta?.hidden
+                    ? jsx(Codicon, {
+                        name: 'eye-closed',
+                        className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
+                        title: 'Hidden from the roster'
                       })
                     : null,
                   jsx('span', {
@@ -4136,6 +4197,26 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
               })
             },
             children: meta?.pinned ? 'Unpin' : 'Pin to top'
+          }),
+          jsx(ContextMenuItem, {
+            onSelect: () => {
+              const hidden = Boolean($botMeta.get()[bot.name]?.hidden)
+              // `hidden: false` (not null) so unhide round-trips through the
+              // server ui_meta merge the same way the local merge sees it.
+              saveBotMeta(bot.name, { hidden: !hidden })
+
+              if (!hidden) {
+                fallbackSelectionAfterHide(bot.name)
+              }
+
+              host.notify({
+                kind: 'info',
+                message: hidden
+                  ? `${displayName(bot, meta)} is back in the roster`
+                  : `${displayName(bot, meta)} hidden — use the eye button in the Bots header to see hidden bots`
+              })
+            },
+            children: meta?.hidden ? 'Unhide Bot' : 'Hide Bot'
           }),
           jsx(ContextMenuSeparator, {}),
           jsx(ContextMenuItem, {
@@ -7738,7 +7819,16 @@ function BotsPane() {
     return activityOf(b) - activityOf(a)
   })
   const activeSourceRoster = roster.filter(bot => !bot.remoteSource)
-  const filteredRoster = filterBots(roster, allMeta, query)
+  // Hidden bots (right-click → Hide Bot) drop out of the roster list unless
+  // the header eye toggle reveals them. Display-only: every other consumer
+  // (mentions, group chats, name-collision checks, merge/avatar/activity
+  // sweeps) keeps the FULL roster.
+  const showHidden = useValue($showHiddenBots)
+  const unreadByName = useValue($botUnread)
+  const hiddenBots = roster.filter(bot => isBotHidden(bot, allMeta))
+  const hiddenUnread = hiddenBots.some(bot => !bot.remoteSource && unreadByName[bot.name])
+  const visibleRoster = showHidden ? roster : roster.filter(bot => !isBotHidden(bot, allMeta))
+  const filteredRoster = filterBots(visibleRoster, allMeta, query)
   // Group chats are first-class roster rows (Discord-style): one standalone
   // row per room, competing in the SAME recency ordering as bot rows — a
   // group's activity is its newest room-log line. Pinned bots still lead;
@@ -7812,6 +7902,35 @@ function BotsPane() {
                   children: jsx(Codicon, { name: activityToasts ? 'bell' : 'bell-slash' })
                 })
               }),
+              // Eye toggle appears only once something is hidden — zero
+              // hidden bots means zero extra chrome. It stays visible while
+              // hidden rows are revealed, so Unhide is always reachable.
+              hiddenBots.length
+                ? jsx(Tip, {
+                    label: showHidden
+                      ? 'Hide hidden bots again'
+                      : `Show ${hiddenBots.length} hidden bot${hiddenBots.length === 1 ? '' : 's'}`,
+                    children: jsxs('button', {
+                      type: 'button',
+                      'aria-label': showHidden ? 'Hide hidden bots' : 'Show hidden bots',
+                      className: cn(
+                        'relative flex size-6 items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+                        showHidden ? 'text-foreground' : 'text-(--ui-text-tertiary)'
+                      ),
+                      onClick: () => $showHiddenBots.set(!showHidden),
+                      children: [
+                        jsx(Codicon, { name: showHidden ? 'eye' : 'eye-closed' }),
+                        hiddenUnread && !showHidden
+                          ? jsx('span', {
+                              className:
+                                'absolute right-0.5 top-0.5 size-1.5 rounded-full bg-(--ui-accent,#4f9cf9)',
+                              'aria-label': 'a hidden bot has unread activity'
+                            })
+                          : null
+                      ]
+                    })
+                  })
+                : null,
               jsxs(DropdownMenu, {
                 children: [
                   jsx(Tip, {
@@ -7848,7 +7967,7 @@ function BotsPane() {
         ]
       }),
       jsx(ActiveNowStrip, {
-        roster,
+        roster: visibleRoster,
         activeProfile,
         gatewayState,
         metaByName: allMeta,
@@ -7955,7 +8074,9 @@ function BotsPane() {
                   className:
                     'flex flex-1 items-center justify-center px-4 text-center text-xs text-(--ui-text-tertiary)',
                   role: 'status',
-                  children: `No bots match “${query.trim()}”`
+                  children: query.trim()
+                    ? `No bots match “${query.trim()}”`
+                    : 'All bots are hidden — use the eye button above to show them.'
                 })
               : jsx(ScrollArea, {
                   className: 'hermes-bots-roster min-h-0 flex-1',

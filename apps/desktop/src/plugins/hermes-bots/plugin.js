@@ -1929,20 +1929,35 @@ function pickImageFromDevice() {
   })
 }
 
-// ── group-chat attachments: pick + downscale images the room's members see ──
+// ── group-chat attachments: pick/paste/drop files the room's members see ────
 
-/** File objects → [{ name, data }] (data URLs), oversized files skipped with
- *  a toast. Shared by the picker button and the composer's paste handler. */
-async function filesToGroupImages(files) {
+/** Classify a picked file for the group-attachment pipeline. */
+function groupAttachmentKind(file) {
+  if (/^image\//.test(file.type || '')) {
+    return 'image'
+  }
+
+  if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')) {
+    return 'pdf'
+  }
+
+  return 'file'
+}
+
+/** File objects → [{ name, data, kind }] (data URLs), oversized files skipped
+ *  with a toast. Images are downscaled; PDFs and other files ride as raw data
+ *  URLs for the gateway's pdf.attach / file.attach staging. Shared by the
+ *  picker button, the composer paste handler, and room drag & drop. */
+async function filesToGroupAttachments(files) {
   const picked = []
 
   for (const file of [...(files || [])]) {
-    if (!file || !/^image\//.test(file.type || '')) {
+    if (!file) {
       continue
     }
 
     if (file.size > 15_000_000) {
-      host.notify({ kind: 'error', message: `${file.name || 'image'}: too large (max 15MB).` })
+      host.notify({ kind: 'error', message: `${file.name || 'attachment'}: too large (max 15MB).` })
       continue
     }
 
@@ -1953,23 +1968,29 @@ async function filesToGroupImages(files) {
       reader.readAsDataURL(file)
     })
 
-    if (data) {
-      picked.push({ name: file.name || 'pasted image', data: await normalizeGroupAttachment(data) })
+    if (!data) {
+      continue
     }
+
+    const kind = groupAttachmentKind(file)
+    picked.push({
+      name: file.name || (kind === 'image' ? 'pasted image' : 'attachment'),
+      data: kind === 'image' ? await normalizeGroupAttachment(data) : data,
+      kind
+    })
   }
 
   return picked
 }
 
-/** Multi-file variant of pickImageFromDevice for the group composer. Resolves
- *  to [{ name, data }] (data URLs); oversized files are skipped with a toast. */
-function pickGroupImages() {
+/** Multi-file picker for the group composer — any file type; kind decides
+ *  the staging RPC. Resolves to [{ name, data, kind }]. */
+function pickGroupAttachments() {
   return new Promise(resolve => {
     const input = document.createElement('input')
     input.type = 'file'
-    input.accept = 'image/png,image/jpeg,image/webp,image/gif'
     input.multiple = true
-    input.onchange = () => resolve(filesToGroupImages(input.files))
+    input.onchange = () => resolve(filesToGroupAttachments(input.files))
     input.click()
   })
 }
@@ -3675,10 +3696,15 @@ function groupSpeakerLabel(name) {
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
 function formatGroupChatLine(entry, viewerName) {
-  // Attachments are staged into each member's session as real images; the
-  // transcript line names them so the delta text and the pixels line up.
+  // Attachments are staged into each member's session as real payloads; the
+  // transcript line names them so the delta text and the bytes line up.
   const attached = Array.isArray(entry.images) && entry.images.length
-    ? ` ${entry.images.map(img => `[attached image: ${img.name || 'image'}]`).join(' ')}`
+    ? ` ${entry.images
+        .map(img => {
+          const label = img.kind === 'pdf' ? 'attached PDF' : img.kind === 'file' ? 'attached file' : 'attached image'
+          return `[${label}: ${img.name || 'image'}]`
+        })
+        .join(' ')}`
     : ''
 
   if (entry.from.kind === 'user') {
@@ -4045,28 +4071,55 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
   }
 
   // Stage this delta's attachments into the member's session so the model
-  // receives the actual pixels with the prompt (the same image.attach_bytes
-  // path the 1:1 chat uses — it also works cross-connection, where the
-  // member's gateway can't see this machine's files). A failed attach
-  // degrades that member to text-only; the transcript line still names the
-  // image so the member knows something was shared.
+  // receives the actual payload with the prompt — the same attach RPCs the
+  // 1:1 chat uses (they also work cross-connection, where the member's
+  // gateway can't see this machine's files). Images queue as vision tiles,
+  // PDFs render per-page via pdf.attach, and other files materialize in the
+  // session workspace (their @file: refs are appended to the prompt so the
+  // member's file tools can read them). A failed attach degrades that
+  // member to text-only; the transcript line still names the attachment so
+  // the member knows something was shared.
+  const fileRefs = []
+
   for (const img of Array.isArray(images) ? images : []) {
     if (!img || typeof img.data !== 'string' || !img.data) {
       continue
     }
 
     try {
-      await requestForBot(member, 'image.attach_bytes', {
-        session_id: runtime,
-        content_base64: img.data,
-        filename: img.name || 'attachment.png'
-      })
+      if (img.kind === 'pdf') {
+        await requestForBot(member, 'pdf.attach', {
+          session_id: runtime,
+          content_base64: img.data,
+          filename: img.name || 'attachment.pdf'
+        })
+      } else if (img.kind === 'file') {
+        const res = await requestForBot(member, 'file.attach', {
+          session_id: runtime,
+          data_url: img.data,
+          name: img.name || 'attachment'
+        })
+
+        if (res?.ref_text) {
+          fileRefs.push(`${img.name || 'attachment'} → ${res.ref_text}`)
+        }
+      } else {
+        await requestForBot(member, 'image.attach_bytes', {
+          session_id: runtime,
+          content_base64: img.data,
+          filename: img.name || 'attachment.png'
+        })
+      }
     } catch {
       /* text-only fallback for this member */
     }
   }
 
-  await requestForBot(member, 'prompt.submit', { session_id: runtime, text: prompt })
+  const turnText = fileRefs.length
+    ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
+    : prompt
+
+  await requestForBot(member, 'prompt.submit', { session_id: runtime, text: turnText })
 
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
@@ -8470,16 +8523,34 @@ function GroupChatWorkspace({ group, members, onBack }) {
     setPendingImages(prev => ({ ...prev, [key]: (prev[key] || []).filter((_, i) => i !== index) }))
   }
 
-  // Ctrl/⌘-V a screenshot into any composer in this room.
+  // Ctrl/⌘-V a screenshot (or any file) into any composer in this room.
   const pasteImages = (thread, event) => {
-    const files = [...(event.clipboardData?.files || [])].filter(f => /^image\//.test(f.type || ''))
+    const files = [...(event.clipboardData?.files || [])]
 
     if (!files.length) {
       return
     }
 
     event.preventDefault()
-    void filesToGroupImages(files).then(picked => addImages(thread, picked))
+    void filesToGroupAttachments(files).then(picked => addImages(thread, picked))
+  }
+
+  // Drag & drop anywhere on the room drops into the ACTIVE composer — the
+  // open reply box when one owns the composer, else the main (new-thread)
+  // composer. Matches the 1:1 chat's drop affordance.
+  const [dragOver, setDragOver] = useState(false)
+
+  const dropFiles = event => {
+    const files = [...(event.dataTransfer?.files || [])]
+
+    setDragOver(false)
+
+    if (!files.length) {
+      return
+    }
+
+    event.preventDefault()
+    void filesToGroupAttachments(files).then(picked => addImages(replyThread, picked))
   }
 
   const header = jsxs('div', {
@@ -8584,8 +8655,9 @@ function GroupChatWorkspace({ group, members, onBack }) {
     setOpenThreads(prev => ({ ...prev, [thread]: true }))
   }
 
-  /** Pending-attachment chips + the paperclip picker for one composer
-   *  (thread = null → main). Chips preview the image and X removes it. */
+  /** Pending-attachment chips + the picker for one composer (thread = null →
+   *  main). Image chips preview the pixels; PDFs/files show a type icon.
+   *  X removes it. */
   const attachmentRow = thread => {
     const images = imagesFor(thread)
 
@@ -8600,7 +8672,12 @@ function GroupChatWorkspace({ group, members, onBack }) {
           className:
             'flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary,#181818) px-1 py-0.5',
           children: [
-            jsx('img', { src: img.data, alt: '', className: 'size-6 rounded object-cover' }),
+            img.kind === 'pdf' || img.kind === 'file'
+              ? jsx(Codicon, {
+                  name: img.kind === 'pdf' ? 'file-pdf' : 'file',
+                  className: 'text-[0.9rem] text-(--ui-text-tertiary)'
+                })
+              : jsx('img', { src: img.data, alt: '', className: 'size-6 rounded object-cover' }),
             jsx('span', {
               className: 'max-w-32 truncate text-[0.65rem] text-(--ui-text-tertiary)',
               children: img.name || 'image'
@@ -8624,9 +8701,9 @@ function GroupChatWorkspace({ group, members, onBack }) {
       variant: 'ghost',
       size: 'sm',
       className: 'shrink-0 text-(--ui-text-tertiary) hover:text-foreground',
-      title: 'Attach images — every responding bot sees them',
-      onClick: () => void pickGroupImages().then(picked => addImages(thread, picked)),
-      children: jsx(Codicon, { name: 'device-camera' })
+      title: 'Attach files — every responding bot sees them',
+      onClick: () => void pickGroupAttachments().then(picked => addImages(thread, picked)),
+      children: jsx(Codicon, { name: 'attach' })
     })
 
   // One log entry, rendered exactly as before conversation folding existed.
@@ -8727,18 +8804,30 @@ function GroupChatWorkspace({ group, members, onBack }) {
                             'data-selectable-text': 'true',
                             children: Streamdown ? jsx(Streamdown, { children: entry.text }) : entry.text
                           }),
-                          // User attachments: the images every responding bot was shown.
+                          // User attachments: what every responding bot was
+                          // shown — image previews, or a named chip for
+                          // PDFs/files.
                           Array.isArray(entry.images) && entry.images.length
                             ? jsx('div', {
-                                className: 'mt-1 flex flex-wrap gap-1.5',
+                                className: 'mt-1 flex flex-wrap items-center gap-1.5',
                                 children: entry.images.map((img, imgIndex) =>
-                                  jsx('img', {
-                                    src: img.data,
-                                    alt: img.name || 'attached image',
-                                    title: img.name || 'attached image',
-                                    className:
-                                      'max-h-40 max-w-60 rounded-md border border-(--ui-stroke-secondary) object-contain'
-                                  }, `${entryKey}:img:${imgIndex}`)
+                                  img.kind === 'pdf' || img.kind === 'file'
+                                    ? jsxs('div', {
+                                        className:
+                                          'flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)',
+                                        title: img.name || 'attached file',
+                                        children: [
+                                          jsx(Codicon, { name: img.kind === 'pdf' ? 'file-pdf' : 'file', className: 'text-[0.8rem]' }),
+                                          jsx('span', { className: 'max-w-48 truncate', children: img.name || 'attached file' })
+                                        ]
+                                      }, `${entryKey}:img:${imgIndex}`)
+                                    : jsx('img', {
+                                        src: img.data,
+                                        alt: img.name || 'attached image',
+                                        title: img.name || 'attached image',
+                                        className:
+                                          'max-h-40 max-w-60 rounded-md border border-(--ui-stroke-secondary) object-contain'
+                                      }, `${entryKey}:img:${imgIndex}`)
                                 )
                               })
                             : null
@@ -8880,8 +8969,29 @@ function GroupChatWorkspace({ group, members, onBack }) {
   })
 
   return jsxs('div', {
-    className: 'flex h-full flex-col',
+    className: 'relative flex h-full flex-col',
+    onDragOver: event => {
+      if ([...(event.dataTransfer?.types || [])].includes('Files')) {
+        event.preventDefault()
+        setDragOver(true)
+      }
+    },
+    onDragLeave: event => {
+      // Only clear when leaving the room container itself, not when the
+      // cursor moves between its children.
+      if (!event.currentTarget.contains(event.relatedTarget)) {
+        setDragOver(false)
+      }
+    },
+    onDrop: dropFiles,
     children: [
+      dragOver
+        ? jsx('div', {
+            className:
+              'pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-2 border-dashed border-(--ui-accent,#4f9cf9) text-sm font-medium text-(--ui-accent,#4f9cf9)',
+            children: replyThread ? 'Drop to attach to this thread reply' : 'Drop to attach — every responding bot sees it'
+          }, 'dropzone')
+        : null,
       header,
       jsx(ScrollArea, {
         className: 'min-h-0 flex-1',

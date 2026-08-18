@@ -351,6 +351,14 @@ async function readLockfile(ssh, ownershipId) {
     }
   }
 
+  // Optional (records written before the version gate lack it); when present
+  // it must look like the other string fields. Absence reads as "unknown
+  // version", which the reuse gate treats as a mismatch — a one-time respawn,
+  // not a rejected record (rejecting would skip cleanupStale and leak the pid).
+  if (parsed.hermesVersion !== undefined && (typeof parsed.hermesVersion !== 'string' || parsed.hermesVersion.length > 1024)) {
+    return null
+  }
+
   return parsed
 }
 
@@ -743,9 +751,26 @@ async function connect(deps) {
     const pidAlive = await remotePidAlive(ssh, lock.pid)
     const owned = pidAlive && (await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))
 
+    // A dashboard spawned before a `hermes update` keeps running the OLD code
+    // even though the on-disk install moved on — reusing it strands the app on
+    // a pre-update backend until a manual kill. Reuse only when the version
+    // recorded at spawn matches what the disk serves now. An empty probe
+    // (transient exec flake) skips the comparison rather than forcing a
+    // respawn loop; a record without the field predates this check and gets
+    // one migration respawn.
+    const versionCurrent = !hermesVersion || lock.hermesVersion === hermesVersion
+
+    if (pidAlive && owned && !versionCurrent) {
+      log(
+        `remote dashboard pid=${lock.pid} was spawned from ${lock.hermesVersion || 'an unknown version'} ` +
+          `but the install now serves ${hermesVersion}; respawning`
+      )
+    }
+
     const reusable =
       pidAlive &&
       owned &&
+      versionCurrent &&
       lock.port > 0 &&
       lock.profile === profile &&
       Boolean(reuseToken) &&
@@ -837,6 +862,7 @@ async function connect(deps) {
     profile,
     hermesPath,
     hermesHome,
+    hermesVersion,
     logPath,
     tokenFingerprint: fingerprintToken(spawnToken),
     protocolVersion: PROTOCOL_VERSION,

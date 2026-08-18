@@ -599,6 +599,105 @@ test('connect() respawns when the lockfile hermesPath differs from the resolved 
   )
 })
 
+test('connect() reuses a dashboard whose recorded version matches the on-disk install', async () => {
+  const reuseToken = 'stored-token'
+  const version = 'Hermes Agent v0.20.4 (2026.8.18)'
+  const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken), hermesVersion: version })
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/--version/, `${version}\n`],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/kill -0/, 'ALIVE'],
+    [/print\("OWNED"/, 'OWNED\n']
+  ])
+
+  const result = await connect(connectDeps(ssh, { reuseToken, adoptServedToken: async (_b, t) => t }))
+  assert.equal(result.reused, true)
+  assert.ok(!ssh.calls.some(c => /setsid/.test(c)))
+})
+
+test('connect() respawns when the install was updated after the dashboard spawned', async () => {
+  // A `hermes update` on the box leaves the running dashboard on the OLD code;
+  // reusing it strands the app on a pre-update backend until a manual kill.
+  const reuseToken = 'stored-token'
+
+  const lock = ownedLock({
+    tokenFingerprint: fingerprintToken(reuseToken),
+    hermesVersion: 'Hermes Agent v0.20.2 (2026.8.15)'
+  })
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/--version/, 'Hermes Agent v0.20.4 (2026.8.18)\n'],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/kill -0 333/, 'ALIVE'],
+    [/print\("OWNED"/, 'OWNED\n'],
+    [/kill 333/, ''],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/setsid/, '890\n'],
+    [/kill -0 890/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=52050\n']
+  ])
+
+  const result = await connect(connectDeps(ssh, { reuseToken, adoptServedToken: async () => 'fresh' }))
+
+  assert.equal(result.reused, false, 'a pre-update dashboard must be replaced, not reused')
+  assert.equal(result.pid, 890)
+  assert.ok(
+    ssh.calls.some(c => /kill 333 && /.test(c)),
+    'the outdated dashboard must be terminated'
+  )
+})
+
+test('connect() still reuses when the version probe fails (no respawn loop on a flaky exec)', async () => {
+  const reuseToken = 'stored-token'
+
+  const lock = ownedLock({
+    tokenFingerprint: fingerprintToken(reuseToken),
+    hermesVersion: 'Hermes Agent v0.20.2 (2026.8.15)'
+  })
+
+  // No --version rule: the probe returns '' — an unknown DISK version must not
+  // condemn a healthy dashboard.
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/kill -0/, 'ALIVE'],
+    [/print\("OWNED"/, 'OWNED\n']
+  ])
+
+  const result = await connect(connectDeps(ssh, { reuseToken, adoptServedToken: async (_b, t) => t }))
+  assert.equal(result.reused, true)
+})
+
+test('connect() respawns once for a pre-version-gate lockfile (missing hermesVersion)', async () => {
+  const reuseToken = 'stored-token'
+  const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/--version/, 'Hermes Agent v0.20.4 (2026.8.18)\n'],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/kill -0 333/, 'ALIVE'],
+    [/print\("OWNED"/, 'OWNED\n'],
+    [/kill 333/, ''],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/setsid/, '890\n'],
+    [/kill -0 890/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=52050\n']
+  ])
+
+  const result = await connect(connectDeps(ssh, { reuseToken, adoptServedToken: async () => 'fresh' }))
+  assert.equal(result.reused, false, 'an unknown RUNNING version cannot be proven current — migrate via respawn')
+})
+
 test('connect() respawns when the lockfile protocolVersion is incompatible', async () => {
   const reuseToken = 'stored-token'
 

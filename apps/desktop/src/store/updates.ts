@@ -329,9 +329,23 @@ export function applyRemoteUpdates(): Promise<DesktopUpdateApplyResult> {
   return remoteUpdateChain
 }
 
+/** Reconnect the shell to its (remote) backend. After a backend update, the
+ *  running pre-update process only gets replaced by a fresh spawn on the next
+ *  connect — without this the app keeps riding old backend code (and its old
+ *  contract) until the user happens to relaunch. */
+async function reconnectBackend(): Promise<void> {
+  try {
+    await window.hermesDesktop?.resetBootstrap?.()
+    window.location.reload()
+  } catch {
+    // Best-effort: worst case the user relaunches manually.
+  }
+}
+
 async function runRemoteUpdateChain(): Promise<DesktopUpdateApplyResult> {
   const backend = $backendUpdateStatus.get() ?? (await checkBackendUpdates())
   let result: DesktopUpdateApplyResult = { ok: true }
+  let backendApplied = false
 
   if (statusHasUpdate(backend)) {
     $updateOverlayTarget.set('backend')
@@ -341,15 +355,42 @@ async function runRemoteUpdateChain(): Promise<DesktopUpdateApplyResult> {
     if (!result.ok) {
       return result
     }
+
+    backendApplied = true
   }
 
-  const client = $updateStatus.get() ?? (await checkUpdates())
-  const clientReady = !!client && client.supported !== false && !client.error && (client.behind ?? 0) > 0
+  // Always re-check rather than trusting the polled cache: a focus/interval
+  // check that ran during a transient outage caches {error:'check-failed'},
+  // and deciding "nothing local to install" from that silently strands the
+  // client on an old build (the exact backend-updated/app-not failure mode
+  // this chain exists to prevent).
+  const client = (await checkUpdates()) ?? $updateStatus.get()
 
-  if (!clientReady || $updateApply.get().applying) {
+  if (client?.error) {
+    // Surface a retryable error instead of silently closing the overlay.
+    $updateOverlayTarget.set('client')
+    $updateOverlayOpen.set(true)
+    $updateApply.set({
+      ...IDLE,
+      applying: false,
+      stage: 'error',
+      error: client.error,
+      message: client.message ?? translateNow('updates.errorBody')
+    })
+
+    return { ok: false, error: client.error, message: client.message }
+  }
+
+  // statusHasUpdate also accepts behind:null + updateAvailable ("update
+  // available, count unknown") — the old `behind > 0` gate skipped it.
+  if (!statusHasUpdate(client) || $updateApply.get().applying) {
     // Nothing local to install — land where a backend-only success would have.
     setUpdateOverlayOpen(false)
     resetUpdateApplyState()
+
+    if (backendApplied) {
+      await reconnectBackend()
+    }
 
     return result
   }

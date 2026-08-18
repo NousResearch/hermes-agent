@@ -981,6 +981,8 @@ describe('applyBackendUpdate recovery', () => {
 describe('applyRemoteUpdates chain', () => {
   const applyClientMock = vi.fn()
   const checkClientMock = vi.fn()
+  const resetBootstrapMock = vi.fn()
+  const reloadMock = vi.fn()
 
   const backendCurrent = {
     behind: 0,
@@ -998,7 +1000,9 @@ describe('applyRemoteUpdates chain', () => {
     notifySpy.mockClear()
     dismissSpy.mockClear()
     applyClientMock.mockReset().mockResolvedValue({ ok: true, handedOff: true })
-    checkClientMock.mockReset().mockResolvedValue(status({ behind: 0 }))
+    checkClientMock.mockReset().mockResolvedValue(status({ behind: 0, updateAvailable: false }))
+    resetBootstrapMock.mockReset().mockResolvedValue({ ok: true })
+    reloadMock.mockReset()
     updateHermesSpy.mockReset().mockResolvedValue({ ok: true, name: 'hermes-update', pid: 1 })
     getActionStatusSpy.mockReset().mockResolvedValue({ exit_code: 0, lines: [], name: 'hermes-update', pid: 1, running: false })
     checkHermesUpdateSpy.mockReset().mockResolvedValue(backendCurrent)
@@ -1008,7 +1012,11 @@ describe('applyRemoteUpdates chain', () => {
     $updateOverlayOpen.set(false)
     setRemote(true)
     ;(globalThis as unknown as { window: unknown }).window = {
-      hermesDesktop: { updates: { apply: applyClientMock, check: checkClientMock } }
+      hermesDesktop: {
+        resetBootstrap: resetBootstrapMock,
+        updates: { apply: applyClientMock, check: checkClientMock }
+      },
+      location: { reload: reloadMock }
     }
     vi.useRealTimers()
   })
@@ -1020,7 +1028,7 @@ describe('applyRemoteUpdates chain', () => {
 
   it('updates the backend, then chains the local client update', async () => {
     $backendUpdateStatus.set(status({ behind: 2 }))
-    $updateStatus.set(status({ behind: 1 }))
+    checkClientMock.mockResolvedValue(status({ behind: 1 }))
 
     const result = await applyRemoteUpdates()
 
@@ -1035,7 +1043,6 @@ describe('applyRemoteUpdates chain', () => {
 
   it('closes the overlay after a backend-only success when the client is already current', async () => {
     $backendUpdateStatus.set(status({ behind: 2 }))
-    $updateStatus.set(status({ behind: 0, updateAvailable: false }))
 
     const result = await applyRemoteUpdates()
 
@@ -1044,11 +1051,15 @@ describe('applyRemoteUpdates chain', () => {
     expect(result.ok).toBe(true)
     expect($updateOverlayOpen.get()).toBe(false)
     expect($backendUpdateApply.get().stage).toBe('idle')
+    // The freshly updated backend only takes over on a reconnect; without one
+    // the shell keeps riding the pre-update process until a manual relaunch.
+    expect(resetBootstrapMock).toHaveBeenCalledTimes(1)
+    expect(reloadMock).toHaveBeenCalledTimes(1)
   }, 10000)
 
   it('skips the backend phase and updates only the client when the backend is current', async () => {
     $backendUpdateStatus.set(status({ behind: 0, updateAvailable: false }))
-    $updateStatus.set(status({ behind: 3 }))
+    checkClientMock.mockResolvedValue(status({ behind: 3 }))
 
     const result = await applyRemoteUpdates()
 
@@ -1056,7 +1067,51 @@ describe('applyRemoteUpdates chain', () => {
     expect(applyClientMock).toHaveBeenCalledTimes(1)
     expect($updateOverlayTarget.get()).toBe('client')
     expect(result.ok).toBe(true)
+    // No backend update applied — no reason to bounce the connection.
+    expect(resetBootstrapMock).not.toHaveBeenCalled()
   })
+
+  it('re-checks the client instead of trusting a stale errored cache', async () => {
+    // A focus/interval check that ran during a transient network outage caches
+    // {error:'check-failed'}; deciding "nothing local to install" from it
+    // silently stranded the app on an old build while the backend moved on.
+    $backendUpdateStatus.set(status({ behind: 2 }))
+    $updateStatus.set(status({ error: 'check-failed', behind: undefined }))
+    checkClientMock.mockResolvedValue(status({ behind: 5 }))
+
+    const result = await applyRemoteUpdates()
+
+    expect(checkClientMock).toHaveBeenCalled()
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+    expect($updateOverlayTarget.get()).toBe('client')
+    expect(result.ok).toBe(true)
+  }, 10000)
+
+  it('surfaces a failed client check instead of silently closing the overlay', async () => {
+    $backendUpdateStatus.set(status({ behind: 2 }))
+    checkClientMock.mockResolvedValue(status({ error: 'fetch-failed', message: 'git fetch failed.', behind: undefined }))
+
+    const result = await applyRemoteUpdates()
+
+    expect(result.ok).toBe(false)
+    expect(applyClientMock).not.toHaveBeenCalled()
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect($updateOverlayTarget.get()).toBe('client')
+    expect($updateApply.get().stage).toBe('error')
+    expect($updateApply.get().message).toBe('git fetch failed.')
+  }, 10000)
+
+  it('installs a client update whose exact behind-count is unknown', async () => {
+    // behind:null + updateAvailable is the honest "update available, count
+    // unknown" state; the old `behind > 0` gate skipped it.
+    $backendUpdateStatus.set(status({ behind: 0, updateAvailable: false }))
+    checkClientMock.mockResolvedValue(status({ behind: null as unknown as number, updateAvailable: true }))
+
+    const result = await applyRemoteUpdates()
+
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+    expect(result.ok).toBe(true)
+  }, 10000)
 
   it('stops with the error view up on a genuine backend failure, never touching the client', async () => {
     $backendUpdateStatus.set(status({ behind: 2 }))

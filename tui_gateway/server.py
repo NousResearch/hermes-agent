@@ -4926,6 +4926,16 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     home_token = (
         set_hermes_home_override(profile_home) if profile_home else None
     )
+    # Bind the session context too. This function runs on the RPC dispatcher
+    # thread (model.switch, config.set model). On that thread the _SESSION_CWD
+    # contextvar is not set, so resolve_agent_cwd() falls back to the process
+    # TERMINAL_CWD, which the desktop pins to the home directory. The rebuilt
+    # prompt then records the wrong working directory and persists it. Later
+    # turns restore the stored bytes without change, because the turn
+    # prologue rebuilds only when _cached_system_prompt is None.
+    session_tokens = _set_session_context(
+        session_key, cwd=_session_cwd(session)
+    )
     try:
         prompt = agent._build_system_prompt(None)
         agent._cached_system_prompt = prompt
@@ -4937,6 +4947,7 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
             exc_info=True,
         )
     finally:
+        _clear_session_context(session_tokens)
         if home_token is not None:
             reset_hermes_home_override(home_token)
 

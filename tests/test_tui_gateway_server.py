@@ -20938,6 +20938,70 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
     assert get_hermes_home_override() is None
 
 
+def test_persist_live_session_system_prompt_binds_session_cwd(monkeypatch, tmp_path):
+    """The prompt rebuild after a live model switch must record the SESSION's
+    working directory, not the process TERMINAL_CWD.
+
+    The function runs on the RPC dispatcher thread (model.switch, config.set
+    model). On that thread the _SESSION_CWD contextvar is not set, so
+    resolve_agent_cwd() falls back to TERMINAL_CWD, which the desktop pins
+    to the home directory. The wrong cwd line then persists into the stored
+    prompt. Later turns restore the stored bytes without change (the
+    prologue rebuilds only when _cached_system_prompt is None), so the
+    poisoned line never self-heals.
+    """
+    session_cwd = tmp_path / "project"
+    session_cwd.mkdir()
+    process_cwd = tmp_path / "home-fallback"
+    process_cwd.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", str(process_cwd))
+
+    persisted = {}
+
+    class FakeAgent:
+        model = "test-model"
+        provider = "test"
+        session_id = "cwd-test-session"
+        _cached_system_prompt = None
+        _session_db = None
+
+        def _build_system_prompt(self, system_message=None):
+            # The real builder embeds resolve_agent_cwd() via
+            # prompt_builder.build_environment_hints().
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            return f"Current working directory: {resolve_agent_cwd()}"
+
+    class FakeDB:
+        def update_system_prompt(self, session_id, prompt):
+            persisted["prompt"] = prompt
+
+    agent = FakeAgent()
+    agent._session_db = FakeDB()
+    session = {
+        "agent": agent,
+        "session_key": "cwd-test-session",
+        "cwd": str(session_cwd),
+        "explicit_cwd": True,
+        "profile_home": None,
+    }
+
+    # A bare thread has no _SESSION_CWD contextvar — the RPC dispatcher shape.
+    result = {}
+
+    def dispatcher_thread():
+        server._persist_live_session_system_prompt(session)
+        result["cached"] = agent._cached_system_prompt
+
+    t = threading.Thread(target=dispatcher_thread)
+    t.start()
+    t.join()
+
+    expected = f"Current working directory: {session_cwd}"
+    assert result["cached"] == expected, result["cached"]
+    assert persisted["prompt"] == expected, persisted["prompt"]
+
+
 def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     """An explicit Move-to-project must win for a RUNNING session: the stored
     row and the live runtime session re-anchor together, never a UI-vs-db

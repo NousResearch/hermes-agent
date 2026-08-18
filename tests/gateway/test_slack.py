@@ -452,7 +452,7 @@ class TestAppMentionHandler:
                 logging.WARNING,
                 __file__,
                 0,
-                "As you gave client as well, token will be unused.",
+                "As you gave `client` as well, `token` will be unused.",
                 (),
                 None,
             )

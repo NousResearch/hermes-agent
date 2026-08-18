@@ -72,7 +72,8 @@ class _SuppressBoltDuplicateTokenWarning(logging.Filter):
     """Drop only Bolt's false duplicate-token warning for a prebuilt client."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return "As you gave client as well, token will be unused." not in record.getMessage()
+        message = record.getMessage().replace("`", "")
+        return "As you gave client as well, token will be unused." not in message
 
 
 _bolt_logger = logging.getLogger(f"{__name__}.bolt")

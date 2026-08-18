@@ -5071,6 +5071,33 @@ def _rebuild_desktop_after_update(
     return True
 
 
+def _migrate_all_profiles() -> None:
+    """Run config migration for every named profile (best-effort).
+
+    ``hermes update`` runs with the default profile active, so named
+    profiles keep their stale config version and break when the desktop
+    app spawns ``hermes serve --profile <name>``.  This loop catches them
+    up.  Per-profile failures are surfaced as visible stderr warnings.
+    """
+    try:
+        from hermes_cli.main import _migrate_profile_config
+        from hermes_cli.profiles import list_profiles
+
+        all_profiles = list_profiles()
+        for p in all_profiles:
+            try:
+                _migrate_profile_config(p)
+            except Exception as pe:
+                print(
+                    f"  ⚠️  Config migration for profile '{p.name}' "
+                    f"failed: {pe}. Run `hermes --profile {p.name} "
+                    f"config migrate` manually.",
+                    file=sys.stderr,
+                )
+    except Exception:
+        pass  # profiles module not available or no profiles
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -6413,6 +6440,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("Skipped. Run 'hermes config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
+
+        # Migrate config for ALL profiles, not just the active one.
+        _migrate_all_profiles()
 
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled

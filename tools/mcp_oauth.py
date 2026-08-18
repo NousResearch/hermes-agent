@@ -224,11 +224,25 @@ _MAX_RESERVED_SOCKETS = 8
 
 
 def _park_reserved_socket(port: int, sock: socket.socket) -> None:
-    """Hold *sock* bound to *port* until ``_wait_for_callback`` adopts it."""
-    # Evict oldest reservations past the cap (dict preserves insertion order).
+    """Hold *sock* bound to *port* until ``_wait_for_callback`` adopts it.
+
+    Pinned CIMD sockets are never evicted: the published metadata document
+    only declares the pinned ports, so losing one mid-flow silently converts
+    a pinned reservation back into a stealable window — the exact race the
+    parking exists to prevent (#22161). The FIFO cap applies to ephemeral
+    reservations only; the pinned range is already bounded by ``_CIMD_PORTS``.
+    """
+    # Evict oldest ephemeral reservations past the cap (dict preserves
+    # insertion order).
     while len(_reserved_sockets) >= _MAX_RESERVED_SOCKETS:
-        stale_port, stale = next(iter(_reserved_sockets.items()))
-        _reserved_sockets.pop(stale_port, None)
+        stale_port = next(
+            (p for p in _reserved_sockets if p not in _CIMD_PORTS), None
+        )
+        if stale_port is None:
+            break  # only pinned sockets remain — never evict those
+        stale = _reserved_sockets.pop(stale_port, None)
+        if stale is None:
+            continue
         try:
             stale.close()
         except OSError:

@@ -213,6 +213,40 @@ def test_pinned_port_is_held_until_the_callback_adopts_it(
     thief.close()
 
 
+def test_pinned_socket_survives_the_ephemeral_eviction_cap(
+    tmp_path, monkeypatch, private_ports
+):
+    """The reservation FIFO cap must never close a parked pinned socket.
+
+    Ephemeral reservations churn through ``_reserve_callback_port`` on every
+    reconnect loop, and past the cap the oldest gets evicted. A pinned CIMD
+    socket parked in the same dict would be the oldest under heavy
+    concurrency — closing it converts the pinned flow back into a stealable
+    window, the exact race the pin exists to prevent (#22161).
+    """
+    import tools.mcp_oauth as mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = _maybe_use_cimd({}, HermesTokenStorage("srv"))
+    assert result is not None
+    pinned = result[1]
+
+    # Churn well past the cap; the pinned socket must stay parked and bound.
+    ephemeral = [mod._reserve_callback_port() for _ in range(mod._MAX_RESERVED_SOCKETS + 4)]
+    try:
+        assert pinned in mod._reserved_sockets
+        thief = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        with pytest.raises(OSError):
+            thief.bind(("127.0.0.1", pinned))
+        thief.close()
+    finally:
+        for port in ephemeral:
+            sock = mod._reserved_sockets.pop(port, None)
+            if sock is not None:
+                sock.close()
+
+
 def test_concurrent_servers_get_different_pinned_ports(
     tmp_path, monkeypatch, private_ports
 ):

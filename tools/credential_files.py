@@ -29,6 +29,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Skill service tokens that are read-denied to the agent (agent.file_safety) yet stay mountable:
+# the google-workspace skill's own sandboxed scripts are their intended consumer. Exact names
+# relative to HERMES_HOME; master stores (.env, auth.json, mcp-tokens/) must never appear here.
+_MOUNTABLE_SERVICE_TOKENS = frozenset({"google_token.json"})
+
 # Session-scoped registry; ContextVar prevents cross-session bleed in the gateway.
 _registered_files_var: ContextVar[dict[str, str]] = ContextVar("_registered_files")
 
@@ -63,6 +68,11 @@ def _contained_host_path(rel: str, hermes_home: Path, abs_msg: str, traversal_ms
     return host_path.resolve()
 
 
+def _is_mountable_service_token(resolved: Path, hermes_home: Path) -> bool:
+    """True when *resolved* is exactly a ``_MOUNTABLE_SERVICE_TOKENS`` file at the HERMES_HOME root."""
+    return any(resolved == (hermes_home / name).resolve() for name in _MOUNTABLE_SERVICE_TOKENS)
+
+
 def register_credential_file(relative_path: str, container_base: str = "/root/.hermes") -> bool:
     """Register a HERMES_HOME-relative credential file for mounting; True if it exists and was registered.
 
@@ -94,7 +104,7 @@ def register_credential_file(relative_path: str, container_base: str = "/root/.h
     except Exception:
         logger.exception("credential_files: refusing %r — read guard raised", relative_path)
         return False
-    if denied:
+    if denied and not _is_mountable_service_token(resolved, get_hermes_home()):
         logger.warning("credential_files: refused %r — it is a credential store the agent "
                        "is denied from reading; a skill may mount its own service token, "
                        "not the master key files", relative_path)

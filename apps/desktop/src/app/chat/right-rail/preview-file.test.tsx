@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { MarkdownPreview } from './preview-file'
 
 // Behavior tests for the .md file preview renderer: input markdown goes
-// through preprocessMarkdown -> Streamdown (+ KaTeX math plugin) and must
+// through normalizeFilePreviewMath -> Streamdown (+ KaTeX math plugin) and must
 // come out as real rendered elements, matching what the chat transcript
 // renderer produces. Guards the regression where the preview was a bare
 // Streamdown pass with no math plugin and no table/img/a components.

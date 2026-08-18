@@ -5508,58 +5508,105 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # If user is on a different branch than the update target, switch
-        # to the target. When the target is "main" this is the historical
-        # "always update against main" behavior; for any other target it's
-        # the same thing — get HEAD onto the requested branch first, then
-        # fast-forward.
-        #
         # Parked-branch guard (2026-08-17 live incident): the checkout can be
         # left parked on a stale feature branch by earlier tooling. Blindly
         # stash-switch-pull-switch-back "updates" main while the running code
-        # stays days behind, then prints "✓ Code updated!". A CLEAN parked
-        # branch always switches to the target (committed work is safe on
-        # the branch; unmerged commits get a loud "kept" notice) — this is
-        # what non-interactive callers (desktop update button, gateway
-        # /update, cron) rely on. Only a dirty tree / opt-out / git failure
-        # warns loudly, marks the code update SKIPPED, and stops before the
-        # post-update steps reinforce the stale tree.
+        # stays days behind, then prints "✓ Code updated!".
+        #
+        # What happens next is routed by what the branch carries (which is
+        # exactly what the guard measures) plus updates.parked_branch_strategy:
+        #
+        #   fully merged  -> a stale leftover with nothing to lose: switch
+        #                    back to the target.
+        #   unmerged: N   -> strategy "switch" (default): switch to the
+        #                    target anyway — committed work is safe on the
+        #                    branch (git checkout never discards commits) and
+        #                    a loud "kept" notice names the branch + count.
+        #                    Deterministic, so non-interactive callers
+        #                    (desktop update button, gateway /update, cron)
+        #                    always reach the target.
+        #                    strategy "update_in_place": a maintained custom
+        #                    branch (local patches on top of main) is updated
+        #                    IN PLACE from origin/<target> — the checkout
+        #                    never moves, local commits survive, the running
+        #                    code advances. --switch-branch overrides back to
+        #                    the switch path for one run.
+        #   anything else -> dirty / unverifiable / opted out: touch nothing,
+        #                    warn loudly, mark the code update SKIPPED, and
+        #                    stop before the post-update steps reinforce the
+        #                    stale tree.
         parked_branch_switched = False
-        if current_branch != branch:
-            if current_branch != "HEAD":
-                switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
-                    git_cmd, _m().PROJECT_ROOT, current_branch, branch
+        in_place_update = False
+        if current_branch != branch and current_branch != "HEAD":
+            switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
+                git_cmd, _m().PROJECT_ROOT, current_branch, branch
+            )
+            if not switch_safe:
+                _m()._print_parked_branch_skip_warning(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    current_branch,
+                    branch,
+                    switch_block_reason,
                 )
-                if not switch_safe:
-                    _m()._print_parked_branch_skip_warning(
-                        git_cmd,
-                        _m().PROJECT_ROOT,
-                        current_branch,
-                        branch,
-                        switch_block_reason,
+                print()
+                print(
+                    "⚠ Update finished — code update SKIPPED"
+                    f"{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}"
+                )
+                _m()._resume_windows_gateways_after_update(
+                    _windows_gateway_resume
+                )
+                sys.exit(1)
+            if switch_block_reason.startswith("unmerged:"):
+                _in_place_configured = False
+                try:
+                    from hermes_cli.config import load_config as _load_cfg
+
+                    _upd_cfg = (_load_cfg() or {}).get("updates", {})
+                    _in_place_configured = (
+                        isinstance(_upd_cfg, dict)
+                        and _upd_cfg.get("parked_branch_strategy", "switch")
+                        == "update_in_place"
                     )
-                    print()
+                except Exception as exc:
+                    logger.debug(
+                        "Could not read updates.parked_branch_strategy: %s", exc
+                    )
+                if _in_place_configured:
+                    # The merge source must exist upstream; --branch typos
+                    # previously surfaced through the checkout failing, which
+                    # does not run on this path.
+                    verify_ref = subprocess.run(
+                        git_cmd + ["rev-parse", "--verify", "--quiet", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if verify_ref.returncode != 0:
+                        print(f"✗ Branch '{branch}' does not exist locally or on origin.")
+                        sys.exit(1)
+                    in_place_update = True
                     print(
-                        "⚠ Update finished — code update SKIPPED"
-                        f"{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}"
+                        f"  ℹ On branch '{current_branch}' — updating it in place from "
+                        f"origin/{branch} (no branch switch; local commits preserved)."
                     )
-                    _m()._resume_windows_gateways_after_update(
-                        _windows_gateway_resume
-                    )
-                    sys.exit(1)
-                parked_branch_switched = True
-                if switch_block_reason.startswith("unmerged:"):
+                else:
+                    parked_branch_switched = True
                     _m()._print_parked_branch_kept_notice(
                         current_branch,
                         branch,
                         switch_block_reason.split(":", 1)[1],
                     )
-                else:
-                    print(
-                        f"  ⚠ Checkout was parked on '{current_branch}' "
-                        f"(fully merged) — switching back to {branch}..."
-                    )
             else:
+                parked_branch_switched = True
+                print(
+                    f"  ⚠ Checkout was parked on '{current_branch}' "
+                    f"(fully merged) — switching back to {branch}..."
+                )
+
+        if not in_place_update and current_branch != branch:
+            if current_branch == "HEAD":
                 print(
                     f"  ⚠ Currently on detached HEAD — switching to {branch} "
                     "for update..."
@@ -5584,7 +5631,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True, encoding="utf-8", errors="replace",
                 )
                 if track_result.returncode != 0:
-                    # Restore the user's prior branch + stash before bailing
+                    # Restore the user's prior stash before bailing
                     # so we don't leave them stranded in a weird state.
                     if auto_stash_ref is not None:
                         _m()._restore_stashed_changes(
@@ -5827,26 +5874,82 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True, encoding="utf-8", errors="replace",
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=_m().PROJECT_ROOT,
-                    capture_output=True,
-                    text=True, encoding="utf-8", errors="replace",
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                # ff-only failed — local and remote have diverged. Before
+                # assuming an upstream force-push, check WHY: a checkout on a
+                # custom branch (local commits on top of origin/<branch>) also
+                # cannot fast-forward, and `reset --hard` here would silently
+                # discard that work. Merge instead and stop cleanly on
+                # conflict — an update must never destroy local commits.
+                _cur_branch = (
+                    subprocess.run(
+                        git_cmd + ["branch", "--show-current"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    ).stdout
+                    or ""
+                ).strip()
+                if _cur_branch and _cur_branch != branch:
+                    import time as _time
+
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        f"  ⚠ Checkout is on custom branch '{_cur_branch}' — "
+                        f"merging origin/{branch} instead of resetting so local commits survive..."
                     )
-                    sys.exit(1)
+                    # Best-effort safety tag; recovery anchor if anything goes wrong.
+                    subprocess.run(
+                        git_cmd
+                        + ["tag", f"pre-update-{_time.strftime('%Y%m%d-%H%M%S')}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        check=False,
+                    )
+                    merge_result = subprocess.run(
+                        git_cmd + ["merge", "--no-edit", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if merge_result.returncode != 0:
+                        subprocess.run(
+                            git_cmd + ["merge", "--abort"],
+                            cwd=_m().PROJECT_ROOT,
+                            capture_output=True,
+                            check=False,
+                        )
+                        print(
+                            "✗ Merge conflict between local commits and upstream — "
+                            "update stopped, nothing was changed."
+                        )
+                        print(
+                            f"  Resolve manually: cd {_m().PROJECT_ROOT} && "
+                            f"git merge origin/{branch}"
+                        )
+                        print(
+                            "  Then re-run the update. Local work is untouched."
+                        )
+                        sys.exit(1)
+                else:
+                    # Same branch as the update target — a true upstream
+                    # force-push/rebase. Local changes are already stashed;
+                    # reset to match the remote exactly (original behaviour).
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
@@ -5953,13 +6056,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # branch guard above should make this unreachable, but if any path
         # leaves the checkout attached elsewhere, "✓ Code updated!" would be
         # a lie — refuse to claim success (2026-08-17 incident class).
+        #
+        # An IN-PLACE branch update is the one legitimate way to end on a
+        # non-target branch: origin/<target> was merged INTO the checked-out
+        # branch, so the running code *is* up to date and HEAD staying put is
+        # the whole point. Claiming failure there would make every update on a
+        # real working branch exit 1 after doing exactly the right thing.
         post_pull_branch = subprocess.run(
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=_m().PROJECT_ROOT,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
         ).stdout.strip()
-        if post_pull_branch and post_pull_branch not in {branch, "HEAD"}:
+        if (
+            not in_place_update
+            and post_pull_branch
+            and post_pull_branch not in {branch, "HEAD"}
+        ):
             print()
             print(
                 f"✗ Update pulled origin/{branch}, but the checkout is on "

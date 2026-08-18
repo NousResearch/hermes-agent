@@ -1652,7 +1652,13 @@ _page_bound_frame_ids: Dict[str, str] = {}
 def _record_daemon_url(session_key: str, url: str) -> None:
     """Record the daemon's authoritative current URL and clear any
     divergence mark — the two must move together so the eval fast-path gate
-    compares the supervisor against the page the daemon is actually on."""
+    compares the supervisor against the page the daemon is actually on.
+
+    Ordering note: the mark is cleared *before* the identity bind on
+    purpose. If the bind fails (no supervisor, or its page doesn't match),
+    it pops the frame binding, and a missing binding alone stands the fast
+    path down — so clearing first cannot re-enable a stale fast path.
+    Don't "fix" this into clear-after-bind."""
     _last_navigated_urls[session_key] = url
     _page_maybe_diverged.discard(session_key)
     _bind_supervisor_page_identity(session_key, url)
@@ -3946,9 +3952,10 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
 
     if result.get("success"):
         # Enter can submit a form and navigate (possibly into a new tab via
-        # target=_blank) — same trust problem as a click. Other keys type or
-        # move focus and keep the fast path available.
-        if key in ("Enter", "NumpadEnter"):
+        # target=_blank) — same trust problem as a click. Space activates a
+        # focused button/link in browsers, so it can navigate too. Other keys
+        # type or move focus and keep the fast path available.
+        if key in ("Enter", "NumpadEnter", "Space", " "):
             _page_maybe_diverged.add(effective_task_id)
         response = {
             "success": True,

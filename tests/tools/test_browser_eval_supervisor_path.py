@@ -426,6 +426,28 @@ class TestPageDivergenceAfterInteractions:
         assert out.get("method") != "cdp_supervisor"
         sup.evaluate_runtime.assert_not_called()
 
+    @pytest.mark.parametrize("space_key", ["Space", " "])
+    def test_press_space_then_eval_falls_through_to_subprocess(
+        self, monkeypatch, space_key
+    ):
+        """Space activates a focused button/link — it can navigate like Enter."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page(self.URL)
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
+        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+            "press": {"success": True},
+            "eval": {"success": True, "data": {"result": "POST-ACTIVATE-RESULT"}},
+        }))
+
+        assert json.loads(bt.browser_press(space_key))["success"] is True
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "POST-ACTIVATE-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
     def test_press_non_enter_keeps_fast_path(self, monkeypatch):
         """Typing/focus keys don't navigate — no reason to give up the fast path."""
         import tools.browser_tool as bt

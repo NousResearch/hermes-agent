@@ -118,9 +118,8 @@ function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
   }
 
   const profile = url.searchParams.get('profile')?.trim() || undefined
-  const connectionId = url.searchParams.get('connectionId')?.trim() || undefined
 
-  return { connectionId, filePath, mode, profile }
+  return { filePath, mode, profile }
 }
 
 export function isStreamableMediaPath(filePath: string): boolean {

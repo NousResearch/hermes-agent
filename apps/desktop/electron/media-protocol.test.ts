@@ -122,6 +122,24 @@ describe('createMediaProtocolHandler', () => {
     expect(headers.get('range')).toBe('bytes=0-1023')
   })
 
+  it('does not let legacy remote media select a registry connection', async () => {
+    const resolveRemoteConnection = vi.fn(async (_profile?: string, _connectionId?: string) => ({
+      authMode: 'token' as const,
+      baseUrl: 'https://gateway.test',
+      mode: 'remote' as const,
+      token: 'secret'
+    }))
+
+    const deps = dependencies({ resolveRemoteConnection })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?profile=reviewer&connectionId=mac-mini')
+    )
+
+    expect(response.status).toBe(206)
+    expect(resolveRemoteConnection).toHaveBeenCalledWith('reviewer')
+  })
+
   it('proxies plugin media through the scoped backend without placing its token in the URL', async () => {
     const resolveRemoteConnection = vi.fn(async (_profile?: string, _connectionId?: string) => ({
       authMode: 'token' as const,

@@ -50,6 +50,22 @@ function pluginMediaPathSuffix(path: string): string {
   return `/${segments.join('/')}`
 }
 
+function pluginMediaId(pluginId: string): string {
+  let decoded: string
+
+  try {
+    decoded = decodeURIComponent(pluginId)
+  } catch {
+    throw new Error(`pluginMediaUrl: invalid plugin id "${pluginId}"`)
+  }
+
+  if (!decoded || decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\')) {
+    throw new Error(`pluginMediaUrl: invalid plugin id "${pluginId}"`)
+  }
+
+  return encodeURIComponent(pluginId)
+}
+
 /** Build a seekable, authenticated media URL for a plugin-owned backend route.
  *  The custom protocol keeps gateway credentials out of the renderer and maps
  *  the URL back to `/api/plugins/<pluginId>` in Electron's main process. */
@@ -59,7 +75,7 @@ export function pluginMediaUrl(pluginId: string, path: string): null | string {
   }
 
   const suffix = pluginMediaPathSuffix(path)
-  const url = new URL(`hermes-media://plugin/${pluginId}${suffix}`)
+  const url = new URL(`hermes-media://plugin/${pluginMediaId(pluginId)}${suffix}`)
   const profile = getApiRequestProfile()
   const connectionId = getApiRequestConnection()
 

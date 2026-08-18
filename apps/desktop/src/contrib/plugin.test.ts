@@ -65,6 +65,20 @@ describe('createPluginContext.mediaUrl', () => {
       delete host.hermesDesktop
     }
   })
+
+  it('rejects a plugin id that could escape its namespace', () => {
+    const host = window as unknown as { hermesDesktop?: unknown }
+
+    host.hermesDesktop = {}
+
+    try {
+      const ctx = createPluginContext('../other-plugin')
+
+      expect(() => ctx.mediaUrl('/outputs/clip/stream')).toThrow('invalid plugin id')
+    } finally {
+      delete host.hermesDesktop
+    }
+  })
 })
 
 describe('createPluginContext.os', () => {

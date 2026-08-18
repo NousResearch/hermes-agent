@@ -241,6 +241,7 @@ import { selectPoolEvictions } from './pool-eviction'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
+import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
@@ -8968,6 +8969,61 @@ function activeSshTerminalTarget() {
   return null
 }
 
+// Loopback reach for the browser pane. Scoped to the SSH connection that
+// authorized it: a different host (or none) must never inherit live forwards
+// into somebody else's machine.
+const previewReach = new PreviewReachRegistry()
+let previewReachScope: null | string = null
+
+async function resetPreviewReach() {
+  previewReachScope = null
+  await previewReach.closeAll()
+}
+
+/**
+ * Rewrite a gateway-loopback URL into one this machine can actually load.
+ *
+ * Returns the URL unchanged when no rewrite is needed or possible — a local
+ * backend (the address is already true), a non-loopback host, or a url/cloud
+ * remote with no tunnel to borrow. Callers must not treat an unchanged URL as
+ * failure; the pane explains an unreachable one on its own.
+ */
+async function reachablePreviewUrl(rawUrl: string): Promise<string> {
+  const target = activeSshTerminalTarget()
+
+  if (!target || target === 'pending') {
+    // No SSH transport behind this gateway; nothing to forward through.
+    await resetPreviewReach()
+
+    return rawUrl
+  }
+
+  const { scope, ssh } = target as { scope: string; ssh: any }
+
+  if (previewReachScope !== scope) {
+    await resetPreviewReach()
+    previewReachScope = scope
+  }
+
+  try {
+    const rewritten = await previewReach.resolve(rawUrl, {
+      cancel: (localPort, remotePort) => ssh.cancelForward(localPort, remotePort),
+      forward: (localPort, remotePort, remoteHost) => ssh.forward(localPort, remotePort, remoteHost),
+      isCurrent: () => sshConnections.get(scope)?.ssh === ssh,
+      // pickLocalPort predates the typed surface here and infers `unknown`.
+      pickLocalPort: () => pickLocalPort() as Promise<number>
+    })
+
+    return rewritten || rawUrl
+  } catch (error: any) {
+    // A failed forward is a preview problem, not a session problem: log it and
+    // let the original URL through so the pane shows its own explanation.
+    sshRememberLog(`preview reach failed for ${rawUrl}: ${error?.message || error}`)
+
+    return rawUrl
+  }
+}
+
 function effectiveSshConfigFingerprint(sshConfig) {
   const ssh =
     process.platform === 'win32'
@@ -14124,6 +14180,10 @@ ipcMain.handle('hermes:stop-find-in-page', event => {
 
   stopFind(win.webContents)
 })
+
+// The renderer can't know whether a loopback URL is reachable — only main
+// knows which transport backs this gateway. Ask before loading one.
+ipcMain.handle('hermes:preview:reach', async (_event, url) => reachablePreviewUrl(String(url || '')))
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
   if (!(await openPreviewInBrowser(url))) {

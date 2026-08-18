@@ -1286,6 +1286,29 @@ _STOP_TIMEOUT_S = 30  # max seconds to wait for SERVICE_STOPPED
 _START_TIMEOUT_S = 60  # max seconds to wait for SERVICE_RUNNING
 
 
+def _is_service_registered_via_registry(service_name: str) -> bool:
+    """Probe SCM registration via the registry, without pywin32.
+
+    SCM persists every service under ``HKLM\SYSTEM\CurrentControlSet\Services``
+    at creation time, independent of the Python environment that created it.
+    When pywin32 is unavailable (e.g. a rebuilt venv, a different interpreter,
+    or a partial pywin32 install) this lets the SCM ownership check still see
+    a registered service instead of silently treating it as an unmanaged
+    install — which would otherwise allow a detached second gateway to spawn
+    alongside the SCM service (PR #50200 contract #3).
+    """
+    try:
+        import winreg
+    except ImportError:
+        return False
+    key_path = f"SYSTEM\CurrentControlSet\Services\\{service_name}"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path):
+            return True
+    except OSError:
+        return False
+
+
 def get_service_name() -> str:
     """Service name, scoped per profile."""
     from hermes_cli.gateway import _profile_suffix
@@ -1335,11 +1358,17 @@ def is_service_registered_for_hermes_home(hermes_home: str) -> bool:
 
     Lets the update pause/resume path ask "is THIS profile's gateway
     SCM-managed?" without depending on the active Hermes profile.
+
+    Falls back to a stdlib registry probe when pywin32 is unavailable so a
+    registered SCM service is never mistaken for an unmanaged install.
     """
     name = get_service_name_for_hermes_home(hermes_home)
     try:
         import win32service
+    except ImportError:
+        return _is_service_registered_via_registry(name)
 
+    try:
         scm = win32service.OpenSCManager(
             None, None, win32service.SC_MANAGER_CONNECT
         )
@@ -1463,10 +1492,17 @@ def start_service_for_hermes_home(hermes_home: str) -> bool:
 
 
 def is_service_registered() -> bool:
-    """Check if the Windows Service is registered with SCM."""
+    """Check if the Windows Service is registered with SCM.
+
+    Falls back to a stdlib registry probe when pywin32 is unavailable so a
+    registered SCM service is never mistaken for an unmanaged install.
+    """
     try:
         import win32service
+    except ImportError:
+        return _is_service_registered_via_registry(get_service_name())
 
+    try:
         scm = win32service.OpenSCManager(
             None, None, win32service.SC_MANAGER_CONNECT
         )
@@ -1717,7 +1753,8 @@ def stop_service() -> None:
     try:
         import win32service
     except ImportError:
-        stop()
+        print("⚠ pywin32 not available — cannot stop Windows Service")
+        print("  Install pywin32: pip install pywin32")
         return
 
     service_name = get_service_name()
@@ -1748,7 +1785,8 @@ def service_status() -> None:
     try:
         import win32service
     except ImportError:
-        status()
+        print("⚠ pywin32 not available — cannot query Windows Service status")
+        print("  Install pywin32: pip install pywin32")
         return
 
     service_name = get_service_name()

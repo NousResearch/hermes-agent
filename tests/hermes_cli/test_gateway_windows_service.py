@@ -1427,3 +1427,166 @@ class TestNoDetachedFallbackFromStartService:
         out = capsys.readouterr().out
         assert "Windows Service start failed" in out
         assert "sc start <service-name>" in out
+
+
+class TestScmProbeFallbackWithoutPywin32:
+    """SCM ownership probe must survive pywin32 unavailability (contract #3).
+
+    If pywin32 is missing, is_service_registered() / is_service_registered_for_hermes_home()
+    must still see a registered SCM service via the stdlib winreg probe;
+    otherwise `hermes gateway start` would spawn a detached second gateway
+    alongside a registered (or running) service. Also: start_service /
+    stop_service / service_status must NOT fall back to the detached
+    start()/stop()/status() paths when pywin32 is missing (recursion +
+    double-gateway hazard)."""
+
+    @staticmethod
+    def _make_winreg(key_exists: bool):
+        import types
+        fw = types.ModuleType("winreg")
+        fw.HKEY_LOCAL_MACHINE = 1
+
+        class _Key:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_open_key(root, path, *a, **k):
+            if key_exists and path.endswith("HermesGateway"):
+                return _Key()
+            raise FileNotFoundError(path)
+
+        fw.OpenKey = fake_open_key
+        return fw
+
+    @staticmethod
+    def _patch_pywin32_missing(monkeypatch, key_exists: bool):
+        """Force `import win32service` to fail and provide a fake winreg."""
+        import builtins, sys, types
+        real_import = builtins.__import__
+        fake_winreg = TestScmProbeFallbackWithoutPywin32._make_winreg(key_exists)
+
+        def fake_import(name, *a, **k):
+            if name == "win32service":
+                raise ImportError(name)
+            if name == "winreg":
+                return fake_winreg
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    def test_is_service_registered_true_via_registry_fallback(self, monkeypatch):
+        self._patch_pywin32_missing(monkeypatch, key_exists=True)
+        from hermes_cli import gateway_windows
+
+        assert gateway_windows.is_service_registered() is True
+
+    def test_is_service_registered_false_via_registry_fallback(self, monkeypatch):
+        self._patch_pywin32_missing(monkeypatch, key_exists=False)
+        from hermes_cli import gateway_windows
+
+        assert gateway_windows.is_service_registered() is False
+
+    def test_is_service_registered_for_home_true_via_registry_fallback(
+        self, monkeypatch
+    ):
+        from hermes_cli import gateway_windows
+
+        # The per-home probe derives a profile-specific service name; the
+        # registry fallback must see it too. Make the fake registry answer
+        # whatever name the probe asks for (key_exists semantics = any
+        # HermesGateway-prefixed key exists).
+        import builtins, types
+        real_import = builtins.__import__
+        fw = types.ModuleType("winreg")
+        fw.HKEY_LOCAL_MACHINE = 1
+
+        class _Key:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_open_key(root, path, *a, **k):
+            if "HermesGateway" in path:
+                return _Key()
+            raise FileNotFoundError(path)
+
+        fw.OpenKey = fake_open_key
+
+        def fake_import(name, *a, **k):
+            if name == "win32service":
+                raise ImportError(name)
+            if name == "winreg":
+                return fw
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        name = gateway_windows.get_service_name_for_hermes_home(
+            r"C:\Users\x\AppData\Local\hermes"
+        )
+        assert name.startswith("HermesGateway")
+        assert gateway_windows.is_service_registered_for_hermes_home(
+            r"C:\Users\x\AppData\Local\hermes"
+        ) is True
+
+    def test_start_service_registered_pywin32_missing_never_detached(
+        self, monkeypatch, capsys
+    ):
+        """start() with a registered service + missing pywin32 must route to
+        SCM start_service() and NEVER call _spawn_detached."""
+        from hermes_cli import gateway_windows
+
+        self._patch_pywin32_missing(monkeypatch, key_exists=True)
+
+        def boom(*a, **k):
+            raise AssertionError("_spawn_detached must not run when SCM owns the service")
+
+        monkeypatch.setattr(gateway_windows, "_spawn_detached", boom)
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "get_service_name", lambda: "HermesGateway")
+
+        gateway_windows.start()
+
+        out = capsys.readouterr().out
+        assert "cannot start Windows Service" in out
+
+    def test_stop_service_pywin32_missing_no_stop_fallback(
+        self, monkeypatch, capsys
+    ):
+        from hermes_cli import gateway_windows
+
+        self._patch_pywin32_missing(monkeypatch, key_exists=True)
+
+        def boom(*a, **k):
+            raise AssertionError("stop() must not be called from stop_service()")
+
+        monkeypatch.setattr(gateway_windows, "stop", boom)
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "get_service_name", lambda: "HermesGateway")
+
+        gateway_windows.stop_service()
+
+        out = capsys.readouterr().out
+        assert "cannot stop Windows Service" in out
+
+    def test_service_status_pywin32_missing_no_status_fallback(
+        self, monkeypatch, capsys
+    ):
+        from hermes_cli import gateway_windows
+
+        self._patch_pywin32_missing(monkeypatch, key_exists=True)
+
+        def boom(*a, **k):
+            raise AssertionError("status() must not be called from service_status()")
+
+        monkeypatch.setattr(gateway_windows, "status", boom)
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "get_service_name", lambda: "HermesGateway")
+
+        gateway_windows.service_status()
+
+        out = capsys.readouterr().out
+        assert "cannot query Windows Service status" in out

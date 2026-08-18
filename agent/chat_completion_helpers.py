@@ -1969,6 +1969,8 @@ def _update_fallback_context_compressor(agent) -> None:
 def _reresolve_fallback_reasoning_config(agent) -> None:
     """Per-model override > global reasoning_effort (YAML False = disabled); a config load
     failure keeps the current reasoning_config rather than killing the swap."""
+    if getattr(agent, "_reasoning_config_fixed", False) is True:
+        return
     try:
         # Re-resolve reasoning_config for the new fallback model (Closes #21256). Wrapped in try/except
         # because a config load failure must not kill the swap.

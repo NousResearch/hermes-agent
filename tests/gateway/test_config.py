@@ -127,6 +127,25 @@ class TestChannelOverride:
         assert ChannelOverride.from_dict(None).model is None
 
 
+    def test_reasoning_disabled_roundtrip_is_not_treated_as_missing(self):
+        restored = ChannelOverride.from_dict({"reasoning_effort": False})
+        assert restored.reasoning_effort is False
+        assert restored.to_dict()["reasoning_effort"] is False
+
+    def test_reasoning_uses_canonical_parser(self):
+        restored = ChannelOverride.from_dict({"reasoning_effort": " XHIGH "})
+        assert restored.reasoning_effort == "xhigh"
+
+    def test_invalid_reasoning_warns_and_inherits(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            restored = ChannelOverride.from_dict({"reasoning_effort": "turbo"})
+        assert restored.reasoning_effort is None
+        assert (
+            "Unknown reasoning_effort 'turbo'; ignoring channel override "
+            "and inheriting configured reasoning"
+        ) in caplog.text
+
+
 class TestPlatformConfigMalformedSections:
     def test_from_dict_ignores_malformed_nested_sections(self):
         restored = PlatformConfig.from_dict(

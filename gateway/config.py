@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from hermes_constants import parse_reasoning_effort
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
 from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
@@ -366,7 +367,23 @@ class ChannelOverride:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
-        return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
+        if not data:
+            return cls()
+        values = {f.name: data.get(f.name) for f in fields(cls)}
+        reasoning_effort = values.get("reasoning_effort")
+        if reasoning_effort is not None:
+            parsed = parse_reasoning_effort(reasoning_effort)
+            if parsed is None:
+                logger.warning(
+                    "Unknown reasoning_effort '%s'; ignoring channel override "
+                    "and inheriting configured reasoning",
+                    reasoning_effort,
+                )
+                reasoning_effort = None
+            else:
+                reasoning_effort = parsed["effort"] if parsed.get("enabled") else False
+            values["reasoning_effort"] = reasoning_effort
+        return cls(**values)
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token

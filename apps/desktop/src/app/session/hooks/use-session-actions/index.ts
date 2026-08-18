@@ -1038,6 +1038,41 @@ export function useSessionActions({
         let prefetchedStoredSessionId: string | null = null
         let prefetchedTranscriptMessages: ChatMessage[] | null = null
 
+        const publishPersistedMessages = (
+          persisted: { messages: SessionMessage[]; session_id?: string },
+          discardSettledCandidate = false
+        ): ChatMessage[] | null => {
+          if (!isCurrentResume()) {
+            return null
+          }
+
+          const currentMessages = $messages.get()
+
+          const previousMessages = discardSettledCandidate
+            ? preserveLocalPendingTurnMessages([], currentMessages)
+            : resumedSameSelectedSession
+              ? preserveLocalPendingTurnMessages(currentMessages, resumeStartMessages)
+              : currentMessages
+
+          // REST hydration is a newest-tail page. Preserve any older pages that
+          // were already backfilled before reconciling local pending state.
+          const graftedMessages = graftRefreshedTailOntoBackfill(toChatMessages(persisted.messages), previousMessages)
+          const reconciledMessages = reconcileAuthoritativeChatMessages(graftedMessages, previousMessages)
+
+          const messagesForView = chatMessageArraysEquivalent(currentMessages, reconciledMessages)
+            ? currentMessages
+            : reconciledMessages
+
+          if (messagesForView !== currentMessages) {
+            setMessages(messagesForView)
+          }
+
+          prefetchedTranscriptMessages = graftedMessages
+          localSnapshot = messagesForView
+
+          return messagesForView
+        }
+
         // REST transcript prefetch and the gateway resume RPC are independent
         // — run them concurrently so a big session's wall time is
         // max(prefetch, resume) instead of their sum. The prefetch paints the
@@ -1072,9 +1107,9 @@ export function useSessionActions({
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
 
-        // Keep both requests concurrent, but do not paint the REST result until
-        // the runtime resume has also settled. An eager prefetch paint followed
-        // by the runtime projection rebuilds large transcripts during resume.
+        // Keep both requests concurrent. A successful REST result can paint the
+        // persisted baseline before the runtime binding settles; final resume
+        // reconciliation below reuses that view unless it adds real projection.
         let prefetchedResult: { messages: SessionMessage[]; session_id?: string } | null = null
 
         try {
@@ -1085,45 +1120,85 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
+        if (!isCurrentResume()) {
+          return
+        }
+
+        if (prefetchedResult) {
+          publishPersistedMessages(prefetchedResult)
+          prefetchApplied = true
+          prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
+        }
+
         const resumed = await resumePromise
 
         if (!isCurrentResume()) {
           return
         }
 
-        if (prefetchedResult) {
-          const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-            : $messages.get()
-
-          // Tail page + previously backfilled prefix (same-session re-resume).
-          const graftedPrefetch = graftRefreshedTailOntoBackfill(
-            toChatMessages(prefetchedResult.messages),
-            previousMessages
-          )
-
-          prefetchedTranscriptMessages = graftedPrefetch
-          localSnapshot = reconcileAuthoritativeChatMessages(graftedPrefetch, previousMessages)
-          prefetchApplied = true
-          prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
-        }
-
-        const currentMessages = $messages.get()
-
-        // Keep the local snapshot when resume would only reshuffle runtime
+        // Keep the current view when resume would only reshuffle runtime
         // projection. When the REST prefetch already hydrated the transcript,
         // skip converting/reconciling the resume payload entirely — on a
         // 1000+-message session that second conversion plus the deep
         // equivalence compare costs over a second of main-thread time.
         const resumedStoredSessionId = resumed.session_key || resumed.resumed
 
-        const prefetchMatchesResumedSession =
+        let prefetchMatchesResumedSession =
           !prefetchedStoredSessionId || !resumedStoredSessionId || prefetchedStoredSessionId === resumedStoredSessionId
 
+        let usablePrefetch = prefetchApplied && prefetchMatchesResumedSession
+
+        if (resumed.messages_omitted && !usablePrefetch) {
+          try {
+            const fallback = await getLatestSessionMessages(resumedStoredSessionId || storedSessionId, sessionProfile)
+
+            if (!isCurrentResume()) {
+              return
+            }
+
+            // A mismatched candidate belongs to another stored identity. Drop
+            // its settled rows before publishing the resume-bound transcript;
+            // only local optimistic/pending rows may survive the correction.
+            const publishedFallback = publishPersistedMessages(
+              fallback,
+              prefetchApplied && !prefetchMatchesResumedSession
+            )
+
+            if (publishedFallback) {
+              prefetchApplied = true
+              prefetchedStoredSessionId = fallback.session_id || resumedStoredSessionId || storedSessionId
+              prefetchMatchesResumedSession =
+                !prefetchedStoredSessionId ||
+                !resumedStoredSessionId ||
+                prefetchedStoredSessionId === resumedStoredSessionId
+              usablePrefetch = prefetchApplied && prefetchMatchesResumedSession
+            }
+          } catch {
+            if (!isCurrentResume()) {
+              return
+            }
+
+            if (prefetchApplied && !prefetchMatchesResumedSession) {
+              const currentMessages = $messages.get()
+              const pendingMessages = preserveLocalPendingTurnMessages([], currentMessages)
+
+              if (!chatMessageArraysEquivalent(currentMessages, pendingMessages)) {
+                setMessages(pendingMessages)
+              }
+            }
+          }
+        }
+
+        const currentMessages = $messages.get()
+
         const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
+        // Older/partial gateway responses may omit the echo flag even though
+        // this client requested omit_messages. A matching successful prefetch
+        // is sufficient proof that REST is the transcript authority.
+        const persistedTranscriptIsAuthority = resumed.messages_omitted || usablePrefetch
 
         const preferredMessages = (() => {
-          if (prefetchApplied && prefetchMatchesResumedSession) {
+          if (usablePrefetch) {
             if (hasLiveProjection && prefetchedTranscriptMessages) {
               const runtimeMessages = toChatMessages(resumed.messages)
               const previousMessages = removeRepresentedLocalLiveProjection(currentMessages, resumed)
@@ -1158,7 +1233,9 @@ export function useSessionActions({
             }
 
             if (!hasLiveProjection) {
-              return localSnapshot
+              // The prefetch already painted. Re-read the live view so events
+              // received while resume settled cannot be rolled back.
+              return currentMessages
             }
           }
 
@@ -1166,7 +1243,11 @@ export function useSessionActions({
             ? preserveLocalPendingTurnMessages(currentMessages, resumeStartMessages)
             : currentMessages
 
-          const resumedMessages = reconcileAuthoritativeMessages(resumed.messages, previousMessages, resumed)
+          // Omitted, not empty: without a usable REST transcript the response
+          // may contribute only its live projection, never an empty authority.
+          const resumedMessages = persistedTranscriptIsAuthority
+            ? appendLiveSessionProjection(currentMessages, resumed)
+            : reconcileAuthoritativeMessages(resumed.messages, previousMessages, resumed)
 
           return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
         })()
@@ -1212,7 +1293,11 @@ export function useSessionActions({
         // must not mask a lost transcript (a retry that reloads real history
         // is safer than surfacing the in-flight turn alone). Recovery only
         // ever appends, so this matches the final transcript's emptiness.
-        if (sessionShouldHaveTranscript(stored) && preferredMessages.length === 0) {
+        const responseClaimsHistory = !createdThisRun.has(storedSessionId) && (resumed.message_count ?? 0) > 0
+
+        const shouldHaveTranscript = sessionShouldHaveTranscript(stored) || responseClaimsHistory
+
+        if (shouldHaveTranscript && preferredMessages.length === 0) {
           setActiveSessionId(null)
           activeSessionIdRef.current = null
           setResumeFailedSessionId(storedSessionId)
@@ -1265,9 +1350,8 @@ export function useSessionActions({
         )
 
         // updateSessionState stages its view sync through requestAnimationFrame.
-        // Commit the final, already-reconciled transcript now so resume has one
-        // additive DOM build instead of an eager prefetch build plus a later
-        // runtime projection build.
+        // Publish only when runtime projection or journal recovery materially
+        // changed the already-visible persisted baseline.
         if (!chatMessageArraysEquivalent($messages.get(), messagesForView)) {
           setMessages(messagesForView)
         }

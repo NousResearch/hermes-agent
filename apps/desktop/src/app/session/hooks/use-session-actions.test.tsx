@@ -6,13 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
-import {
-  getAllSessionMessages,
-  getLatestSessionMessages,
-  getSession,
-  type SessionInfo,
-  type SessionResumeResponse
-} from '@/hermes'
+import { getAllSessionMessages, getLatestSessionMessages, getSession, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
@@ -47,6 +41,8 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+import { isWatchWindow } from '@/store/windows'
+import type { SessionMessage, SessionResumeResponse } from '@/types/hermes'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { sessionRoute } from '../../routes'
@@ -77,21 +73,28 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
   revealTreePane: vi.fn()
 }))
 
+vi.mock('@/store/windows', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isWatchWindow: vi.fn(() => false)
+}))
+
 const RUNTIME_SESSION_ID = 'rt-new-001'
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
 
-  const promise = new Promise<T>(done => {
+  const promise = new Promise<T>((done, fail) => {
     resolve = done
+    reject = fail
   })
 
-  return { promise, resolve }
+  return { promise, reject, resolve }
 }
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  'createBackendSessionForSend' | 'resumeSession' | 'selectSidebarItem' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -716,6 +719,7 @@ describe('resumeSession failure recovery', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    vi.mocked(isWatchWindow).mockReset().mockReturnValue(false)
     vi.restoreAllMocks()
   })
 
@@ -731,6 +735,386 @@ describe('resumeSession failure recovery', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-1', true)
   }
+
+  it('paints REST history while session.resume is still pending', async () => {
+    const resumeDeferred = deferred<SessionResumeResponse>()
+    const persistedMessages = [{ content: 'persisted question', role: 'user', timestamp: 1 }]
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: persistedMessages,
+      session_id: 'stored-1'
+    } as never)
+
+    const requestGateway = vi.fn((method: string) => {
+      if (method === 'session.resume') {
+        return resumeDeferred.promise as Promise<never>
+      }
+
+      return Promise.resolve({} as never)
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumeResult = resume!('stored-1', true)
+    let earlyPaintedMessages = $messages.get()
+
+    try {
+      await waitFor(() => expect(JSON.stringify($messages.get())).toContain('persisted question'))
+      earlyPaintedMessages = $messages.get()
+      expect($activeSessionId.get()).toBeNull()
+    } finally {
+      resumeDeferred.resolve({
+        info: {},
+        message_count: persistedMessages.length,
+        messages: [],
+        messages_omitted: true,
+        resumed: 'stored-1',
+        session_id: 'runtime-1',
+        session_key: 'stored-1'
+      })
+      await resumeResult
+    }
+
+    expect($activeSessionId.get()).toBe('runtime-1')
+    expect($messages.get()).toBe(earlyPaintedMessages)
+  })
+
+  it('does not let a stale REST completion overwrite a newer selected session', async () => {
+    const stalePrefetch = deferred<{ messages: SessionMessage[]; session_id: string }>()
+
+    vi.mocked(getLatestSessionMessages).mockImplementation(async storedSessionId => {
+      if (storedSessionId === 'stored-1') {
+        return stalePrefetch.promise
+      }
+
+      return {
+        messages: [{ content: 'newer session history', role: 'user', timestamp: 2 }],
+        session_id: 'stored-2'
+      } as never
+    })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: params?.session_id,
+          session_id: `runtime-${params?.session_id}`,
+          session_key: params?.session_id
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const staleResume = resume!('stored-1', true)
+    await resume!('stored-2', true)
+    expect(JSON.stringify($messages.get())).toContain('newer session history')
+
+    stalePrefetch.resolve({
+      messages: [{ content: 'stale session history', role: 'user', timestamp: 1 }],
+      session_id: 'stored-1'
+    })
+    await staleResume
+
+    expect(JSON.stringify($messages.get())).toContain('newer session history')
+    expect(JSON.stringify($messages.get())).not.toContain('stale session history')
+    expect($activeSessionId.get()).toBe('runtime-stored-2')
+  })
+
+  it('keeps a pending row that arrives after the early REST paint', async () => {
+    const resumeDeferred = deferred<SessionResumeResponse>()
+
+    const persistedMessages = [
+      { content: 'persisted question', role: 'user', timestamp: 1 },
+      { content: 'persisted answer', role: 'assistant', timestamp: 2 }
+    ]
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: persistedMessages,
+      session_id: 'stored-1'
+    } as never)
+
+    const requestGateway = vi.fn((method: string) => {
+      if (method === 'session.resume') {
+        return resumeDeferred.promise as Promise<never>
+      }
+
+      return Promise.resolve({} as never)
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumeResult = resume!('stored-1', true)
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('persisted answer'))
+
+    const messagesAfterEarlyPaint = [
+      ...$messages.get(),
+      {
+        id: 'pending-user',
+        role: 'user' as const,
+        parts: [{ type: 'text' as const, text: 'arrived while resume was pending' }]
+      }
+    ]
+
+    act(() => setMessages(messagesAfterEarlyPaint))
+
+    resumeDeferred.resolve({
+      info: {},
+      message_count: persistedMessages.length,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'stored-1',
+      session_id: 'runtime-1',
+      session_key: 'stored-1'
+    })
+    await resumeResult
+
+    expect(JSON.stringify(resumedState?.messages)).toContain('arrived while resume was pending')
+    expect(resumedState?.messages).toBe(messagesAfterEarlyPaint)
+  })
+
+  it('falls back to REST when resume omits messages and the initial prefetch fails', async () => {
+    setSessions([storedSession({ profile: 'work' })])
+    vi.mocked(getLatestSessionMessages)
+      .mockReset()
+      .mockRejectedValueOnce(new Error('initial prefetch failed'))
+      .mockResolvedValueOnce({
+        messages: [{ content: 'history recovered by bound key', role: 'user', timestamp: 1 }],
+        session_id: 'stored-1'
+      } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('work')
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+    expect(getLatestSessionMessages).toHaveBeenNthCalledWith(1, 'stored-1', 'work')
+    expect(getLatestSessionMessages).toHaveBeenNthCalledWith(2, 'stored-1', 'work')
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ profile: 'work', session_id: 'stored-1' })
+    )
+    expect(JSON.stringify($messages.get())).toContain('history recovered by bound key')
+    expect($activeSessionId.get()).toBe('runtime-1')
+  })
+
+  it('replaces an identity-mismatched early prefetch using the resume-bound key', async () => {
+    const resumeDeferred = deferred<SessionResumeResponse>()
+    vi.mocked(getLatestSessionMessages)
+      .mockReset()
+      .mockResolvedValueOnce({
+        messages: [{ content: 'parent session history', role: 'user', timestamp: 1 }],
+        session_id: 'stored-1'
+      } as never)
+      .mockResolvedValueOnce({
+        messages: [{ content: 'continuation session history', role: 'user', timestamp: 2 }],
+        session_id: 'stored-continuation'
+      } as never)
+
+    const requestGateway = vi.fn((method: string) => {
+      if (method === 'session.resume') {
+        return resumeDeferred.promise as Promise<never>
+      }
+
+      return Promise.resolve({} as never)
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumeResult = resume!('stored-1', true)
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('parent session history'))
+
+    resumeDeferred.resolve({
+      info: {},
+      message_count: 1,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'stored-continuation',
+      session_id: 'runtime-continuation',
+      session_key: 'stored-continuation'
+    })
+    await resumeResult
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+    expect(getLatestSessionMessages).toHaveBeenNthCalledWith(1, 'stored-1', undefined)
+    expect(getLatestSessionMessages).toHaveBeenNthCalledWith(2, 'stored-continuation', undefined)
+    expect(JSON.stringify($messages.get())).toContain('continuation session history')
+    expect(JSON.stringify($messages.get())).not.toContain('parent session history')
+    expect($activeSessionId.get()).toBe('runtime-continuation')
+  })
+
+  it('arms the failure latch from resume message_count when the sidebar row is absent', async () => {
+    vi.mocked(getLatestSessionMessages).mockReset().mockRejectedValue(new Error('REST unavailable'))
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 3,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+    expect($resumeFailedSessionId.get()).toBe('stored-1')
+    expect($activeSessionId.get()).toBeNull()
+  })
+
+  it('binds an empty session when REST fails and resume message_count is zero', async () => {
+    vi.mocked(getLatestSessionMessages).mockReset().mockRejectedValue(new Error('REST unavailable'))
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+    expect($resumeFailedSessionId.get()).toBeNull()
+    expect($activeSessionId.get()).toBe('runtime-1')
+  })
+
+  it.each([true, false])(
+    'does not latch a newly created session from its live count when running=%s',
+    async running => {
+      const storedSessionId = `created-session-${String(running)}`
+
+      vi.mocked(getLatestSessionMessages)
+        .mockReset()
+        .mockResolvedValue({
+          messages: [],
+          session_id: storedSessionId
+        } as never)
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'session.create') {
+          return {
+            info: {},
+            message_count: 0,
+            messages: [],
+            session_id: `created-runtime-${String(running)}`,
+            stored_session_id: storedSessionId
+          } as never
+        }
+
+        if (method === 'session.resume') {
+          return {
+            info: {},
+            message_count: 1,
+            messages: [],
+            messages_omitted: true,
+            resumed: storedSessionId,
+            running,
+            session_id: `resumed-runtime-${String(running)}`,
+            session_key: storedSessionId
+          } as never
+        }
+
+        return {} as never
+      })
+
+      let handle: HarnessHandle | null = null
+      render(<Harness onReady={ready => (handle = ready)} requestGateway={requestGateway} />)
+      await waitFor(() => expect(handle).not.toBeNull())
+
+      await act(async () => {
+        await handle!.createBackendSessionForSend()
+      })
+      await act(async () => {
+        await handle!.resumeSession(storedSessionId, true)
+      })
+
+      expect($resumeFailedSessionId.get()).toBeNull()
+      expect($activeSessionId.get()).toBe(`resumed-runtime-${String(running)}`)
+    }
+  )
+
+  it('keeps watch-window lazy resume off the REST transcript path', async () => {
+    vi.mocked(isWatchWindow).mockReturnValue(true)
+    vi.mocked(getLatestSessionMessages).mockReset()
+    let resumeParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        resumeParams = params
+
+        return {
+          info: {},
+          message_count: 1,
+          messages: [{ content: 'watch transcript', role: 'user', timestamp: 1 }],
+          resumed: 'stored-1',
+          session_id: 'runtime-watch',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(resumeParams).toMatchObject({ lazy: true, source: 'desktop' })
+    expect(resumeParams).not.toHaveProperty('omit_messages')
+    expect(JSON.stringify($messages.get())).toContain('watch transcript')
+    expect($activeSessionId.get()).toBe('runtime-watch')
+  })
 
   it('arms $resumeFailedSessionId when resume RPC and REST fallback both fail', async () => {
     // session.resume rejects (e.g. timeout against a wedged backend)...
@@ -807,19 +1191,14 @@ describe('resumeSession failure recovery', () => {
 
     vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
 
-    const requestGateway = vi.fn(async (method: string) => {
+    const resumeDeferred = deferred<SessionResumeResponse>()
+
+    const requestGateway = vi.fn((method: string) => {
       if (method === 'session.resume') {
-        return {
-          session_id: 'runtime-1',
-          session_key: 'stored-1',
-          resumed: 'stored-1',
-          message_count: 2,
-          messages: storedMessages,
-          info: {}
-        } as never
+        return resumeDeferred.promise as Promise<never>
       }
 
-      return {} as never
+      return Promise.resolve({} as never)
     })
 
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
@@ -827,7 +1206,21 @@ describe('resumeSession failure recovery', () => {
       <ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} selectedStoredSessionId="stored-1" />
     )
     await waitFor(() => expect(resume).not.toBeNull())
-    await resume!('stored-1', true)
+    const resumeResult = resume!('stored-1', true)
+
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('earlier answer'))
+    expect($messages.get().map(message => message.id)).toContain('user-optimistic')
+
+    resumeDeferred.resolve({
+      info: {},
+      message_count: storedMessages.length,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'stored-1',
+      session_id: 'runtime-1',
+      session_key: 'stored-1'
+    })
+    await resumeResult
 
     expect($messages.get().map(message => message.id)).toContain('user-optimistic')
   })
@@ -1753,7 +2146,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
   })
 
-  it('paints the bounded latest transcript after the deferred resume acknowledgement', async () => {
+  it('paints the bounded latest transcript before the deferred resume acknowledgement', async () => {
     const latestPage = Array.from({ length: 500 }, (_, index) => ({
       content: `message-${index}`,
       role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
@@ -1788,7 +2181,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(1))
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
-    expect($messages.get()).toHaveLength(0)
+    await waitFor(() => expect($messages.get()).toHaveLength(500))
+    const earlyPaintedMessages = $messages.get()
     expect(requestGatewayMock).toHaveBeenCalledWith(
       'session.resume',
       expect.objectContaining({
@@ -1806,7 +2200,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       info: {}
     })
     await resumePromise
-    expect($messages.get()).toHaveLength(500)
+    expect($messages.get()).toBe(earlyPaintedMessages)
   })
 
   it('honours a warm cache entry whose stored id matches and refreshes its persisted transcript', async () => {

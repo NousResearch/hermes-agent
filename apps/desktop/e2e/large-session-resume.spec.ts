@@ -42,7 +42,13 @@ interface SeededFixture {
 
 interface PaintState {
   bursts: number
+  pending: boolean
   timeline: Array<{ mutations: number; time: number }>
+}
+
+interface PaintBudget {
+  bursts: number
+  kind: 'exact' | 'maximum'
 }
 
 async function setupSeededDesktop(mockServer?: MockServerOptions): Promise<SeededFixture> {
@@ -116,26 +122,84 @@ async function submitPrompt(page: Page, prompt: string): Promise<void> {
 async function startPaintObserver(page: Page): Promise<void> {
   await page.evaluate(() => {
     const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-    const state = { bursts: 0, timeline: [] as Array<{ mutations: number; time: number }> }
+    const state = { bursts: 0, pending: false, timeline: [] as Array<{ mutations: number; time: number }> }
     ;(window as Window & { __largeSessionPaints?: typeof state }).__largeSessionPaints = state
     if (!viewport) return
 
     let additions = 0
+    let addedUserRows = 0
     let flushTimer: ReturnType<typeof setTimeout> | undefined
-    new MutationObserver(records => {
-      additions += records.reduce(
-        (count, record) => count + (record.type === 'childList' && record.addedNodes.length > 0 ? 1 : 0),
-        0,
+    let previousUserIds: string[] = []
+
+    const userIds = () =>
+      Array.from(viewport.querySelectorAll<HTMLElement>('[data-role="user"][data-message-id]')).map(
+        row => row.dataset.messageId ?? '',
       )
+
+    const flush = () => {
+      const nextUserIds = userIds()
+
+      if (nextUserIds.length > 0) {
+        const onlyPrependedBackfill =
+          nextUserIds.length > previousUserIds.length &&
+          previousUserIds.every((id, index) => id === nextUserIds[nextUserIds.length - previousUserIds.length + index])
+        const rebuiltSameRows =
+          previousUserIds.length > 0 &&
+          previousUserIds.length === nextUserIds.length &&
+          previousUserIds.every((id, index) => id === nextUserIds[index]) &&
+          addedUserRows > 0
+        const transcriptChanged =
+          previousUserIds.length === 0 ||
+          rebuiltSameRows ||
+          (!onlyPrependedBackfill &&
+            (previousUserIds.length !== nextUserIds.length ||
+              previousUserIds.some((id, index) => id !== nextUserIds[index])))
+
+        if (transcriptChanged) {
+          state.bursts += 1
+          state.timeline.push({ mutations: additions, time: Date.now() })
+        }
+
+        previousUserIds = nextUserIds
+      }
+
+      additions = 0
+      addedUserRows = 0
+      state.pending = false
+    }
+
+    new MutationObserver(records => {
+      for (const record of records) {
+        if (record.type !== 'childList' || record.addedNodes.length === 0) continue
+
+        additions += 1
+        addedUserRows += Array.from(record.addedNodes).filter(
+          node =>
+            node instanceof Element &&
+            (node.matches('[data-role="user"][data-message-id]') ||
+              node.querySelector('[data-role="user"][data-message-id]')),
+        ).length
+      }
+
       if (additions === 0) return
+      state.pending = true
       if (flushTimer) clearTimeout(flushTimer)
-      flushTimer = setTimeout(() => {
-        state.bursts += 1
-        state.timeline.push({ mutations: additions, time: Date.now() })
-        additions = 0
-      }, 30)
+      flushTimer = setTimeout(flush, 30)
     }).observe(viewport, { childList: true, subtree: true })
   })
+}
+
+async function waitForSettledTranscriptPaint(page: Page): Promise<void> {
+  await page.waitForFunction(
+    expected => {
+      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+      const state = (window as Window & { __largeSessionPaints?: PaintState }).__largeSessionPaints
+
+      return Boolean((viewport?.textContent ?? '').includes(expected) && state && state.bursts >= 1 && !state.pending)
+    },
+    OLDEST_SEEDED_TEXT,
+    { timeout: 30_000 },
+  )
 }
 
 async function paintState(page: Page): Promise<PaintState> {
@@ -166,17 +230,24 @@ async function reloadIntoColdRenderer(fixture: SeededFixture): Promise<void> {
   await openNewSession(fixture.page)
 }
 
-async function assertUnchangedResume(page: Page, testInfo: TestInfo): Promise<void> {
+async function assertUnchangedResume(page: Page, testInfo: TestInfo, budget: PaintBudget): Promise<void> {
   await openSeededSession(page)
-  await page.waitForTimeout(1_000)
+  await waitForSettledTranscriptPaint(page)
   await page.screenshot({ path: testInfo.outputPath('unchanged-session-resume.png'), fullPage: false })
 
   const paints = await paintState(page)
   expect(await textNodeOccurrences(page, EXPECTED_TEXT), 'the resumed user message should appear once').toBe(1)
-  // A warm session first restores its retained view, then reconciles it with the
-  // authoritative transcript. That is bounded at two builds; a third paint was
-  // the old eager-prefetch + runtime-rebuild regression. A cold restore has one.
-  expect(paints.bursts, `unexpected transcript paint count: ${JSON.stringify(paints.timeline)}`).toBeLessThanOrEqual(2)
+  const diagnostic = `unexpected transcript paint count: ${JSON.stringify(paints.timeline)}`
+
+  if (budget.kind === 'exact') {
+    expect(paints.bursts, diagnostic).toBe(budget.bursts)
+  } else {
+    // A warm session first restores its retained view, then reconciles it with
+    // the authoritative transcript. A third paint is the old eager-prefetch +
+    // runtime-rebuild regression.
+    expect(paints.bursts, diagnostic).toBeGreaterThanOrEqual(1)
+    expect(paints.bursts, diagnostic).toBeLessThanOrEqual(budget.bursts)
+  }
 }
 
 test.describe('large session resume', () => {
@@ -192,7 +263,7 @@ test.describe('large session resume', () => {
     await waitForAppReady(fixture, 120_000)
 
     await startPaintObserver(fixture.page)
-    await assertUnchangedResume(fixture.page, testInfo)
+    await assertUnchangedResume(fixture.page, testInfo, { bursts: 1, kind: 'exact' })
   })
 
   test('fast resume of an unchanged session has one user row and bounded transcript paints', async ({}, testInfo) => {
@@ -207,7 +278,7 @@ test.describe('large session resume', () => {
     await openSeededSession(fixture.page)
     await openNewSession(fixture.page)
     await startPaintObserver(fixture.page)
-    await assertUnchangedResume(fixture.page, testInfo)
+    await assertUnchangedResume(fixture.page, testInfo, { bursts: 2, kind: 'maximum' })
   })
 
   for (const resumeKind of ['fast', 'cold'] as const) {
@@ -233,9 +304,24 @@ test.describe('large session resume', () => {
 
       if (resumeKind === 'cold') {
         await reloadIntoColdRenderer(fixture)
+        await startPaintObserver(fixture.page)
       }
 
       await openSeededSession(fixture.page)
+
+      if (resumeKind === 'cold') {
+        await fixture.page.waitForTimeout(300)
+        const paints = await paintState(fixture.page)
+        expect(
+          paints.bursts,
+          `unexpected cold live-resume paint count: ${JSON.stringify(paints.timeline)}`,
+        ).toBeGreaterThanOrEqual(1)
+        expect(
+          paints.bursts,
+          `unexpected cold live-resume paint count: ${JSON.stringify(paints.timeline)}`,
+        ).toBeLessThanOrEqual(2)
+      }
+
       fixture.mock.releaseHeldStream()
       await fixture.page.waitForFunction(
         expected => (document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),

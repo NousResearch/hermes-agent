@@ -594,8 +594,6 @@ export interface Translations {
       stagedNote: string
       launchModeTitle: string
       launchModeDesc: string
-      launchPrimary: string
-      launchLastUsed: string
       searchPlaceholder: string
       noSearchResults: string
       loadFailed: string

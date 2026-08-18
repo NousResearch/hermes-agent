@@ -705,11 +705,8 @@ export const en: Translations = {
       intro: 'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
       stagedNote:
         'Switch gateways from Sessions. Profiles, chats, messaging, and cron jobs stay with their gateway; work on other gateways keeps running.',
-      launchModeTitle: 'Open on launch',
-      launchModeDesc:
-        'Choose whether Hermes opens your primary gateway or the last gateway that connected successfully.',
-      launchPrimary: 'Primary gateway',
-      launchLastUsed: 'Last used',
+      launchModeTitle: 'At startup, return to Sessions on the last-used gateway',
+      launchModeDesc: 'When off, Sessions opens on the Primary gateway.',
       searchPlaceholder: 'Search gateways…',
       noSearchResults: 'No gateways match your search.',
       loadFailed: 'Could not load connections',

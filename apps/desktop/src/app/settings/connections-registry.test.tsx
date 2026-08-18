@@ -75,7 +75,7 @@ describe('ConnectionsRegistrySection', () => {
     // Label and the managed pill share the copy, so expect both instances.
     expect(screen.getAllByText('This device').length).toBeGreaterThan(0)
     expect(screen.getByText('Current')).toBeTruthy()
-    expect(screen.getByText('Primary')).toBeTruthy()
+    expect(screen.getAllByText('Primary').length).toBeGreaterThan(0)
     expect(list).toHaveBeenCalledTimes(1)
   })
 
@@ -136,11 +136,15 @@ describe('ConnectionsRegistrySection', () => {
     expect(save).not.toHaveBeenCalled()
   })
 
-  it('makes a non-primary connection primary', async () => {
+  it('keeps the primary fallback configurable while last-used restore is enabled', async () => {
+    list.mockResolvedValueOnce({ ...registry, launchMode: 'last-used' })
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    fireEvent.click(screen.getByText('Make primary'))
+    const makePrimary = screen.getByText('Make primary').closest('button')!
+
+    expect(makePrimary.disabled).toBe(false)
+    fireEvent.click(makePrimary)
 
     await waitFor(() => expect(setPrimary).toHaveBeenCalledWith('homelab'))
   })
@@ -148,8 +152,11 @@ describe('ConnectionsRegistrySection', () => {
   it('lets users opt into restoring the last-used source', async () => {
     render(<ConnectionsRegistrySection />)
 
-    await waitFor(() => expect(screen.getByText('Open on launch')).toBeTruthy())
-    fireEvent.click(screen.getByText('Last used'))
+    const launchSetting = await screen.findByText('At startup, return to Sessions on the last-used gateway')
+    const addConnection = screen.getByText('Add connection')
+
+    expect(addConnection.compareDocumentPosition(launchSetting) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(screen.getByRole('switch', { name: 'At startup, return to Sessions on the last-used gateway' }))
 
     await waitFor(() => expect(setLaunchMode).toHaveBeenCalledWith('last-used'))
   })
@@ -160,7 +167,7 @@ describe('ConnectionsRegistrySection', () => {
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
-    expect(screen.queryByText('Open on launch')).toBeNull()
+    expect(screen.queryByText('At startup, return to Sessions on the last-used gateway')).toBeNull()
   })
 
   it('keeps search out of the way for a small registry', async () => {
@@ -191,23 +198,92 @@ describe('ConnectionsRegistrySection', () => {
           label: index === 0 ? 'Alpha' : `Gateway ${index}`,
           tokenPreview: null,
           tokenSet: false,
-          url: index === 4 ? 'https://studio.example.test' : `https://gateway-${index}.example.test`
+          url:
+            index === 4
+              ? 'https://studio.example.test'
+              : index === 5
+                ? 'https://studio-archive.example.test'
+                : `https://gateway-${index}.example.test`
         }))
       ]
     }
 
     list.mockResolvedValueOnce(largeRegistry)
-    render(<ConnectionsRegistrySection />)
+    render(
+      <div data-testid="settings-scroller" style={{ height: 400, overflowY: 'auto' }}>
+        <ConnectionsRegistrySection />
+      </div>
+    )
 
     const search = await screen.findByRole('searchbox', { name: 'Search gateways…' })
+    expect(search.parentElement?.className).toContain('mt-3')
+    expect(search.parentElement?.className).toContain('mb-0')
+    const settingsScroller = screen.getByTestId('settings-scroller')
+    settingsScroller.scrollTop = 200
+    vi.spyOn(search, 'getBoundingClientRect')
+      .mockReturnValueOnce({
+        bottom: 152,
+        height: 32,
+        left: 0,
+        right: 0,
+        top: 120,
+        width: 0,
+        x: 0,
+        y: 120,
+        toJSON: () => ({})
+      })
+      .mockReturnValueOnce({
+        bottom: 152,
+        height: 32,
+        left: 0,
+        right: 0,
+        top: 120,
+        width: 0,
+        x: 0,
+        y: 120,
+        toJSON: () => ({})
+      })
+      .mockReturnValueOnce({
+        bottom: 152,
+        height: 32,
+        left: 0,
+        right: 0,
+        top: 120,
+        width: 0,
+        x: 0,
+        y: 120,
+        toJSON: () => ({})
+      })
+      .mockReturnValue({
+        bottom: 182,
+        height: 32,
+        left: 0,
+        right: 0,
+        top: 150,
+        width: 0,
+        x: 0,
+        y: 150,
+        toJSON: () => ({})
+      })
     const alpha = screen.getByText('Alpha')
     const zulu = screen.getByText('Zulu')
     expect(alpha.compareDocumentPosition(zulu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
-    fireEvent.change(search, { target: { value: 'studio.example' } })
+    fireEvent.change(search, { target: { value: 'studio' } })
 
+    expect(settingsScroller.scrollTop).toBe(200)
     expect(screen.getByText('Gateway 4')).toBeTruthy()
+    expect(screen.getByText('Gateway 5')).toBeTruthy()
     expect(screen.queryByText('Alpha')).toBeNull()
+
+    settingsScroller.scrollTop = 260
+    fireEvent.change(search, { target: { value: 'studio.example' } })
+    expect(settingsScroller.scrollTop).toBe(290)
+    expect(screen.getByText('Gateway 4')).toBeTruthy()
+    expect(screen.queryByText('Gateway 5')).toBeNull()
+
+    fireEvent.change(search, { target: { value: '' } })
+    expect(search.closest<HTMLElement>('.border-t')?.style.minHeight).toBe('')
   })
 
   it('tests a connection through the bridge', async () => {

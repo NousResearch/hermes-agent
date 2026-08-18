@@ -1,10 +1,9 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import type {
   DesktopConnectionKind,
   DesktopConnectionsRegistry,
@@ -22,7 +21,7 @@ import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Te
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 
-import { EmptyState, ListRow, Pill, SectionHeading } from './primitives'
+import { EmptyState, ListRow, Pill, SectionHeading, ToggleRow } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   cloud: Cloud,
@@ -199,6 +198,20 @@ export function sameBackendPeerLabel(
   return null
 }
 
+function scrollableAncestor(element: HTMLElement): HTMLElement | null {
+  let parent = element.parentElement
+
+  while (parent) {
+    if (/(auto|scroll)/.test(window.getComputedStyle(parent).overflowY)) {
+      return parent
+    }
+
+    parent = parent.parentElement
+  }
+
+  return null
+}
+
 /**
  * The connections registry section of Settings → Gateways: manage the named
  * agent sources (local runtime + any number of remote gateways / Hermes Cloud
@@ -220,6 +233,8 @@ export function ConnectionsRegistrySection() {
   const [launchModeBusy, setLaunchModeBusy] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const pendingSearchTopRef = useRef<null | number>(null)
   // Inline duplicate rejection from the save path (dedupe is also enforced in
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
@@ -486,6 +501,34 @@ export function ConnectionsRegistrySection() {
     connectionMatchesQuery(connection, effectiveSearchQuery, [kindMeta[connection.kind].label])
   )
 
+  useLayoutEffect(() => {
+    const previousTop = pendingSearchTopRef.current
+    const input = searchInputRef.current
+
+    pendingSearchTopRef.current = null
+
+    if (previousTop == null || !input) {
+      return
+    }
+
+    const scroller = scrollableAncestor(input)
+
+    if (!scroller) {
+      return
+    }
+
+    const delta = input.getBoundingClientRect().top - previousTop
+
+    if (Math.abs(delta) > 0.5) {
+      scroller.scrollTop += delta
+    }
+  }, [displayedConnections.length, effectiveSearchQuery])
+
+  const updateSearchQuery = (nextQuery: string) => {
+    pendingSearchTopRef.current = searchInputRef.current?.getBoundingClientRect().top ?? null
+    setSearchQuery(nextQuery)
+  }
+
   if (!bridge) {
     return null
   }
@@ -500,31 +543,14 @@ export function ConnectionsRegistrySection() {
         {s.stagedNote}
       </p>
 
-      {!loading && registry && registry.connections.length > 1 && (
-        <ListRow
-          action={
-            <SegmentedControl
-              disabled={launchModeBusy || !bridge?.setLaunchMode}
-              onChange={mode => void setLaunchMode(mode)}
-              options={[
-                { id: 'primary', label: s.launchPrimary },
-                { id: 'last-used', label: s.launchLastUsed }
-              ]}
-              value={registry.launchMode ?? 'primary'}
-            />
-          }
-          description={s.launchModeDesc}
-          title={s.launchModeTitle}
-        />
-      )}
-
       {!loading && showSearch && (
         <Input
           aria-label={s.searchPlaceholder}
-          containerClassName="mb-3 w-full max-w-sm"
-          onChange={event => setSearchQuery(event.target.value)}
+          containerClassName="mt-3 mb-0 w-full max-w-sm"
+          onChange={event => updateSearchQuery(event.target.value)}
           placeholder={s.searchPlaceholder}
           prefix={<SearchIcon className="size-3.5" />}
+          ref={searchInputRef}
           size="sm"
           type="search"
           value={searchQuery}
@@ -822,6 +848,18 @@ export function ConnectionsRegistrySection() {
               )}
             </Button>
           )}
+        </div>
+      )}
+
+      {!loading && registry && registry.connections.length > 1 && (
+        <div className="mt-6 border-t border-border/60 pt-4">
+          <ToggleRow
+            checked={registry.launchMode === 'last-used'}
+            description={s.launchModeDesc}
+            disabled={launchModeBusy || !bridge?.setLaunchMode}
+            label={s.launchModeTitle}
+            onChange={enabled => void setLaunchMode(enabled ? 'last-used' : 'primary')}
+          />
         </div>
       )}
 

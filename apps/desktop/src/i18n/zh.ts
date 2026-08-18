@@ -910,10 +910,8 @@ export const zh: Translations = {
       intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
       stagedNote:
         '可在“会话”侧边栏切换网关。配置档案、聊天、消息和定时任务归属于各自网关；其他网关上的工作会继续运行。',
-      launchModeTitle: '启动时打开',
-      launchModeDesc: '选择 Hermes 启动时打开主网关，或上次成功连接的网关。',
-      launchPrimary: '主网关',
-      launchLastUsed: '上次使用',
+      launchModeTitle: '启动时返回上次使用网关的会话视图',
+      launchModeDesc: '关闭时，会话将在主网关上打开。',
       searchPlaceholder: '搜索网关…',
       noSearchResults: '没有与搜索匹配的网关。',
       loadFailed: '无法加载连接',

@@ -137,6 +137,8 @@ describe('ensureGatewayAgent shares the gatewaySwitch mutex with profile switche
     ensureGatewayForProfile.mockImplementation(async (profile: string) => {
       order.push(`profile:${profile}`)
       await profileGate.promise
+
+      return true
     })
     ensureGatewayForAgent.mockImplementation(async (_connectionId, profile) => {
       order.push(`agent:${profile}`)
@@ -178,6 +180,8 @@ describe('ensureGatewayAgent shares the gatewaySwitch mutex with profile switche
     })
     ensureGatewayForProfile.mockImplementation(async (profile: string) => {
       order.push(`profile:${profile}`)
+
+      return true
     })
     getConnection.mockResolvedValue(localConn({ profile: 'worker' }))
     getConnectionFor.mockResolvedValue(agentConn())

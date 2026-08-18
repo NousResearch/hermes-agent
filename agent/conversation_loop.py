@@ -3687,7 +3687,11 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
-                        continue
+                        # Match content_filter failover: break out of the
+                        # retry loop so restart_with_rebuilt_messages re-runs
+                        # preflight against the fallback context window (#84733).
+                        _retry.restart_with_rebuilt_messages = True
+                        break
 
                     agent._flush_status_buffer()
                     logger.warning(

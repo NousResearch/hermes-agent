@@ -51,6 +51,7 @@ const {
   disposeSecondariesForConnection,
   ensureActiveGatewayOpen,
   ensureGatewayForAgent,
+  ensureGatewayForProfile,
   openGatewayForProfile,
   reconnectSecondaryGateways,
   retireLocalProfileGateways,
@@ -240,5 +241,71 @@ describe('reconnect fail-stop on a removed connection', () => {
     const reopened = await ensureActiveGatewayOpen()
 
     expect(reopened).not.toBeNull()
+  })
+
+  it('evicts a LOCAL profile entry when the deletion guard reports the profile gone (#88769)', async () => {
+    // A stale rail badge clicked after deletion drives reconnects against
+    // Electron's spawn guard, which rejects every attempt. That rejection is
+    // permanent — the loop must fail-stop, not hammer the guard on backoff.
+    // sharedPrimaryRoute probes getConnection too, so resolve enough calls to
+    // get the socket open before the guard starts rejecting.
+    let connectionCalls = 0
+
+    const getConnection = vi.fn(async () => {
+      connectionCalls += 1
+
+      if (connectionCalls <= 3) {
+        return descriptorFor('legacy-local', 'selena')
+      }
+
+      throw new Error('Profile "selena" no longer exists.')
+    })
+
+    installDesktop({ getConnection })
+
+    await openGatewayForProfile('selena')
+    await ensureGatewayForProfile('selena')
+    expect(gatewayMocks.instances).toHaveLength(1)
+    connectionCalls = 99
+
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // Drive the reconnect: the guard rejection must dispose + evict.
+    const result = await ensureActiveGatewayOpen()
+
+    expect(result).toBeNull()
+    const callsAfterFailStop = getConnection.mock.calls.length
+    await ensureActiveGatewayOpen()
+    expect(getConnection.mock.calls.length).toBe(callsAfterFailStop)
+  })
+
+  it('fail-stops on the mid-delete guard rejection too', async () => {
+    let connectionCalls = 0
+
+    const getConnection = vi.fn(async () => {
+      connectionCalls += 1
+
+      if (connectionCalls <= 3) {
+        return descriptorFor('legacy-local', 'selena')
+      }
+
+      throw new Error('Profile "selena" is being deleted.')
+    })
+
+    installDesktop({ getConnection })
+
+    await openGatewayForProfile('selena')
+    await ensureGatewayForProfile('selena')
+    connectionCalls = 99
+
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    await ensureActiveGatewayOpen()
+
+    const callsAfterFailStop = getConnection.mock.calls.length
+    await ensureActiveGatewayOpen()
+    expect(getConnection.mock.calls.length).toBe(callsAfterFailStop)
   })
 })

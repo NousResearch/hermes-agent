@@ -130,6 +130,9 @@ describe('connection-aware plugin host APIs', () => {
 
     expect(order).toEqual(['retire', 'delete'])
     expect(retireLocalProfileGateways).toHaveBeenCalledWith('worker')
+    // The rail paints from $profiles; skipping the refresh leaves a stale
+    // badge whose click hot-loops against the deletion guard (#88769).
+    expect(refreshProfiles).toHaveBeenCalled()
   })
 
   it('refreshes the profile inventory before asking Electron for routes', async () => {

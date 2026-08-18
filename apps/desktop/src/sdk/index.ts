@@ -303,6 +303,12 @@ export const host = {
     retireLocalProfileGateways(name)
     await deleteProfile(name)
 
+    // The profile rail paints from the shared $profiles cache; without a
+    // refresh the deleted profile's badge survives and clicking it starts a
+    // doomed spawn-retry loop against Electron's deletion guard (#88769).
+    // Best-effort: the delete itself already succeeded.
+    await refreshProfiles().catch(() => undefined)
+
     if (wasActive) {
       selectProfile('default')
       setActiveProfile('default')

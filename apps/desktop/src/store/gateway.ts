@@ -325,12 +325,20 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
     entry.reconnectAttempt = 0
   } catch (error) {
     // The registry no longer knows this connection (removed while we were
-    // backing off). Retrying forever can never succeed — fail-stop: dispose
-    // the entry and evict it instead of an infinite 15s-cap retry loop.
-    if (entry.connectionId && isMissingConnectionError(error)) {
+    // backing off), or Electron's deletion guard reports the profile itself
+    // gone/mid-delete. Both are permanent for this scoped socket — retrying
+    // forever can never succeed and hammers the spawn guard every backoff
+    // tick (#88769). Fail-stop: dispose the entry and evict it instead of an
+    // infinite 15s-cap retry loop.
+    if ((entry.connectionId && isMissingConnectionError(error)) || isMissingProfileError(error)) {
       entry.reconnecting = false
       disposeSecondary(entry)
-      g.secondaries.delete(entry.scope)
+
+      if (g.secondaries.get(entry.scope) === entry) {
+        g.secondaries.delete(entry.scope)
+      }
+
+      restoreActiveToPrimaryIfEvicted()
 
       return
     }
@@ -351,6 +359,16 @@ function isMissingConnectionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
   return message.includes('No connection with id')
+}
+
+// Electron's spawn guard (assertLocalProfileCanStart) rejects with these when
+// the profile's directory is gone or its DELETE is still in flight. For a
+// renderer socket that condition is permanent: the backend it reconnects to
+// can never come back, and every retry hammers the guard (#88769).
+function isMissingProfileError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message.includes('no longer exists') || message.includes('is being deleted')
 }
 
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {

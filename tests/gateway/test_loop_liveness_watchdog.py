@@ -166,12 +166,67 @@ def test_gateway_config_loop_watchdog_round_trip():
     assert config.to_dict()["loop_watchdog"] is False
 
 
+def test_gateway_config_loop_watchdog_tuning_round_trip():
+    """Watchdog tolerance knobs parse, serialize, and clamp malformed values."""
+    from gateway.config import GatewayConfig
+
+    # Defaults
+    default = GatewayConfig.from_dict({})
+    assert default.loop_watchdog is True
+    assert default.loop_watchdog_probe_interval_s == 30.0
+    assert default.loop_watchdog_probe_timeout_s == 10.0
+    assert default.loop_watchdog_max_strikes == 8
+
+    # Explicit values round-trip
+    cfg = GatewayConfig.from_dict(
+        {
+            "loop_watchdog_probe_interval_s": 45,
+            "loop_watchdog_probe_timeout_s": 15,
+            "loop_watchdog_max_strikes": 12,
+        }
+    )
+    assert cfg.loop_watchdog_probe_interval_s == 45.0
+    assert cfg.loop_watchdog_probe_timeout_s == 15.0
+    assert cfg.loop_watchdog_max_strikes == 12
+    d = cfg.to_dict()
+    assert d["loop_watchdog_probe_interval_s"] == 45.0
+    assert d["loop_watchdog_probe_timeout_s"] == 15.0
+    assert d["loop_watchdog_max_strikes"] == 12
+
+    # Nested gateway.* form honored
+    nested = GatewayConfig.from_dict(
+        {
+            "gateway": {
+                "loop_watchdog_probe_interval_s": 60,
+                "loop_watchdog_probe_timeout_s": 20,
+                "loop_watchdog_max_strikes": 20,
+            }
+        }
+    )
+    assert nested.loop_watchdog_probe_interval_s == 60.0
+    assert nested.loop_watchdog_probe_timeout_s == 20.0
+    assert nested.loop_watchdog_max_strikes == 20
+
+    # Malformed / degenerate values fall back to safe defaults
+    clamped = GatewayConfig.from_dict(
+        {
+            "loop_watchdog_probe_interval_s": 0,
+            "loop_watchdog_probe_timeout_s": -5,
+            "loop_watchdog_max_strikes": 0,
+        }
+    )
+    assert clamped.loop_watchdog_probe_interval_s == 30.0
+    assert clamped.loop_watchdog_probe_timeout_s == 10.0
+    assert clamped.loop_watchdog_max_strikes == 8
+
+
 def test_gateway_runner_liveness_guards_start_and_stop():
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner._loop_floor_timer_handle = None
     runner._loop_liveness_watchdog = None
+    runner.config = None
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     floor_timer = MagicMock()
     watchdog = MagicMock()
@@ -188,7 +243,12 @@ def test_gateway_runner_liveness_guards_start_and_stop():
         runner._start_loop_liveness_guards(loop)
 
     arm_floor.assert_called_once_with(loop)
-    start_watchdog.assert_called_once_with(loop)
+    start_watchdog.assert_called_once_with(
+        loop,
+        probe_interval=30.0,
+        probe_timeout=10.0,
+        max_strikes=8,
+    )
     assert runner._loop_floor_timer_handle is floor_timer
     assert runner._loop_liveness_watchdog is watchdog
 

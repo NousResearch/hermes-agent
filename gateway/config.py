@@ -983,7 +983,23 @@ class GatewayConfig:
     # missed probes it dumps all-thread stacks and hard-exits with the
     # service-restart code so the supervisor can revive the process. On by
     # default; set gateway.loop_watchdog: false in config.yaml to disable.
+    #
+    # Tuning knobs (all seconds unless noted) make the watchdog tolerate
+    # *transient, self-recovering* event-loop stalls — e.g. Telegram/Discord
+    # reconnect doing synchronous socket I/O during a network blip — so a
+    # short block does not force exit code 75 and trigger a restart churn
+    # that stalls cron dispatch (recurring fleet incidents on 2026-08-17,
+    # kanban t_0f76430f/t_70483f23). A genuine wedge (event loop frozen for
+    # the full tolerance window) still escalates to a supervised restart.
     loop_watchdog: bool = True
+    # Seconds the watchdog waits between liveness probes.
+    loop_watchdog_probe_interval_s: float = 30.0
+    # Seconds a single probe may go unprocessed before it counts as a miss.
+    loop_watchdog_probe_timeout_s: float = 10.0
+    # Consecutive missed probes allowed before the watchdog hard-exits.
+    # Default raised from 3 to 8: a transient reconnect stall (~60-120s) is
+    # tolerated while a genuine multi-minute wedge still escalates.
+    loop_watchdog_max_strikes: int = 8
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -1124,6 +1140,9 @@ class GatewayConfig:
             "multiplex_profile_allowlist": self.multiplex_profile_allowlist,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "loop_watchdog": self.loop_watchdog,
+            "loop_watchdog_probe_interval_s": self.loop_watchdog_probe_interval_s,
+            "loop_watchdog_probe_timeout_s": self.loop_watchdog_probe_timeout_s,
+            "loop_watchdog_max_strikes": self.loop_watchdog_max_strikes,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -1207,6 +1226,30 @@ class GatewayConfig:
         else:
             loop_watchdog_raw = nested_gateway.get("loop_watchdog")
         loop_watchdog = _coerce_bool(loop_watchdog_raw, True)
+        loop_watchdog_probe_interval_s = _coerce_float(
+            data.get("loop_watchdog_probe_interval_s")
+            if "loop_watchdog_probe_interval_s" in data
+            else nested_gateway.get("loop_watchdog_probe_interval_s"),
+            30.0,
+        )
+        loop_watchdog_probe_timeout_s = _coerce_float(
+            data.get("loop_watchdog_probe_timeout_s")
+            if "loop_watchdog_probe_timeout_s" in data
+            else nested_gateway.get("loop_watchdog_probe_timeout_s"),
+            10.0,
+        )
+        loop_watchdog_max_strikes = _coerce_int(
+            data.get("loop_watchdog_max_strikes")
+            if "loop_watchdog_max_strikes" in data
+            else nested_gateway.get("loop_watchdog_max_strikes"),
+            8,
+        )
+        if loop_watchdog_probe_interval_s < 1.0:
+            loop_watchdog_probe_interval_s = 30.0
+        if loop_watchdog_probe_timeout_s < 1.0:
+            loop_watchdog_probe_timeout_s = 10.0
+        if loop_watchdog_max_strikes < 1:
+            loop_watchdog_max_strikes = 8
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -1269,6 +1312,9 @@ class GatewayConfig:
             multiplex_profile_allowlist=multiplex_profile_allowlist,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=loop_watchdog,
+            loop_watchdog_probe_interval_s=loop_watchdog_probe_interval_s,
+            loop_watchdog_probe_timeout_s=loop_watchdog_probe_timeout_s,
+            loop_watchdog_max_strikes=loop_watchdog_max_strikes,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),

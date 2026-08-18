@@ -12349,7 +12349,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         watchdog = getattr(self, "_loop_liveness_watchdog", None)
         if watchdog is None or not watchdog.is_alive():
             try:
-                self._loop_liveness_watchdog = start_loop_liveness_watchdog(loop)
+                interval = 30.0
+                timeout = 10.0
+                strikes = 8
+                if config is not None:
+                    interval = getattr(
+                        config, "loop_watchdog_probe_interval_s", 30.0
+                    ) or 30.0
+                    timeout = getattr(
+                        config, "loop_watchdog_probe_timeout_s", 10.0
+                    ) or 10.0
+                    strikes = getattr(
+                        config, "loop_watchdog_max_strikes", 8
+                    ) or 8
+                self._loop_liveness_watchdog = start_loop_liveness_watchdog(
+                    loop,
+                    probe_interval=float(interval),
+                    probe_timeout=float(timeout),
+                    max_strikes=int(strikes),
+                )
             except Exception:
                 logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
 

@@ -48,7 +48,12 @@ DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S = 5.0
 DEFAULT_LOOP_WATCHDOG_INTERVAL_S = 30.0
 DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
-DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+# Raised from 3 to 8 (kanban t_70483f23): tolerate transient, self-recovering
+# event-loop stalls during Telegram/Discord reconnect (sync socket I/O on a
+# network blip) so a short block does not force exit code 75. A genuine
+# multi-minute wedge still escalates. Tuned via gateway.loop_watchdog_* in
+# config.yaml when the default is too loose or too tight for a deployment.
+DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 8
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 

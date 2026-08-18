@@ -85,12 +85,27 @@ export function clampIntensity(value: unknown): number {
 
 /**
  * Glass rides on the macOS vibrancy material, so it is macOS-only and 'clear'
- * is the fallback everywhere else. Clear is also the default: a profile with no
- * mode recorded predates this setting and always behaved as clear, so it keeps
- * behaving as clear rather than silently changing look on update.
+ * is the fallback everywhere else.
+ *
+ * With no mode recorded, macOS gets glass — it is the better-looking half of
+ * the feature and the one worth finding, and pre-selecting it costs a fresh
+ * profile nothing because the intensity still starts at 0 (the whole feature
+ * is off until the user raises the lever). `legacyIntensity` is the escape
+ * hatch: a profile that already carries a NON-ZERO intensity but no mode
+ * predates this setting and has been rendering as clear all along, so it keeps
+ * rendering as clear. Flipping a window someone already tuned is the one thing
+ * a default must not do.
  */
-export function normalizeMode(value: unknown, isMac: boolean): TranslucencyMode {
-  return value === 'glass' && isMac ? 'glass' : 'clear'
+export function normalizeMode(value: unknown, isMac: boolean, legacyIntensity = 0): TranslucencyMode {
+  if (!isMac) {
+    return 'clear'
+  }
+
+  if (value === 'glass' || value === 'clear') {
+    return value
+  }
+
+  return legacyIntensity > 0 ? 'clear' : 'glass'
 }
 
 /** Unknown or unsupported values fall back to the default material. */
@@ -106,10 +121,11 @@ export function normalizeScope(value: unknown): GlassScope {
 /** Parse a persisted translucency.json / IPC payload into a safe state. */
 export function normalizeState(payload: unknown, isMac: boolean): TranslucencyState {
   const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+  const intensity = clampIntensity(record.intensity)
 
   return {
-    intensity: clampIntensity(record.intensity),
-    mode: normalizeMode(record.mode, isMac),
+    intensity,
+    mode: normalizeMode(record.mode, isMac, intensity),
     material: normalizeMaterial(record.material),
     scope: normalizeScope(record.scope)
   }

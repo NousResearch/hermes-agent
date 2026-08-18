@@ -13,8 +13,6 @@
 
 import {
   clampIntensity,
-  DEFAULT_GLASS_MATERIAL,
-  DEFAULT_GLASS_SCOPE,
   GLASS_MATERIALS,
   GLASS_SCOPES,
   type GlassMaterial,
@@ -22,6 +20,7 @@ import {
   glassSurfaceKeep,
   normalizeMaterial,
   normalizeScope,
+  normalizeState,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_STEP,
@@ -40,27 +39,17 @@ export const GLASS_SUPPORTED = isMacPlatform()
 
 const KEY = 'hermes.desktop.translucency.v1'
 
-// The v1 key used to hold a bare intensity (`"23"`). Anything without a mode
-// predates glass and always behaved as clear, so it stays clear — a saved
-// setting must not change how the window looks on update.
+// The v1 key used to hold a bare intensity (`"23"`). Normalization lives in the
+// shared module so this and the main process resolve the default the same way —
+// including the legacy rule, where a saved NON-ZERO intensity with no mode means
+// a profile that has been rendering as clear all along and must keep doing so.
 const read = (): TranslucencyState => {
   const stored = readJson<unknown>(KEY)
 
-  const record: Record<string, unknown> =
-    stored && typeof stored === 'object' ? (stored as Record<string, unknown>) : { intensity: stored }
-
-  return {
-    intensity: clampIntensity(record.intensity),
-    mode: record.mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear',
-    material: normalizeMaterial(record.material),
-    scope: normalizeScope(record.scope)
-  }
+  return normalizeState(stored && typeof stored === 'object' ? stored : { intensity: stored }, GLASS_SUPPORTED)
 }
 
-const initial: TranslucencyState =
-  typeof window === 'undefined'
-    ? { intensity: TRANSLUCENCY_MIN, mode: 'clear', material: DEFAULT_GLASS_MATERIAL, scope: DEFAULT_GLASS_SCOPE }
-    : read()
+const initial: TranslucencyState = typeof window === 'undefined' ? normalizeState(null, false) : read()
 
 export const $translucency = atom<TranslucencyState>(initial)
 

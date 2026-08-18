@@ -83,11 +83,30 @@ describe('normalizeMode', () => {
     expect(normalizeMode('glass', false)).toBe('clear')
   })
 
-  it('falls back to clear for absent, legacy and junk values', () => {
-    expect(normalizeMode(undefined, true)).toBe('clear')
+  it('honours an explicit choice', () => {
     expect(normalizeMode('clear', true)).toBe('clear')
-    expect(normalizeMode('acrylic', true)).toBe('clear')
-    expect(normalizeMode(42, true)).toBe('clear')
+    expect(normalizeMode('glass', true)).toBe('glass')
+  })
+
+  // Glass is pre-selected so the better half of the feature is the one you
+  // find, which is free because the intensity still starts at 0.
+  it('pre-selects glass on macOS when nothing is recorded', () => {
+    expect(normalizeMode(undefined, true)).toBe('glass')
+    expect(normalizeMode('acrylic', true)).toBe('glass')
+    expect(normalizeMode(42, true)).toBe('glass')
+    expect(normalizeMode(undefined, false)).toBe('clear')
+  })
+
+  // The one case that must NOT flip: a profile carrying a non-zero intensity
+  // with no mode has been rendering as clear since before glass existed, and
+  // defaulting it to glass would change a window the user already tuned.
+  it('leaves an already-tuned legacy profile on clear', () => {
+    expect(normalizeMode(undefined, true, 45)).toBe('clear')
+    expect(normalizeMode(undefined, true, 1)).toBe('clear')
+    expect(normalizeMode(undefined, true, 0)).toBe('glass')
+
+    // An explicit mode still wins over the legacy heuristic.
+    expect(normalizeMode('glass', true, 45)).toBe('glass')
   })
 })
 
@@ -227,11 +246,15 @@ describe('normalizeState', () => {
   })
 
   it('survives junk payloads', () => {
-    const fallback = { intensity: 0, material: DEFAULT_GLASS_MATERIAL, mode: 'clear', scope: DEFAULT_GLASS_SCOPE }
+    const base = { intensity: 0, material: DEFAULT_GLASS_MATERIAL, scope: DEFAULT_GLASS_SCOPE }
 
-    expect(normalizeState(null, true)).toEqual(fallback)
-    expect(normalizeState('nope', true)).toEqual(fallback)
-    expect(normalizeState({ intensity: 'x', material: 'nope', mode: 'glass', scope: 'nope' }, false)).toEqual(fallback)
+    // A fresh macOS profile lands on glass at zero intensity: selected, but off.
+    expect(normalizeState(null, true)).toEqual({ ...base, mode: 'glass' })
+    expect(normalizeState('nope', true)).toEqual({ ...base, mode: 'glass' })
+    expect(normalizeState({ intensity: 'x', material: 'nope', mode: 'glass', scope: 'nope' }, false)).toEqual({
+      ...base,
+      mode: 'clear'
+    })
   })
 })
 
@@ -240,6 +263,23 @@ describe('glassActive', () => {
     expect(glassActive(glass(60))).toBe(true)
     expect(glassActive(glass(0))).toBe(false)
     expect(glassActive(clear(60))).toBe(false)
+  })
+})
+
+// The default must be selected-but-off: a fresh macOS profile shows Glass in
+// the picker while the window itself is untouched until the lever moves.
+describe('a fresh profile', () => {
+  const fresh = normalizeState(null, true)
+
+  it('pre-selects glass with the feature still off', () => {
+    expect(fresh.mode).toBe('glass')
+    expect(fresh.intensity).toBe(TRANSLUCENCY_MIN)
+    expect(glassActive(fresh)).toBe(false)
+  })
+
+  it('leaves the window exactly as it is today', () => {
+    expect(windowOpacityFor(fresh)).toBe(1)
+    expect(windowBackingOptions(fresh, '#101014')).toEqual({ backgroundColor: '#101014' })
   })
 })
 

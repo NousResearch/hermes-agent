@@ -37,6 +37,10 @@ const glassAttr = () => document.documentElement.hasAttribute('data-hermes-glass
 const clearAttr = () => document.documentElement.hasAttribute('data-hermes-clear')
 const keep = () => document.documentElement.style.getPropertyValue('--translucency-glass-keep')
 
+// Snapshotted at import time: every describe below mutates the store, so the
+// default can only be observed here.
+const initialTranslucency = $translucency.get()
+
 describe('window translucency lever', () => {
   beforeEach(() => {
     setTranslucencyMode('clear')
@@ -49,10 +53,13 @@ describe('window translucency lever', () => {
     expect(TRANSLUCENCY_MAX).toBe(100)
   })
 
-  it('defaults to off and clear', () => {
-    expect($translucency.get()).toEqual({
+  // NB: this asserts the module's INITIAL value, so it deliberately reads the
+  // atom before the beforeEach above can touch it — the previous version of
+  // this test ran after the reset and so proved nothing about the default.
+  it('starts off, with glass pre-selected on macOS', () => {
+    expect(initialTranslucency).toEqual({
       intensity: TRANSLUCENCY_MIN,
-      mode: 'clear',
+      mode: GLASS_SUPPORTED ? 'glass' : 'clear',
       material: DEFAULT_GLASS_MATERIAL,
       scope: DEFAULT_GLASS_SCOPE
     })

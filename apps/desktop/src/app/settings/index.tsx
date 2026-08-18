@@ -48,6 +48,9 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
   'gateway',
+  // Legacy alias: the Connections page merged into Gateways. Kept in the enum
+  // so saved `?tab=connections` deep links still resolve (redirected below).
+  'connections',
   'keybinds',
   'keys',
   'notifications',
@@ -77,6 +80,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }, [navigate, search])
 
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+
+  // Connections merged into the unified Gateways page: land old
+  // `?tab=connections` routes/bookmarks there instead of a dead entry.
+  useEffect(() => {
+    if (activeView === 'connections') {
+      setActiveView('gateway')
+    }
+  }, [activeView, setActiveView])
   // Providers subnav (Accounts vs API keys) lives in its own param so each
   // sub-view is deep-linkable and survives a refresh.
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
@@ -303,7 +314,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />
-          ) : activeView === 'gateway' ? (
+          ) : activeView === 'gateway' || activeView === 'connections' ? (
+            // 'connections' renders the unified page too so the frame before
+            // the alias redirect lands doesn't flash the fallback view.
             <GatewaySettings />
           ) : activeView === 'keybinds' ? (
             <KeybindSettings />

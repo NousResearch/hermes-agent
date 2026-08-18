@@ -1,11 +1,24 @@
 import { useStore } from '@nanostores/react'
-import { useEffect } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { getLatestSessionMessages } from '@/hermes'
+import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
-import { $activeSessionId, $currentCwd, setCurrentCwd } from '@/store/session'
+import {
+  $activeSessionId,
+  $busy,
+  $currentCwd,
+  $messagingSessions,
+  $selectedStoredSessionId,
+  $sessions,
+  sessionMatchesStoredId,
+  setCurrentCwd
+} from '@/store/session'
 import {
   $sessionStates,
   publishSessionState,
@@ -13,7 +26,98 @@ import {
   setSessionStalled
 } from '@/store/session-states'
 
+import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
+
+interface ActiveTranscriptSession {
+  profile?: string | null
+}
+
+/** Resolve an active transcript from either local recents or messaging slices. */
+export function resolveActiveTranscriptSession(storedSessionId: string): ActiveTranscriptSession | undefined {
+  return (
+    $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
+    $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  )
+}
+
+export interface ActiveTranscriptRefreshDeps {
+  activeSessionIdRef: MutableRefObject<string | null>
+  busyRef: MutableRefObject<boolean>
+  requestSequenceRef: MutableRefObject<number>
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
+  resolveSession: (storedSessionId: string) => ActiveTranscriptSession | null | undefined
+  signatureRef: MutableRefObject<Map<string, string>>
+  updateSessionState: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null
+  ) => ClientSessionState
+}
+
+/** Reconcile one persisted transcript snapshot into the currently viewed session. */
+export async function reconcileActiveTranscript({
+  activeSessionIdRef,
+  busyRef,
+  requestSequenceRef,
+  resolveSession,
+  selectedStoredSessionIdRef,
+  signatureRef,
+  updateSessionState
+}: ActiveTranscriptRefreshDeps): Promise<void> {
+  const storedSessionId = selectedStoredSessionIdRef.current
+  const runtimeSessionId = activeSessionIdRef.current
+
+  if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+    return
+  }
+
+  const stored = resolveSession(storedSessionId)
+
+  if (!stored) {
+    return
+  }
+
+  const requestId = requestSequenceRef.current + 1
+  requestSequenceRef.current = requestId
+
+  try {
+    const latest = await getLatestSessionMessages(storedSessionId, stored.profile)
+
+    if (
+      requestId !== requestSequenceRef.current ||
+      busyRef.current ||
+      selectedStoredSessionIdRef.current !== storedSessionId ||
+      activeSessionIdRef.current !== runtimeSessionId
+    ) {
+      return
+    }
+
+    const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+    const signature = sessionMessagesSignature(latest.messages)
+
+    if (signatureRef.current.get(signatureKey) === signature) {
+      return
+    }
+
+    signatureRef.current.set(signatureKey, signature)
+    const messages = toChatMessages(latest.messages)
+
+    updateSessionState(
+      runtimeSessionId,
+      state => ({
+        ...state,
+        // The refresh re-reads only the newest tail page; graft it onto any
+        // older pages "Show earlier" already backfilled instead of clobbering
+        // them (see transcript-backfill).
+        messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
+      }),
+      storedSessionId
+    )
+  } catch {
+    // Non-fatal: the next change event or manual resume can hydrate the view.
+  }
+}
 
 // Cron sessions are written by a background scheduler tick, messaging turns by
 // the background gateway (Telegram, WeChat, Discord, …) — neither signals the
@@ -150,14 +254,20 @@ export function rehydrateLiveSessionStatuses(
 
       const existing = $sessionStates.get()[runtimeSessionId]
 
-      if (existing?.busy || existing?.needsInput) {
+      if (existing?.busy || existing?.needsInput || existing?.awaitingResponse) {
         publishSessionState(runtimeSessionId, {
           ...existing,
           awaitingResponse: false,
           busy: false,
           needsInput: false,
           streamId: null,
-          turnStartedAt: null
+          turnStartedAt: null,
+          turnLive: false,
+          // The turn ended without its completion events reaching us — a lost
+          // `tool.complete` would otherwise leave a spinning tool row in an
+          // idle session. Seal open tool parts the same way the settle path
+          // does, so the transcript matches the state.
+          messages: sealOpenToolParts(existing.messages)
         })
       }
     }
@@ -177,9 +287,10 @@ interface BackgroundSyncParams {
   activeGatewayProfile: string
   activeIsMessaging: boolean
   activeSessionId: null | string
+  activeStoredSessionId: null | string
   freshDraftReady: boolean
   gatewayState: string
-  refreshActiveMessagingTranscript: () => Promise<unknown> | unknown
+  refreshActiveTranscript: () => Promise<unknown> | unknown
   refreshCronJobs: () => Promise<unknown> | unknown
   refreshCurrentModel: (force?: boolean) => Promise<unknown> | unknown
   refreshHermesConfig: () => Promise<unknown> | unknown
@@ -193,9 +304,24 @@ interface BackgroundSyncParams {
  *  safety-net refreshes, not the live path, so they're the right thing to slow
  *  when the machine is spending its charge. Returns nothing — meant to live
  *  inside an effect. */
+export function windowIsActivelyViewed({
+  focused,
+  visibilityState
+}: {
+  focused: boolean
+  visibilityState: DocumentVisibilityState
+}): boolean {
+  return visibilityState === 'visible' && focused
+}
+
 function visiblePoll(intervalMs: number, tick: () => void): () => void {
   const run = () => {
-    if (document.visibilityState === 'visible') {
+    // On macOS an unfocused or app-hidden BrowserWindow commonly remains
+    // `visibilityState === "visible"`. Visibility alone therefore kept every
+    // safety-net gateway poll alive while the user was in another app. These
+    // are stale-data backstops, not the live event path, so pause them until
+    // the window is actually being viewed and catch up immediately on focus.
+    if (windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })) {
       tick()
     }
   }
@@ -208,11 +334,13 @@ function visiblePoll(intervalMs: number, tick: () => void): () => void {
   })
 
   document.addEventListener('visibilitychange', run)
+  window.addEventListener('focus', run)
 
   return () => {
     unsubscribeBattery()
     window.clearInterval(intervalId)
     document.removeEventListener('visibilitychange', run)
+    window.removeEventListener('focus', run)
   }
 }
 
@@ -226,9 +354,10 @@ export function useBackgroundSync({
   activeGatewayProfile,
   activeIsMessaging,
   activeSessionId,
+  activeStoredSessionId,
   freshDraftReady,
   gatewayState,
-  refreshActiveMessagingTranscript,
+  refreshActiveTranscript,
   refreshCronJobs,
   refreshCurrentModel,
   refreshHermesConfig,
@@ -239,6 +368,54 @@ export function useBackgroundSync({
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
   const sessionsChangeTick = useStore($sessionsChangeTick)
+  const activeTranscriptBusy = useStore($busy)
+  const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
+
+  const requestActiveTranscriptRefresh = useCallback(
+    (preservePending: boolean) => {
+      if (!activeStoredSessionId || !activeSessionId) {
+        return
+      }
+
+      const storedSessionId = activeStoredSessionId
+      const runtimeSessionId = activeSessionId
+      const sessionKey = `${storedSessionId}:${runtimeSessionId}`
+
+      if (preservePending) {
+        activeTranscriptRefreshPendingRef.current = sessionKey
+      }
+
+      if ($busy.get()) {
+        return
+      }
+
+      if (preservePending && activeTranscriptRefreshPendingRef.current === sessionKey) {
+        activeTranscriptRefreshPendingRef.current = null
+      }
+
+      let sawBusyDuringRead = false
+
+      const unsubscribeBusy = $busy.listen(busy => {
+        sawBusyDuringRead ||= busy
+      })
+
+      void Promise.resolve(refreshActiveTranscript()).finally(() => {
+        unsubscribeBusy()
+
+        // If streaming began while the read was in flight, reconciliation was
+        // discarded and the external event still needs one idle retry.
+        if (
+          preservePending &&
+          (sawBusyDuringRead || $busy.get()) &&
+          $activeSessionId.get() === runtimeSessionId &&
+          $selectedStoredSessionId.get() === storedSessionId
+        ) {
+          activeTranscriptRefreshPendingRef.current = sessionKey
+        }
+      })
+    },
+    [activeSessionId, activeStoredSessionId, refreshActiveTranscript]
+  )
 
   useEffect(() => {
     if (gatewayState !== 'open') {
@@ -264,7 +441,7 @@ export function useBackgroundSync({
         })
         .catch(() => undefined)
     }
-  }, [gatewayState, refreshCurrentModel, refreshSessions, requestGateway])
+  }, [activeGatewayProfile, gatewayState, refreshCurrentModel, refreshSessions, requestGateway])
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session
@@ -332,6 +509,7 @@ export function useBackgroundSync({
       lastRunAt = Date.now()
       void refreshSessions()
       void refreshMessagingSessions()
+      requestActiveTranscriptRefresh(true)
     }
 
     const unsubscribe = $sessionsChangeTick.listen(() => {
@@ -354,7 +532,7 @@ export function useBackgroundSync({
         window.clearTimeout(timer)
       }
     }
-  }, [changeEventsAvailable, gatewayState, refreshMessagingSessions, refreshSessions])
+  }, [changeEventsAvailable, gatewayState, refreshMessagingSessions, refreshSessions, requestActiveTranscriptRefresh])
 
   // Keep the cron-jobs section live without a user action (scheduler ticks in
   // the background). cron.changed (jobs.json moved: CRUD or a scheduler tick's
@@ -374,24 +552,47 @@ export function useBackgroundSync({
     )
   }, [changeEventsAvailable, cronChangeTick, gatewayState, refreshCronJobs])
 
-  // Only the open messaging transcript needs its own cadence — local chats are
-  // live over the websocket already. sessions.changed re-pulls it via the tick
-  // dep; the visible poll is the backstop.
+  // A busy transition only consumes a pending sessions.changed refresh. It
+  // never creates one, so an ordinary local turn going busy -> idle does not
+  // add a REST read. The event itself is coalesced by the list throttle above.
   useEffect(() => {
-    if (gatewayState !== 'open' || !activeIsMessaging) {
+    if (
+      gatewayState !== 'open' ||
+      activeTranscriptBusy ||
+      !activeSessionId ||
+      !activeStoredSessionId ||
+      activeTranscriptRefreshPendingRef.current !== `${activeStoredSessionId}:${activeSessionId}`
+    ) {
       return
     }
 
-    const dispose = visiblePoll(
+    requestActiveTranscriptRefresh(true)
+  }, [activeSessionId, activeStoredSessionId, activeTranscriptBusy, gatewayState, requestActiveTranscriptRefresh])
+
+  // Preserve the pre-existing messaging behavior: refresh once when a
+  // messaging transcript opens, then keep its visibility backstop. Desktop
+  // sessions never enter this effect and therefore gain no periodic timer.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !activeIsMessaging || !activeSessionId || !activeStoredSessionId) {
+      return
+    }
+
+    const runScheduledRefresh = () => requestActiveTranscriptRefresh(false)
+
+    runScheduledRefresh()
+
+    return visiblePoll(
       changeEventsAvailable ? ACTIVE_MESSAGING_SESSION_BACKSTOP_INTERVAL_MS : ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS,
-      () => void refreshActiveMessagingTranscript()
+      runScheduledRefresh
     )
-
-    void refreshActiveMessagingTranscript()
-
-    return dispose
-    // sessionsChangeTick: an inbound turn re-pulls the open transcript.
-  }, [activeIsMessaging, changeEventsAvailable, gatewayState, refreshActiveMessagingTranscript, sessionsChangeTick])
+  }, [
+    activeIsMessaging,
+    activeSessionId,
+    activeStoredSessionId,
+    changeEventsAvailable,
+    gatewayState,
+    requestActiveTranscriptRefresh
+  ])
 
   // Messaging session lists against an older backend: no sessions.changed, so
   // keep the legacy visible poll. (Event-capable backends fold this into the

@@ -73,7 +73,7 @@ function toSuggestion(server: string, sessionId: string | null): ComposerSuggest
     doneTip: copy('doneTip'),
     icon: 'plug',
     id: server,
-    invoke: context => reconnect(server, sessionId, context.cancelled),
+    invoke: context => reconnect(server, context.sessionId ?? sessionId, context.cancelled),
     label: copy('label', name),
     provider: 'repair',
     tip: copy('tip', name),

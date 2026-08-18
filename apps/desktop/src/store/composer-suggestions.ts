@@ -67,8 +67,31 @@ export const $composerSuggestionsBySession = atom<Record<string, ComposerSuggest
 
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
+// Everything the pill actually paints. Compared field-by-field rather than by
+// key alone: a provider rebuilds its suggestion objects on every sample, so
+// key equality is true constantly, and treating that as "no change" pins the
+// FIRST object forever — the strip then paints a stale tip and, worse, calls a
+// stale `invoke` closure. Comparing the rendered copy keeps the cheap bail-out
+// for the common case (same draft, same match) while letting a genuinely
+// changed offer through.
+const RENDERED: readonly (keyof ComposerSuggestion)[] = [
+  'brand',
+  'doneLabel',
+  'doneTip',
+  'icon',
+  'label',
+  'tip',
+  'workingLabel',
+  'workingTip'
+]
+
 const sameSuggestions = (a: readonly ComposerSuggestion[], b: readonly ComposerSuggestion[]) =>
-  a.length === b.length && a.every((x, i) => suggestionKey(x) === suggestionKey(b[i]!))
+  a.length === b.length &&
+  a.every((x, i) => {
+    const y = b[i]!
+
+    return suggestionKey(x) === suggestionKey(y) && RENDERED.every(field => x[field] === y[field])
+  })
 
 function write(sessionId: string | null | undefined, suggestions: ComposerSuggestion[]): void {
   const key = keyFor(sessionId)

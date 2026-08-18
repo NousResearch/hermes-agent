@@ -67,7 +67,20 @@ class TestRecordAuxiliaryUsage:
         assert rows[0]["input_tokens"] == 3000
         assert rows[0]["api_call_count"] == 3
 
-
+    def test_explicit_none_api_call_count_uses_default_one(self, db):
+        """Explicit None must match the documented default of 1, not become 0."""
+        db.create_session("s1", source="cli")
+        db.record_auxiliary_usage(
+            "s1",
+            "vision",
+            model="gemini-3-flash",
+            input_tokens=10,
+            output_tokens=1,
+            api_call_count=None,
+        )
+        rows = _usage_rows(db, "s1")
+        assert len(rows) == 1
+        assert rows[0]["api_call_count"] == 1
 
     def test_main_loop_and_aux_rows_coexist(self, db):
         db.create_session("s1", source="cli")

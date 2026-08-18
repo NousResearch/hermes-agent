@@ -284,3 +284,16 @@ class TestExcludedDirectories:
         tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
         result = tracker.check_tool_call("read_file", {"path": str(normal / "f.py")})
         assert result is not None and "Backend rules" in result
+
+    def test_agents_override_md_wins_in_subdirectory(self, tmp_path):
+        """AGENTS.override.md takes priority over AGENTS.md per directory."""
+        sub = tmp_path / "backend"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Committed backend rules")
+        (sub / "AGENTS.override.md").write_text("Personal backend override")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
+        assert result is not None
+        assert "Personal backend override" in result
+        assert "Committed backend rules" not in result

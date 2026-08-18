@@ -123,11 +123,123 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
     with pytest.raises(_FellThroughIntercept):
         await _dispatch(runner, _event("just checking the visual UI, no need to pass any data"))
 
-    # The clarify entry must still be pending and unresolved.
+    # The prose is not accepted as the answer, but the clarify must be
+    # released before normal busy routing so redirect-to-steer can drain.
     with cm._lock:
         entry = cm._entries.get("cl-native")
     assert entry is not None
-    assert not entry.event.is_set()
+    assert entry.event.is_set()
+    assert entry.response == ""
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_thread_prose_does_not_overwrite_concurrent_button_choice():
+    """A button result that wins the race remains the clarify response."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-button-race",
+        SESSION_KEY,
+        "Pick a UI variant",
+        ["buttons", "dropdown"],
+    )
+    assert cm.resolve_gateway_clarify("cl-button-race", "buttons") is True
+
+    with pytest.raises(_FellThroughIntercept):
+        await _dispatch(runner, _event("one more unrelated thought"))
+
+    assert entry.event.is_set()
+    assert entry.response == "buttons"
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_native_multi_select_out_of_range_keeps_clarify_pending():
+    """Out-of-range multi-select numbers must not cancel the pending prompt."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-ms-oor",
+        SESSION_KEY,
+        "Pick some targets",
+        ["staging", "prod", "canary"],
+        multi_select=True,
+    )
+    assert entry.awaiting_text is False
+
+    result = await _dispatch(runner, _event("99"))
+
+    assert result == ""
+    with cm._lock:
+        still = cm._entries.get("cl-ms-oor")
+    assert still is not None
+    assert not still.event.is_set()
+    assert still.response is None
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_native_multi_select_bad_comma_list_keeps_clarify_pending():
+    """Unrecognised comma-lists are retryable selection attempts, not prose."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-ms-bad",
+        SESSION_KEY,
+        "Pick some targets",
+        ["staging", "prod", "canary"],
+        multi_select=True,
+    )
+    assert entry.awaiting_text is False
+
+    result = await _dispatch(runner, _event("1,99"))
+
+    assert result == ""
+    with cm._lock:
+        still = cm._entries.get("cl-ms-bad")
+    assert still is not None
+    assert not still.event.is_set()
+    assert still.response is None
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_native_multi_select_prose_releases_clarify_before_routing():
+    """Free prose on multi-select still breaks the redirect/steer deadlock."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    cm.register(
+        "cl-ms-prose",
+        SESSION_KEY,
+        "Pick some targets",
+        ["staging", "prod"],
+        multi_select=True,
+    )
+
+    with pytest.raises(_FellThroughIntercept):
+        await _dispatch(
+            runner,
+            _event("just checking the visual UI, no need to pass any data"),
+        )
+
+    with cm._lock:
+        entry = cm._entries.get("cl-ms-prose")
+    assert entry is not None
+    assert entry.event.is_set()
+    assert entry.response == ""
     _clear_clarify_state()
 
 
@@ -151,5 +263,4 @@ async def test_prose_still_accepted_after_other_flips_text_capture():
     assert entry.event.is_set()
     assert entry.response == "a carousel actually"
     _clear_clarify_state()
-
 

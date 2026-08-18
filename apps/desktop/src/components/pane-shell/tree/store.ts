@@ -172,9 +172,11 @@ function frontPaneInGroup(paneId: string) {
  *  - a registered closer (core panes whose visibility an app store owns:
  *    review/terminal/preview/sessions) closes through that store, so the
  *    titlebar/statusbar toggles stay truthful;
- *  - everything else (plugin panes, unbound core panes) is DISMISSED: removed
- *    from the tree and remembered so adoption doesn't re-add it. Reveal
- *    intent (a preview target, ⌘G) or a layout reset un-dismisses.
+ *  - unbound core panes and panes from multi-pane plugins are DISMISSED:
+ *    removed from the tree and remembered so adoption doesn't re-add them.
+ *    Reveal intent (a preview target, ⌘G) or a layout reset un-dismisses;
+ *  - closing the sole pane from a plugin disables that plugin, preserving the
+ *    discoverable Settings → Plugins recovery path for single-pane plugins.
  */
 const DISMISSED_KEY = 'hermes.desktop.dismissedPanes.v1'
 
@@ -762,14 +764,24 @@ export function closeTreePane(paneId: string) {
     return
   }
 
-  // A plugin's pane: Close = DISABLE the plugin — the same switch as
-  // Settings → Plugins, so recovery is discoverable and symmetric. The
-  // contribution unregisters but the pane id STAYS in the tree, so
-  // re-enabling restores it exactly where it was. (Dismissal + removal
-  // would strand the pane with no way back short of a layout reset.)
-  const source = registry.getArea('panes').find(c => c.id === paneId)?.source
+  const panes = registry.getArea('panes')
+  const source = panes.find(c => c.id === paneId)?.source
 
   if (source?.startsWith('plugin:')) {
+    // A plugin may own several independent panes. Closing one of them must not
+    // unload every contribution from that plugin (for example, closing Bot
+    // Mode's Cronjobs pane must leave its Bots roster and composer middleware
+    // alive). Dismiss just that pane; Layout reset remains the explicit way to
+    // restore dismissed contributed panes.
+    if (panes.filter(c => c.source === source).length > 1) {
+      dismissTreePane(paneId)
+
+      return
+    }
+
+    // A single-pane plugin keeps the existing symmetric behavior: Close uses
+    // the same switch as Settings → Plugins. Its contribution unregisters but
+    // the pane id stays in the tree, so re-enabling restores its exact place.
     const pluginId = source.slice('plugin:'.length)
     void setPluginEnabled(pluginId, false)
     notify({
@@ -1093,6 +1105,86 @@ interface PaneDockHint {
   pos: DropPosition
   /** Center docks: stack BEFORE this pane id (the strip divider's slot). */
   before?: null | string
+  /** One-time re-home token: a pane ALREADY adopted under an older dock hint
+   *  moves onto this hint's center anchor once per token — never when the
+   *  user has placed the pane themselves. See `healDockedPanes`. */
+  heal?: string
+}
+
+// One-time dock heals already applied, persisted so a heal runs exactly once
+// per pane per token across boots (and never re-fights a user who re-arranges
+// the healed pane afterward).
+const DOCK_HEAL_KEY = 'hermes.desktop.paneDockHeals.v1'
+
+const appliedDockHeals = new Set<string>(readJson<string[]>(DOCK_HEAL_KEY) ?? [])
+
+function markDockHealApplied(token: string) {
+  appliedDockHeals.add(token)
+  writeJson(DOCK_HEAL_KEY, [...appliedDockHeals])
+}
+
+/**
+ * A `panes` contribution whose dock hint carries a `heal` token gets ONE
+ * chance to re-home its already-adopted pane onto the hint's anchor —
+ * adoption is once per pane lifetime (the persisted tree remembers it), so a
+ * contribution whose default dock CHANGED would otherwise never reach
+ * existing installs. Guarded hard:
+ *
+ *  - the token burns exactly once per pane (idempotent across boots), and it
+ *    burns even when the heal is skipped, so a user who later drags the pane
+ *    back to the old spot is never fought;
+ *  - a USER-PLACED pane ($userPlacedPanes) is never touched — their spot wins;
+ *  - center re-homes only: a heal exists to consolidate a stray split into
+ *    its anchor's tab strip, not to re-run arbitrary splits.
+ *
+ * Silent like adoption — the anchor zone keeps its active tab. The center
+ * insert pins the zone's header shown, which is the point: the strip is how
+ * the user finds the healed tab.
+ */
+function healDockedPanes(
+  tree: LayoutNode,
+  dataOf: (paneId: string) => { dock?: PaneDockHint; placement?: string } | undefined
+): LayoutNode {
+  let next = tree
+
+  for (const pane of registry.getArea('panes')) {
+    const dock = dataOf(pane.id)?.dock
+
+    if (!dock?.heal || dock.pos !== 'center' || !allPaneIds(next).includes(pane.id)) {
+      continue
+    }
+
+    const token = `${pane.id}:${dock.heal}`
+
+    if (appliedDockHeals.has(token)) {
+      continue
+    }
+
+    markDockHealApplied(token)
+
+    if ($userPlacedPanes.get().has(pane.id)) {
+      continue
+    }
+
+    const from = findGroupOfPane(next, pane.id)
+    const anchor = findGroupOfPane(next, dock.pane)
+
+    // Already stacked with its anchor, or the anchor isn't in the tree.
+    if (!from || !anchor || from.id === anchor.id) {
+      continue
+    }
+
+    const without = removePane(next, pane.id)
+    const target = without ? findGroupOfPane(without, dock.pane)?.id : undefined
+
+    if (!without || !target) {
+      continue
+    }
+
+    next = insertAtGroup(without, target, pane.id, 'center', dock.before, false) ?? next
+  }
+
+  return next
 }
 
 function adoptContributedPanes(): void {
@@ -1111,16 +1203,11 @@ function adoptContributedPanes(): void {
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
   const inTree = new Set(allPaneIds(tree))
 
-  // Plugin panes are never dismissed anymore (Close disables the plugin
-  // instead) — drop stale entries so panes stranded by the old behavior
-  // re-adopt on their own.
-  for (const pane of panes) {
-    if (pane.source?.startsWith('plugin:') && $dismissedPanes.get().has(pane.id)) {
-      setDismissed(pane.id, false)
-    }
-  }
-
   const dismissed = $dismissedPanes.get()
+
+  // One-time dock heals run FIRST: a heal re-homes a pane that is ALREADY in
+  // the tree, so the missing-pane adoption below never sees it.
+  const healed = healDockedPanes(tree, dataOf)
 
   // `placement: 'floating'` opts OUT of the tree entirely — those panes render
   // as fixed cards above it (renderer/floating-panes.tsx). Adopting one would
@@ -1131,10 +1218,14 @@ function adoptContributedPanes(): void {
   )
 
   if (missing.length === 0) {
+    if (healed !== tree) {
+      commit(healed)
+    }
+
     return
   }
 
-  let next = tree
+  let next = healed
 
   for (const pane of missing) {
     const dock = dataOf(pane.id)?.dock

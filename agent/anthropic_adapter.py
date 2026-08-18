@@ -625,6 +625,10 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         # Hostname match (not substring) so e.g. evil.com/palantirfoundry
         # paths don't trigger Bearer auth.
         or base_url_host_matches(normalized, "palantirfoundry.com")
+        # CommandCode's /provider/v1/messages endpoint uses Bearer auth,
+        # not Anthropic's native x-api-key header. Hostname match for the
+        # same reason as above.
+        or base_url_host_matches(normalized, "api.commandcode.ai")
     )
 
 
@@ -2814,7 +2818,26 @@ def convert_messages_to_anthropic(
                     p.get("cache_control") for p in content if isinstance(p, dict)
                 )
                 if has_cache:
-                    system = [p for p in content if isinstance(p, dict)]
+                    # Copy blocks before coercing so the caller's message
+                    # dicts are never mutated, then replace blank/whitespace
+                    # text with the shared non-whitespace placeholder —
+                    # Anthropic rejects a blank system text block with the
+                    # same HTTP 400 as message blocks ("text content blocks
+                    # must contain non-whitespace text"), and a blank block
+                    # carrying a cache_control breakpoint cannot simply be
+                    # dropped (#70909).
+                    system = []
+                    for p in content:
+                        if not isinstance(p, dict):
+                            continue
+                        if (
+                            p.get("type") == "text"
+                            and isinstance(p.get("text"), str)
+                            and not p["text"].strip()
+                        ):
+                            p = dict(p)
+                            p["text"] = _EMPTY_TEXT_PLACEHOLDER
+                        system.append(p)
                 else:
                     system = "\n".join(
                         p["text"] for p in content if p.get("type") == "text"

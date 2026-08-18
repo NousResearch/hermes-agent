@@ -10,6 +10,8 @@ The first test characterizes the sequence as driven through `tick()` (proving
 the extraction didn't change `tick`'s behavior); the rest unit-test the
 extracted helper directly.
 """
+import pytest
+
 import cron.scheduler as s
 
 
@@ -46,12 +48,22 @@ def test_tick_process_job_sequence(monkeypatch):
     sequence run_job → save → deliver → mark, in that order."""
     calls = _patch_pipeline(monkeypatch)
     monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
-    monkeypatch.setattr(s, "advance_next_runs", lambda ids: 1)
+    monkeypatch.setattr(s, "claim_job_for_fire", lambda _job_id, **_kwargs: True)
 
     s.tick(verbose=False, sync=True)
 
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j1", True)
+
+
+def test_tick_skips_job_when_durable_fire_claim_is_lost(monkeypatch):
+    """A manual/external fire that wins the shared CAS must exclude ticker."""
+    calls = _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
+    monkeypatch.setattr(s, "claim_job_for_fire", lambda _job_id: False)
+
+    assert s.tick(verbose=False, sync=True) == 0
+    assert calls == []
 
 
 def test_run_one_job_success_sequence(monkeypatch):
@@ -64,6 +76,179 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j2", True)
+
+
+def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
+    """An exception escaping the run body must not become a silent error row."""
+    delivered = []
+    marked = []
+    finished = []
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j3"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            RuntimeError("Gemini HTTP 503 (UNAVAILABLE)")
+        ),
+    )
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, **_kw: delivered.append((job["id"], content)) or None,
+    )
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
+    )
+
+    ok = s.run_one_job({"id": "j3", "name": "morning", "deliver": "telegram"})
+
+    assert ok is False
+    assert delivered == [
+        ("j3", "⚠️ Cron 'morning' failed: Gemini HTTP 503 (UNAVAILABLE)")
+    ]
+    assert marked == [
+        (("j3", False, "Gemini HTTP 503 (UNAVAILABLE)"), {"delivery_error": None})
+    ]
+    assert finished == [
+        (
+            ("exec-j3",),
+            {
+                "success": False,
+                "error": "Gemini HTTP 503 (UNAVAILABLE)",
+                "delivery_outcome": "delivered",
+            },
+        )
+    ]
+
+
+def test_run_one_job_exception_records_failure_alert_delivery_error(monkeypatch):
+    """A failed fallback alert must populate last_delivery_error."""
+    marked = []
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j4"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("provider failed")),
+    )
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: "send failed: 502")
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+
+    assert s.run_one_job({"id": "j4", "deliver": "telegram"}) is False
+    assert marked == [
+        (("j4", False, "provider failed"), {"delivery_error": "send failed: 502"})
+    ]
+
+
+def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
+    """Once delivery has been attempted, the outer handler must not send again."""
+    delivered = []
+    mark_calls = []
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j5"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (True, "out", "final response", None),
+    )
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, **_kw: delivered.append((job["id"], content)) or None,
+    )
+
+    def fake_mark(*args, **kwargs):
+        mark_calls.append((args, kwargs))
+        if len(mark_calls) == 1:
+            raise RuntimeError("bookkeeping boom")
+
+    monkeypatch.setattr(s, "mark_job_run", fake_mark)
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+
+    ok = s.run_one_job({"id": "j5", "name": "once", "deliver": "telegram"})
+
+    assert ok is False
+    assert delivered == [("j5", "final response")]
+    assert mark_calls[0] == (("j5", True, None), {"delivery_error": None})
+    assert mark_calls[1] == (
+        ("j5", False, "bookkeeping boom"),
+        {"delivery_error": None},
+    )
+
+
+def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch):
+    """Hard interrupts must not attempt failure delivery; they re-raise."""
+    delivered = []
+    marked = []
+    finished = []
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j6"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, **_kw: delivered.append((job["id"], content)) or None,
+    )
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        s.run_one_job({"id": "j6", "name": "interrupt", "deliver": "telegram"})
+
+    assert delivered == []
+    assert marked == [(("j6", False, "KeyboardInterrupt"), {})]
+    assert finished == [
+        (
+            ("exec-j6",),
+            {
+                "success": False,
+                "error": "KeyboardInterrupt",
+                "delivery_outcome": "suppressed",
+            },
+        )
+    ]
 
 
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):

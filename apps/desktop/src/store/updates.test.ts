@@ -123,6 +123,15 @@ describe('maybeNotifyUpdateAvailable', () => {
     maybeNotifyUpdateAvailable(status({ behind: 0 }))
     expect(notifySpy).not.toHaveBeenCalled()
   })
+
+  // FAIL-BEFORE: a shallow installer clone reports behind:null + updateAvailable
+  // (exact count unknowable without a merge-base). The guard treated null as 0
+  // and silently swallowed the notification entirely.
+  it('still notifies with generic copy when the exact behind count is unknown', () => {
+    maybeNotifyUpdateAvailable(status({ behind: null, updateAvailable: true }))
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: 'A new update is available.' })
+  })
 })
 
 describe('reportBackendContract', () => {
@@ -404,6 +413,27 @@ describe('applyUpdates terminal state', () => {
     expect($updateApply.get().applying).toBe(false)
     expect($updateApply.get().stage).toBe('error')
     expect($updateApply.get().error).toBe('rebuild-failed')
+  })
+
+  it('preserves structured safe blockers for the close-and-update prompt', async () => {
+    const blockers = [
+      {
+        pid: 47484,
+        name: 'python.exe',
+        cmdline: 'python.exe -m http.server 8766',
+        kind: 'local-preview' as const,
+        safeToStop: true,
+        label: 'Example Preview',
+        port: 8766
+      }
+    ]
+
+    applyMock.mockResolvedValue({ ok: false, error: 'venv-blocked', message: 'blocked', blockers })
+
+    await applyUpdates()
+
+    expect($updateApply.get().error).toBe('venv-blocked')
+    expect($updateApply.get().blockers).toEqual(blockers)
   })
 
   it('keeps the manual command state for CLI installs with no staged updater', async () => {

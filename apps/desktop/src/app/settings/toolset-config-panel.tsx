@@ -40,11 +40,31 @@ interface ToolsetConfigPanelProps {
   /** Called after a key is saved/cleared or a provider chosen, so the parent
    *  can refresh the "Configured / Needs keys" pill. */
   onConfiguredChange?: () => void
+  /** Capabilities profile-scope override: configure THIS profile instead of the
+   *  app-wide active one. Omitted (every other caller) → app-wide active
+   *  profile, so behavior is unchanged. Threaded into every fetch below. */
+  profile?: null | string
 }
 
 /** Toolsets whose backends expose a selectable model catalog (mirrors the
  *  backend's _MODEL_CATALOG_TOOLSETS map). */
 const MODEL_CATALOG_TOOLSETS = new Set(['image_gen', 'video_gen'])
+
+/**
+ * `useNavigate` throws when there is no react-router context. Inside Settings
+ * (the panel's original home) there always is one, so behavior is unchanged;
+ * embedded in a plugin dialog OUTSIDE the router there is none, and this
+ * degrades to `null` instead of crashing the whole panel. Router presence is
+ * stable for a mounted instance's lifetime, so the try/catch never changes the
+ * hook count between renders (rules-of-hooks safe).
+ */
+function useOptionalNavigate(): null | ReturnType<typeof useNavigate> {
+  try {
+    return useNavigate()
+  } catch {
+    return null
+  }
+}
 
 function providerConfigured(provider: ToolProvider, envState: Record<string, boolean>): boolean {
   if (provider.env_vars.length === 0) {
@@ -81,12 +101,13 @@ interface EnvVarFieldProps {
   isSet: boolean
   onSaved: (key: string) => void
   onCleared: (key: string) => void
+  profile?: null | string
 }
 
-function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
+function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarFieldProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
-  const navigate = useNavigate()
+  const navigate = useOptionalNavigate()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -94,7 +115,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
 
   // Internal route change to Settings → API Keys (tools sub-view) with the
   // deep-link param keys-settings consumes to scroll + flash this key's card.
-  const openInKeys = () => navigate(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
+  // No-op when there is no router (embedded outside Settings, e.g. a plugin
+  // dialog): the "Manage keys" affordance simply doesn't navigate there.
+  const openInKeys = () => navigate?.(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
 
   async function handleSave() {
     if (!value) {
@@ -104,7 +127,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
     setBusy(true)
 
     try {
-      await setEnvVar(envVar.key, value)
+      await setEnvVar(envVar.key, value, profile)
       setEditing(false)
       setValue('')
       onSaved(envVar.key)
@@ -124,7 +147,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
     setBusy(true)
 
     try {
-      await deleteEnvVar(envVar.key)
+      await deleteEnvVar(envVar.key, profile)
       setRevealed(null)
       onCleared(envVar.key)
       notify({ kind: 'success', title: copy.removedTitle, message: copy.removedMessage(envVar.key) })
@@ -143,7 +166,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
     }
 
     try {
-      const result = await revealEnvVar(envVar.key)
+      const result = await revealEnvVar(envVar.key, profile)
       setRevealed(result.value)
     } catch (err) {
       notifyError(err, copy.failedReveal(envVar.key))
@@ -226,6 +249,7 @@ interface PostSetupRunnerProps {
   /** Refresh the parent config after the install finishes (a backend may now
    *  report itself configured). */
   onComplete?: () => void
+  profile?: null | string
 }
 
 /**
@@ -239,7 +263,7 @@ interface PostSetupRunnerProps {
  * "Installed" pill plus a small "Re-run setup" text button, so clicking
  * around the panel doesn't look like it keeps reinstalling.
  */
-function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete }: PostSetupRunnerProps) {
+function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete, profile }: PostSetupRunnerProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [running, setRunning] = useState(false)
@@ -260,7 +284,7 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete 
     activeRef.current = true
 
     try {
-      const started = await runToolsetPostSetup(toolset, postSetupKey)
+      const started = await runToolsetPostSetup(toolset, postSetupKey, profile)
 
       // The spawn endpoint reports ok:false if it couldn't launch the action
       // (e.g. unknown key, server-side spawn failure). Don't poll a status
@@ -283,7 +307,7 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete 
           break
         }
 
-        const polled = await getActionStatus(started.name, 300)
+        const polled = await getActionStatus(started.name, 300, profile)
         last = polled
         setStatus(polled)
         upsertDesktopActionTask(polled)
@@ -316,7 +340,7 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete 
         setRunning(false)
       }
     }
-  }, [toolset, postSetupKey, onComplete, copy])
+  }, [toolset, postSetupKey, onComplete, copy, profile])
 
   return (
     <div className="grid gap-2 rounded-lg bg-background/55 p-2.5">
@@ -364,6 +388,7 @@ interface ModelCatalogPickerProps {
   /** True when this provider is the one written to config — selecting a model
    *  only makes sense for the active backend. */
   isActiveBackend: boolean
+  profile?: null | string
 }
 
 /**
@@ -373,7 +398,7 @@ interface ModelCatalogPickerProps {
  * radio-card list and persists the choice to `image_gen.model` /
  * `video_gen.model`.
  */
-function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCatalogPickerProps) {
+function ModelCatalogPicker({ toolset, providerName, isActiveBackend, profile }: ModelCatalogPickerProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [catalog, setCatalog] = useState<ToolsetModelsResponse | null>(null)
@@ -384,7 +409,7 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCat
     let cancelled = false
 
     setLoading(true)
-    getToolsetModels(toolset, providerName)
+    getToolsetModels(toolset, providerName, profile)
       .then(next => {
         if (!cancelled) {
           setCatalog(next)
@@ -404,13 +429,13 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCat
       })
 
     return () => void (cancelled = true)
-  }, [toolset, providerName])
+  }, [toolset, providerName, profile])
 
   const pick = async (modelId: string) => {
     setSaving(modelId)
 
     try {
-      await selectToolsetModel(toolset, modelId, providerName)
+      await selectToolsetModel(toolset, modelId, providerName, profile)
       setCatalog(current => (current ? { ...current, current: modelId } : current))
       notify({ kind: 'success', title: copy.modelSelectedTitle, message: copy.modelSelectedMessage(modelId) })
     } catch (err) {
@@ -486,7 +511,7 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCat
   )
 }
 
-export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfigPanelProps) {
+export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: ToolsetConfigPanelProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [cfg, setCfg] = useState<ToolsetConfig | null>(null)
@@ -516,7 +541,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     setLoading(true)
 
     try {
-      const next = await getToolsetConfig(toolset)
+      const next = await getToolsetConfig(toolset, profile)
       setCfg(next)
       const seeded: Record<string, boolean> = {}
 
@@ -532,7 +557,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     } finally {
       setLoading(false)
     }
-  }, [copy.failedLoad, toolset])
+  }, [copy.failedLoad, toolset, profile])
 
   useEffect(() => {
     void refresh()
@@ -574,7 +599,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     setSelecting(provider.name)
 
     try {
-      const result = await selectToolsetProvider(toolset, provider.name)
+      const result = await selectToolsetProvider(toolset, provider.name, undefined, profile)
       // Mirror the backend write locally so dependent UI (model catalog
       // enablement) tracks the new active backend without a refetch.
       setCfg(current =>
@@ -616,7 +641,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   // refetch the toolset config so is_active / status flip once entitled.
   async function signInToNousPortal() {
     try {
-      const start = await startOAuthLogin('nous')
+      const start = await startOAuthLogin('nous', profile)
 
       if (start.flow !== 'device_code') {
         notifyError(new Error(`unexpected flow: ${start.flow}`), copy.nousAuthFailed)
@@ -644,7 +669,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
           return
         }
 
-        const polled = await pollOAuthSession('nous', start.session_id)
+        const polled = await pollOAuthSession('nous', start.session_id, profile)
 
         if (polled.status === 'approved') {
           notify({ kind: 'success', title: copy.nousAuthDoneTitle, message: copy.nousAuthDoneMessage })
@@ -676,7 +701,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     setSelecting(provider.name)
 
     try {
-      await selectToolsetProvider(toolset, provider.name, capability)
+      await selectToolsetProvider(toolset, provider.name, capability, profile)
       // Mirror the backend write locally so the Search:/Extract: badges track
       // the new per-capability backend without a refetch.
       setCfg(current =>
@@ -846,6 +871,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                       key={ev.key}
                       onCleared={key => patchEnv(key, false)}
                       onSaved={key => patchEnv(key, true)}
+                      profile={profile}
                     />
                   ))
                 )}
@@ -854,6 +880,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                     installed={provider.status === 'ready'}
                     onComplete={() => void refresh()}
                     postSetupKey={provider.post_setup}
+                    profile={profile}
                     toolset={toolset}
                   />
                 )}
@@ -866,6 +893,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 {MODEL_CATALOG_TOOLSETS.has(toolset) && (
                   <ModelCatalogPicker
                     isActiveBackend={provider.is_active || cfg?.active_provider === provider.name}
+                    profile={profile}
                     providerName={provider.name}
                     toolset={toolset}
                   />

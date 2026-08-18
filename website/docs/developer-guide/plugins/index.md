@@ -253,6 +253,25 @@ config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
 are deprecated — declare capabilities instead so users get a single,
 auditable consent screen. Capabilities are consent + audit, **not a
 sandbox**: they gate host API surfaces, nothing more.
+
+**Pip-distributed plugins** have no `plugin.yaml` directory once installed,
+so declare capabilities in distribution metadata instead, via the companion
+`hermes_agent.plugin_capabilities` entry-point group. Each declaration is
+named `<plugin-id>.<capability-id>` and points at the same object as your
+`hermes_agent.plugins` entry point:
+
+```toml
+[project.entry-points."hermes_agent.plugins"]
+calculator = "my_pkg:register"
+
+[project.entry-points."hermes_agent.plugin_capabilities"]
+"calculator.tools.override" = "my_pkg:register"
+```
+
+Hermes reads these from installed metadata without importing your code, so
+`hermes plugins capabilities` and the consent flow stay accurate for pip
+installs.
+
 ### Manifest v2 reference
 
 `plugin.yaml` also supports an additive **v2 schema** (#64165). Every field is
@@ -639,6 +658,31 @@ _DATA_FILE = _PLUGIN_DIR / "data" / "languages.yaml"
 with open(_DATA_FILE) as f:
     _DATA = yaml.safe_load(f)
 ```
+
+That's for files you *ship*. State you *write* is different — see the next
+section.
+
+### Store durable state
+
+Never write runtime state into your plugin directory: that's the install
+tree, and `hermes plugins update` / `remove` git-pull or delete it — your
+users' data dies with it. The sanctioned home is the per-plugin data root,
+which survives both and follows the active profile:
+
+```python
+from plugins.plugin_storage import plugin_data_dir, plugin_db
+
+# <hermes home>/plugin-data/<name>/ — created on first use
+state_file = plugin_data_dir("my-plugin") / "state.json"
+
+# Or a SQLite database at <data dir>/data.db (WAL mode, thread-friendly)
+conn = plugin_db("my-plugin")
+conn.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY)")
+```
+
+One directory per plugin means every plugin's data is inspectable in one
+predictable place. Secrets don't belong here — credential reads go through
+the standard `.env` / secret-scope path like everywhere else.
 
 ### Bundle skills
 

@@ -760,7 +760,65 @@ function Install-Uv {
         # than a bare `powershell`, which isn't guaranteed to be on PATH under
         # PowerShell 7 / pwsh-only setups.
         $psHostExe = Get-PowerShellHostExe
-        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+
+        # Rungs 1 + 2: run the uv installer -- astral.sh first, then the
+        # byte-identical copy published on GitHub releases.  Corporate
+        # proxies and AV products frequently block astral.sh while
+        # github.com is reachable (issue #69216), so a second source turns
+        # a hard failure into a working install.  Capture the installer
+        # output (Tee-Object) instead of discarding it: when every source
+        # fails, the real error (download blocked, AV quarantine,
+        # permissions) must reach the user instead of only the generic
+        # "installed but not found" message.
+        $installerOutput = @()
+        $astralOut = @()
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
+        $installerOutput += "--- uv installer source: astral.sh ---"
+        $installerOutput += @($astralOut | ForEach-Object { "$_" })
+        if (Test-Path $managedUv) {
+            Write-Info "uv installer succeeded via astral.sh"
+        } else {
+            Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
+            $ghOut = @()
+            & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
+            $installerOutput += "--- uv installer source: GitHub releases ---"
+            $installerOutput += @($ghOut | ForEach-Object { "$_" })
+            if (Test-Path $managedUv) {
+                Write-Info "uv installer succeeded via GitHub releases"
+            }
+        }
+
+        # Rung 3: salvage an existing uv.exe.  When the installer cannot run
+        # at all (network fully blocked) but a working uv already exists --
+        # on PATH, or at ~/.local/bin (the astral default location when
+        # UV_INSTALL_DIR was ignored by an older installer) -- copy it into
+        # the managed location so the managed-first invariant holds
+        # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
+        if (-not (Test-Path $managedUv)) {
+            $existingUv = $null
+            $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($uvOnPath -and $uvOnPath.Source -and (Test-Path $uvOnPath.Source)) {
+                $existingUv = $uvOnPath.Source
+            }
+            if (-not $existingUv) {
+                $defaultUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
+                if (Test-Path $defaultUv) { $existingUv = $defaultUv }
+            }
+            if ($existingUv) {
+                Write-Info "Salvaging existing uv from $existingUv"
+                try {
+                    Copy-Item $existingUv $managedUv -Force
+                    # Verify the salvaged binary actually runs before
+                    # trusting it as the managed uv.
+                    $null = & $managedUv --version
+                } catch {
+                    Write-Info "Existing uv at $existingUv could not be salvaged: $_"
+                    Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
@@ -771,6 +829,10 @@ function Install-Uv {
         }
 
         Write-Err "uv installed but not found at $managedUv"
+        if ($installerOutput.Count -gt 0) {
+            Write-Info "uv installer output (last 15 lines):"
+            $installerOutput | Select-Object -Last 15 | ForEach-Object { Write-Info "  $_" }
+        }
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
     } catch {
@@ -904,6 +966,15 @@ function Update-ManagedNpm {
         } catch { }
     }
 
+    # In-app updates run while the desktop app's Node processes are alive.
+    # The managed npm lives inside the very tree they execute from, so an
+    # in-place upgrade would hit WinError 5 (Access denied) on npm.cmd
+    # (#80926).  Defer; the next update with the app closed retries.
+    if (Test-ManagedNodeInUse $NodeDir) {
+        Write-Warn "Hermes-managed Node.js is in use by a running app; skipping the bundled npm upgrade (applies on a later update with the app closed)."
+        return $false
+    }
+
     Write-Info "Upgrading bundled npm to satisfy $range ..."
 
     $tmpCwd = Join-Path $env:TEMP ("hermes-npm-upgrade-" + [Guid]::NewGuid().ToString("N"))
@@ -940,6 +1011,29 @@ function Update-ManagedNpm {
 
     Write-Success "npm $(& $npmCmd --version 2>$null) installed"
     return $true
+}
+
+function Test-ManagedNodeInUse {
+    param([string]$NodeDir)
+    # Windows locks files that running processes execute from.  During an
+    # in-app update the desktop app's Node processes may hold the managed
+    # tree open, and rewriting it then fails with WinError 5 (Access denied)
+    # on npm.cmd (#80926).  Cheap pre-check used to skip destructive steps;
+    # the rename/move itself remains the authoritative guard.
+    #
+    # Check the executable path AND the command line: a cmd.exe wrapper
+    # running npm.cmd from the tree reports its own exe (cmd.exe lives in
+    # System32) while the tree path appears only in the command line.
+    # Win32_Process.CommandLine is available on Windows PowerShell 5.1 and
+    # 7+ (the Get-Process .CommandLine ETS property is 7.4+ only), and a
+    # single CIM query beats a per-process property access loop.
+    return @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.ExecutablePath -like "$NodeDir\*") -or
+                ($_.CommandLine -like "*$NodeDir*")
+            }
+    ).Count -gt 0
 }
 
 # Re-discover uv without re-installing it.  Cross-process stage drivers
@@ -1542,8 +1636,77 @@ function Test-Node {
 
             $extractedDir = Get-ChildItem $tmpDir -Directory | Select-Object -First 1
             if ($extractedDir) {
-                if (Test-Path "$HermesHome\node") { Remove-Item -Recurse -Force "$HermesHome\node" }
-                Move-Item $extractedDir.FullName "$HermesHome\node"
+                # Rename-swap instead of delete-then-move: the live tree is
+                # never removed before its replacement is fully extracted.
+                # Windows permits renaming a tree with running executables,
+                # but if a process holds it without FILE_SHARE_DELETE the
+                # rename fails with WinError 5 -- that refusal means the tree
+                # is in use, so defer instead of forcing the write (#80926).
+                # Best-effort sweep of staging/backup litter from interrupted
+                # runs; locked files simply stay for the next attempt.  Only
+                # dirs older than 10 minutes are removed so a concurrent
+                # heal's in-flight swap is never disturbed.
+                Get-ChildItem "$HermesHome" -Directory -Filter "node.old-*" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                Get-ChildItem "$HermesHome" -Directory -Filter "node.new-*" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                $stamp = [Guid]::NewGuid().ToString("N")
+                $staged = "$HermesHome\node.new-$stamp"
+                $backup = "$HermesHome\node.old-$stamp"
+                # Stage to a sibling directory so the final swap is a
+                # same-volume rename (atomic), not a cross-volume Move-Item
+                # (copy+delete, non-atomic -- a partial copy would leave a
+                # broken tree).  Move from $env:TEMP here, rename below.
+                try {
+                    Move-Item $extractedDir.FullName $staged -ErrorAction Stop
+                } catch {
+                    Write-Warn "Failed to stage the new Node.js tree; aborting the Node upgrade."
+                    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                    Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                    return $false
+                }
+                if (Test-Path "$HermesHome\node") {
+                    try {
+                        Rename-Item "$HermesHome\node" $backup -ErrorAction Stop
+                    } catch {
+                        Write-Warn "Hermes-managed Node.js is in use by a running app; deferring its upgrade. Close the app and re-run the update."
+                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                    # A rename preserves LastWriteTime, so a backup renamed
+                    # from a long-lived tree would instantly look older than
+                    # the litter-sweep cutoff to a concurrent heal.  Touch it
+                    # (best-effort) so the in-flight backup is never swept.
+                    try {
+                        (Get-Item $backup).LastWriteTime = Get-Date
+                    } catch { }
+                    try {
+                        Rename-Item $staged "$HermesHome\node" -ErrorAction Stop
+                    } catch {
+                        # Restore the live tree before bailing.  The swap is a
+                        # same-volume rename, so a failure leaves no partial
+                        # target to clear.
+                        Rename-Item $backup "$HermesHome\node" -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                    Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
+                } else {
+                    try {
+                        Rename-Item $staged "$HermesHome\node" -ErrorAction Stop
+                    } catch {
+                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                }
 
                 # Session PATH so the rest of this run sees node/npm.
                 $env:Path = "$HermesHome\node;$env:Path"
@@ -2268,22 +2431,26 @@ function Install-Venv {
     # exits. Populated only with tasks that were ENABLED before we touched
     # them, so a task the user deliberately disabled is never re-armed.
     $gatewayTasksDisabled = @()
+    $venvHadExistingVenv = $false
+    $venvBackupName = $null
+    $venvParked = $false
     try {
-    if (Test-Path "venv") {
+    if (Test-Path -LiteralPath "venv") {
+        $venvHadExistingVenv = $true
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd, tornado's
         # speedups.pyd) are loaded as DLLs by any running hermes process.
         # Windows denies deletion of loaded DLLs, so every process running out
-        # of this venv must be stopped before removing it -- otherwise
-        # Remove-Item fails with "Access to the path '...' is denied" and the
-        # whole install/update aborts at this stage.
+        # of this venv must be stopped before retiring it. This keeps cleanup
+        # from accumulating locked stale trees and avoids carrying a live
+        # gateway into the replacement venv.
         if ($env:OS -eq "Windows_NT") {
             $myPid = $PID
             Write-Info "Stopping any running hermes processes before recreating venv..."
             # Disarm the respawner FIRST: the gateway autostart Scheduled Task
             # relaunches a killed gateway within seconds, and losing that race
             # re-locks the venv's .pyd files between our kill sweep and
-            # Remove-Item (the July 2026 _brotlicffi.pyd incident). schtasks
+            # venv parking/cleanup (the July 2026 _brotlicffi.pyd incident). schtasks
             # /End stops a running task instance; /Change /DISABLE stops it
             # from re-firing mid-install. (The Startup-folder .vbs fallback is
             # NOT touched: it only fires at logon, so it cannot respawn a
@@ -2329,7 +2496,7 @@ function Install-Venv {
             #
             # The sweep is a bounded LOOP, not single-shot: supervised processes
             # (the Desktop app's backend, a watchdog-managed gateway) respawn in
-            # the window between one kill pass and the delete. Each pass re-
+            # the window between one kill pass and venv parking. Each pass re-
             # enumerates; three consecutive clean passes (or the attempt cap)
             # ends the loop.
             $venvPrefix = [System.IO.Path]::GetFullPath((Join-Path $InstallDir "venv")).TrimEnd('\') + '\'
@@ -2353,42 +2520,26 @@ function Install-Venv {
                 Start-Sleep -Milliseconds 400
             }
         }
-        # Rename-then-delete: on Windows a directory RENAME succeeds even while
-        # files inside it are mapped as DLLs (only in-place delete/replace of
-        # the mapped file is denied, and only same-volume renames are atomic
-        # moves). Moving the old venv aside means `uv venv` can create a fresh
-        # one immediately even if some straggler still holds a .pyd from the
-        # old tree; the renamed dir is deleted best-effort (now, and by the
-        # cleanup pass below on the NEXT install if a handle outlives this one).
-        $staleName = "venv.stale.{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
-        $renamed = $false
+        # Move the old venv aside before creating its replacement. A directory
+        # rename is atomic on the same volume and does not require deleting
+        # files mapped as DLLs. NEVER fall back to deleting the live venv
+        # (#83149): Remove-Item -Recurse can delete most of site-packages and
+        # then fail on one locked .pyd, leaving a gutted venv with no usable
+        # interpreter and no rollback source. Abort with the previous install
+        # intact so the user can close holders and retry.
+        $venvBackupName = "venv.stale.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
         try {
-            Rename-Item -Path "venv" -NewName $staleName -ErrorAction Stop
-            $renamed = $true
+            Rename-Item -LiteralPath "venv" -NewName $venvBackupName -ErrorAction Stop
+            $venvParked = $true
         } catch {
-            Write-Warn "Could not rename venv aside ($($_.Exception.Message)); falling back to in-place delete"
+            $renameErr = $_.Exception.Message
+            throw (
+                "Could not move the existing venv aside ($renameErr). " +
+                "A process still has the install directory open (often a non-Hermes " +
+                "python.exe that resolved into this venv via PATH). Close those " +
+                "processes and retry - the previous install was left intact."
+            )
         }
-        if ($renamed) {
-            Remove-Item -Recurse -Force $staleName -ErrorAction SilentlyContinue
-            if (Test-Path $staleName) {
-                Write-Warn "Old venv parked at $staleName (a process still holds files in it); it will be cleaned up on the next install"
-            }
-        } else {
-            Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
-            # A killed process can take a moment to release its file handles, so a
-            # first Remove-Item may still hit a locked .pyd. Retry once after a short
-            # pause before giving up and letting the stage fail loudly.
-            if (Test-Path "venv") {
-                Start-Sleep -Seconds 2
-                Remove-Item -Recurse -Force "venv"
-            }
-        }
-    }
-
-    # Clean up parked venvs from previous installs whose handles have since
-    # been released. Best-effort -- a still-held tree just stays for next time.
-    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
-        Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
     }
     
     # uv creates the venv and pins the Python version in one step.  uv emits
@@ -2405,6 +2556,34 @@ function Install-Venv {
         throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
     }
 
+    # uv can return success without leaving the interpreter expected by the
+    # installer (for example after an interrupted filesystem operation). Treat
+    # that as a failed transaction so the previous venv can be restored.
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $venvPythonExe -PathType Leaf)) {
+        throw "uv reported success but venv interpreter is missing at $venvPythonExe"
+    }
+
+    # The replacement has a working interpreter, but the transaction is only
+    # committed after Install-Dependencies' baseline-import gate passes -- the
+    # bootstrap runs the stages as separate processes, and every dependency
+    # tier (or the import validation) can still fail after this stage
+    # succeeds. Record the parked backup so the dependency stage can restore
+    # it on failure and commit its cleanup only after validation (#83149).
+    if ($venvParked) {
+        Set-Content -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Value $venvBackupName -Encoding ascii
+        Write-Info "Previous venv parked at $venvBackupName until the dependency install is verified"
+    }
+
+    # Clean up parked venvs from previous installs whose handles have since
+    # been released. Best-effort -- a still-held tree just stays for next time.
+    # The backup parked THIS run is excluded: it is the rollback source until
+    # Install-Dependencies commits the transaction.
+    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne $venvBackupName } | ForEach-Object {
+            Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
+        }
+
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
     # later `uv sync` / `uv pip install` tiers, so without this it would
@@ -2412,10 +2591,43 @@ function Install-Venv {
     # -- building Rust transitives that have no wheel for that version from
     # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
     # just created forces every subsequent uv command onto it.
-    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
-    if (Test-Path $venvPythonExe) {
-        $env:UV_PYTHON = $venvPythonExe
-    }
+    $env:UV_PYTHON = $venvPythonExe
+    } catch {
+        $originalError = $_
+        $rollbackError = $null
+
+        if ($venvParked -and $venvBackupName -and (Test-Path -LiteralPath $venvBackupName)) {
+            try {
+                if (Test-Path -LiteralPath "venv") {
+                    $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+                    Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
+                    Write-Warn "Failed replacement parked at $failedVenvName"
+                }
+                Rename-Item -LiteralPath $venvBackupName -NewName "venv" -ErrorAction Stop
+                Write-Warn "Restored previous virtual environment after failed recreate"
+            } catch {
+                $rollbackError = $_.Exception.Message
+            }
+
+            if ($rollbackError) {
+                throw "Virtual environment recreate failed: $($originalError.Exception.Message). Rollback failed: $rollbackError. Previous venv remains at $venvBackupName."
+            }
+        } elseif (-not $venvHadExistingVenv -and (Test-Path -LiteralPath "venv")) {
+            # Preserve a partial first install too. This branch must not touch a
+            # pre-existing venv whose move-aside failed above.
+            try {
+                $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+                Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
+                Write-Warn "Partial virtual environment parked at $failedVenvName"
+            } catch {
+                $rollbackError = $_.Exception.Message
+            }
+            if ($rollbackError) {
+                throw "Virtual environment creation failed: $($originalError.Exception.Message). Could not park partial venv: $rollbackError"
+            }
+        }
+
+        throw $originalError
     } finally {
         Pop-Location
         # Re-arm the gateway autostart tasks disabled during the venv teardown
@@ -2434,6 +2646,55 @@ function Install-Venv {
     }
 
     Write-Success "Virtual environment ready (Python $PythonVersion)"
+}
+
+function Get-PendingVenvBackup {
+    # Rollback source recorded by Install-Venv (#83149). Returns the parked
+    # directory name, or $null when there is nothing to roll back to. A marker
+    # pointing at a directory that no longer exists is stale -- drop it.
+    $markerPath = Join-Path $InstallDir "venv.pending-backup"
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $null }
+    $name = (Get-Content -LiteralPath $markerPath -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($name) { $name = $name.Trim() }
+    if (-not $name -or -not (Test-Path -LiteralPath (Join-Path $InstallDir $name))) {
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+    return $name
+}
+
+function Complete-VenvTransaction {
+    # Commit: dependency install + baseline imports passed, so the previous
+    # venv is no longer needed as a rollback source. Best-effort delete; a
+    # tree still held open just stays parked for the next install's sweep.
+    $backupName = Get-PendingVenvBackup
+    if (-not $backupName) { return }
+    $backupPath = Join-Path $InstallDir $backupName
+    Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $backupPath) {
+        Write-Warn "Old venv parked at $backupName (a process still holds files in it); it will be cleaned up on the next install"
+    }
+    Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
+}
+
+function Restore-VenvBackup {
+    # Rollback: the dependency stage failed after Install-Venv replaced the
+    # venv. Park the unusable replacement and restore the previous working
+    # venv so Hermes (and the venv-blocker probe) stay usable (#83149).
+    $backupName = Get-PendingVenvBackup
+    if (-not $backupName) { return }
+    try {
+        if (Test-Path -LiteralPath (Join-Path $InstallDir "venv")) {
+            $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+            Rename-Item -LiteralPath (Join-Path $InstallDir "venv") -NewName $failedVenvName -ErrorAction Stop
+            Write-Warn "Failed replacement parked at $failedVenvName"
+        }
+        Rename-Item -LiteralPath (Join-Path $InstallDir $backupName) -NewName "venv" -ErrorAction Stop
+        Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
+        Write-Warn "Restored previous virtual environment after failed dependency install"
+    } catch {
+        Write-Warn "Could not restore previous venv (still parked at $backupName): $($_.Exception.Message)"
+    }
 }
 
 function Install-Dependencies {
@@ -2470,6 +2731,12 @@ function Install-Dependencies {
     # without any hash verification -- they exist to keep installs working
     # when the lockfile is stale, missing, or out-of-sync with the
     # current extras spec, NOT because they're equivalent in posture.
+    #
+    # Everything through the baseline-import gate runs inside the venv
+    # transaction opened by Install-Venv (#83149): on any failure the parked
+    # previous venv is restored before the error propagates, and the parked
+    # tree is deleted only after the imports prove the replacement usable.
+    try {
     if (Test-Path "uv.lock") {
         Write-Info "Trying tier: hash-verified (uv.lock) ..."
         # Critical flag choice: `--extra all`, NOT `--all-extras`.
@@ -2586,7 +2853,7 @@ except Exception:
     if (-not $NoVenv) {
         $venvPython = "$InstallDir\venv\Scripts\python.exe"
         if (-not (Test-Path $venvPython)) {
-            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, close Hermes processes and preserve existing venv directories before retrying. Do not delete venv in place."
         }
         # Relax EAP=Stop while running the import probe.  Python writes
         # deprecation warnings and import-system info to stderr; under
@@ -2602,13 +2869,26 @@ except Exception:
         if ($importExitCode -ne 0) {
             $sibling = "$InstallDir\.venv"
             $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
+                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Close Hermes processes, preserve the existing venv, and rerun the installer so the transactional recovery path can move directories safely."
             } else {
                 "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
             }
             throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
         }
         Write-Success "Baseline imports verified in venv"
+    }
+
+    # Commit the venv transaction: the dependency install completed and the
+    # baseline imports passed, so the previous venv is no longer needed as a
+    # rollback source (#83149).
+    Complete-VenvTransaction
+    } catch {
+        # Dependency install or import validation failed: restore the previous
+        # working venv (parked by Install-Venv) before surfacing the error, so
+        # a failed update leaves Hermes and its blocker probe usable.
+        Restore-VenvBackup
+        Pop-Location
+        throw
     }
 
     if (-not $NoVenv) {
@@ -3240,7 +3520,10 @@ function Install-BrowserUseCli {
     }
     $managedBin = Join-Path $HermesHome "bin"
     $managedBu = Join-Path $managedBin "browser-use.exe"
-    if ((Get-Command browser-use -ErrorAction SilentlyContinue) -or (Test-Path $managedBu)) {
+    # MANAGED-FIRST: only Hermes' managed copy short-circuits. A browser-use
+    # on the user's PATH is a side install -- resolution prefers the managed
+    # copy, so it must be provisioned regardless.
+    if (Test-Path $managedBu) {
         Write-Success "Browser Use CLI already installed"
         return
     }
@@ -3269,6 +3552,57 @@ function Install-BrowserUseCli {
     }
 }
 
+function Test-CuaDriverRuntimeContract {
+    param([Parameter(Mandatory = $true)][string]$DriverPath)
+
+    try {
+        $versionOutput = (& $DriverPath --version 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            return $false
+        }
+        $versionMatch = [regex]::Match($versionOutput, '(\d+\.\d+\.\d+)')
+        if (-not $versionMatch.Success) {
+            return $false
+        }
+        if ([version]($versionMatch.Groups[1].Value) -lt [version]'0.20.0') {
+            return $false
+        }
+
+        $manifestOutput = (& $DriverPath manifest 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $manifestOutput) {
+            return $false
+        }
+        $manifest = $manifestOutput | ConvertFrom-Json
+        if (-not $manifest.mcp_invocation.args) {
+            return $false
+        }
+
+        $required = @{
+            mcp = @('--socket', '--grant')
+            serve = @(
+                '--socket', '--permission-mode', '--capability-manifest',
+                '--approve-capability-manifest', '--embedded'
+            )
+            stop = @('--socket')
+        }
+        foreach ($commandName in $required.Keys) {
+            $command = $manifest.subcommands | Where-Object { $_.name -eq $commandName }
+            if (-not $command) {
+                return $false
+            }
+            $argNames = @($command.args | ForEach-Object { $_.name })
+            foreach ($requiredArg in $required[$commandName]) {
+                if ($requiredArg -notin $argNames) {
+                    return $false
+                }
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # cua-driver powers the computer_use toolset (background desktop control).
 # Provision it at install time so enabling the tool later -- via `hermes
 # tools`, the dashboard, or the desktop app -- is a config flip, not a
@@ -3280,9 +3614,13 @@ function Install-CuaDriver {
         Write-Info "Skipping Computer Use (cua-driver) install (-SkipComputerUse)"
         return
     }
-    if (Get-Command cua-driver -ErrorAction SilentlyContinue) {
-        Write-Success "Computer Use driver (cua-driver) already installed"
-        return
+    $existingCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+    if ($existingCuaDriver) {
+        if (Test-CuaDriverRuntimeContract -DriverPath $existingCuaDriver.Source) {
+            Write-Success "Computer Use driver (cua-driver) already installed and compatible"
+            return
+        }
+        Write-Warn "Existing cua-driver is old or incomplete; repairing it"
     }
 
     Write-Info "Installing Computer Use driver (cua-driver)..."
@@ -3299,10 +3637,11 @@ function Install-CuaDriver {
         if (Wait-Job $job -Timeout 660) {
             Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
             Remove-Job $job -Force -ErrorAction SilentlyContinue
-            if (Get-Command cua-driver -ErrorAction SilentlyContinue) {
+            $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+            if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
                 Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
             } else {
-                Write-Warn "Computer Use driver install did not complete -- it will install on demand when you enable the tool."
+                Write-Warn "Computer Use driver install did not produce a compatible runtime -- repair it before enabling the tool."
                 Write-Info "Install later with: hermes computer-use install"
             }
         } else {

@@ -392,6 +392,35 @@ def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
     assert kwargs["start_new_session"] is True
 
 
+def test_start_local_openviking_server_strips_pythonpath_from_child_env(monkeypatch):
+    """The spawned server must not inherit Hermes's PYTHONPATH (#78153).
+
+    Inheriting it makes openviking-server import packages from the Hermes
+    venv instead of its own, and on Windows locks Hermes venv DLLs so the
+    venv cannot be rebuilt during `hermes update`.
+    """
+    popen_calls = []
+
+    def fake_popen(args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return object()
+
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: False)
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    monkeypatch.setattr(openviking_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("PYTHONPATH", "/opt/hermes/.venv/Lib/site-packages")
+    monkeypatch.setenv("HERMES_PROFILE", "test-profile")
+
+    state, _message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    assert state == openviking_module._LOCAL_SERVER_STARTED
+    _, kwargs = popen_calls[0]
+    child_env = kwargs["env"]
+    assert child_env is not None
+    assert "PYTHONPATH" not in child_env
+    assert child_env.get("HERMES_PROFILE") == "test-profile"
+
+
 def test_start_local_openviking_server_does_not_spawn_when_port_already_open(monkeypatch):
     """A live listener means a second server would just die on DataDirectoryLocked."""
     probed = []
@@ -1700,3 +1729,49 @@ def test_is_available_false_without_any_endpoint(monkeypatch):
         openviking_module, "_load_hermes_openviking_config", lambda: {}
     )
     assert OpenVikingMemoryProvider().is_available() is False
+
+
+class TestOpenVikingEnvWriter:
+    """``_write_env_vars`` copies existing .env lines through on every update,
+    so how it *reads* them decides whether a credential update lands.
+
+    f1ea4a56c ("cover the remaining setup-time .env reads with utf-8-sig")
+    swept this class; this writer was missed.
+    """
+
+    def test_bom_prefixed_env_updates_in_place(self, tmp_path):
+        from plugins.memory.openviking import _write_env_vars
+
+        env = tmp_path / ".env"
+        env.write_bytes(b"\xef\xbb\xbfOPENAI_API_KEY=old\nOTHER=1\n")
+
+        _write_env_vars(env, {"OPENAI_API_KEY": "new"})
+
+        lines = [l for l in env.read_text(encoding="utf-8-sig").splitlines() if l]
+        # The stale value must be gone, not left as a duplicate. Hermes and
+        # python-dotenv use the last occurrence, but the file must have one value.
+        assert lines.count("OPENAI_API_KEY=new") == 1
+        assert not any(l.endswith("=old") for l in lines)
+        assert "OTHER=1" in lines
+
+    def test_non_utf8_env_preserves_unrelated_bytes(self, tmp_path):
+        from plugins.memory.openviking import _write_env_vars
+
+        env = tmp_path / ".env"
+        env.write_bytes(b"NAME=caf\xe9\nOPENAI_API_KEY=old\n")
+
+        _write_env_vars(env, {"OPENAI_API_KEY": "new"})
+
+        assert env.read_bytes() == b"NAME=caf\xe9\nOPENAI_API_KEY=new\n"
+
+    def test_plain_env_is_unchanged_apart_from_the_write(self, tmp_path):
+        from plugins.memory.openviking import _write_env_vars
+
+        env = tmp_path / ".env"
+        env.write_text("A=1\nOPENAI_API_KEY=old\nB=2\n", encoding="utf-8")
+
+        _write_env_vars(env, {"OPENAI_API_KEY": "new"})
+
+        assert env.read_text(encoding="utf-8").splitlines() == [
+            "A=1", "OPENAI_API_KEY=new", "B=2",
+        ]

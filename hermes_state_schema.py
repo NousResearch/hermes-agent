@@ -86,7 +86,18 @@ class SessionSchemaMixin:
     """See module docstring — mixin for SessionDB (Schema cluster)."""
 
     def _dedupe_legacy_system_prompts(self, cursor: sqlite3.Cursor) -> None:
-        """Move inline prompt snapshots into the shared content-addressed table."""
+        """Move inline prompt snapshots into the shared content-addressed table.
+
+        Contention-safe by design: a ``database is locked`` (or any other
+        ``OperationalError``) mid-loop returns instead of raising. Partial
+        migration is safe — the legacy ``system_prompt`` column is kept as a
+        read fallback for unmigrated rows, and the next schema init picks up
+        the remainder. Letting the error propagate aborted schema init
+        entirely, left the version below 25, and made every subsequent
+        ``SessionDB.__init__`` re-enter this migration against the same
+        contended DB (enterprise field report, 2026-08-14: gateway watchdog
+        crash loop).
+        """
         try:
             rows = cursor.execute(
                 "SELECT id, system_prompt FROM sessions "
@@ -98,13 +109,22 @@ class SessionSchemaMixin:
         for row in rows:
             session_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
             prompt = row["system_prompt"] if isinstance(row, sqlite3.Row) else row[1]
-            prompt_hash = self._store_system_prompt(cursor, prompt)
-            cursor.execute(
-                "UPDATE sessions "
-                "SET system_prompt_hash = ?, system_prompt = NULL "
-                "WHERE id = ?",
-                (prompt_hash, session_id),
-            )
+            try:
+                prompt_hash = self._store_system_prompt(cursor, prompt)
+                cursor.execute(
+                    "UPDATE sessions "
+                    "SET system_prompt_hash = ?, system_prompt = NULL "
+                    "WHERE id = ?",
+                    (prompt_hash, session_id),
+                )
+            except sqlite3.OperationalError as exc:
+                logger.warning(
+                    "v25 prompt dedupe paused after contention (%s); "
+                    "unmigrated rows keep the legacy inline prompt and the "
+                    "next schema init resumes the migration.",
+                    exc,
+                )
+                return
 
     def _sqlite_supports_fts5(self, cursor: sqlite3.Cursor) -> bool:
         try:
@@ -566,12 +586,35 @@ class SessionSchemaMixin:
                             f'ALTER TABLE "{table_name}" ADD COLUMN "{safe_name}" {col_type}'
                         )
                     except sqlite3.OperationalError as exc:
-                        # Expected: "duplicate column name" from a race or
-                        # re-run.  Unexpected: "Cannot add a NOT NULL column
-                        # with default value NULL" from a schema mistake.
-                        # Log at DEBUG so it's visible in agent.log.
-                        logger.debug(
-                            "reconcile %s.%s: %s", table_name, col_name, exc,
+                        message = str(exc).lower()
+                        if "duplicate column" in message:
+                            # Expected: a sibling process won the race to ADD
+                            # this column between our PRAGMA diff and the
+                            # ALTER. The store ends up correct either way.
+                            logger.debug(
+                                "reconcile %s.%s: %s", table_name, col_name, exc,
+                            )
+                            continue
+                        if "locked" in message or "busy" in message:
+                            # Lock contention (e.g. an orphaned sibling
+                            # backend holding the write lock, #79531). This
+                            # used to be swallowed at DEBUG, leaving the
+                            # store half-reconciled: startup "succeeded" and
+                            # every session-list read then failed with
+                            # "no such column" until an unrelated writable
+                            # open. Re-raise instead so the open-time lock
+                            # patience in _connect_and_init_with_lock_patience
+                            # retries the WHOLE init (executescript is
+                            # idempotent CREATE IF NOT EXISTS) with jittered
+                            # backoff rather than serving a stale schema.
+                            raise
+                        # Anything else ("Cannot add a NOT NULL column with
+                        # default value NULL", ...) is a schema mistake that
+                        # permanently strands the store behind SCHEMA_SQL —
+                        # be loud, don't bury it at DEBUG.
+                        logger.warning(
+                            "reconcile %s.%s failed; store remains behind "
+                            "SCHEMA_SQL: %s", table_name, col_name, exc,
                         )
 
     def _heal_gateway_routing_pk(self, cursor: sqlite3.Cursor) -> None:

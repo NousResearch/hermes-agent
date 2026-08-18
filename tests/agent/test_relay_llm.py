@@ -39,6 +39,128 @@ def relay_turn(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+def test_sync_execution_uses_canonical_relay_operation_name(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    observed_names = []
+    original_execute = relay.llm.execute
+
+    async def capture_name(name, *args, **kwargs):
+        observed_names.append(name)
+        return await original_execute(name, *args, **kwargs)
+
+    monkeypatch.setattr(relay.llm, "execute", capture_name)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"content": "done"},
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        metadata={"api_mode": "chat_completions"},
+    )
+
+    assert result == {"content": "done"}
+    assert observed_names == ["openai.chat_completions"]
+
+
+@pytest.mark.asyncio
+async def test_async_execution_uses_canonical_relay_operation_name(
+    relay_turn, monkeypatch
+):
+    relay, _turn = relay_turn
+    observed_names = []
+    original_execute = relay.llm.execute
+
+    async def capture_name(name, *args, **kwargs):
+        observed_names.append(name)
+        return await original_execute(name, *args, **kwargs)
+
+    async def provider(_request):
+        return {"content": "done"}
+
+    monkeypatch.setattr(relay.llm, "execute", capture_name)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    result = await relay_llm.execute_async(
+        {"model": "test-model", "input": "hello"},
+        provider,
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        metadata={"api_mode": "codex_responses"},
+    )
+
+    assert result == {"content": "done"}
+    assert observed_names == ["openai.responses"]
+
+
+def test_stream_execution_uses_canonical_relay_operation_name(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    observed_names = []
+    original_stream_execute = relay.llm.stream_execute
+
+    async def capture_name(name, *args, **kwargs):
+        observed_names.append(name)
+        return await original_stream_execute(name, *args, **kwargs)
+
+    monkeypatch.setattr(relay.llm, "stream_execute", capture_name)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "done"}]),
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        finalizer=lambda: {"content": "done"},
+        metadata={"api_mode": "anthropic_messages"},
+    )
+
+    try:
+        assert list(stream) == [{"delta": "done"}]
+    finally:
+        stream.close()
+    assert observed_names == ["anthropic.messages"]
+
+
+def test_unknown_api_mode_preserves_provider_name():
+    assert (
+        relay_llm._relay_operation_name("custom-provider", {"api_mode": "future_api"})
+        == "custom-provider"
+    )
+
+
+@pytest.mark.parametrize(
+    ("api_mode", "operation", "codec_class"),
+    [
+        ("chat_completions", "openai.chat_completions", "OpenAIChatCodec"),
+        ("codex_responses", "openai.responses", "OpenAIResponsesCodec"),
+        ("anthropic_messages", "anthropic.messages", "AnthropicMessagesCodec"),
+    ],
+)
+def test_relay_protocol_drives_operation_and_codec(
+    api_mode, operation, codec_class
+):
+    codec_type = type(codec_class, (), {})
+    codecs = SimpleNamespace(**{codec_class: codec_type})
+    relay = SimpleNamespace(codecs=codecs)
+    metadata = {"api_mode": api_mode}
+
+    assert relay_llm._relay_operation_name("custom-provider", metadata) == operation
+    assert isinstance(relay_llm._codec(relay, metadata), codec_type)
+
+
+def test_relay_metadata_preserves_provider_name():
+    metadata = {"api_mode": "chat_completions", "hermes.provider": "explicit"}
+
+    assert relay_llm._relay_metadata("openrouter", metadata) == metadata
+    assert relay_llm._relay_metadata("openrouter", {"api_mode": "chat_completions"}) == {
+        "api_mode": "chat_completions",
+        "hermes.provider": "openrouter",
+    }
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []
@@ -796,6 +918,116 @@ def test_stream_current_streams_iterators_with_predicate(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+def test_stream_current_primes_lazy_completed_response(relay_turn, monkeypatch):
+    """A lazy Relay stream must run once before Hermes decides its shape."""
+    _relay, _turn = relay_turn
+    completed = _completed_response()
+
+    class LazyCompletedStream:
+        final_response = None
+
+        def _prime_completed_response(self):
+            self.final_response = completed
+
+    lazy_stream = LazyCompletedStream()
+    monkeypatch.setattr(relay_llm, "stream", lambda *args, **kwargs: lazy_stream)
+
+    result = relay_llm.stream_current(
+        {"model": "test-model", "messages": [], "stream": True},
+        lambda request: completed,
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+        completed_response_predicate=_choices_predicate,
+    )
+
+    assert result is completed
+
+
+def test_stream_current_unwraps_completed_response_with_real_interceptor(relay_turn):
+    """A real stream interceptor makes Relay lazy; completion still unwraps."""
+    relay, _turn = relay_turn
+    completed = _completed_response()
+
+    async def identity_stream(request, next_call):
+        return await next_call(request)
+
+    relay.intercepts.register_llm_stream_execution(
+        "hermes-test-prime-completed",
+        1,
+        identity_stream,
+    )
+    try:
+        result = relay_llm.stream_current(
+            {"model": "test-model", "messages": [], "stream": True},
+            lambda _request: completed,
+            name="test-provider",
+            model_name="test-model",
+            finalizer=lambda: completed,
+            completed_response_predicate=_choices_predicate,
+        )
+
+        assert result is completed
+    finally:
+        relay.intercepts.deregister_llm_stream_execution(
+            "hermes-test-prime-completed"
+        )
+
+
+def test_stream_current_preserves_real_relay_interceptor_chunks(relay_turn):
+    """Priming a real managed pipeline must retain its transformed first chunk."""
+    relay, _turn = relay_turn
+
+    def rewrite_stream(request, next_call):
+        async def generate():
+            upstream = await next_call(request)
+            async for chunk in upstream:
+                yield {**chunk, "delta": chunk["delta"].upper()}
+
+        return generate()
+
+    relay.intercepts.register_llm_stream_execution(
+        "hermes-test-prime-stream",
+        1,
+        rewrite_stream,
+    )
+    try:
+        result = relay_llm.stream_current(
+            {"model": "test-model", "messages": [], "stream": True},
+            lambda _request: iter([{"delta": "a"}, {"delta": "b"}]),
+            name="test-provider",
+            model_name="test-model",
+            finalizer=lambda: {"content": "AB"},
+            completed_response_predicate=_choices_predicate,
+        )
+
+        assert list(result) == [
+            SimpleNamespace(delta="A"),
+            SimpleNamespace(delta="B"),
+        ]
+        assert result.output_modified is True
+    finally:
+        relay.intercepts.deregister_llm_stream_execution(
+            "hermes-test-prime-stream"
+        )
+
+
+def test_stream_current_surfaces_managed_factory_error_before_return(relay_turn):
+    """Shape detection preserves the unmanaged factory-error boundary."""
+
+    def fail_factory(_request):
+        raise RuntimeError("provider failed before streaming")
+
+    with pytest.raises(RuntimeError, match="provider failed before streaming"):
+        relay_llm.stream_current(
+            {"model": "test-model", "messages": [], "stream": True},
+            fail_factory,
+            name="test-provider",
+            model_name="test-model",
+            finalizer=dict,
+            completed_response_predicate=_choices_predicate,
+        )
+
 
 def _completed_response(content: str = "done") -> SimpleNamespace:
     return SimpleNamespace(
@@ -833,6 +1065,8 @@ def test_stream_managed_traps_direct_completed_response(relay_turn):
         finalizer=lambda: {},
         completed_response_predicate=_choices_predicate,
     )
+    stream._prime_completed_response()
+    assert stream._closed
     assert list(stream) == []
     assert stream.final_response is not None
     assert stream.final_response.choices[0].message.content == "done"

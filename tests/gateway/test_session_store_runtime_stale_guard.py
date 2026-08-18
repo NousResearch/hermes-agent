@@ -292,4 +292,25 @@ class TestAdvanceCompressionSession:
         db.end_session.assert_not_called()
         db.reopen_session.assert_not_called()
 
+    def test_repoint_does_not_touch_activity_clock(self, tmp_path):
+        """Compression repoint is bookkeeping — it must not bump updated_at.
+
+        A background compression on an idle session must not make it look
+        fresh to reset policy or the restart-resume freshness gate (#85709).
+        """
+        db = _db_returning({})
+        store = _make_store_with_db(tmp_path, db)
+        source = _source()
+        key = store._generate_session_key(source)
+        original = _make_entry(key, "sid_parent")
+        idle = datetime.now() - timedelta(days=21)
+        original.updated_at = idle
+        store._entries[key] = original
+
+        result = store.advance_compression_session(key, "sid_parent", "sid_tip")
+
+        assert result is not None
+        assert result.updated_at == idle
+        assert store.suspend_recently_active(max_age_seconds=120) == 0
+
 

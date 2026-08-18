@@ -28,6 +28,7 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError, readableError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
 
+import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
@@ -131,23 +132,6 @@ function ModeCard({
       <p className="mt-1.5 flex-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {description}
       </p>
-    </button>
-  )
-}
-
-function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
-  return (
-    <button
-      className={cn(
-        'rounded-full border px-3 py-1 text-[length:var(--conversation-caption-font-size)] transition',
-        active
-          ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
-          : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)'
-      )}
-      onClick={onSelect}
-      type="button"
-    >
-      {label}
     </button>
   )
 }
@@ -1072,25 +1056,46 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       )}
 
+      {/* Per-profile gateway overrides: an explicit subsection (not an ambient
+          page-scope chip row) — pick which target the connection controls
+          below edit: the default connection or one named profile's override. */}
       {namedProfiles.length > 0 ? (
-        <div className="mb-5 grid gap-2">
+        <div className="mb-5 grid gap-1">
           <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-            {g.appliesTo}
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            <ScopeChip active={scope === null} label={g.allProfiles} onSelect={() => setScope(null)} />
-            {namedProfiles.map(profile => (
-              <ScopeChip
-                active={scope === profile.name}
-                key={profile.name}
-                label={profile.name}
-                onSelect={() => setScope(profile.name)}
-              />
-            ))}
+            {g.profileOverridesTitle}
           </div>
           <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {scope === null ? g.defaultConnection : g.profileConnection(scope)}
+            {g.profileOverridesDesc}
           </p>
+          <ListRow
+            action={
+              scope === null ? (
+                <Pill tone="primary">{g.overrideEditing}</Pill>
+              ) : (
+                <Button aria-label={g.allProfiles} onClick={() => setScope(null)} size="sm" variant="outline">
+                  {g.overrideEdit}
+                </Button>
+              )
+            }
+            description={g.defaultConnection}
+            title={g.allProfiles}
+          />
+          {namedProfiles.map(profile => (
+            <ListRow
+              action={
+                scope === profile.name ? (
+                  <Pill tone="primary">{g.overrideEditing}</Pill>
+                ) : (
+                  <Button aria-label={profile.name} onClick={() => setScope(profile.name)} size="sm" variant="outline">
+                    {g.overrideEdit}
+                  </Button>
+                )
+              }
+              description={scope === profile.name ? g.profileConnection(profile.name) : g.overrideSelectHint}
+              key={profile.name}
+              title={profile.name}
+            />
+          ))}
         </div>
       ) : null}
 
@@ -1572,6 +1577,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           />
         </div>
       )}
+
+      {/* Unified Gateways page: the full connections registry (add/edit/delete
+          named agent sources) lives on this page now, below the window
+          connection controls. Hidden in the embedded (boot-recovery) form. */}
+      {embedded ? null : <ConnectionsRegistrySection />}
 
       {/* Plain-text token opt-in: gated when secure storage is unavailable and a
           new token would be persisted. Confirm resumes the remembered save/apply. */}

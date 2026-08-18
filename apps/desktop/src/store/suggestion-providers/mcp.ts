@@ -2,13 +2,14 @@ import {
   addMcpServer,
   authMcpServer,
   cancelMcpOAuthFlow,
+  getMcpCatalog,
   getMcpOAuthFlow,
   listMcpServers,
   removeMcpServer
 } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
-import { directoryEntry, MCP_DIRECTORY } from '@/lib/mcp-directory'
+import { MCP_DIRECTORY } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
 import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer-suggestions'
 import { $gateway } from '@/store/gateway'
@@ -17,15 +18,20 @@ import { notifyError } from '@/store/notifications'
 /**
  * The MCP draft provider — the suggestion bus's founding member (PR #85036).
  *
- * Matches the draft against the desktop's directory of official hosted MCP
- * remotes (`lib/mcp-directory.ts` — deliberately NOT the reviewed install
- * catalog) by whole-word keyword and pasted-link host suffix, excluding
- * servers already configured. A suggestion's invoke runs the whole connect:
- * validated config write → browser OAuth → live tool reload, with rollback
- * on cancel/failure so a decline never strands a half-configured server.
+ * Matches the draft against the Nous-approved MCP catalog's `suggest`
+ * metadata (`GET /api/mcp/catalog` — the same reviewed manifests behind
+ * `hermes mcp catalog`), by whole-word keyword and pasted-link host suffix,
+ * excluding servers already configured. The catalog is the single source of
+ * truth for suggestible servers; the renderer-local `lib/mcp-directory.ts`
+ * remains only as a compatibility rung for older backends whose catalog
+ * entries carry no `suggest` field. A suggestion's invoke runs the whole
+ * connect: validated config write → browser OAuth → live tool reload, with
+ * rollback on cancel/failure so a decline never strands a half-configured
+ * server.
  */
 
 const CONFIGURED_TTL_MS = 5 * 60_000
+const CATALOG_TTL_MS = 5 * 60_000
 
 // Names already present in mcp_servers config (enabled or not) — those need a
 // toggle/auth at most, not an "add this server" pill. Cached briefly; a miss
@@ -33,10 +39,25 @@ const CONFIGURED_TTL_MS = 5 * 60_000
 let configuredNames: Set<string> | null = null
 let configuredAt = 0
 
-/** Drop the configured-servers cache (profile switch / after an install). */
+interface SuggestibleServer {
+  server: string
+  keywords: string[]
+  hosts?: string[]
+  /** Streamable-HTTP/SSE endpoint written to config on invoke. */
+  url: string
+}
+
+// Suggestible servers from the catalog (entries with `suggest` + an http
+// url), or the static directory on backends that predate `suggest`.
+let suggestible: SuggestibleServer[] | null = null
+let suggestibleAt = 0
+
+/** Drop the caches (profile switch / after an install). */
 export function invalidateMcpSuggestionIndex(): void {
   configuredNames = null
   configuredAt = 0
+  suggestible = null
+  suggestibleAt = 0
 }
 
 async function loadConfiguredNames(): Promise<Set<string>> {
@@ -50,6 +71,41 @@ async function loadConfiguredNames(): Promise<Set<string>> {
   configuredAt = Date.now()
 
   return configuredNames
+}
+
+async function loadSuggestible(): Promise<SuggestibleServer[]> {
+  if (suggestible && Date.now() - suggestibleAt < CATALOG_TTL_MS) {
+    return suggestible
+  }
+
+  const { entries } = await getMcpCatalog()
+
+  const fromCatalog: SuggestibleServer[] = entries
+    .filter(
+      entry => entry.suggest && entry.url && (entry.suggest.keywords.length > 0 || entry.suggest.hosts.length > 0)
+    )
+    .map(entry => ({
+      hosts: entry.suggest!.hosts,
+      keywords: entry.suggest!.keywords,
+      server: entry.name,
+      url: entry.url!
+    }))
+
+  // Compatibility rung: an older backend serves the catalog without any
+  // `suggest` metadata. Fall back to the static directory rather than
+  // silently losing the feature (remove once the backend contract bumps).
+  suggestible =
+    fromCatalog.length > 0
+      ? fromCatalog
+      : MCP_DIRECTORY.map(entry => ({
+          hosts: entry.hosts,
+          keywords: entry.keywords,
+          server: entry.name,
+          url: entry.url
+        }))
+  suggestibleAt = Date.now()
+
+  return suggestible
 }
 
 interface KeywordEntry {
@@ -84,11 +140,32 @@ export interface McpMatch {
 
 const MAX_MATCHES = 2
 
+// Whole-word (unicode-aware) keyword hit that the user has FINISHED typing:
+// at least one character must follow the match (the lookahead already
+// guarantees it's a boundary). A hit still under the caret — "figma" as the
+// last thing typed, debounce elapsed mid-thought — is not intent yet, it's
+// eavesdropping on a word in progress; the pill waits for the space/period.
+const keywordHit = (haystack: string, candidate: string): boolean => {
+  const pattern = new RegExp(
+    `(?<![\\p{L}\\p{N}])${candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`,
+    'gu'
+  )
+
+  for (const match of haystack.matchAll(pattern)) {
+    if (match.index + match[0].length < haystack.length) {
+      return true
+    }
+  }
+
+  return false
+}
+
 /** Pure matcher, exported for tests: pasted-link host hits (the strongest
- *  intent signal) and whole-word (unicode-aware) keyword hits against the
- *  draft, capped at MAX_MATCHES. */
+ *  intent signal) and completed whole-word keyword hits against the draft,
+ *  capped at MAX_MATCHES. Host hits skip the completed-word guard — a paste
+ *  is a deliberate act, and the URL routinely ends the draft. */
 export function matchSuggestions(text: string, index: KeywordEntry[]): McpMatch[] {
-  const haystack = ` ${text.toLowerCase()} `
+  const haystack = text.toLowerCase()
   const hosts = draftHosts(text)
   const matches: McpMatch[] = []
 
@@ -96,16 +173,9 @@ export function matchSuggestions(text: string, index: KeywordEntry[]): McpMatch[
     // A pasted vendor link beats any keyword: report the host as the trigger.
     const host = entry.hosts?.find(suffix => hosts.some(candidate => hostMatches(candidate, suffix)))
 
-    // Whole-word match so "linearly" doesn't suggest Linear. Directory
+    // Whole-word match so "linearly" doesn't suggest Linear. Suggest
     // keywords are lowercase; multi-word keywords match as phrases.
-    const keyword =
-      host ??
-      entry.keywords.find(candidate =>
-        new RegExp(
-          `(?<![\\p{L}\\p{N}])${candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`,
-          'u'
-        ).test(haystack)
-      )
+    const keyword = host ?? entry.keywords.find(candidate => keywordHit(haystack, candidate))
 
     if (keyword) {
       matches.push({ keyword, server: entry.server })
@@ -119,19 +189,13 @@ export function matchSuggestions(text: string, index: KeywordEntry[]): McpMatch[
   return matches
 }
 
-async function connect(server: string, sessionId: string | null, cancelled: () => boolean): Promise<void> {
-  const known = directoryEntry(server)
-
-  if (!known) {
-    return
-  }
-
+async function connect(known: SuggestibleServer, sessionId: string | null, cancelled: () => boolean): Promise<void> {
   try {
-    await addMcpServer({ name: known.name, url: known.url })
+    await addMcpServer({ name: known.server, url: known.url })
 
     try {
       await completeMcpDesktopOAuth({
-        serverName: known.name,
+        serverName: known.server,
         start: authMcpServer,
         status: getMcpOAuthFlow,
         cancelled,
@@ -142,7 +206,7 @@ async function connect(server: string, sessionId: string | null, cancelled: () =
       // Decline/failure means "no server" — roll back the config write
       // rather than stranding an unauthorized entry (authoritative-write
       // rule). Best-effort; the primary error wins.
-      await removeMcpServer(known.name).catch(() => {})
+      await removeMcpServer(known.server).catch(() => {})
       throw error
     }
 
@@ -156,14 +220,14 @@ async function connect(server: string, sessionId: string | null, cancelled: () =
     invalidateMcpSuggestionIndex()
   } catch (error) {
     if (!(error instanceof McpOAuthCancelled)) {
-      notifyError(error, translateNow('composer.mcpSuggestions.connectFailed', prettyName(server)))
+      notifyError(error, translateNow('composer.mcpSuggestions.connectFailed', prettyName(known.server)))
     }
 
     throw error
   }
 }
 
-function toSuggestion(match: McpMatch, sessionId: string | null): ComposerSuggestion {
+function toSuggestion(match: McpMatch, known: SuggestibleServer, sessionId: string | null): ComposerSuggestion {
   const name = prettyName(match.server)
   const copy = (key: string, ...args: unknown[]) => translateNow(`composer.mcpSuggestions.${key}`, ...args)
 
@@ -172,7 +236,9 @@ function toSuggestion(match: McpMatch, sessionId: string | null): ComposerSugges
     doneLabel: copy('added', name),
     doneTip: copy('addedTip'),
     id: match.server,
-    invoke: context => connect(match.server, sessionId, context.cancelled),
+    // The pill's session wins over the one captured at sample time: the reload
+    // has to reach the session the user is actually looking at.
+    invoke: context => connect(known, context.sessionId ?? sessionId, context.cancelled),
     label: copy('label', name),
     provider: 'mcp',
     tip: copy('tip', match.keyword),
@@ -182,16 +248,19 @@ function toSuggestion(match: McpMatch, sessionId: string | null): ComposerSugges
 }
 
 registerDraftProvider('mcp', async ({ sessionId, text }) => {
-  const index = MCP_DIRECTORY.map(entry => ({ hosts: entry.hosts, keywords: entry.keywords, server: entry.name }))
+  // Catalog unreachable — suggest nothing rather than mis-suggest.
+  const index = await loadSuggestible()
   const candidates = matchSuggestions(text, index)
 
-  // Fast path: no keyword hit at all → nothing, without touching the network.
+  // Fast path: no keyword hit at all → skip the servers fetch.
   if (candidates.length === 0) {
     return []
   }
 
-  // Server list unreachable — suggest nothing rather than mis-suggest.
   const configured = await loadConfiguredNames()
+  const byName = new Map(index.map(entry => [entry.server, entry]))
 
-  return candidates.filter(candidate => !configured.has(candidate.server)).map(match => toSuggestion(match, sessionId))
+  return candidates
+    .filter(candidate => !configured.has(candidate.server))
+    .map(match => toSuggestion(match, byName.get(match.server)!, sessionId))
 })

@@ -24,6 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -48,18 +49,37 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _resolve_requests_verify() -> bool | str:
-    """Resolve SSL verify setting for `requests` calls from env vars.
+def _resolve_requests_verify(base_url: str = "") -> bool | str:
+    """Resolve SSL verify setting for `requests` calls.
 
-    The `requests` library only honours REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE
-    by default. Hermes also honours HERMES_CA_BUNDLE (its own convention)
-    and SSL_CERT_FILE (used by the stdlib `ssl` module and by httpx), so
-    that a single env var can cover both `requests` and `httpx` callsites
-    inside the same process.
+    Priority (mirrors ``agent.ssl_verify.resolve_httpx_verify`` so the
+    ``requests``-based ``/models`` probes agree with the httpx chat client):
 
-    Returns either a filesystem path to a CA bundle, or True to defer to
-    the requests default (certifi).
+    1. Per-provider ``ssl_verify: false`` for ``base_url`` — disable verification.
+    2. Per-provider ``ssl_ca_cert`` for ``base_url`` — an explicit CA bundle.
+       Without this, a custom endpoint whose chain only verifies against the
+       provider's configured bundle (not the process ``SSL_CERT_FILE``) logs a
+       spurious CERTIFICATE_VERIFY_FAILED on every probe even though the chat
+       path succeeds (per-provider ``ssl_ca_cert`` was reaching only httpx).
+    3. Env vars ``HERMES_CA_BUNDLE`` / ``REQUESTS_CA_BUNDLE`` / ``SSL_CERT_FILE``
+       (a single var covers both ``requests`` and ``httpx`` in-process).
+    4. ``True`` — defer to the requests default (certifi).
+
+    ``base_url`` is optional so existing callers (OpenRouter, etc.) keep the
+    env-only behavior unchanged; only probes that pass a base_url pick up the
+    per-provider override.
     """
+    if base_url:
+        try:
+            from hermes_cli.config import get_custom_provider_tls_settings
+            tls = get_custom_provider_tls_settings(base_url)
+            if tls.get("ssl_verify") is False:
+                return False
+            ca = tls.get("ssl_ca_cert")
+            if isinstance(ca, str) and ca and os.path.isfile(ca):
+                return ca
+        except Exception:
+            pass  # fall through to env vars — never break a probe on config lookup
     for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
         val = os.getenv(env_var)
         if val and os.path.isfile(val):
@@ -1261,7 +1281,7 @@ def fetch_endpoint_model_metadata(
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,
                     timeout=(5, 10),
-                    verify=_resolve_requests_verify(),
+                    verify=_resolve_requests_verify(normalized),
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -1324,7 +1344,7 @@ def fetch_endpoint_model_metadata(
                 url,
                 headers=headers,
                 timeout=(5, 10),
-                verify=_resolve_requests_verify(),
+                verify=_resolve_requests_verify(normalized),
                 stream=True,
             )
             if response.status_code in (401, 403):
@@ -1364,7 +1384,7 @@ def fetch_endpoint_model_metadata(
                 try:
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
                     base = request_candidate.rstrip("/").replace("/v1", "")
-                    _verify = _resolve_requests_verify()
+                    _verify = _resolve_requests_verify(normalized)
                     props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
                     if not props_resp.ok:
                         props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
@@ -2284,7 +2304,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
             "anthropic-version": "2023-06-01",
         }
         _ensure_requests()
-        resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+        resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify(base_url))
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -2326,6 +2346,56 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.2": 272_000,
     "gpt-5": 272_000,
 }
+
+# Codex OAuth advertises 272K via /backend-api/codex/models for these
+# families, but the backend actually ACCEPTS far more. OpenAI enabled the
+# large-context window for ChatGPT-subscription Codex accounts on
+# Aug 16 2026 (announced by @thsottiaux; previously API-key-only).
+# Verified live against chatgpt.com/backend-api/codex/responses the same
+# day: 911,276 input tokens completed OK on gpt-5.6-sol; ~925K+ rejected
+# with ``context_length_exceeded`` (the 1.05M window minus reserved output
+# headroom). gpt-5.6-terra, gpt-5.6-luna, and gpt-5.4 all completed 900,026
+# tokens OK. gpt-5.5 and gpt-5.4-mini still rejected >272K, so their
+# advertisement is real enforcement and they are NOT listed. 900K keeps
+# ≥11K margin under the observed ceiling and matches the compaction point
+# Codex's own client config documents for the 1M window.
+#
+# Applied ONLY when the resolved value (live probe or fallback table) is
+# exactly the known-stale 272,000 advertisement — if OpenAI moves the
+# advertised number in either direction (the gpt-5.6 family shifted
+# 272K → 372K → 272K during July 2026), the catalog is trusted again and
+# this table is inert. ``gpt-5.6`` is a FAMILY PREFIX (sol/terra/luna and
+# dated snapshots; ``-pro`` slugs are not routable on Codex OAuth — the
+# backend 400s them — so over-matching there is moot). ``gpt-5.4`` is EXACT:
+# gpt-5.4-mini was probed and genuinely enforces 272K (rejected 500K), so
+# prefix-matching the 5.4 family would over-report for mini.
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
+    "gpt-5.6": 900_000,   # sol / terra / luna — all three verified live at 900K
+}
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
+    "gpt-5.4": 900_000,   # verified live at 900K; gpt-5.4-mini rejected 500K — excluded
+}
+
+# The advertised value the verified-above table is allowed to override.
+_CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000
+
+
+def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
+    """Return the live-verified Codex cap for a slug, or ``None``.
+
+    Exact slugs first, then family prefixes (``<key>``, ``<key>-``,
+    ``<key>.``) so dated snapshots of a verified family inherit the bump.
+    """
+    slug = (model_bare or "").strip().lower()
+    if not slug:
+        return None
+    exact = _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT.get(slug)
+    if exact is not None:
+        return exact
+    for key, ctx in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES.items():
+        if slug == key or slug.startswith(key + "-") or slug.startswith(key + "."):
+            return ctx
+    return None
 
 
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
@@ -2454,16 +2524,33 @@ def _resolve_codex_oauth_context_length_with_source(
     if not model_bare:
         return None, ""
 
+    def _apply_verified_bump(ctx: int, source: str) -> Tuple[int, str]:
+        """Lift a known-stale 272K advertisement to the live-verified cap.
+
+        Only fires when the resolved value is EXACTLY the stale 272,000
+        advertisement for a slug we have probed above it (see
+        ``_verified_codex_ctx_for_slug``). Any other advertised value —
+        higher or lower — is trusted as a real server-side change.
+        """
+        bumped = _verified_codex_ctx_for_slug(model_bare)
+        if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+            logger.debug(
+                "Codex OAuth context for %s: advertised %d raised to "
+                "live-verified %d", model_bare, ctx, bumped,
+            )
+            return bumped, source
+        return ctx, source
+
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
         live_source = "live" if fresh_probe else "memory"
         if model_bare in live:
-            return live[model_bare], live_source
+            return _apply_verified_bump(live[model_bare], live_source)
         # Case-insensitive match in case casing drifts
         model_lower = model_bare.lower()
         for slug, ctx in live.items():
             if slug.lower() == model_lower:
-                return ctx, live_source
+                return _apply_verified_bump(ctx, live_source)
 
     # Fallback: longest-key-first substring match over hardcoded defaults.
     model_lower = model_bare.lower()
@@ -2471,7 +2558,7 @@ def _resolve_codex_oauth_context_length_with_source(
         _CODEX_OAUTH_CONTEXT_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True
     ):
         if slug in model_lower:
-            return ctx, "fallback"
+            return _apply_verified_bump(ctx, "fallback")
 
     return None, ""
 
@@ -2577,6 +2664,7 @@ def get_model_context_length(
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
+    0b. model_overrides config (per-provider+model context_window override)
     0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
     1. Persistent cache (previously discovered via probing).  Nous URLs,
        LM Studio, and Codex OAuth bypass the cache here so their provider
@@ -2638,7 +2726,23 @@ def get_model_context_length(
             logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
         # Fall through to the generic default if aggregator resolution failed.
 
-    # 0b. custom_providers per-model override — check before any probe.
+    # 0b. model_overrides config — EXPLICIT per-provider+model context_window
+    # override only (fill-gap _default entries are applied later, inside
+    # lookup_models_dev_context at step 5f, once the catalog has actually
+    # missed — so a _default can never preempt custom_providers or live
+    # probes). This is the supported self-unblock path for models with
+    # wrong context in models.dev (#84482) and for custom/local models
+    # (#8731). Config-read only; never blocks on the network.
+    if provider and model:
+        try:
+            from agent.models_dev import _override_context_window
+            mo_ctx = _override_context_window(provider, model)
+            if mo_ctx is not None and mo_ctx > 0:
+                return mo_ctx
+        except Exception:
+            pass  # fall through to other resolution paths
+
+    # 0c. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.
     # See #15779.
@@ -3314,7 +3418,7 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     )
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k in ("_anthropic_content_blocks", "reasoning_details"):
+        if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS:
             continue
         if k == "api_content":
             # Always popped before the request is built; only counted when it

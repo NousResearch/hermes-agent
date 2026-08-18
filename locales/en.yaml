@@ -291,6 +291,7 @@ gateway:
     none_found:            "No checkpoints found for {cwd}"
     invalid_number:        "Invalid checkpoint number. Use 1-{max}."
     restored:              "✅ Restored to checkpoint {hash}: {reason}\nA pre-rollback snapshot was saved automatically."
+    kept_user_edits:       "↷ Kept your hand-edits: {files}\nUse /rollback <N> --all to restore those too."
     restore_failed:        "❌ {error}"
 
   diff:

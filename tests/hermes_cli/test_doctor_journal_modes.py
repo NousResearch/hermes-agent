@@ -14,6 +14,12 @@ import sqlite3
 import pytest
 
 import hermes_cli.doctor as doctor
+from hermes_cli.sqlite_safe_read import (
+    connect_tracked,
+    has_live_connection,
+    track_connection,
+    untrack_connection,
+)
 
 VULNERABLE = (3, 50, 4)
 FIXED_VERSIONS = [(3, 51, 3), (3, 52, 0), (3, 50, 7), (3, 44, 6)]
@@ -36,6 +42,28 @@ def _sidecars(directory):
     return sorted(
         p.name for p in directory.iterdir() if p.name.endswith(("-wal", "-shm"))
     )
+
+
+@pytest.fixture
+def clean_registry():
+    """Isolate a test from the module-level connection registry.
+
+    Clears on both sides, not just teardown: a test that leaks a tracked
+    connection (an earlier failure, or a test that does not take this
+    fixture) would otherwise leave the registry dirty and make the *next*
+    test's refusal assertion pass for the wrong reason.
+    """
+    import hermes_cli.sqlite_safe_read as mod
+
+    def _clear():
+        with mod._live_lock:
+            mod._live_connections.clear()
+
+    _clear()
+    try:
+        yield
+    finally:
+        _clear()
 
 
 class TestReadJournalMode:
@@ -139,6 +167,156 @@ class TestReadJournalMode:
         assert wal_db.read_bytes() == wal_bytes
         assert rollback_db.read_bytes() == rollback_bytes
         assert _sidecars(tmp_path) == []
+
+
+class TestLiveConnectionSafety:
+    """The probe must not raw-open a database this process has connections to.
+
+    close() on any descriptor cancels every POSIX advisory lock the process
+    holds on that file, so a byte-probe run while a connection is live drops
+    that connection's locks — including the EXCLUSIVE lock a VACUUM holds
+    mid-rewrite. run_doctor is reachable in-process (the dashboard console
+    imports and calls it directly while holding live SessionDB connections),
+    so the probe must defer to the registry rather than open the file.
+    """
+
+    def test_probe_is_refused_while_a_tracked_connection_is_live(
+        self, tmp_path, clean_registry
+    ):
+        db = tmp_path / "state.db"
+        _make_db(db, journal_mode="WAL")
+
+        track_connection(db)
+        try:
+            assert has_live_connection(db)
+
+            mode, error = doctor._read_journal_mode(db)
+
+            assert mode is None
+            assert error == "database is open in this process"
+        finally:
+            untrack_connection(db)
+
+    def test_probe_is_refused_for_a_real_tracked_connection(
+        self, tmp_path, clean_registry
+    ):
+        """The same, through connect_tracked — the path SessionDB actually takes."""
+        db = tmp_path / "state.db"
+        _make_db(db, journal_mode="WAL")
+
+        conn = connect_tracked(db)
+        try:
+            assert has_live_connection(db)
+
+            mode, error = doctor._read_journal_mode(db)
+
+            assert mode is None
+            assert error == "database is open in this process"
+        finally:
+            conn.close()
+
+    def test_probe_resumes_once_the_connection_closes(self, tmp_path, clean_registry):
+        db = tmp_path / "state.db"
+        _make_db(db, journal_mode="WAL")
+
+        conn = connect_tracked(db)
+        assert doctor._read_journal_mode(db)[0] is None
+        conn.close()
+
+        assert not has_live_connection(db)
+        assert doctor._read_journal_mode(db) == ("wal", None)
+
+    def test_refusal_creates_no_new_sidecars(self, tmp_path, clean_registry):
+        db = tmp_path / "state.db"
+        _make_db(db, journal_mode="WAL")
+
+        conn = connect_tracked(db)
+        try:
+            before = _sidecars(tmp_path)
+
+            doctor._read_journal_mode(db)
+
+            assert _sidecars(tmp_path) == before
+        finally:
+            conn.close()
+
+    def test_report_degrades_instead_of_probing_a_live_database(
+        self, tmp_path, capsys, clean_registry
+    ):
+        db = tmp_path / "state.db"
+        _make_db(db, journal_mode="WAL")
+
+        conn = connect_tracked(db)
+        try:
+            doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        finally:
+            conn.close()
+
+        out = capsys.readouterr().out
+        assert "state.db: journal mode could not be read" in out
+        assert "database is open in this process" in out
+        assert "cannot rule out WAL exposure" in out
+
+    def test_an_untracked_lock_holder_does_not_block_the_probe(self, tmp_path):
+        """Only this process's *registered* connections gate the read.
+
+        A plain sqlite3.connect elsewhere is not in the registry, and a lock
+        held by another process is irrelevant — neither can be cancelled by a
+        close() we never perform. Guards against over-correcting into refusing
+        every read.
+        """
+        db = tmp_path / "state.db"
+        _make_db(db)
+        holder = sqlite3.connect(db, isolation_level=None)
+        try:
+            holder.execute("BEGIN EXCLUSIVE")
+
+            assert doctor._read_journal_mode(db) == ("rollback", None)
+        finally:
+            holder.close()
+
+
+class TestUnreadableReason:
+    def test_missing_file_keeps_the_os_error_text(self, tmp_path):
+        reason = doctor._unreadable_reason(tmp_path / "gone.db")
+
+        assert "No such file or directory" in reason
+
+    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+    @pytest.mark.skipif(
+        # os.geteuid is POSIX-only, and a skipif condition is evaluated at
+        # collection time — calling it unguarded would raise AttributeError
+        # and take the whole module down on Windows.
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root ignores file permissions",
+    )
+    def test_unreadable_file_is_reported_as_permission_denied(self, tmp_path):
+        db = tmp_path / "state.db"
+        _make_db(db)
+        os.chmod(db, 0o000)
+        try:
+            mode, error = doctor._read_journal_mode(db)
+        finally:
+            os.chmod(db, 0o644)
+
+        assert mode is None
+        assert "permission denied" in error.lower()
+
+    def test_reason_does_not_open_the_file(self, tmp_path, monkeypatch):
+        """_unreadable_reason must answer from metadata only.
+
+        It runs on database paths, so taking a descriptor would reintroduce
+        the very close() this module's guard exists to prevent.
+        """
+        db = tmp_path / "state.db"
+        _make_db(db)
+
+        def _fail(*args, **kwargs):
+            raise AssertionError("_unreadable_reason must not open the file")
+
+        monkeypatch.setattr("builtins.open", _fail)
+
+        assert doctor._unreadable_reason(db) == "file could not be read"
 
 
 class TestReportDatabaseJournalModes:

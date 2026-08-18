@@ -16,6 +16,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    _dispatch_pre_tool_call_hooks,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -1120,6 +1121,122 @@ class TestResolvePreToolBlock:
         monkeypatch.setattr("tools.approval.request_tool_approval", _boom)
         msg = resolve_pre_tool_block("terminal", {})
         assert msg is not None and "gate failed" in msg  # fail-closed
+
+
+class TestPreToolCallModify:
+    """Tests for the modify action — transforming tool args before dispatch."""
+
+    def test_modify_returns_merged_args(self, monkeypatch):
+        """A single modify hook should return merged args."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe/dir"}}
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/unsafe/dir", "content": "x"}
+        )
+        assert block_msg is None
+        assert modified == {"path": "/safe/dir", "content": "x"}
+
+    def test_modify_accumulates_multiple_hooks(self, monkeypatch):
+        """Multiple modify hooks should accumulate — hook A + hook B both survive."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe"}},
+                {"action": "modify", "args": {"content": "fixed"}},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/unsafe", "content": "original"}
+        )
+        assert block_msg is None
+        assert modified == {"path": "/safe", "content": "fixed"}
+
+    def test_modify_last_wins_on_same_key(self, monkeypatch):
+        """When two hooks modify the same key, the later hook wins."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/first"}},
+                {"action": "modify", "args": {"path": "/second"}},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/original"}
+        )
+        assert modified == {"path": "/second"}
+
+    def test_modify_with_block_returns_both(self, monkeypatch):
+        """When a modify precedes a block, both are returned."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe"}},
+                {"action": "block", "message": "still blocked"},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/unsafe"}
+        )
+        assert block_msg == "still blocked"
+        assert modified == {"path": "/safe"}
+
+    def test_modify_after_block_is_invisible(self, monkeypatch):
+        """A modify after a block is never reached — first block wins."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block", "message": "stopped"},
+                {"action": "modify", "args": {"path": "/invisible"}},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/original"}
+        )
+        assert block_msg == "stopped"
+        assert modified is None
+
+    def test_modify_with_none_args(self, monkeypatch):
+        """Modify should handle None args gracefully."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe"}}
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks("write_file", None)
+        assert block_msg is None
+        assert modified == {"path": "/safe"}
+
+    def test_modify_none_when_no_hooks(self, monkeypatch):
+        """No hooks → both return values are None."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "terminal", {"cmd": "ls"}
+        )
+        assert block_msg is None
+        assert modified is None
+
+    def test_modify_invalid_args_ignored(self, monkeypatch):
+        """Non-dict args and empty dicts should be silently ignored."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": "not a dict"},
+                {"action": "modify", "args": {}},          # empty
+                {"action": "modify", "args": {"path": "/real"}},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/original"}
+        )
+        assert modified == {"path": "/real"}
 
 
 class TestGetPreVerifyContinueMessage:

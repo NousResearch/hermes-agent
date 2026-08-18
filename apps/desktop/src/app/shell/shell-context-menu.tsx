@@ -82,13 +82,20 @@ export function ShellContextMenu({ children }: { children: React.ReactNode }) {
 }
 
 /** Right-clicks that already have an owner keep it: a surface with its own
- *  context menu, an editable, or a live selection (Electron's native edit menu).
- *  Never `preventDefault` — that is what would swallow the native menu. */
+ *  context menu, an editable, a live selection (Electron's native edit menu),
+ *  or an image/media element (Electron's native image menu — Copy Image,
+ *  Save Image As...). Never `preventDefault` — that is what would swallow the
+ *  native menu. */
 function guard(event: React.MouseEvent<HTMLDivElement>) {
   const target = event.target as HTMLElement | null
   const owner = target?.closest('[data-slot="context-menu-trigger"]')
 
-  if ((owner && !owner.hasAttribute('data-shell-context-menu')) || isEditableTarget(target) || hasTextSelection()) {
+  if (
+    (owner && !owner.hasAttribute('data-shell-context-menu')) ||
+    target?.closest('img, picture, video, canvas') ||
+    isEditableTarget(target) ||
+    hasTextSelection()
+  ) {
     event.stopPropagation()
   }
 }

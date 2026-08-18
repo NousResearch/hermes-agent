@@ -1249,6 +1249,12 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_counter = itertools.count(1)
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        # Model picker button state (picker_id → {chat_id, session_key, on_model_selected, ...})
+        self._model_picker_state: Dict[int, dict] = {}
+        self._model_picker_counter = itertools.count(1)
+        # Choice picker button state (picker_id → {chat_id, session_key, choices, on_choice_selected})
+        self._choice_picker_state: Dict[int, dict] = {}
+        self._choice_picker_counter = itertools.count(1)
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
         self._load_seen_message_ids()
@@ -1720,6 +1726,116 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive model-picker card.
+
+        Matches the gateway's official ``send_model_picker`` contract (same as
+        Telegram/Discord/Matrix): flatten the provided ``providers`` catalog
+        into a single ``select_static`` dropdown whose selected value is
+        resolved server-side against the stored entries, then hand the choice
+        to ``on_model_selected(chat_id, model_id, provider_slug)``.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        # Flatten providers into (label, model_id, provider_slug), deduped.
+        model_entries: List[tuple] = []
+        seen: set = set()
+        for provider in providers or []:
+            if not isinstance(provider, dict):
+                continue
+            slug = str(provider.get("slug") or "")
+            name = str(provider.get("name") or slug or "unknown")
+            for model in provider.get("models", []) or []:
+                if isinstance(model, dict):
+                    mid = str(model.get("model") or model.get("id") or "").strip()
+                else:
+                    mid = str(model or "").strip()
+                if not mid:
+                    continue
+                key = (slug, mid)
+                if key in seen:
+                    continue
+                seen.add(key)
+                short = mid.split("/")[-1] if "/" in mid else mid
+                model_entries.append((f"{name} · {short}", mid, slug))
+
+        if not model_entries:
+            return SendResult(success=False, error="No models available")
+
+        picker_id = next(self._model_picker_counter)
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "⚙ 切换模型", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": f"当前模型：`{current_model or 'unknown'}`"},
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "select_static",
+                            "placeholder": {"tag": "plain_text", "content": "选择要切换的模型"},
+                            "options": [
+                                {
+                                    "text": {"tag": "plain_text", "content": label},
+                                    "value": f"hermes_model_picker:{picker_id}:{idx}",
+                                }
+                                for idx, (label, _mid, _slug) in enumerate(model_entries)
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send_model_picker failed")
+            if result.success:
+                self._model_picker_state[picker_id] = {
+                    "chat_id": chat_id,
+                    "session_key": session_key,
+                    "on_model_selected": on_model_selected,
+                    "model_entries": model_entries,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_model_picker failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _build_model_picker_selection_card(*, model_id: str) -> Dict[str, Any]:
+        """Build the inline card shown immediately after a selection lands."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "模型切换中", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": f"正在切换到 `{model_id}`…"},
+            ],
+        }
+
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Raw card JSON shown in place of the buttons once an approval is resolved."""
@@ -2079,6 +2195,18 @@ class FeishuAdapter(BasePlatformAdapter):
                 return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
             if action_value.get("hermes_update_prompt_action"):
                 return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
+
+        # Model picker is a select_static: the selected option value arrives
+        # via action.option.value (or action.value.key depending on SDK
+        # version) rather than action.value like buttons.
+        mp_option = self._find_model_picker_option_value(action, action_value)
+        if mp_option:
+            return self._handle_model_picker_card_action(
+                event=event,
+                option_value=mp_option,
+                loop=loop,
+            )
+
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
 
@@ -2143,6 +2271,126 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             return None
         return open_id, callback_chat_id, self._get_cached_sender_name(open_id) or open_id
+
+    _MODEL_PICKER_PREFIX = "hermes_model_picker:"
+
+    @classmethod
+    def _find_model_picker_option_value(cls, action: Any, action_value: Any) -> Optional[str]:
+        """Extract the selected model-picker option value from a card action.
+
+        Feishu's select_static callbacks deliver the chosen option's value in
+        different shapes depending on SDK/callback version:
+        - ``action.option.value`` (string)
+        - ``action.value.key`` (legacy form option callbacks)
+        - ``action.value`` itself when the platform passes the raw string
+        Returns the value string when it carries our prefix, else None.
+        """
+        candidates: List[Any] = []
+
+        option = getattr(action, "option", None)
+        if option is not None:
+            candidates.append(getattr(option, "value", None))
+
+        if isinstance(action_value, dict):
+            candidates.append(action_value.get("key"))
+            candidates.append(action_value.get("value"))
+        elif isinstance(action_value, str):
+            candidates.append(action_value)
+
+        for cand in candidates:
+            if isinstance(cand, str) and cand.startswith(cls._MODEL_PICKER_PREFIX):
+                return cand
+        return None
+
+    def _handle_model_picker_card_action(self, *, event: Any, option_value: str, loop: Any) -> Any:
+        """Validate a model-picker selection and schedule the session switch."""
+        parts = str(option_value or "").split(":")
+        # parts = ["hermes_model_picker", picker_id, index]
+        if len(parts) != 3:
+            logger.debug("[Feishu] Malformed model picker value %r", option_value)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        try:
+            picker_id = int(parts[1])
+            idx = int(parts[2])
+        except ValueError:
+            logger.debug("[Feishu] Non-integer model picker value %r", option_value)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        state = self._model_picker_state.get(picker_id)
+        if not state:
+            logger.debug("[Feishu] Model picker %s unknown or already used", picker_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        entries = state.get("model_entries", [])
+        if idx < 0 or idx >= len(entries):
+            logger.warning("[Feishu] Invalid model picker index %s for %s", idx, picker_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if not self._allow_group_message(sender_id, expected_chat_id, is_bot=False):
+            logger.warning("[Feishu] Unauthorized model picker click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning("[Feishu] Model picker chat mismatch for %s", picker_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        _label, model_id, provider_slug = entries[idx]
+
+        # One-time: pop before scheduling so a duplicate tap can't double-switch.
+        state = self._model_picker_state.pop(picker_id, None)
+        if not state or not self._submit_on_loop(
+            loop,
+            self._dispatch_model_picker_selection(
+                on_model_selected=state["on_model_selected"],
+                chat_id=expected_chat_id,
+                model_id=model_id,
+                provider_slug=provider_slug,
+            ),
+        ):
+            if state:
+                self._model_picker_state[picker_id] = state
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_model_picker_selection_card(model_id=model_id)
+            response.card = card
+        return response
+
+    async def _dispatch_model_picker_selection(
+        self,
+        *,
+        on_model_selected: Any,
+        chat_id: str,
+        model_id: str,
+        provider_slug: str,
+    ) -> None:
+        """Invoke the gateway callback and post the confirmation text."""
+        result_text: str
+        try:
+            result_text = await on_model_selected(chat_id, model_id, provider_slug)
+        except Exception as exc:
+            logger.error("[Feishu] Model picker switch failed: %s", exc)
+            result_text = f"模型切换失败：{exc}"
+        try:
+            await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="text",
+                payload=json.dumps({"text": _strip_markdown_to_plain_text(result_text)}, ensure_ascii=False),
+                reply_to=None,
+                metadata=None,
+            )
+        except Exception as exc:
+            logger.debug("[Feishu] Failed to send model picker confirmation: %s", exc)
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""

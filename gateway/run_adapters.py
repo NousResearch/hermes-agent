@@ -928,6 +928,7 @@ class GatewayAdapterLifecycleMixin:
                 f"these platform entries from profile '{profile_name}'s config.yaml "
                 f"or configure them only on the default profile."
             )
+        self._register_profile_gateway_config(profile_name, profile_cfg)
         return profile_cfg
 
     def _refuse_duplicate_claim(
@@ -1005,7 +1006,7 @@ class GatewayAdapterLifecycleMixin:
                 credential_claim, claimed, profile_name, platform, "credential"
             ) or self._refuse_duplicate_claim(listener_claim, claimed, profile_name, platform, "listener"):
                 continue
-            self._configure_profile_adapter(adapter, profile_name, platform)
+            self._configure_profile_adapter(adapter, profile_name, platform, gateway_config=profile_cfg)
             try:
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     success = await self._connect_initial_adapter_with_timeout(adapter, platform)
@@ -1032,11 +1033,14 @@ class GatewayAdapterLifecycleMixin:
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        busy_text_mode: Optional[str] = None,
+        busy_text_mode: Optional[str] = None, slash_access_check=None,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
         adapter.set_message_handler(message_handler or self._primary_message_handler())
+        set_slash_access = getattr(adapter, "set_slash_access_check", None)
+        if callable(set_slash_access):
+            set_slash_access(slash_access_check or self._primary_slash_access_check())
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(busy_session_handler or self._handle_active_session_busy_message)
@@ -1051,11 +1055,13 @@ class GatewayAdapterLifecycleMixin:
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
 
     def _configure_profile_adapter(
-        self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform
+        self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform, *, gateway_config=None
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
         # Runtime status is process-scoped: key on profile:platform so health shows WHICH secondary failed.
         adapter._runtime_status_platform_key = f"{profile_name}:{platform.value}"
+        if gateway_config is not None:
+            self._register_profile_gateway_config(profile_name, gateway_config)
         # Declare ownership BEFORE any inbound event: adapter-level session keys are derived at ingress,
         # before the handler stamps source.profile (else every secondary keys into `agent:main:`).
         _set_owner = getattr(adapter, "set_owner_profile", None)
@@ -1067,6 +1073,7 @@ class GatewayAdapterLifecycleMixin:
         self._wire_adapter_handlers(
             adapter,
             message_handler=self._make_profile_message_handler(profile_name),
+            slash_access_check=self._make_profile_slash_access_check(profile_name, gateway_config=gateway_config),
             fatal_error_handler=self._make_profile_fatal_error_handler(profile_name, platform),
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
@@ -1096,7 +1103,8 @@ class GatewayAdapterLifecycleMixin:
         # Hydrate external secret sources off-loop so they cannot starve heartbeats.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_config = load_gateway_config().platforms.get(platform)
+            profile_cfg = load_gateway_config()
+            profile_config = profile_cfg.platforms.get(platform)
             if profile_config is None or not profile_config.enabled:
                 return None, None
             # Startup credential gate mirror: a removed credential must not rebuild.
@@ -1116,7 +1124,7 @@ class GatewayAdapterLifecycleMixin:
                 )
                 return None, None
             try:
-                self._configure_profile_adapter(adapter, profile_name, platform)
+                self._configure_profile_adapter(adapter, profile_name, platform, gateway_config=profile_cfg)
                 success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
             except BaseException:
                 # Caller never sees this adapter; release its partial resources here.

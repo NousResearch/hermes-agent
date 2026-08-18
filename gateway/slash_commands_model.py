@@ -7,6 +7,7 @@ the import cycle.
 """
 
 from __future__ import annotations
+from gateway.message_actor import event_actor_identity, source_for_event_actor
 
 import asyncio
 import contextlib
@@ -380,7 +381,7 @@ class GatewayModelCommandsMixin:
             current_model=listing_kwargs["current_model"],
             current_provider=listing_kwargs["current_provider"], session_key=session_key,
             on_model_selected=on_model_selected,
-            metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+            metadata={**(self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)) or {}), "picker_user_id": event_actor_identity(event)[0]},
         )
         return bool(result.success)
 
@@ -649,7 +650,7 @@ class GatewayModelCommandsMixin:
         try:
             result = await adapter.send_choice_picker(
                 chat_id=event.source.chat_id, title=title, choices=choices, session_key=session_key,
-                on_choice_selected=on_choice_selected, metadata=self._reply_metadata(event),
+                on_choice_selected=on_choice_selected, metadata={**(self._reply_metadata(event) or {}), "picker_user_id": event_actor_identity(event)[0]},
             )
             return bool(getattr(result, "success", False))
         except Exception as e:

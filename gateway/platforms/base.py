@@ -1903,6 +1903,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._slash_access_check = None
         self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
         self._platform_event_handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = None
@@ -2248,6 +2249,19 @@ class BasePlatformAdapter(ABC):
     def set_message_handler(self, handler: MessageHandler) -> None:
         """Set the incoming-message handler (MessageEvent -> optional response str)."""
         self._message_handler = handler
+
+    def set_slash_access_check(
+        self,
+        check: Optional[Callable[[Any, str], Optional[str]]],
+    ) -> None:
+        """Install the runner-owned slash-policy checker for native callbacks.
+
+        The checker receives an actor-bearing ``SessionSource`` and a canonical
+        command name.  It returns ``None`` when allowed and a denial string
+        otherwise, matching ``GatewayRunner._check_slash_access``.
+        """
+        self._slash_access_check = check
+
 
     def set_platform_event_handler(
         self, handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]]) -> None:

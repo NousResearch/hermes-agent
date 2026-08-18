@@ -5,6 +5,7 @@ Split out of ``gateway/slash_commands.py``; bound onto ``GatewayRunner`` through
 the import cycle."""
 
 from __future__ import annotations
+from gateway.message_actor import event_actor_identity, source_for_event_actor
 
 import asyncio
 import contextlib
@@ -151,6 +152,9 @@ class GatewaySessionCommandsMixin:
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
+        actor_user_id, _ = event_actor_identity(event)
+        if not actor_user_id:
+            return "⛔ /reset requires an identifiable user."
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
@@ -178,7 +182,7 @@ class GatewaySessionCommandsMixin:
 
         new_entry = await self.async_session_store.reset_session(session_key)
         _old_sid = old_entry.session_id if old_entry else None
-        await self._fire_session_reset_hooks(source, session_key, _old_sid,
+        await self._fire_session_reset_hooks(source_for_event_actor(event), session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
         # Scoped to the profile serving this source so a multiplexed /new banner reports the
         # profile's model, not the base config's.
@@ -296,14 +300,25 @@ class GatewaySessionCommandsMixin:
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
 
-    def _resume_caller_is_admin(self, source: SessionSource) -> bool:
+    def _resume_caller_is_admin(self, source: SessionSource, actor_user_id: Optional[str] = None) -> bool:
         """Whether *source* is an EXPLICITLY-configured admin (cross-origin /resume, /sessions).
         Stricter than ``SlashAccessPolicy.is_admin()``, which is True for every caller when slash
         gating is DISABLED — the default config would make everyone cross-origin-capable (IDOR)."""
         try:
             from gateway.slash_access import policy_for_source
-            policy = policy_for_source(self.config, source)
-            uid = getattr(source, "user_id", None)
+            # Cross-origin data access must be judged by the profile actually
+            # serving this source; an unresolvable profile fails closed rather
+            # than inheriting the multiplexer's admin list.
+            policy_cfg, policy_resolved = (
+                self._effective_gateway_config_for_source(source)
+            )
+            if not policy_resolved:
+                return False
+            policy = policy_for_source(policy_cfg, source)
+            # Shared observed-group sources intentionally omit participant
+            # identity for routing. The actual command actor remains on the
+            # MessageEvent and is passed separately at the handler boundary.
+            uid = actor_user_id or getattr(source, "user_id", None)
             return bool(policy.enabled and uid and policy.is_admin(uid))
         except Exception:
             return False
@@ -341,13 +356,17 @@ class GatewaySessionCommandsMixin:
         if caller_keys_on_alt:
             return False
         return bool(row_uid) and row_uid == caller_uid
-
-    async def _resume_target_allowed(self, source: SessionSource, target_id: str,
-                                     allow_override: bool = False) -> bool:
+    async def _resume_target_allowed(
+        self,
+        source: SessionSource,
+        target_id: str,
+        allow_override: bool = False,
+        actor_user_id: Optional[str] = None,
+    ) -> bool:
         """Whether *source* may resume session *target_id* (IDOR guard for every adapter).  The live
         origin decides when the target is active; otherwise the DB row must PROVE ownership or fail
         closed.  Admin ``--all`` bypasses."""
-        if allow_override and self._resume_caller_is_admin(source):
+        if allow_override and self._resume_caller_is_admin(source, actor_user_id):
             return True
         # Only a real SessionSource origin decides; unresolvable/error falls through to DB scoping.
         try:
@@ -362,15 +381,15 @@ class GatewaySessionCommandsMixin:
             return False
         return self._persisted_row_proves_owner(source, row)
 
-    async def _resume_row_visible(self, source: SessionSource, row: dict, allow_all: bool) -> bool:
+    async def _resume_row_visible(self, source: SessionSource, row: dict, allow_all: bool, actor_user_id: Optional[str] = None) -> bool:
         """Whether a listing *row* belongs to the caller's origin (blocks cross-origin enumeration of
         ids/previews); Matrix is room-scoped, ``--all`` needs a configured admin everywhere."""
-        if allow_all and self._resume_caller_is_admin(source):
+        if allow_all and self._resume_caller_is_admin(source, actor_user_id):
             return True
         sid = str(row.get("id") or "")
         if source.platform == Platform.MATRIX:
             return self._same_matrix_room(source, self._gateway_session_origin_for_id(sid))
-        return await self._resume_target_allowed(source, sid, allow_override=False)
+        return await self._resume_target_allowed(source, sid, allow_override=False, actor_user_id=actor_user_id)
 
     # ------------------------------------------------------------------ /retry, /undo
 
@@ -661,6 +680,10 @@ class GatewaySessionCommandsMixin:
     async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
         """Handle /topic for Telegram DM user-managed topic sessions."""
         source = event.source
+        actor_user_id, _ = event_actor_identity(event)
+        if not actor_user_id:
+            return t("gateway.topic.unauthorized")
+        actor_source = source_for_event_actor(event)
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
             return t("gateway.topic.not_telegram_dm")
         if not self._session_db:
@@ -668,7 +691,7 @@ class GatewaySessionCommandsMixin:
 
         # Defense in depth: /topic mutates SQLite side tables, so re-check the allowlist here.
         try:
-            if not self._is_user_authorized(source):
+            if not self._is_user_authorized(actor_source):
                 return t("gateway.topic.unauthorized")
         except Exception:
             logger.debug("Topic auth check failed", exc_info=True)
@@ -677,11 +700,13 @@ class GatewaySessionCommandsMixin:
         if args.lower() in {"help", "?", "-h", "--help"}:
             return self._telegram_topic_help_text()
         if args.lower() in {"off", "disable", "stop"}:
-            return await self._disable_telegram_topic_mode_for_chat(source)
+            return await self._disable_telegram_topic_mode_for_chat(actor_source)
         if args:
             if not source.thread_id:
                 return t("gateway.topic.restore_needs_topic")
-            return await self._restore_telegram_topic_session(event, args)
+            return await self._restore_telegram_topic_session(
+                event, args, actor_user_id=str(actor_user_id)
+            )
 
         capabilities = await self._get_telegram_topic_capabilities(source)
         if capabilities.get("checked"):
@@ -698,7 +723,7 @@ class GatewaySessionCommandsMixin:
         profile_name = self._telegram_topic_profile_name(source)
         try:
             await self._session_db.enable_telegram_topic_mode(
-                chat_id=str(source.chat_id), user_id=str(source.user_id), profile_name=profile_name,
+                chat_id=str(source.chat_id), user_id=str(actor_user_id), profile_name=profile_name,
                 has_topics_enabled=capabilities.get("has_topics_enabled"),
                 allows_users_to_create_topics=capabilities.get("allows_users_to_create_topics"))
         except Exception as exc:
@@ -707,7 +732,7 @@ class GatewaySessionCommandsMixin:
 
         if not source.thread_id:
             await self._ensure_telegram_system_topic(source)
-            return await self._telegram_topic_root_status_message(source)
+            return await self._telegram_topic_root_status_message(actor_source)
         try:
             binding = await self._session_db.get_telegram_topic_binding(
                 chat_id=str(source.chat_id), thread_id=str(source.thread_id),
@@ -827,20 +852,20 @@ class GatewaySessionCommandsMixin:
 
     # -------------------------------------------------------------- /resume, /sessions
 
-    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
+    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool, actor_user_id: Optional[str] = None) -> list[dict]:
         """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
-        widen = allow_all and self._resume_caller_is_admin(source)
+        widen = allow_all and self._resume_caller_is_admin(source, actor_user_id=actor_user_id)
         sessions = await self._session_db.list_sessions_rich(
             source=source.platform.value if source.platform else None,
             session_key=None if widen else session_key, limit=10)
         titled = [s for s in sessions if s.get("title")][:10]
-        return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
+        return [s for s in titled if await self._resume_row_visible(source, s, allow_all, actor_user_id=actor_user_id)]
 
-    async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
+    async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool, actor_user_id: Optional[str] = None):
         """``(target_id, name)`` for a numbered choice, session id or title; else the error reply."""
         if name.isdigit():
             try:
-                titled = await self._list_titled_sessions(source, session_key, allow_all)
+                titled = await self._list_titled_sessions(source, session_key, allow_all, actor_user_id=actor_user_id)
             except Exception as e:
                 logger.debug("Failed to list titled sessions for numeric resume: %s", e)
                 return t("gateway.resume.list_failed", error=e)
@@ -863,7 +888,7 @@ class GatewaySessionCommandsMixin:
         return target_id, name
 
     async def _resume_access_denied_reply(self, source, target_id: str, name: str, allow_all: bool,
-                                          allow_cross_room: bool) -> Optional[str]:
+                                          allow_cross_room: bool, actor_user_id: Optional[str] = None) -> Optional[str]:
         """IDOR guard: a session id/title is a routing handle, not authority — bind /resume to the
         caller's own room (Matrix) or platform/user/chat (other adapters)."""
         if source.platform == Platform.MATRIX:
@@ -874,12 +899,13 @@ class GatewaySessionCommandsMixin:
                 return t("gateway.resume.matrix_blocked_no_origin", name=name)
             return t("gateway.resume.matrix_blocked_other_room", name=name,
                      room=target_origin.chat_name or target_origin.chat_id)
-        if await self._resume_target_allowed(source, target_id, allow_override=(allow_all or allow_cross_room)):
+        if await self._resume_target_allowed(source, target_id, allow_override=(allow_all or allow_cross_room), actor_user_id=actor_user_id):
             return None
         return t("gateway.resume.blocked_not_owner", name=name)
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — list or switch to a previous session."""
+        actor_user_id, _ = event_actor_identity(event)
         if not self._session_db:
             return self._session_db_unavailable_reply()
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
@@ -893,17 +919,17 @@ class GatewaySessionCommandsMixin:
         name = _strip_resume_name(parts)
         if not name:
             try:
-                titled = await self._list_titled_sessions(source, session_key, allow_all)
-                return self._resume_listing_reply(source, titled, allow_all)
+                titled = await self._list_titled_sessions(source, session_key, allow_all, actor_user_id=actor_user_id)
+                return self._resume_listing_reply(source, titled, allow_all, actor_user_id=actor_user_id)
             except Exception as e:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return t("gateway.resume.list_failed", error=e)
 
-        resolved = await self._resolve_resume_target(source, session_key, name, allow_all)
+        resolved = await self._resolve_resume_target(source, session_key, name, allow_all, actor_user_id=actor_user_id)
         if isinstance(resolved, str):
             return resolved
         target_id, name = resolved
-        denied = await self._resume_access_denied_reply(source, target_id, name, allow_all, allow_cross_room)
+        denied = await self._resume_access_denied_reply(source, target_id, name, allow_all, allow_cross_room, actor_user_id=actor_user_id)
         if denied is not None:
             return denied
         current_entry = await self.async_session_store.get_or_create_session(source)
@@ -938,11 +964,11 @@ class GatewaySessionCommandsMixin:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
 
-    def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool) -> str:
+    def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool, actor_user_id: Optional[str] = None) -> str:
         """Numbered /resume list; a non-admin ``--all`` falls back to same-origin scoping and says so
         (sibling of the /sessions notice)."""
         scope_note = None
-        if allow_all and not self._resume_caller_is_admin(source):
+        if allow_all and not self._resume_caller_is_admin(source, actor_user_id=actor_user_id):
             scope_note = t("gateway.resume.all_requires_admin")
         if not titled:
             if source.platform == Platform.MATRIX and not allow_all:
@@ -966,6 +992,7 @@ class GatewaySessionCommandsMixin:
 
     async def _handle_sessions_command(self, event: MessageEvent) -> str:
         """Handle /sessions — list previous sessions for gateway chats."""
+        actor_user_id, _ = event_actor_identity(event)
         if not self._session_db:
             return self._session_db_unavailable_reply()
         from hermes_cli.session_listing import (
@@ -983,7 +1010,7 @@ class GatewaySessionCommandsMixin:
         session_key = self._session_key_for_source(source)
         # `/sessions all` is admin-only like `/resume --all` (else any caller could enumerate other
         # origins' ids/titles/previews); a non-admin gets explicit feedback, not a silent narrowing.
-        cross_origin = include_all and self._resume_caller_is_admin(source)
+        cross_origin = include_all and self._resume_caller_is_admin(source, actor_user_id=actor_user_id)
         scope_notice = None
         if include_all and not cross_origin:
             scope_notice = "_Note: `all` (cross-chat listing) requires a configured admin; showing this chat's sessions only._"
@@ -998,7 +1025,7 @@ class GatewaySessionCommandsMixin:
             # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
             limit=50 if search_query else 10, exclude_sources=["tool"])
         if not cross_origin:
-            rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
+            rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False, actor_user_id=actor_user_id)]
         rows = rows[:10]
         if search_query:
             title = f"Sessions matching “{search_query}”"

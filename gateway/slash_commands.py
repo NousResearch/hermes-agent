@@ -4,6 +4,7 @@ mixins (``slash_commands_model/_session/_status/_goals``); this module keeps the
 the one-off commands.  run.py helpers are imported lazily."""
 
 from __future__ import annotations
+from gateway.message_actor import event_actor_identity, source_for_event_actor
 
 import asyncio
 import contextlib
@@ -310,8 +311,11 @@ class GatewaySlashCommandsMixin(
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""
         from gateway.slash_access import policy_for_source
-        source = event.source
-        policy = policy_for_source(self.config, source)
+        source = source_for_event_actor(event)
+        policy_cfg, resolved = self._effective_gateway_config_for_source(source)
+        if not resolved:
+            return "⛔ /whoami is unavailable without profile policy context."
+        policy = policy_for_source(policy_cfg, source)
         platform = source.platform.value if source and source.platform else "?"
         chat_type = ((source.chat_type if source else "") or "dm").lower()
         scope = "DM" if chat_type in {"dm", "direct", "private", ""} else "group/channel"
@@ -432,7 +436,8 @@ class GatewaySlashCommandsMixin(
         # run another user started lives under a different key, yet authorized users must still be
         # able to /stop it: fall back to sibling runs in this thread, gated on authorization.
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
-        if sibling_keys and self._is_user_authorized(source):
+        actor_source = source_for_event_actor(event)
+        if sibling_keys and self._is_user_authorized(actor_source):
             for sibling_key in sibling_keys:
                 await _stop(sibling_key, "stop_command_thread_sibling")
             logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
@@ -879,8 +884,10 @@ class GatewaySlashCommandsMixin(
         # This mutates profile-wide security policy. The central slash gate can allow selected
         # commands to non-admin users, so enforce admin again at this side-effect boundary.
         # Unconfigured policies remain unrestricted.
-        policy = policy_for_source(self.config, event.source)
-        if requested and not policy.is_admin(event.source.user_id):
+        policy_cfg, resolved = self._effective_gateway_config_for_source(event.source)
+        policy = policy_for_source(policy_cfg, event.source)
+        actor_user_id, _ = event_actor_identity(event)
+        if requested and (not resolved or not actor_user_id or not policy.is_admin(actor_user_id)):
             return "Only gateway admins can change the persistent approval mode."
         # Approval checks load config dynamically; do not evict the cached agent or alter its
         # system prompt/tool schema (prompt-cache prefix is sacred).

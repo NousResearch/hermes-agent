@@ -2052,6 +2052,7 @@ from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn import GatewayTurnMixin
 from gateway.run_shutdown import GatewayShutdownMixin, _exit_with_failure_verdict, _resolve_gateway_exit_verdict
+from gateway.run_slash_policy import GatewaySlashPolicyMixin
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
 from gateway.run_startup import GatewayStartupMixin
@@ -3250,7 +3251,7 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
 
 
 class GatewayRunner(
-    GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
+    GatewaySlashPolicyMixin, GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,

@@ -6,6 +6,7 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
+from gateway.message_actor import source_for_event_actor
 
 import logging
 from typing import TYPE_CHECKING
@@ -182,7 +183,7 @@ class GatewayInboundMixin:
             return None
         source = event.source
 
-        if not self._is_user_authorized_for_source(source):
+        if not self._is_user_authorized_for_source(source_for_event_actor(event)):
             if source.user_id is None:
                 # No user identity (Telegram service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
@@ -508,7 +509,7 @@ class GatewayInboundMixin:
                 return True, await self._handle_context_command(event)
             # Slash access control mirrors the cold-path gate so non-admins can't bypass gating
             # just because an agent is busy. /help and /whoami are the always-allowed floor.
-            _denied = self._check_slash_access(source, _cmd_def_inner.name)
+            _denied = self._check_slash_access(source_for_event_actor(event), _cmd_def_inner.name)
             if _denied is not None:
                 return True, _denied
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
@@ -648,12 +649,6 @@ class GatewayInboundMixin:
         self._queue_or_replace_pending_event(_quick_key, event)
         return None
 
-    def _hm_quick_commands(self) -> dict:
-        """User-defined ``quick_commands`` mapping from config (empty dict when unset/malformed)."""
-        cfg = self.config
-        qc = (cfg.get("quick_commands") if isinstance(cfg, dict) else getattr(cfg, "quick_commands", None)) or {}
-        return qc if isinstance(qc, dict) else {}
-
     @staticmethod
     def _hm_expand_alias_quick_command(event: "MessageEvent", qcmd: dict) -> Optional[str]:
         """Rewrite ``event.text`` to an alias quick command's target; returns the new command name."""
@@ -731,7 +726,7 @@ class GatewayInboundMixin:
         # --provider openrouter reach the /model handler. Built-ins keep precedence: aliases only
         # need early handling when the typed command is not already known.
         if command and _cmd_def is None:
-            qcmd = self._hm_quick_commands().get(command)
+            qcmd = self._quick_commands_for_source(source).get(command)
             if qcmd is not None and qcmd.get("type") == "alias":
                 new_command = self._hm_expand_alias_quick_command(event, qcmd)
                 if new_command is not None:
@@ -744,7 +739,7 @@ class GatewayInboundMixin:
         # Per-platform slash access control: only active when the operator set ``allow_admin_from``
         # for the source's scope; then non-admins get ``user_allowed_commands`` plus the
         # /help, /whoami floor. Plain chat is never gated.
-        _denied = self._check_slash_access(source, canonical)
+        _denied = self._check_slash_access(source_for_event_actor(event), canonical)
         if _denied is not None:
             return True, _denied, command, canonical
 
@@ -951,14 +946,14 @@ class GatewayInboundMixin:
             return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
-        qcmd = self._hm_quick_commands().get(command) if command else None
+        qcmd = self._quick_commands_for_source(source).get(command) if command else None
         if qcmd is not None:
             # Quick commands are slash capabilities too — and type:exec ones run a shell command in
             # the gateway process. They are never in the registry, so the early gate never fires for
             # them; apply the same admin/user policy to the raw typed name here.
             # The early gate above only fires for registry-known commands, so quick commands (never in the
             # registry) would otherwise reach this dispatch sink unchecked. (#44727)
-            _denied = self._check_slash_access(source, command)
+            _denied = self._check_slash_access(source_for_event_actor(event), command)
             if _denied is not None:
                 return True, _denied, command
             qtype = qcmd.get("type")

@@ -57,3 +57,58 @@ async def test_gateway_rejects_non_admin_persistent_approval_change():
     run.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_shared_group_actor_can_pass_persistent_approval_admin_boundary():
+    runner = _runner()
+    runner.config = SimpleNamespace(
+        platforms={
+            Platform.TELEGRAM: SimpleNamespace(
+                extra={
+                    "group_allow_admin_from": ["admin-1"],
+                    "group_user_allowed_commands": [],
+                }
+            )
+        }
+    )
+    event = MessageEvent(
+        text="/approvals off",
+        user_id="admin-1",
+        user_name="Admin",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id=None,
+            chat_id="group-1",
+            chat_type="group",
+        ),
+    )
+
+    with patch(
+        "hermes_cli.approval_mode.run_approval_mode_command",
+        return_value=SimpleNamespace(message="approval mode updated"),
+    ) as run:
+        output = await runner._handle_approvals_command(event)
+
+    assert output == "approval mode updated"
+    run.assert_called_once_with("off")
+
+
+@pytest.mark.asyncio
+async def test_missing_actor_cannot_change_approvals_with_unconfigured_policy():
+    runner = _runner()
+    event = MessageEvent(
+        text="/approvals off",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id=None,
+            chat_id="group-1",
+            chat_type="group",
+        ),
+    )
+
+    with patch("hermes_cli.approval_mode.run_approval_mode_command") as run:
+        output = await runner._handle_approvals_command(event)
+
+    assert "admin" in output.lower()
+    run.assert_not_called()
+
+

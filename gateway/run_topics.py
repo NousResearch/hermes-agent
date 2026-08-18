@@ -3,6 +3,7 @@
 ``patch("gateway.run.X")`` keeps intercepting them at call time."""
 
 from __future__ import annotations
+from gateway.message_actor import event_actor_identity
 
 import asyncio
 import dataclasses
@@ -605,9 +606,12 @@ class GatewayTopicThreadsMixin:
             lines.extend(["No previous unlinked Telegram sessions found.", "", "To restore a previous session later:", *_TOPIC_RESTORE_STEPS])
         return "\n".join(lines)
 
-    async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
+    async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str, *, actor_user_id: Optional[str] = None) -> str:
         """Restore an existing Telegram-owned Hermes session into this topic."""
         source = event.source
+        actor_user_id = actor_user_id or event_actor_identity(event)[0]
+        if not actor_user_id:
+            return "⛔ /topic requires an identifiable user."
         db = self._session_db
         session_id = await db.resolve_session_id(raw_session_id.strip())
         session = await db.get_session(session_id) if session_id else None
@@ -615,7 +619,7 @@ class GatewayTopicThreadsMixin:
             return f"Session not found: {raw_session_id.strip()}"
         if str(session.get("source") or "") != "telegram":
             return "That session is not a Telegram session and cannot be restored into this topic."
-        if str(session.get("user_id") or "") != str(source.user_id):
+        if str(session.get("user_id") or "") != str(actor_user_id):
             return "That session does not belong to this Telegram user."
         linked = await db.is_telegram_session_linked_to_topic(session_id=session_id)
         topic_profile = self._telegram_topic_profile_name(source)
@@ -627,7 +631,7 @@ class GatewayTopicThreadsMixin:
             return already_linked
         try:
             await db.bind_telegram_topic(
-                chat_id=str(source.chat_id), thread_id=str(source.thread_id), user_id=str(source.user_id),
+                chat_id=str(source.chat_id), thread_id=str(source.thread_id), user_id=str(actor_user_id),
                 session_key=self._session_key_for_source(source), session_id=session_id, managed_mode="restored",
                 profile_name=topic_profile,
             )

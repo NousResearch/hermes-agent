@@ -7289,14 +7289,23 @@ function useProfileSessions(botName, gatewayGeneration) {
   })
 }
 
-async function openProfileSession(botName, storedId, gatewayGeneration) {
+async function openProfileSession(botName, session, gatewayGeneration) {
   const profile = String(botName || '')
-  const id = String(storedId || '')
+  const id = String(session?.id || '')
   if (!NAME_RE.test(profile) || !id || gatewayGeneration !== $sessionsGatewayGeneration.get()) return
   if (typeof host.openSession !== 'function') {
     throw new Error('This Hermes Desktop version cannot open stored sessions')
   }
-  await host.openSession(id, { profile })
+
+  // Same hydration contract as canonical Bot Chats (#89206): a bare open can
+  // focus a main surface whose runtime/transcript silently vanished, leaving a
+  // blank pane while the row preview still shows the conversation. Waiting on
+  // hydration lets the SDK issue the explicit resume when the surface is stale.
+  const hasAuthoritativeCount =
+    typeof session?.message_count === 'number' && Number.isFinite(session.message_count)
+  const expectHistory = hasAuthoritativeCount ? session.message_count > 0 : Boolean(session?.preview)
+
+  await host.openSession(id, { profile, awaitHydration: true, expectHistory })
   if (gatewayGeneration !== $sessionsGatewayGeneration.get()) return
   $botSelectedSessions.set({ ...$botSelectedSessions.get(), [profile]: id })
 }
@@ -7305,7 +7314,7 @@ function ProfileSessionRow({ session, botName, active, gatewayGeneration }) {
   return jsxs('button', {
     type: 'button',
     'aria-current': active ? 'page' : undefined,
-    onClick: () => void openProfileSession(botName, session.id, gatewayGeneration).catch(err => host.notifyError(err, 'Could not open session')),
+    onClick: () => void openProfileSession(botName, session, gatewayGeneration).catch(err => host.notifyError(err, 'Could not open session')),
     className: cn(
       'flex w-full flex-col gap-0.5 overflow-hidden rounded-md px-2 py-1.5 text-left transition-colors',
       'hover:bg-(--chrome-action-hover)',

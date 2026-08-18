@@ -345,6 +345,39 @@ describe('profile-aware plugin session opens', () => {
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 
+  it('requests an explicit resume on a cold open where selection has not settled (#89206)', async () => {
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(async (target: null | string | undefined) => {
+      $activeGatewayProfile.set(target || 'default')
+    })
+
+    // Cold-start shape from the field: the persisted route already points at
+    // the bot's stored session, but no selection, no runtime, no transcript.
+    setMockAtom($selectedStoredSessionId, null)
+    setMockAtom($activeSessionId, null)
+    setMockAtom($messages, [])
+
+    const opening = host.openSession('cold-bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1_000
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // The old pre-open "already selected" precondition skipped this request,
+    // stranding the pane blank until timeout. It must fire now.
+    expect(requestSessionResume).toHaveBeenCalledWith('cold-bot-chat')
+
+    setMockAtom($selectedStoredSessionId, 'cold-bot-chat')
+    setMockAtom($activeSessionId, 'runtime-cold')
+    setMockAtom($messages, [{ id: 'history-cold', parts: [], role: 'assistant' }] as never)
+
+    await opening
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
   it('requests a fresh resume when the same main Bot Chat lost its transcript', async () => {
     $activeGatewayProfile.set('hyoseob')
     setMockAtom($selectedStoredSessionId, 'bot-chat')

@@ -486,13 +486,6 @@ export const host = {
       $gatewaySwapTarget.set(targetProfile)
     }
 
-    const mainMessages = $messages.get()
-
-    const needsExplicitResume =
-      options.awaitHydration &&
-      $selectedStoredSessionId.get() === storedSessionId &&
-      (!$activeSessionId.get() || (expectHistory && !mainMessages.length))
-
     try {
       openSession(
         storedSessionId,
@@ -508,10 +501,22 @@ export const host = {
         options.intent ?? 'in-place'
       )
 
-      if (needsExplicitResume) {
-        // Re-selecting a routed Bot Chat normally focuses the existing main
-        // surface without changing the URL. If that surface lost its runtime or
-        // transcript, the route effect otherwise gets no signal to re-resume it.
+      // Judge the main surface AFTER the open: on a cold start the persisted
+      // route can already point at this session while selection has not
+      // settled, so a pre-open "already selected" precondition skips the
+      // resume exactly when it is needed (#89206 — blank Bot Chat with the
+      // roster preview intact). The surface is healthy only when this stored
+      // session is selected, a runtime is bound, and the expected transcript
+      // is present; anything less gets an explicit sequenced resume request.
+      // The route-resume effect only honors the request while the route
+      // points at this session, and consumes it alongside any resume the
+      // navigation itself triggers, so a redundant request is a no-op.
+      const surfaceHealthy =
+        $selectedStoredSessionId.get() === storedSessionId &&
+        Boolean($activeSessionId.get()) &&
+        (!expectHistory || $messages.get().length > 0)
+
+      if (options.awaitHydration && !surfaceHealthy) {
         requestSessionResume(storedSessionId)
       }
 

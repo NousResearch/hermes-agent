@@ -88,15 +88,17 @@ test('sessions workspace: filtering searches title, preview, and source without 
 
 test('sessions workspace: opening a stored row uses profile-aware navigation and records selection', async () => {
   const runtime = load({ profile: 'default' })
-  await runtime.__sessions.openProfileSession('ops', 'stored-123', 0)
-  assert.deepEqual(plain(runtime.calls), [['openSession', 'stored-123', { profile: 'ops' }]])
+  await runtime.__sessions.openProfileSession('ops', { id: 'stored-123', message_count: 4 }, 0)
+  assert.deepEqual(plain(runtime.calls), [
+    ['openSession', 'stored-123', { profile: 'ops', awaitHydration: true, expectHistory: true }]
+  ])
   assert.equal(runtime.__sessions.$botSelectedSessions.get().ops, 'stored-123')
 })
 
 test('sessions workspace: malformed profile or session input is a no-op', async () => {
   const runtime = load()
-  await runtime.__sessions.openProfileSession('../ops', 'stored-123', 0)
-  await runtime.__sessions.openProfileSession('ops', '', 0)
+  await runtime.__sessions.openProfileSession('../ops', { id: 'stored-123' }, 0)
+  await runtime.__sessions.openProfileSession('ops', { id: '' }, 0)
   assert.deepEqual(runtime.calls, [])
 })
 
@@ -107,8 +109,16 @@ test('sessions workspace: a gateway lifecycle change clears selection and reject
   assert.equal(runtime.__sessions.$sessionsGatewayGeneration.get(), 1)
   assert.deepEqual(plain(runtime.__sessions.$botSelectedSessions.get()), {})
 
-  await runtime.__sessions.openProfileSession('ops', 'stored-123', 0)
+  await runtime.__sessions.openProfileSession('ops', { id: 'stored-123' }, 0)
   assert.deepEqual(runtime.calls, [])
+})
+
+test('sessions workspace: an empty session with no preview does not demand history', async () => {
+  const runtime = load()
+  await runtime.__sessions.openProfileSession('ops', { id: 'stored-empty', message_count: 0 }, 0)
+  assert.deepEqual(plain(runtime.calls), [
+    ['openSession', 'stored-empty', { profile: 'ops', awaitHydration: true, expectHistory: false }]
+  ])
 })
 
 test('sessions workspace: an in-flight open cannot restore selection after gateway replacement', async () => {
@@ -117,7 +127,7 @@ test('sessions workspace: an in-flight open cannot restore selection after gatew
     openSession: async () => runtime.__sessions.handleSessionsGatewayTransition()
   })
 
-  await runtime.__sessions.openProfileSession('ops', 'stored-123', 0)
+  await runtime.__sessions.openProfileSession('ops', { id: 'stored-123', preview: 'last line' }, 0)
   assert.equal(runtime.calls.length, 1)
   assert.deepEqual(plain(runtime.__sessions.$botSelectedSessions.get()), {})
 })

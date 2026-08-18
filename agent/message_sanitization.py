@@ -400,6 +400,41 @@ def _sanitize_tools_non_ascii(tools: list) -> bool:
     return _sanitize_structure_non_ascii(tools)
 
 
+def serialized_messages_bytes(messages: list) -> int:
+    """Exact serialized size, in bytes, of the ``messages`` request payload.
+
+    Recovery path for HTTP 413 (payload too large).  A 413 is a *byte*-size
+    error, but Hermes' context estimator deliberately prices an image at a
+    flat per-image token cost so that a screenshot does not trigger premature
+    compaction (see ``estimate_messages_tokens_rough``).  That makes the
+    token estimate structurally unable to *score* recovery from an
+    image-dominated 413: compaction can free megabytes of base64 while the
+    estimate barely moves, so a token-scored progress check reports
+    "no progress" and the turn dies permanently.
+
+    This measures the thing the provider actually rejected — serialized
+    bytes — exactly and for free.  It is a faithful proxy for the request
+    body's ``messages`` field (the only part recovery can shrink) and is
+    measured identically before and after each compression pass, so the
+    before/after ratio is exact.  It is NOT an estimate.
+
+    Non-serializable values fall back to ``str()`` so a malformed message
+    can never crash the 413 recovery path.
+    """
+    if not isinstance(messages, list) or not messages:
+        return 0
+    try:
+        return len(
+            json.dumps(
+                messages, ensure_ascii=False, separators=(",", ":"), default=str
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError):
+        # Extremely defensive — ``default=str`` already covers exotic
+        # values.  Never let byte accounting take down error recovery.
+        return sum(len(str(m)) for m in messages)
+
+
 def _strip_images_from_messages(messages: list) -> bool:
     """Remove image_url content parts from all messages in-place.
 

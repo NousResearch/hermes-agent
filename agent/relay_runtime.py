@@ -897,6 +897,7 @@ class RelayRuntime:
         allow_closing: bool = False,
         failure_label: str = "scope close failed",
         drain_limit: int = 32,
+        operation_already_held: bool = False,
     ) -> str | None:
         """Pop ``handle``, draining orphaned children in the same session context.
 
@@ -1013,7 +1014,12 @@ class RelayRuntime:
                 error_holder["retry"] = retry_exc
 
         try:
-            self.run_in_session(
+            run_in_session = (
+                self._run_in_session_untracked
+                if operation_already_held
+                else self.run_in_session
+            )
+            run_in_session(
                 session,
                 close_with_drain,
                 allow_closing=allow_closing,
@@ -1063,6 +1069,7 @@ class RelayRuntime:
                     output={},
                     allow_closing=True,
                     failure_label="session scope close failed",
+                    operation_already_held=True,
                 )
                 if failure:
                     failures.append(failure)

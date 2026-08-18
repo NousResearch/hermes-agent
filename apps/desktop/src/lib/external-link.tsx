@@ -284,17 +284,6 @@ export function ExternalLink({
     <a
       className={cn('ref', className)}
       href={target}
-      onClick={event => {
-        event.stopPropagation()
-        onClick?.(event)
-
-        if (event.defaultPrevented) {
-          return
-        }
-
-        event.preventDefault()
-        openLink(target, { native: wantsNativeBrowser(event.nativeEvent) })
-      }}
       // Middle-click never fires `click`; it's the other half of the
       // open-elsewhere convention, so it has to be caught on its own.
       onAuxClick={event => {
@@ -305,6 +294,17 @@ export function ExternalLink({
         event.preventDefault()
         event.stopPropagation()
         openExternalLink(target)
+      }}
+      onClick={event => {
+        event.stopPropagation()
+        onClick?.(event)
+
+        if (event.defaultPrevented) {
+          return
+        }
+
+        event.preventDefault()
+        openLink(target, { native: wantsNativeBrowser(event.nativeEvent) })
       }}
       rel="noopener noreferrer"
       target="_blank"

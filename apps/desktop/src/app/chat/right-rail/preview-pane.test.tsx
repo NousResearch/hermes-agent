@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
 
-import { PreviewPane } from './preview-pane'
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
+import { PreviewPane } from './preview-pane'
 
 function stubPdfObjectUrls() {
   const NativeUrl = URL

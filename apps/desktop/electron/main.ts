@@ -14,6 +14,7 @@ import {
   clipboard,
   dialog,
   net as electronNet,
+  webContents as electronWebContents,
   globalShortcut,
   ipcMain,
   Menu,
@@ -26,8 +27,7 @@ import {
   screen,
   session,
   shell,
-  systemPreferences,
-  webContents as electronWebContents
+  systemPreferences
 } from 'electron'
 import nodePty from 'node-pty'
 

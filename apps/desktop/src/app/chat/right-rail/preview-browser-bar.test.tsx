@@ -112,6 +112,7 @@ describe('PreviewBrowserBar', () => {
   it('toggles the console and DevTools, and labels them by current state', () => {
     const onToggleConsole = vi.fn()
     const onToggleDevTools = vi.fn()
+
     const rendered = render(
       <PreviewBrowserBar {...baseProps} onToggleConsole={onToggleConsole} onToggleDevTools={onToggleDevTools} />
     )

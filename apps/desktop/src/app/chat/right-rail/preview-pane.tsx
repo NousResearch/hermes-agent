@@ -25,8 +25,8 @@ import {
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
-import { registerPreviewPageReader } from './preview-reader'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
+import { registerPreviewPageReader } from './preview-reader'
 
 type PreviewWebview = HTMLElement & {
   canGoBack?: () => boolean
@@ -676,6 +676,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       // buttons can't be left stale.
       syncHistory()
     }
+
     // The WEBVIEW is the source of truth for DevTools, not our click handler:
     // closing the DevTools window itself fires devtools-closed with no click,
     // and the glyph was left stuck "on" when we tracked it locally.

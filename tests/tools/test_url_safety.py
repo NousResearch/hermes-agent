@@ -496,3 +496,307 @@ class TestRedirectTargetFromResponse:
             next_request=_FakeNextRequest("http://10.0.0.1/meta"),
         )
         assert redirect_target_from_response(resp) == "http://10.0.0.1/meta"
+# ============================================================================
+# Region D — shared resolve-and-validate core (PR #84999 class closure)
+# ============================================================================
+
+
+class TestClassifyIp:
+    """_classify_ip: single classification core with pinned reasons."""
+
+    def test_reasons_grid(self):
+        from tools.url_safety import _classify_ip
+
+        cases = [
+            ("1.2.3.4", False, "ok"),
+            ("169.254.169.254", True, "metadata-ip"),
+            ("169.254.9.9", True, "link-local"),
+            ("127.0.0.1", True, "loopback"),
+            ("10.0.0.1", True, "private-ip"),
+            ("172.16.5.5", True, "private-ip"),
+            ("192.168.1.1", True, "private-ip"),
+            ("198.18.0.1", True, "private-ip"),
+            ("100.64.0.1", True, "cgnat"),
+            ("100.127.255.255", True, "cgnat"),
+            ("fe80::1", True, "link-local"),
+            ("fc00::1", True, "private-ip"),
+            ("fd00::1", True, "private-ip"),
+            ("::1", True, "loopback"),
+            ("::", True, "unspecified"),
+            ("224.0.0.1", True, "multicast"),
+            ("2001:db8::1", True, "private-ip"),  # docs range: is_private on >=3.11
+            ("93.184.216.34", False, "ok"),
+            ("2001:4860:4860::8888", False, "ok"),
+        ]
+        import ipaddress as _ip
+
+        for ip_str, blocked, reason in cases:
+            ip = _ip.ip_address(ip_str)
+            got = _classify_ip(ip)
+            assert got == (blocked, reason), (ip_str, got)
+
+    def test_mapped_prefix_tagged(self):
+        from tools.url_safety import _classify_ip
+        import ipaddress as _ip
+
+        assert _classify_ip(_ip.ip_address("::ffff:100.64.0.1")) == (True, "mapped:cgnat")
+        assert _classify_ip(_ip.ip_address("::ffff:10.0.0.1")) == (True, "mapped:private-ip")
+        assert _classify_ip(_ip.ip_address("::ffff:169.254.169.254")) == (True, "mapped:metadata-ip")
+        # ::/96 IPv4-compatible — floor class (G7 fix)
+        assert _classify_ip(_ip.ip_address("::a9fe:a9fe")) == (True, "ipv4-compatible")
+
+    def test_is_blocked_ip_backcompat(self):
+        """_is_blocked_ip stays a thin bool wrapper (back-compat)."""
+        from tools.url_safety import _is_blocked_ip
+        import ipaddress as _ip
+
+        assert _is_blocked_ip(_ip.ip_address("10.0.0.1")) is True
+        assert _is_blocked_ip(_ip.ip_address("93.184.216.34")) is False
+
+
+class TestResolveAndCheckUrl:
+    """resolve_and_check_url — resolve + validate + pin (fail-closed)."""
+
+    def test_public_host_ok_and_pinned(self):
+        from tools.url_safety import _MAX_SSRF_CONNECT_IPS, resolve_and_check_url
+
+        with _resolves_to("93.184.216.34", "93.184.216.35", "93.184.216.34"):
+            v = resolve_and_check_url("https://example.com/x")
+        assert v.ok is True
+        assert v.reason == "ok"
+        assert v.resolved_ips == ("93.184.216.34", "93.184.216.35")  # deduped
+        assert len(v.resolved_ips) <= _MAX_SSRF_CONNECT_IPS
+
+    def test_cap_returns_only_but_classifies_all(self):
+        """All answers classified even beyond the return cap (D7.1)."""
+        from tools.url_safety import _MAX_SSRF_CONNECT_IPS, resolve_and_check_url
+
+        public = [f"93.184.216.{i}" for i in range(1, _MAX_SSRF_CONNECT_IPS + 1)]
+        with _resolves_to(*(public + ["10.0.0.1"])):
+            v = resolve_and_check_url("https://example.com/x")
+        assert v.ok is False
+        assert v.reason == "blocked:private-ip"
+
+    def test_any_private_answer_blocks(self):
+        from tools.url_safety import resolve_and_check_url
+
+        with _resolves_to("93.184.216.34", "10.0.0.1"):
+            v = resolve_and_check_url("http://example.com/x")
+        assert v.ok is False
+        assert v.reason == "blocked:private-ip"
+
+    def test_hostname_floor_no_dns(self):
+        from tools.url_safety import resolve_and_check_url
+
+        calls = []
+
+        def _no_dns(*a, **k):
+            calls.append(a)
+            raise AssertionError("resolver must not be consulted")
+
+        assert resolve_and_check_url(
+            "http://metadata.google.internal/", resolve=_no_dns
+        ).reason == "blocked:metadata-host"
+        assert resolve_and_check_url(
+            "http://example.internal/", resolve=_no_dns
+        ).reason == "blocked:metadata-host"
+        assert not calls
+
+    def test_floor_metadata_ip_and_link_local(self):
+        from tools.url_safety import resolve_and_check_url
+
+        with _resolves_to("169.254.169.254"):
+            assert resolve_and_check_url("http://host.example/").reason == "blocked:metadata-ip"
+        with _resolves_to("169.254.9.9"):
+            assert resolve_and_check_url("http://host.example/").reason == "blocked:link-local"
+
+    def test_numeric_coercion_resolver_never_called(self):
+        from tools.url_safety import resolve_and_check_url
+
+        def _no_dns(*a, **k):
+            raise AssertionError("resolver must not be consulted for numeric hosts")
+
+        for url in ("http://2130706433/", "http://0x7f000001/", "http://0177.0.0.1/",
+                    "http://127.1/", "http://0x7f.0.0.1/"):
+            v = resolve_and_check_url(url, resolve=_no_dns)
+            assert v.ok is False, url
+            assert v.reason == "blocked:loopback", (url, v.reason)
+
+    def test_strict_parse_backslash_and_control(self):
+        from tools.url_safety import resolve_and_check_url
+
+        def _no_dns(*a, **k):
+            raise AssertionError("resolver must not be consulted for parse blocks")
+
+        cases = [
+            "http://\\user@evil.com/",
+            "http://evil.com\\@127.0.0.1/",
+            "http://127.0.0.1%5cevil.com/",
+            "http://example.com%0a.evil.com/",
+            "http://example.com%09.evil.com/",
+        ]
+        for url in cases:
+            v = resolve_and_check_url(url, resolve=_no_dns)
+            assert v.reason == "blocked:parse", (url, v.reason)
+
+    def test_unsupported_scheme_and_missing_host(self):
+        from tools.url_safety import resolve_and_check_url
+
+        assert resolve_and_check_url("ftp://example.com/f").reason == "blocked:unsupported-scheme"
+        assert resolve_and_check_url("http:///path").reason == "blocked:parse"
+        assert resolve_and_check_url("").reason == "blocked:parse"
+
+    def test_ipv6_exotic_classes(self):
+        from tools.url_safety import resolve_and_check_url
+
+        cases = [
+            ("http://[::a9fe:a9fe]/", "blocked:ipv4-compatible"),
+            ("http://[::ffff:169.254.169.254]/", "blocked:metadata-ip"),
+            ("http://[fe80::1%25eth0]/", "blocked:link-local"),
+            ("http://[fc00::1]/", "blocked:private-ip"),
+            ("http://[::1]/", "blocked:loopback"),
+        ]
+        for url, reason in cases:
+            v = resolve_and_check_url(url)
+            assert v.reason == reason, (url, v.reason)
+        assert resolve_and_check_url("http://[2001:4860:4860::8888]/").ok is True
+
+    def test_dns_failure_no_proxy_delegation_inside_helper(self, monkeypatch):
+        from tools.url_safety import resolve_and_check_url
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:9090")
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nxdomain")):
+            v = resolve_and_check_url("http://nonexistent.example.com/")
+        assert v.ok is False
+        assert v.reason == "error:dns"
+
+    def test_error_internal_on_unparseable_answer(self):
+        from tools.url_safety import resolve_and_check_url
+
+        with _resolves_to("not-an-ip"):
+            v = resolve_and_check_url("http://host.example/")
+        assert v.reason == "error:internal"
+
+    def test_resolve_called_exactly_once(self):
+        """Pin contract: one resolution, whole answer set evaluated (T11)."""
+        from tools.url_safety import resolve_and_check_url
+
+        calls = []
+
+        def _resolver(*a, **k):
+            calls.append(a)
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 0)),
+            ]
+
+        v = resolve_and_check_url("http://rebind.example/", resolve=_resolver)
+        assert v.ok is False
+        assert len(calls) == 1
+
+    def test_trusted_https_host_gate(self):
+        from tools.url_safety import resolve_and_check_url
+
+        with _resolves_to("198.18.0.23"):
+            assert resolve_and_check_url("https://multimedia.nt.qq.com.cn/x").ok is True
+            v = resolve_and_check_url("http://multimedia.nt.qq.com.cn/x")
+            assert v.ok is False  # http does NOT get the exemption (D5)
+
+    def test_toggle_skips_private_but_not_floor(self):
+        from tools.url_safety import resolve_and_check_url
+
+        with _resolves_to("192.168.1.1"):
+            assert resolve_and_check_url("http://router.local/", allow_private=True).ok is True
+        with _resolves_to("169.254.169.254"):
+            assert resolve_and_check_url("http://router.local/", allow_private=True).ok is False
+
+
+class TestAsyncResolveAndCheckUrl:
+    @pytest.mark.asyncio
+    async def test_matches_sync_verdict(self):
+        from tools.url_safety import async_resolve_and_check_url
+
+        with _resolves_to("127.0.0.1"):
+            v = await async_resolve_and_check_url("http://localhost:8080/")
+        assert v.ok is False
+        assert v.reason == "blocked:loopback"
+
+
+class TestIpIsBlocked:
+    def test_observed_ip_classification(self):
+        from tools.url_safety import ip_is_blocked
+
+        assert ip_is_blocked("1.2.3.4") == (False, "ok")
+        assert ip_is_blocked("169.254.169.254") == (True, "metadata-ip")
+        assert ip_is_blocked("::ffff:100.64.0.1") == (True, "mapped:cgnat")
+        assert ip_is_blocked("fe80::1%eth0") == (True, "link-local")
+        assert ip_is_blocked("not-an-ip") == (True, "blocked:parse")
+        assert ip_is_blocked("") == (True, "blocked:parse")
+
+
+class TestUrlBlockReason:
+    def test_strict_predicate(self, monkeypatch):
+        from tools.url_safety import url_block_reason
+
+        assert url_block_reason("http://169.254.169.254/latest/meta-data/") == "blocked:metadata-ip"
+        assert url_block_reason("http://10.0.0.1/x") == "blocked:private-ip"
+        assert url_block_reason("https://example.com/") is None
+        # fail-closed on DNS even with a proxy configured
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:9090")
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nxdomain")):
+            assert url_block_reason("http://split-horizon.example/") == "error:dns"
+
+
+class TestOracleConvergence:
+    """_url_is_private and is_safe_url must agree on the real divergences (D3)."""
+
+    @pytest.mark.parametrize("ip", [
+        "::ffff:100.64.0.1",       # mapped CGNAT — real divergence
+        "::ffff:100.100.100.200",  # mapped Alibaba floor
+        "::a9fe:a9fe",             # ::/96 IPv4-compatible (G7)
+        "100.64.0.1",              # CGNAT
+        "198.18.0.1",              # benchmark/private on >=3.11
+        "::ffff:10.0.0.1",         # mapped private (convergence control)
+    ])
+    def test_routing_and_enforcement_agree(self, ip):
+        from tools.browser_tool import _url_is_private
+
+        url = f"http://[{ip}]/" if ":" in ip else f"http://{ip}/"
+        assert _url_is_private(url) is True, ip
+        assert is_safe_url(url) is False, ip
+
+    def test_classification_grid_consistency(self):
+        from tools.url_safety import ip_is_blocked, resolve_and_check_url
+
+        grid = ["10.0.0.1", "172.16.5.5", "192.168.1.1", "100.64.0.1", "169.254.9.9",
+                "169.254.169.254", "127.0.0.1", "0.0.0.0", "::1", "fe80::1", "fc00::1",
+                "fd00::1", "::", "224.0.0.1", "198.18.0.1", "::ffff:10.0.0.1",
+                "::ffff:100.64.0.1", "::a9fe:a9fe", "93.184.216.34", "2001:4860:4860::8888"]
+        for ip in grid:
+            with _resolves_to(ip):
+                safe = is_safe_url("http://host.example/")
+            blocked, _ = ip_is_blocked(ip)
+            literal_url = f"http://[{ip}]/" if ":" in ip else f"http://{ip}/"
+            v = resolve_and_check_url(literal_url, allow_private=False)
+            assert (not safe) == blocked == (not v.ok), ip
+
+
+class TestIsAlwaysBlockedUrlRegionD:
+    def test_ipv4_compatible_new_floor(self):
+        from tools.url_safety import is_always_blocked_url
+
+        assert is_always_blocked_url("http://[::a9fe:a9fe]/") is True
+
+    def test_dns_failure_still_false(self):
+        from tools.url_safety import is_always_blocked_url
+
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nxdomain")):
+            assert is_always_blocked_url("http://public.example/") is False
+
+    def test_suffix_floor(self):
+        from tools.url_safety import is_always_blocked_url
+
+        assert is_always_blocked_url("http://foo.compute.internal/x") is True
+        # .local/.lan stay routing-only (not the security floor)
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nxdomain")):
+            assert is_always_blocked_url("http://printer.local/") is False

@@ -29,6 +29,36 @@ def _clean_env(monkeypatch):
     yield
 
 
+# The real endpoint resolver, captured before any fixture patches it.
+_REAL_ENSURE_ENDPOINT = bu_cli._ensure_exec_cdp_endpoint
+
+
+@pytest.fixture(autouse=True)
+def _monitor_off_for_fake_cli(monkeypatch):
+    """Fake-CLI tests have no real CDP: stub endpoint resolution (no Chrome
+    spawn) and disable the guard stack. Monitor-specific tests
+    (test_browser_exec_monitor.py / test_browser_use_guard.py) override.
+    """
+    import tools.browser_use_guard as bug_mod
+
+    monkeypatch.setattr(
+        bu_cli, "_ensure_exec_cdp_endpoint", lambda env, task_id, session: None
+    )
+    monkeypatch.setattr(
+        bug_mod, "_prepare_guard", lambda *a, **k: {"enabled": False, "config": {}}
+    )
+    yield
+
+
+def _fake_py_cli(tmp_path, body):
+    """Python-based fake CLI: subprocess-able as [sys.executable, path]."""
+    import sys as _sys
+
+    script = tmp_path / "browser-use.py"
+    script.write_text(body, encoding="utf-8")
+    return [_sys.executable, str(script)]
+
+
 def _fake_cli(tmp_path, body):
     """Write an executable fake browser-use CLI and return its path."""
     script = tmp_path / "browser-use"
@@ -295,20 +325,57 @@ class TestLegacyCloudMigration:
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_migrated_config_gets_bu_autospawn(self, tmp_path, monkeypatch):
+        """Legacy direct-API cloud config is REFUSED pre-spawn (Region A C1):
+        its autospawned browser is unknown to Hermes, so it cannot be
+        CDP-monitored. No BU_AUTOSPAWN may reach the spawn env."""
+        import tools.browser_tool as bt
+
+        class _Provider:
+            name = "browser-use"
+
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:$BU_AUTOSPAWN"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: _Provider())
+        monkeypatch.setattr(bu_cli, "_ensure_exec_cdp_endpoint", _REAL_ENSURE_ENDPOINT)
+        monkeypatch.setattr(
+            bu_cli, "_read_browser_cfg", lambda: {"exec_network_monitor": "off"}
+        )
+        cli = _fake_py_cli(tmp_path, "import sys, os\nsys.stdin.read()\nprint('ran')\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: list(cli))
         result = json.loads(bu_cli.browser_exec("print(1)"))
-        assert "autospawn:1" in result["output"]
+        assert "error" in result
+        assert "cannot be CDP-monitored" in result["error"]
+        assert "ran" not in json.dumps(result)
+        assert "BU_AUTOSPAWN" not in result
 
     def test_explicit_backend_does_not_set_bu_autospawn(self, tmp_path, monkeypatch):
+        """Explicit backend configs never set BU_AUTOSPAWN; the supervised
+        Chrome fallback provides the monitored endpoint instead."""
+        import tools.browser_tool as bt
+
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {"backend": "browser-use"}},
         )
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:[$BU_AUTOSPAWN]"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+        monkeypatch.setattr(bu_cli, "_ensure_exec_cdp_endpoint", _REAL_ENSURE_ENDPOINT)
+        monkeypatch.setattr(
+            bu_cli, "_read_browser_cfg", lambda: {"exec_network_monitor": "off"}
+        )
+        import tools.browser_exec_monitor as bem
+
+        monkeypatch.setattr(
+            bem, "spawn_supervised_chrome", lambda tag: "ws://127.0.0.1:1/x"
+        )
+        cli = _fake_py_cli(
+            tmp_path,
+            "import sys, os\nsys.stdin.read()\n"
+            "print('autospawn:[' + os.environ.get('BU_AUTOSPAWN', '') + ']')\n",
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: list(cli))
+        monkeypatch.setattr(bu_cli, "_trusted_landed_url", lambda *a, **k: None)
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "autospawn:[]" in result["output"]
 
@@ -327,6 +394,12 @@ class TestLegacyCloudMigration:
 class TestBackendCdpResolution:
     """browser_exec routes through the configured browser backend by reusing
     the legacy stack's provider session machinery (_get_session_info)."""
+
+    @pytest.fixture(autouse=True)
+    def _real_resolver(self, monkeypatch):
+        """These tests exercise the REAL endpoint resolution, not the stub."""
+        monkeypatch.setattr(bu_cli, "_ensure_exec_cdp_endpoint", _REAL_ENSURE_ENDPOINT)
+        yield
 
     def _env(self):
         return {}
@@ -365,14 +438,21 @@ class TestBackendCdpResolution:
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "wss://browser.example/cdp/abc"
 
-    def test_no_provider_leaves_env_untouched(self, monkeypatch):
+    def test_no_provider_uses_supervised_chrome_fallback(self, monkeypatch):
+        """Region A C1 step 4: nothing configured → supervised local Chrome
+        becomes the monitored endpoint (no unmonitorable auto-spawn path)."""
         import tools.browser_tool as bt
 
         monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
         monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+        import tools.browser_exec_monitor as bem
+
+        monkeypatch.setattr(
+            bem, "spawn_supervised_chrome", lambda tag: "ws://127.0.0.1:9222/x"
+        )
         env = self._env()
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+        assert env["BU_CDP_WS"] == "ws://127.0.0.1:9222/x"
 
     def test_provider_failure_returns_error(self, monkeypatch):
         import tools.browser_tool as bt
@@ -394,6 +474,45 @@ class TestBackendCdpResolution:
         monkeypatch.setattr(bt, "_get_session_info", lambda task_id: {"cdp_url": None})
         err = bu_cli._resolve_backend_cdp(self._env(), "t1")
         assert err and "no" in err.lower() and "CDP" in err
+
+    def test_direct_api_browser_use_config_refused(self, monkeypatch):
+        """Direct-API Browser Use cloud cannot be CDP-monitored (Region A C1
+        step 3): the exec must refuse before spawn."""
+        import tools.browser_tool as bt
+
+        class _Provider:
+            name = "browser-use"
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: _Provider())
+        err = bu_cli._resolve_backend_cdp(self._env(), "t1")
+        assert err and "cannot be CDP-monitored" in err
+
+    def test_named_session_resolves_endpoint_and_sets_bu_name(self, tmp_path, monkeypatch):
+        """session=<name> (BU_NAME cloud browser) now ALSO resolves a
+        monitorable endpoint: _ensure_exec_cdp_endpoint is invoked and both
+        BU_NAME and BU_CDP_WS are set (Region A C1 regression)."""
+        calls = []
+
+        def _record(env, task_id, session):
+            calls.append((task_id, session))
+            env["BU_CDP_WS"] = "wss://session.example/cdp/x"
+            return None
+
+        monkeypatch.setattr(bu_cli, "_ensure_exec_cdp_endpoint", _record)
+        cli = _fake_py_cli(
+            tmp_path,
+            "import sys, os\nsys.stdin.read()\n"
+            "print('bu:' + os.environ.get('BU_NAME', ''))\n",
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: list(cli))
+        monkeypatch.setattr(bu_cli, "_trusted_landed_url", lambda *a, **k: None)
+        result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
+        assert calls, "_ensure_exec_cdp_endpoint must be invoked for session= path"
+        assert calls[0][1] == "r7k2"
+        assert result["success"] is True
+        assert "bu:r7k2" in result["output"]
+        assert result["session"] == "r7k2"
 
     def test_named_session_composes_with_provider_backend(self, tmp_path, monkeypatch):
         """session=<name> composes with a configured provider backend: the
@@ -432,31 +551,9 @@ class TestBackendCdpResolution:
             lambda key: seen.append(key) or {"cdp_url": "wss://x/cdp/a"},
         )
         env1, env2 = {}, {}
-        assert bu_cli._resolve_backend_cdp(env1, "task-A", session_name="research") is None
-        assert bu_cli._resolve_backend_cdp(env2, "task-B", session_name="research") is None
+        assert bu_cli._ensure_exec_cdp_endpoint(env1, "task-A", "research") is None
+        assert bu_cli._ensure_exec_cdp_endpoint(env2, "task-B", "research") is None
         assert seen == ["bu-named-research", "bu-named-research"]
-
-    def test_named_session_direct_api_bu_cloud_still_skips_provider(
-        self, tmp_path, monkeypatch
-    ):
-        """Direct-API Browser Use cloud configs keep the native named-daemon
-        path: resolving through the provider would double-session and
-        double-bill."""
-        import tools.browser_tool as bt
-
-        class _BUProvider:
-            name = "browser-use"
-
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: _BUProvider())
-        monkeypatch.setattr(
-            bt, "_get_session_info",
-            lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
-        )
-        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
-        env = {}
-        assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
-        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
 
 
 class TestOwnTabPreamble:
@@ -464,17 +561,13 @@ class TestOwnTabPreamble:
     private per-name browsers and unnamed sessions do not."""
 
     def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False):
-        import tools.browser_tool as bt
+        def _resolve(env, task_id, sess):
+            env["BU_CDP_WS"] = "ws://127.0.0.1:9222/x"
+            if private or provider:
+                env[bu_cli._PRIVATE_BROWSER_SENTINEL] = "1"
+            return None
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        if provider:
-            monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
-            monkeypatch.setattr(
-                bt, "_get_session_info",
-                lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
-            )
-        else:
-            monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+        monkeypatch.setattr(bu_cli, "_ensure_exec_cdp_endpoint", _resolve)
         # fake CLI echoes stdin back so we can inspect what code was sent
         cli = _fake_cli(tmp_path, "cat\n")
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -499,14 +592,12 @@ class TestOwnTabPreamble:
         assert "_hermes_ensure_own_tab" not in result["output"]
 
     def test_sentinel_never_reaches_subprocess_env(self, tmp_path, monkeypatch):
-        import tools.browser_tool as bt
+        def _resolve(env, task_id, sess):
+            env["BU_CDP_WS"] = "ws://127.0.0.1:9222/x"
+            env[bu_cli._PRIVATE_BROWSER_SENTINEL] = "1"
+            return None
 
-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
-        monkeypatch.setattr(
-            bt, "_get_session_info",
-            lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
-        )
+        monkeypatch.setattr(bu_cli, "_ensure_exec_cdp_endpoint", _resolve)
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "sentinel:${_HERMES_BU_PRIVATE_BROWSER:-unset}"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
@@ -518,8 +609,6 @@ class TestOwnTabPreamble:
         ast.parse(bu_cli._OWN_TAB_PREAMBLE)
         # and composes with model code
         ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
-
-
 class TestProviderPickerIntegration:
     """The `hermes tools` Browser Automation picker row (browser_backend
     marker) must enter/leave CLI mode cleanly and highlight correctly."""
@@ -1387,3 +1476,69 @@ class TestDefaultDowngradeNotice:
         )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.default_downgrade_notice() is None
+# ============================================================================
+# Region D — exec wiring (D §2.4 sites 4+6 / D §4 group 12)
+# ============================================================================
+
+
+class TestBrowserExecRegionDWiring:
+    """The exec surface consumes the shared resolve-and-check helper directly:
+    error:dns blocks even with proxy env set, numeric coercion and strict
+    parse block, and the pre-check is strict (backend-independent)."""
+
+    def _run_landing(self, tmp_path, monkeypatch, landed, **dns_patch):
+        cli = _fake_py_cli(tmp_path, "import sys\nsys.stdin.read()\nprint('PAGE_BODY')\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: list(cli))
+        monkeypatch.setattr(bu_cli, "_trusted_landed_url", lambda *a, **k: landed)
+        return json.loads(bu_cli.browser_exec("print('x')"))
+
+    def test_landed_dns_failure_with_proxy_withholds(self, tmp_path, monkeypatch):
+        """D1 regression: error:dns on the exec landing blocks even when
+        HTTPS_PROXY is set (split-horizon names)."""
+        import socket as _socket
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:9090")
+        monkeypatch.setattr(
+            _socket, "getaddrinfo", lambda *a, **k: (_ for _ in ()).throw(
+                _socket.gaierror("nxdomain")
+            )
+        )
+        result = self._run_landing(
+            tmp_path, monkeypatch, "http://split-horizon.internal.example/x"
+        )
+        assert "error" in result
+        assert "DNS" in result["error"] or "could not be safely verified" in result["error"]
+        assert "PAGE_BODY" not in json.dumps(result)
+
+    def test_landed_numeric_host_withheld(self, tmp_path, monkeypatch):
+        """G5: a numeric hostname landing is coerced and blocked (no DNS)."""
+        result = self._run_landing(tmp_path, monkeypatch, "http://2130706433/")
+        assert "error" in result
+        assert "PAGE_BODY" not in json.dumps(result)
+
+    def test_landed_parser_divergence_withheld(self, tmp_path, monkeypatch):
+        """D2: backslash/control-char authority confusion is blocked:parse."""
+        result = self._run_landing(tmp_path, monkeypatch, "http://\\user@evil.com/")
+        assert "error" in result
+        assert "PAGE_BODY" not in json.dumps(result)
+
+    def test_precheck_strict_ignores_local_backend(self, monkeypatch):
+        """G10: the exec pre-check is unconditional w.r.t. the backend."""
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_is_local_backend", lambda: True)
+        err = bu_cli._blocked_url_in_code("new_tab('http://10.0.0.1/')")
+        assert err is not None
+        assert "private or internal" in err
+
+    def test_precheck_strict_fails_closed_on_dns(self, monkeypatch):
+        import socket as _socket
+
+        monkeypatch.setattr(
+            _socket, "getaddrinfo", lambda *a, **k: (_ for _ in ()).throw(
+                _socket.gaierror("nxdomain")
+            )
+        )
+        err = bu_cli._blocked_url_in_code("new_tab('https://some.public-looking.name/')")
+        assert err is not None
+        assert "DNS" in err or "could not be safely verified" in err

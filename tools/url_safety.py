@@ -31,7 +31,9 @@ import os
 import socket
 import asyncio
 import re
-from typing import Any, Optional
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Optional, Union
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 from hermes_constants import get_hermes_home_override
@@ -209,6 +211,55 @@ _MAX_SSRF_CONNECT_IPS = 8
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# Deprecated IPv4-compatible embedding (::/96). Python 3.11 flags these
+# ``is_reserved``, but the class is named explicitly so the floor reason is
+# pinned and toggle-independent (``::a9fe:a9fe`` == ``::169.254.169.254``
+# must always block, even with allow_private_urls on).
+_IPV4_COMPATIBLE_NETWORK = ipaddress.ip_network("::/96")
+
+# Hostname suffix floor: names under these suffixes are always blocked as
+# metadata/internal without any DNS work. Deliberately minimal (Region D
+# pin): ``.internal`` only — it subsumes ``.compute.internal`` — while
+# ``.local``/``.lan`` stay routing-only to protect benign mDNS/VPN setups.
+_BLOCKED_HOSTNAME_SUFFIXES = (".internal",)
+
+# Reason classes that are part of the non-negotiable security floor: they
+# block regardless of the ``allow_private_urls`` toggle or any trusted-host
+# exemption. See ``_classify_ip`` / ``resolve_and_check_url``.
+FLOOR_REASONS = frozenset({
+    "blocked:metadata-host",
+    "blocked:metadata-ip",
+    "blocked:link-local",
+    "blocked:ipv4-compatible",
+})
+
+# Reason classes (without the ``blocked:`` prefix, as returned by
+# ``_classify_ip``) that the ``allow_private_urls`` toggle / trusted-host
+# exemption may skip. Floor classes are never in this set.
+_TOGGLE_SKIP_REASONS = frozenset({
+    "private-ip",
+    "cgnat",
+    "reserved",
+    "multicast",
+    "unspecified",
+    "loopback",
+})
+
+# Reasons (as returned by ``_url_is_private``'s ``resolve_and_check_url``
+# verdict) that mean "the URL routes to the private/LAN sidecar".
+_PRIVATE_ROUTING_REASONS = frozenset({
+    "blocked:private-ip",
+    "blocked:cgnat",
+    "blocked:reserved",
+    "blocked:multicast",
+    "blocked:unspecified",
+    "blocked:loopback",
+    "blocked:link-local",
+    "blocked:metadata-host",
+    "blocked:metadata-ip",
+    "blocked:ipv4-compatible",
+})
+
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
@@ -286,26 +337,415 @@ def _reset_allow_private_cache() -> None:
     _cached_allow_private = False
 
 
+def _classify_ip(ip: ipaddress._BaseAddress) -> tuple[bool, str]:
+    """Classify one parsed IP address: ``(blocked, reason)``.
+
+    This is the single classification core for the whole policy surface.
+    Reasons (pinned, deterministic evaluation order — see the Region D
+    contract):
+
+    ``'ok'`` | ``'metadata-ip'`` | ``'link-local'`` | ``'loopback'`` |
+    ``'private-ip'`` | ``'cgnat'`` | ``'reserved'`` | ``'multicast'`` |
+    ``'unspecified'`` | ``'ipv4-compatible'``
+
+    IPv4-mapped IPv6 addresses are unwrapped first and the reason is
+    prefixed with ``mapped:`` (e.g. ``mapped:cgnat``) so callers can tell
+    the encoding from the class. ``'blocked:parse'`` is never produced here
+    (that is ``ip_is_blocked``'s job for unparseable strings).
+    """
+    # 1. Mapped unwrap — check the embedded IPv4, tagged with the encoding.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        blocked, reason = _classify_ip(ip.ipv4_mapped)
+        return blocked, f"mapped:{reason}"
+
+    # 2. Security floor: exact sentinel metadata IPs, then link-local.
+    if ip in _ALWAYS_BLOCKED_IPS:
+        return True, "metadata-ip"
+    if ip.is_link_local:  # IPv4 169.254.0.0/16 (remainder) + IPv6 fe80::/10
+        return True, "link-local"
+
+    # 3. Obvious non-routable classes.
+    if ip.is_loopback:
+        return True, "loopback"
+    if ip.is_multicast:
+        return True, "multicast"
+    if ip.is_unspecified:
+        return True, "unspecified"
+
+    # 4. Deprecated IPv4-compatible embedding (::/96) — floor class.
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _IPV4_COMPATIBLE_NETWORK:
+        return True, "ipv4-compatible"
+
+    # 5. RFC1918 / IPv6 ULA (fc00::/7) — private.
+    if ip.is_private:
+        return True, "private-ip"
+
+    # 6. Explicit IPv4-only range checks, type-guarded so IPv6 addresses
+    #    never silently no-op through an IPv4 network containment test.
+    if isinstance(ip, ipaddress.IPv4Address):
+        if ip in _CGNAT_NETWORK:
+            return True, "cgnat"
+        if ip in ipaddress.ip_network("172.16.0.0/12"):
+            return True, "private-ip"
+        if ip in ipaddress.ip_network("198.18.0.0/15"):
+            return True, "private-ip"
+
+    # 7. Everything else reserved (incl. benchmark/documentation ranges).
+    if ip.is_reserved:
+        return True, "reserved"
+
+    return False, "ok"
+
+
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
-    # IPv4-mapped IPv6 addresses (``::ffff:x.x.x.x``) should be checked
-    # by their embedded IPv4 address, not as IPv6
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        embedded_ip = ip.ipv4_mapped
-        return (embedded_ip.is_private or embedded_ip.is_loopback or
-                embedded_ip.is_link_local or embedded_ip.is_reserved or
-                embedded_ip.is_multicast or embedded_ip.is_unspecified or
-                embedded_ip in _CGNAT_NETWORK)
+    return _classify_ip(ip)[0]
 
-    # Standard IPv4/IPv6 address checking
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-        return True
-    if ip.is_multicast or ip.is_unspecified:
-        return True
-    # CGNAT range not covered by is_private
-    if ip in _CGNAT_NETWORK:
-        return True
-    return False
+
+# ---------------------------------------------------------------------------
+# Shared resolve-and-validate core (Region D)
+# ---------------------------------------------------------------------------
+# The helpers below are the single source of truth the whole SSRF policy
+# surface consumes: ``is_safe_url`` / ``is_always_blocked_url`` keep their
+# documented boundary semantics on top, while the model-controlled surfaces
+# (browser_exec pre-check + landing recheck, the CDP monitor, the egress
+# interposer) use ``resolve_and_check_url`` / ``url_block_reason`` directly
+# so ``error:dns`` fails closed there regardless of proxy environment.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class URLSafetyVerdict:
+    """Result of :func:`resolve_and_check_url`.
+
+    ``reason`` is one of ``'ok'`` | ``'blocked:metadata-host'`` |
+    ``'blocked:metadata-ip'`` | ``'blocked:link-local'`` |
+    ``'blocked:loopback'`` | ``'blocked:private-ip'`` |
+    ``'blocked:cgnat'`` | ``'blocked:reserved'`` | ``'blocked:multicast'`` |
+    ``'blocked:unspecified'`` | ``'blocked:ipv4-compatible'`` |
+    ``'blocked:numeric-ip'`` | ``'blocked:unsupported-scheme'`` |
+    ``'blocked:parse'`` | ``'error:dns'`` | ``'error:internal'``.
+    """
+
+    ok: bool
+    reason: str
+    detail: str
+    scheme: str = ""
+    hostname: str = ""
+    resolved_ips: tuple[str, ...] = ()
+    checked_at: float = 0.0
+
+
+def _coerce_numeric_host(hostname: str) -> Optional[str]:
+    """Strictly decode numeric hostname forms into a dotted IPv4 string.
+
+    Handles pure-decimal integers (``2130706433``), ``0x`` hex integers,
+    dotted-hex (``0x7f.0.0.1``), dotted-octal (``0177.0.0.1``), mixed radix
+    and short forms (``127.1``) the way Chromium/glibc dial them. Each octet
+    is parsed with an explicit radix; any out-of-range or non-numeric
+    component makes the whole host "not numeric" (returns None). The
+    resolver is never consulted for these — see ``resolve_and_check_url``.
+    """
+    h = (hostname or "").strip().lower()
+    if not h or h[0] in "+-":
+        return None
+    parts = h.split(".")
+    if len(parts) > 4:
+        return None
+
+    numbers: list[int] = []
+    for i, part in enumerate(parts):
+        if not part:
+            return None
+        if part.startswith("0x"):
+            try:
+                n = int(part[2:], 16)
+            except ValueError:
+                return None
+        elif len(part) > 1 and part.startswith("0"):
+            try:
+                n = int(part, 8)
+            except ValueError:
+                return None
+        else:
+            try:
+                n = int(part, 10)
+            except ValueError:
+                return None
+        if n < 0:
+            return None
+        if i == len(parts) - 1 and len(parts) > 1 and n > 255:
+            return None
+        if i < len(parts) - 1 and n > 255:
+            return None
+        numbers.append(n)
+
+    if len(numbers) == 1:
+        v = numbers[0]
+        if v > 0xFFFFFFFF:
+            return None
+        return ".".join(str((v >> shift) & 0xFF) for shift in (24, 16, 8, 0))
+
+    # Multi-part form: every component is an octet; missing middle octets
+    # are zero (inet_aton semantics: ``127.1`` → 127.0.0.1).
+    octets = [0, 0, 0, 0]
+    octets[0] = numbers[0]
+    octets[-1] = numbers[-1]
+    if len(numbers) == 3:
+        octets[1] = numbers[1]
+    elif len(numbers) == 4:
+        octets[1], octets[2] = numbers[1], numbers[2]
+    return ".".join(str(o) for o in octets)
+
+
+def _strict_parse_fail(url: str, reason: str, detail: str) -> URLSafetyVerdict:
+    return URLSafetyVerdict(ok=False, reason=reason, detail=detail, checked_at=time.time())
+
+
+def _verdict_reason(classify_reason: str) -> str:
+    """Turn a ``_classify_ip`` reason into a verdict reason string.
+
+    IPv4-mapped prefixes (``mapped:…``) are normalized away for the verdict
+    so floor consumers (``FLOOR_REASONS``) match regardless of the address
+    encoding; ``ip_is_blocked`` still exposes the raw tagged reason.
+    """
+    if classify_reason.startswith("mapped:"):
+        classify_reason = classify_reason[len("mapped:"):]
+    return f"blocked:{classify_reason}"
+
+
+def resolve_and_check_url(
+    url: str,
+    *,
+    port: Optional[int] = None,
+    allow_private: Optional[bool] = None,
+    trusted_private_hosts: Optional[frozenset[str]] = None,
+    resolve: Optional[Callable[..., Any]] = None,
+    now: Optional[Callable[[], float]] = None,
+) -> URLSafetyVerdict:
+    """Resolve, validate, and pin one URL — the shared SSRF verdict helper.
+
+    Deterministic, fail-closed behavior (in order):
+
+    1. **Strict parse.** The authority span (after ``scheme://``) is
+       percent-decoded; any decoded backslash or ASCII control character
+       (0x00-0x1F, 0x7F) → ``blocked:parse``. WHATWG canonicalizes those
+       into authority separators the Python-visible hostname never shows,
+       so rejection is the only fail-closed choice (``http://***@evil.com/``
+       style parser-divergence).
+    2. **Scheme** must be ``http``/``https`` → else ``blocked:unsupported-scheme``.
+    3. **Hostname floor** — ``_BLOCKED_HOSTNAMES`` or ``_BLOCKED_HOSTNAME_SUFFIXES``
+       (``.internal``) → ``blocked:metadata-host`` (no DNS).
+    4. **Numeric-IP coercion** — literal IPs and their numeric encodings are
+       classified directly; the resolver is never consulted for them.
+    5. **Resolve once** — any ``gaierror`` or empty answer set →
+       ``error:dns`` (no proxy-delegation fail-open inside this helper; the
+       shim survives only at ``is_safe_url``'s own boundary).
+    6. **Classify every answer** — any blocked answer fails the whole
+       verdict with its first blocking reason (whole-set semantics,
+       everything classified even beyond the returned cap).
+    7. **Honor toggles at the boundary** — ``allow_private=True`` or an
+       HTTPS trusted-private host skips the toggle-skip set only; floor
+       classes always block.
+    8. **Pin** — on ``ok``, ``resolved_ips`` are the deduped, zone-stripped,
+       validated answers capped at ``_MAX_SSRF_CONNECT_IPS``. Callers that
+       dial must connect to these exact IPs and never re-resolve.
+
+    ``allow_private`` defaults to the global ``security.allow_private_urls``
+    toggle; ``trusted_private_hosts`` defaults to ``_TRUSTED_PRIVATE_IP_HOSTS``.
+    ``resolve`` and ``now`` are injectable seams for tests / async offload.
+    """
+    ts = now() if now is not None else time.time()
+
+    raw = (url or "").strip()
+    if not raw:
+        return _strict_parse_fail(raw, "blocked:parse", "empty URL")
+
+    # 1. Strict parse — authority span, decoded, checked for separators.
+    scheme_match = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):", raw)
+    if not scheme_match:
+        return _strict_parse_fail(raw, "blocked:parse", "URL has no scheme")
+    scheme = scheme_match.group(1).lower()
+    rest = raw[scheme_match.end():]
+    if rest.startswith("//"):
+        authority = rest[2:]
+        for sep in ("/", "?", "#"):
+            idx = authority.find(sep)
+            if idx != -1:
+                authority = authority[:idx]
+                break
+        decoded_authority = unquote(authority)
+        if "\\" in decoded_authority or any(
+            ord(c) < 0x20 or ord(c) == 0x7F for c in decoded_authority
+        ):
+            return _strict_parse_fail(
+                raw, "blocked:parse",
+                f"authority contains a decoded separator or control character ({decoded_authority!r})",
+            )
+
+    # 2. Scheme gate.
+    if scheme not in {"http", "https"}:
+        return _strict_parse_fail(raw, "blocked:unsupported-scheme", f"unsupported scheme {scheme!r}")
+
+    # 3. Hostname.
+    try:
+        parsed = urlparse(raw)
+    except ValueError as exc:
+        return _strict_parse_fail(raw, "blocked:parse", f"unparseable URL: {exc}")
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not hostname:
+        return _strict_parse_fail(raw, "blocked:parse", "URL has no hostname")
+
+    # 4. Hostname floor (no DNS).
+    if hostname in _BLOCKED_HOSTNAMES or hostname.endswith(_BLOCKED_HOSTNAME_SUFFIXES):
+        return URLSafetyVerdict(
+            ok=False, reason="blocked:metadata-host",
+            detail=f"hostname {hostname!r} is an always-blocked metadata/internal name",
+            scheme=scheme, hostname=hostname, checked_at=ts,
+        )
+
+    trusted = _TRUSTED_PRIVATE_IP_HOSTS if trusted_private_hosts is None else trusted_private_hosts
+    allow_all_private = _global_allow_private_urls() if allow_private is None else allow_private
+    allow_private_ip = scheme == "https" and hostname in trusted  # https gate pinned (D5)
+
+    # 5. Literal-IP / numeric-coercion path — resolver never consulted.
+    try:
+        ip = ipaddress.ip_address(hostname)
+        coerced = False
+    except ValueError:
+        coerced_host = _coerce_numeric_host(hostname)
+        if coerced_host is None:
+            ip = None
+            coerced = False
+        else:
+            try:
+                ip = ipaddress.ip_address(coerced_host)
+                coerced = True
+            except ValueError:
+                ip = None
+                coerced = False
+
+    if ip is not None:
+        blocked, reason = _classify_ip(ip)
+        plain_reason = reason[len("mapped:"):] if reason.startswith("mapped:") else reason
+        if blocked and (plain_reason not in _TOGGLE_SKIP_REASONS or not (allow_all_private or allow_private_ip)):
+            # Numeric encodings are classified by their coerced address
+            # class (2130706433 → 127.0.0.1 → blocked:loopback); the
+            # resolver is never consulted for them (G5).
+            numeric_tag = " (numeric hostname encoding)" if coerced else ""
+            return URLSafetyVerdict(
+                ok=False, reason=_verdict_reason(reason),
+                detail=f"{hostname!r} (dialed as {ip}) is a blocked address class{numeric_tag}",
+                scheme=scheme, hostname=hostname, checked_at=ts,
+            )
+        return URLSafetyVerdict(
+            ok=True, reason="ok",
+            detail=f"{hostname!r} resolves to the allowed literal {ip}",
+            scheme=scheme, hostname=hostname,
+            resolved_ips=(str(ip),), checked_at=ts,
+        )
+
+    # 6. Resolve once. The resolver is looked up at call time so test
+    #    seams and runtime monkeypatches of ``socket.getaddrinfo`` apply.
+    resolver = resolve if resolve is not None else socket.getaddrinfo
+    try:
+        addr_info = resolver(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        return URLSafetyVerdict(
+            ok=False, reason="error:dns",
+            detail=f"DNS resolution failed for {hostname!r}: {exc}",
+            scheme=scheme, hostname=hostname, checked_at=ts,
+        )
+    except Exception as exc:
+        return URLSafetyVerdict(
+            ok=False, reason="error:internal",
+            detail=f"resolution raised for {hostname!r}: {exc}",
+            scheme=scheme, hostname=hostname, checked_at=ts,
+        )
+
+    safe_ips: list[str] = []
+    seen: set[str] = set()
+    for _family, _, _, _, sockaddr in addr_info:
+        ip_str = sockaddr[0]
+        if "%" in ip_str:
+            ip_str = ip_str.split("%", 1)[0]
+        try:
+            resolved = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return URLSafetyVerdict(
+                ok=False, reason="error:internal",
+                detail=f"unparseable address {sockaddr[0]!r} for {hostname!r}",
+                scheme=scheme, hostname=hostname, checked_at=ts,
+            )
+        blocked, reason = _classify_ip(resolved)
+        plain_reason = reason[len("mapped:"):] if reason.startswith("mapped:") else reason
+        if blocked and (plain_reason not in _TOGGLE_SKIP_REASONS or not (allow_all_private or allow_private_ip)):
+            return URLSafetyVerdict(
+                ok=False, reason=_verdict_reason(reason),
+                detail=f"{hostname!r} resolved to blocked address {ip_str}",
+                scheme=scheme, hostname=hostname, checked_at=ts,
+            )
+        if ip_str not in seen:
+            seen.add(ip_str)
+            if len(safe_ips) < _MAX_SSRF_CONNECT_IPS:  # cap applies to the returned list only
+                safe_ips.append(ip_str)
+
+    if not safe_ips:
+        return URLSafetyVerdict(
+            ok=False, reason="error:dns",
+            detail=f"DNS returned no usable answers for {hostname!r}",
+            scheme=scheme, hostname=hostname, checked_at=ts,
+        )
+
+    return URLSafetyVerdict(
+        ok=True, reason="ok",
+        detail=f"{hostname!r} resolved to {len(safe_ips)} allowed address(es)",
+        scheme=scheme, hostname=hostname,
+        resolved_ips=tuple(safe_ips), checked_at=ts,
+    )
+
+
+async def async_resolve_and_check_url(
+    url: str, **kwargs: Any
+) -> URLSafetyVerdict:
+    """Async twin of :func:`resolve_and_check_url` (DNS off the event loop)."""
+    return await asyncio.to_thread(resolve_and_check_url, url, **kwargs)
+
+
+def ip_is_blocked(ip: Union[str, ipaddress._BaseAddress]) -> tuple[bool, str]:
+    """Classify an already-observed IP: ``(blocked, reason)``.
+
+    For strings, a zone scope is stripped before parsing; an unparseable
+    string fails closed with ``(True, 'blocked:parse')``. Reasons are the
+    raw ``_classify_ip`` classes (e.g. ``'mapped:cgnat'``) plus
+    ``'blocked:parse'``.
+    """
+    if isinstance(ip, str):
+        host = ip.strip()
+        if "%" in host:
+            host = host.split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return True, "blocked:parse"
+    try:
+        blocked, reason = _classify_ip(ip)
+        return blocked, reason
+    except Exception:
+        return True, "blocked:parse"
+
+
+def url_block_reason(url: str, *, allow_private: Optional[bool] = None) -> Optional[str]:
+    """Strict predicate for model-controlled navigation surfaces.
+
+    Returns the verdict ``reason`` when the URL is blocked, ``None`` when
+    safe. Deliberately does NOT apply ``is_safe_url``'s proxy-delegation
+    shim: ``error:dns`` / ``error:internal`` / ``blocked:parse`` all block
+    here. Use this (or ``resolve_and_check_url``) wherever a third-party
+    browser/CLI will dial the destination.
+    """
+    v = resolve_and_check_url(url, allow_private=allow_private)
+    return None if v.ok else v.reason
 
 
 def is_always_blocked_url(url: str) -> bool:
@@ -321,8 +761,9 @@ def is_always_blocked_url(url: str) -> bool:
     request proceed.
 
     Returns True (= blocked) on:
-      - Hostnames in ``_BLOCKED_HOSTNAMES``
+      - Hostnames in ``_BLOCKED_HOSTNAMES`` or under ``_BLOCKED_HOSTNAME_SUFFIXES``
       - IPs / networks in ``_ALWAYS_BLOCKED_IPS`` / ``_ALWAYS_BLOCKED_NETWORKS``
+      - IPv4-compatible ``::/96`` addresses (new floor)
       - URLs whose hostname resolves to any of the above
 
     Returns False (= not in the always-blocked floor) on:
@@ -338,68 +779,14 @@ def is_always_blocked_url(url: str) -> bool:
     SSRF check should still use ``is_safe_url``.
     """
     try:
-        parsed = urlparse(url)
-        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
-        if not hostname:
-            return False
-
-        # Blocked-hostname check fires regardless of DNS resolution
-        if hostname in _BLOCKED_HOSTNAMES:
+        v = resolve_and_check_url(url, allow_private=True)
+        if not v.ok and v.reason in FLOOR_REASONS:
             logger.warning(
-                "Blocked request to internal hostname (always-blocked floor): %s",
-                hostname,
+                "Blocked request to cloud metadata address (always-blocked floor): %s",
+                v.detail,
             )
             return True
-
-        # Literal IP → check directly against the always-blocked set
-        try:
-            ip = ipaddress.ip_address(hostname)
-        except ValueError:
-            ip = None
-
-        if ip is not None:
-            if ip in _ALWAYS_BLOCKED_IPS or any(
-                ip in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
-                logger.warning(
-                    "Blocked request to cloud metadata address "
-                    "(always-blocked floor): %s",
-                    hostname,
-                )
-                return True
-            return False
-
-        # Hostname → resolve and check every answer.  DNS failure is NOT
-        # always-blocked (caller's ordinary path handles that).
-        try:
-            addr_info = socket.getaddrinfo(
-                hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
-            )
-        except socket.gaierror:
-            return False
-
-        for _family, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
-            if '%' in ip_str:
-                ip_str = ip_str.split('%')[0]
-            try:
-                resolved = ipaddress.ip_address(ip_str)
-            except ValueError:
-                logger.warning("Unparseable IP address %r for hostname %s — skipping address", sockaddr[0], hostname)
-                continue
-            if resolved in _ALWAYS_BLOCKED_IPS or any(
-                resolved in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
-                logger.warning(
-                    "Blocked request to cloud metadata address "
-                    "(always-blocked floor): %s -> %s",
-                    hostname,
-                    ip_str,
-                )
-                return True
-
         return False
-
     except Exception as exc:
         # Parse failures or unexpected errors — don't claim the URL is
         # always-blocked.  Caller decides what to do with a malformed URL.
@@ -422,48 +809,33 @@ def is_safe_url(url: str) -> bool:
     ``HERMES_ALLOW_PRIVATE_URLS=true``), private-IP blocking is skipped.
     Cloud metadata endpoints (169.254.169.254, metadata.google.internal)
     remain blocked regardless — they are never legitimate agent targets.
+
+    **Delegation caveat (Region D pin):** this function keeps a
+    proxy-environment DNS-delegation fail-open at ITS OWN boundary only
+    (sandbox/Docker+Squid environments where direct DNS is blocked and
+    only HTTP(S) through the proxy is permitted). Callers whose
+    destination will be dialed by a third-party browser/CLI must use
+    ``resolve_and_check_url`` / ``url_block_reason`` instead — never this
+    function's delegation branch.
     """
     try:
-        parsed = urlparse(url)
-        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
-        scheme = (parsed.scheme or "").strip().lower()
-        if scheme not in {"http", "https"}:
-            logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
-            return False
-        if not hostname:
-            return False
+        v = resolve_and_check_url(url)
+        if v.ok:
+            return True
 
-        # Block known internal hostnames — ALWAYS, even with toggle on
-        if hostname in _BLOCKED_HOSTNAMES:
-            logger.warning("Blocked request to internal hostname: %s", hostname)
-            return False
-
-        # Check the global toggle AFTER blocking metadata hostnames
-        allow_all_private = _global_allow_private_urls()
-
-        allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
-
-        # Try to resolve and check IP
-        try:
-            addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        except socket.gaierror:
-            # DNS resolution failed.  In sandbox / proxy environments
-            # (NVIDIA OpenShell, Docker + Squid, etc.) the host may
-            # block direct DNS — only HTTP(S) through the proxy is
-            # permitted.  When a proxy is configured, delegate DNS to
-            # the proxy rather than blocking the request outright.
-            # The hostname was already checked against
-            # _BLOCKED_HOSTNAMES above so metadata endpoints remain
-            # blocked regardless.  Literal IPs never qualify — they
-            # need no DNS, so a getaddrinfo failure on one is not a
-            # proxy-environment symptom; keep them on the fail-closed
-            # path (and the blocked-IP floor) instead of delegating.
-            _is_literal_ip = True
+        # Proxy-delegation shim, kept ONLY here: in proxy-only sandboxes
+        # direct DNS is blocked at the network level and the proxy is the
+        # egress boundary.  Literal IPs never qualify (no DNS needed), and
+        # blocked hostnames/metadata floors already failed above.
+        if v.reason == "error:dns" and _proxy_is_configured():
+            parsed = urlparse(url)
+            hostname = (parsed.hostname or "").strip().lower().rstrip(".")
             try:
                 ipaddress.ip_address(hostname)
+                _is_literal_ip = True
             except ValueError:
                 _is_literal_ip = False
-            if not _is_literal_ip and _proxy_is_configured():
+            if not _is_literal_ip:
                 logger.debug(
                     "DNS resolution failed for %s — proxy configured, "
                     "allowing through for proxy-side resolution",
@@ -473,44 +845,8 @@ def is_safe_url(url: str) -> bool:
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
             return False
 
-        for family, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
-            if '%' in ip_str:
-                ip_str = ip_str.split('%')[0]
-            try:
-                ip = ipaddress.ip_address(ip_str)
-            except ValueError:
-                # Still unparseable after scope ID strip — fail closed
-                logger.warning("Blocked request — unparseable IP address %r for hostname %s", sockaddr[0], hostname)
-                return False
-
-            # Always block cloud metadata IPs and link-local, even with toggle on
-            if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
-                logger.warning(
-                    "Blocked request to cloud metadata address: %s -> %s",
-                    hostname, ip_str,
-                )
-                return False
-
-            if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
-                logger.warning(
-                    "Blocked request to private/internal address: %s -> %s",
-                    hostname, ip_str,
-                )
-                return False
-
-        if allow_all_private:
-            logger.debug(
-                "Allowing private/internal resolution (security.allow_private_urls=true): %s",
-                hostname,
-            )
-        elif allow_private_ip:
-            logger.debug(
-                "Allowing trusted hostname despite private/internal resolution: %s",
-                hostname,
-            )
-
-        return True
+        logger.warning("Blocked request — URL safety check failed for %s (%s)", url, v.reason)
+        return False
 
     except Exception as exc:
         # Fail closed on unexpected errors — don't let parsing edge cases
@@ -576,12 +912,14 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
                 f"Blocked request - unparseable IP address {sockaddr[0]!r} for hostname {hostname}"
             ) from exc
 
-        if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
+        blocked, reason = _classify_ip(ip)
+        plain_reason = reason[7:] if reason.startswith("mapped:") else reason
+        if plain_reason in ("metadata-ip", "link-local", "ipv4-compatible"):
             raise SSRFConnectionBlocked(
                 f"Blocked request to cloud metadata address during connect: {hostname} -> {ip_str}"
             )
 
-        if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
+        if not allow_all_private and not allow_private_ip and blocked:
             raise SSRFConnectionBlocked(
                 f"Blocked request to private/internal address during connect: {hostname} -> {ip_str}"
             )

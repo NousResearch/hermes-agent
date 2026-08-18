@@ -268,6 +268,18 @@ hermes profile export work -o ./work-2026-03-29.tar.gz
 
 See [Export and import a profile file](../user-guide/profile-distributions.md#export-and-import-a-profile-file) for exactly what lands in the archive and what to check before sending one to someone else.
 
+## `hermes profile validate`
+
+```bash
+hermes profile validate <archive> [--json]
+```
+
+Inspects a profile archive without extracting or changing anything. It checks
+archive readability, safe member paths and types (links and special files are
+rejected), the single top-level profile name, credential/runtime files, and
+whether the destination profile already exists. `--json` emits a deterministic
+machine-readable object and exits non-zero when invalid.
+
 ## `hermes profile import`
 
 ```bash
@@ -282,6 +294,8 @@ Also available in chat as [`/import`](./slash-commands.md), and in the desktop a
 |-------------------|-------------|
 | `<archive>` | Path to the tar.gz archive to import. |
 | `--name <name>` | Name for the imported profile (default: inferred from archive). |
+| `--dry-run` | Validate and preview the destination without extracting, creating links, installing gateways, or mutating profiles. |
+| `--json` | Emit the deterministic validation/preview object as JSON. |
 
 **Example:**
 

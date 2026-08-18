@@ -138,6 +138,12 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "-o", "--output", default=None, help="Output file (default: <name>.tar.gz)"
     )
 
+    profile_validate = profile_subparsers.add_parser(
+        "validate", help="Validate a profile archive without extracting it"
+    )
+    profile_validate.add_argument("archive", help="Path to .tar.gz archive")
+    profile_validate.add_argument("--json", action="store_true", dest="json_output")
+
     profile_import = profile_subparsers.add_parser(
         "import", help="Import a profile from archive"
     )
@@ -148,6 +154,11 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         metavar="NAME",
         help="Profile name (default: inferred from archive)",
     )
+    profile_import.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate and print the import plan without changing the profile",
+    )
+    profile_import.add_argument("--json", action="store_true", dest="json_output")
 
     # ---------- Distribution subcommands (issue #20456) ----------
     profile_install = profile_subparsers.add_parser(

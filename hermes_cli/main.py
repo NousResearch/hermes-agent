@@ -10490,13 +10490,43 @@ def cmd_profile(args):
             print(f"Error: {e}")
             sys.exit(1)
 
+    elif action == "validate":
+        from hermes_cli.profiles import validate_profile_archive
+
+        result = validate_profile_archive(args.archive)
+        if getattr(args, "json_output", False):
+            print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        else:
+            status = "valid" if result["valid"] else "invalid"
+            print(f"Archive: {result['archive']} ({status})")
+            if result["archive_root"]:
+                print(f"Profile: {result['profile_name']}")
+            for error in result["errors"]:
+                print(f"Error: {error}")
+        if not result["valid"]:
+            sys.exit(1)
+
     elif action == "import":
         from hermes_cli.profiles import import_profile
 
         try:
-            profile_dir = import_profile(
-                args.archive, name=getattr(args, "import_name", None)
+            dry_run = getattr(args, "dry_run", False)
+            profile_result = import_profile(
+                args.archive, name=getattr(args, "import_name", None),
+                dry_run=dry_run,
             )
+            if dry_run:
+                if getattr(args, "json_output", False):
+                    print(json.dumps(profile_result, sort_keys=True, separators=(",", ":")))
+                else:
+                    status = "valid" if profile_result["valid"] else "invalid"
+                    print(f"Import preview ({status}): {profile_result['profile_name'] or 'unknown'}")
+                    for error in profile_result["errors"]:
+                        print(f"Error: {error}")
+                if not profile_result["valid"]:
+                    sys.exit(1)
+                return
+            profile_dir = profile_result
             name = profile_dir.name
             print(f"✓ Imported profile '{name}' at {profile_dir}")
 

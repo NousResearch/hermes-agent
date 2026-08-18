@@ -590,6 +590,56 @@ class TestPlayAudioFile:
         mock_sd_obj.play.assert_called_once()
         mock_sd_obj.stop.assert_called_once()
 
+
+class TestSerialPlayback:
+    """Concurrent play_audio_file calls must queue instead of overlapping.
+
+    Regression test for overlapping audio: concurrent speak requests (CLI
+    voice-mode threads, desktop /api/audio/speak executor threads) used to
+    spawn parallel afplay/ffplay processes, so two replies played at once.
+    The module-level _serial_playback_lock now guarantees one-at-a-time
+    playback, while stop_playback() (barge-in) still works independently
+    through its own short _playback_lock.
+    """
+
+    def test_concurrent_playback_is_serialized(self, monkeypatch):
+        import threading
+
+        import tools.voice_mode as vm
+
+        active = 0
+        max_active = 0
+        state_lock = threading.Lock()
+
+        def _fake_impl(file_path: str) -> bool:
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.2)  # simulate real playback duration
+            with state_lock:
+                active -= 1
+            return True
+
+        monkeypatch.setattr(vm, "_play_audio_file_impl", _fake_impl)
+        monkeypatch.setattr(vm, "mark_audio_output_active", lambda _active: None)
+
+        results = []
+
+        def worker():
+            results.append(vm.play_audio_file("/tmp/hermes-serial-test.mp3"))
+
+        threads = [threading.Thread(target=worker) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert results == [True, True, True]
+        assert max_active == 1, (
+            f"playback overlapped: {max_active} files were playing at once"
+        )
+
 # ============================================================================
 # macOS output policy (no sounddevice for OUTPUT -> avoids TCC prompt)
 # ============================================================================

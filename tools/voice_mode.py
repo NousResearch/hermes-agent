@@ -929,6 +929,13 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 # ── Audio playback (interruptable) ──
 _active_playback: Optional[subprocess.Popen] = None  # so stop_playback can interrupt it
 _playback_lock = threading.Lock()
+# Serializes ALL audio playback across every caller (CLI voice mode, desktop
+# /api/audio/speak, TUI gateway, streaming consumer). Without it, concurrent
+# speak requests spawn parallel afplay/ffplay processes and the audio
+# overlaps. barge-in (stop_playback) is unaffected: it only takes the short
+# _playback_lock to grab the current process, so it can still cut the
+# playing file while a queued playback waits its turn.
+_serial_playback_lock = threading.Lock()
 
 
 def _set_active_playback(proc) -> None:
@@ -971,12 +978,18 @@ def _wsl_powershell_tts_available() -> bool:
 def play_audio_file(file_path: str) -> bool:
     """Play an audio file; True on success. WAV via ``sounddevice.play()`` when allowed,
     else system players: afplay (macOS), WSL2 PowerShell bridge, ffplay, aplay (Linux).
-    Interruptible via ``stop_playback()``."""
-    mark_audio_output_active(True)  # ref-count real speaker output for the whole call
-    try:
-        return _play_audio_file_impl(file_path)
-    finally:
-        mark_audio_output_active(False)
+    Interruptible via ``stop_playback()``.
+
+    Serialized with every other playback: concurrent callers (multiple desktop
+    speak requests, CLI voice-mode threads) queue up instead of playing over
+    each other. The active-output ref-count stays INSIDE the lock so
+    queued-but-not-yet-playing audio does not count as active."""
+    with _serial_playback_lock:
+        mark_audio_output_active(True)  # ref-count real speaker output for the whole call
+        try:
+            return _play_audio_file_impl(file_path)
+        finally:
+            mark_audio_output_active(False)
 
 
 def _play_wav_via_sounddevice(file_path: str) -> bool:

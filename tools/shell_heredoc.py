@@ -159,6 +159,100 @@ def _find_heredoc_close(
         cursor = after
 
 
+# A heredoc whose output redirects to a file: `cat > path`, `cat >> path`,
+# or a bare redirect with no other consumer (`> path <<EOF`). Deliberately
+# narrow — this must not flag heredocs feeding an interpreter that legitimately
+# consumes stdin as input rather than writing it verbatim to disk (python,
+# psql, docker exec -i, ssh).
+_FILE_WRITE_HEREDOC_RE = re.compile(
+    r"^\s*"
+    r"(?:[A-Z_][A-Z0-9_]*=\S+\s+)*"
+    r"(?:cat\s+)?"
+    r">{1,2}\s*\S",
+    re.IGNORECASE,
+)
+
+
+def detect_unquoted_heredoc_file_write(command: str) -> str | None:
+    """Return a warning if COMMAND writes a file via an unquoted heredoc.
+
+    ``cat > path <<EOF ... EOF`` (unquoted delimiter) hands the body to bash
+    for backtick / ``$(...)`` / ``$VAR`` expansion before it reaches the file
+    — a TypeScript template literal or any shell-looking payload text
+    silently corrupts on write, with no error at all. ``write_file`` pipes
+    content as raw stdin, bypassing shell parsing entirely, and is what the
+    terminal tool's own description already tells the caller to use for
+    exactly this. This detects the specific dangerous combination
+    (file-write consumer + unquoted delimiter) rather than heredocs
+    generally — piping a heredoc to an interpreter (python, psql,
+    docker exec -i) is a common, legitimate pattern and stays untouched.
+
+    Conservative in the same direction as ``strip_inert_heredoc_bodies``:
+    on any parse ambiguity (unknown operator, unterminated heredoc), this
+    skips that occurrence rather than flagging it — a missed corruption
+    case is a worse outcome than a background one, but reliability here
+    still favors under-triggering over blocking valid commands on a parse
+    the module cannot stand behind.
+
+    Returns ``None`` when no unsafe pattern is found; otherwise a
+    human-readable reason naming the delimiter.
+    """
+    if "<<" not in command:
+        return None
+    command_start = 0
+    last_opener_index = command.rfind("<<")
+
+    while command_start < len(command):
+        if command_start > last_opener_index:
+            break
+        command_end, specs, unknown_operator, _has_list_operator = (
+            _scan_heredoc_command_unit(command, command_start)
+        )
+        if unknown_operator:
+            command_start = command_end + 1 if command_end < len(command) else command_end
+            if command_end >= len(command):
+                break
+            continue
+        if not specs:
+            if command_end >= len(command):
+                break
+            command_start = command_end + 1
+            continue
+        if command_end >= len(command):
+            break
+
+        opener = command[command_start:command_end]
+        masked_opener = _mask_simple_quotes(opener)
+        if _FILE_WRITE_HEREDOC_RE.search(masked_opener):
+            for delimiter, _strip_tabs, quoted in specs:
+                if not quoted:
+                    return (
+                        f"heredoc <<{delimiter} is unquoted while its output "
+                        "redirects to a file -- bash expands backticks/"
+                        "$()/$VAR in the body before it reaches disk, so "
+                        "content containing shell-active syntax (a "
+                        "TypeScript template literal, a Markdown code "
+                        "fence with $VAR, etc.) can silently corrupt on "
+                        f"write. Use write_file for file content instead, "
+                        f"or quote the delimiter (<<'{delimiter}') if the "
+                        "body genuinely needs to stay inert."
+                    )
+
+        body_cursor = command_end + 1
+        unterminated = False
+        for delimiter, strip_tabs, _quoted in specs:
+            close_end = _find_heredoc_close(command, body_cursor, delimiter, strip_tabs)
+            if close_end is None:
+                unterminated = True
+                break
+            body_cursor = close_end
+        if unterminated:
+            break
+        command_start = body_cursor
+
+    return None
+
+
 def strip_inert_heredoc_bodies(command: str) -> str:
     """Mask heredoc bodies that are provably inert data (see module docstring)."""
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.

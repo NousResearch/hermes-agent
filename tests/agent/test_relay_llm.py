@@ -39,6 +39,52 @@ def relay_turn(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+@pytest.mark.parametrize(
+    "api_mode",
+    ["chat_completions", "codex_responses", "anthropic_messages"],
+)
+def test_relay_request_body_omits_client_timeout(api_mode):
+    request = {"model": "test-model", "timeout": 1800.0}
+
+    body = relay_llm._relay_request_body(request, {"api_mode": api_mode})
+
+    assert "timeout" not in body
+    assert request["timeout"] == 1800.0
+
+
+def test_unintercepted_provider_callback_preserves_client_timeout(
+    relay_turn, monkeypatch
+):
+    relay, _turn = relay_turn
+    relay_requests = []
+    provider_requests = []
+    original_execute = relay.llm.execute
+
+    async def capture_relay_request(name, request, *args, **kwargs):
+        relay_requests.append(request.content)
+        return await original_execute(name, request, *args, **kwargs)
+
+    def provider(request):
+        provider_requests.append(request)
+        return {"content": "done"}
+
+    monkeypatch.setattr(relay.llm, "execute", capture_relay_request)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": [], "timeout": 1800.0},
+        provider,
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        metadata={"api_mode": "chat_completions"},
+    )
+
+    assert result == {"content": "done"}
+    assert relay_requests == [{"model": "test-model", "messages": []}]
+    assert provider_requests[0]["timeout"] == 1800.0
+
+
 def test_sync_execution_uses_canonical_relay_operation_name(relay_turn, monkeypatch):
     relay, _turn = relay_turn
     observed_names = []

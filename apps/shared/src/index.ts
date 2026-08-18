@@ -64,9 +64,17 @@ export {
 } from './skin'
 export {
   clampIntensity,
+  DEFAULT_GLASS_MATERIAL,
+  DEFAULT_GLASS_SCOPE,
+  GLASS_MATERIALS,
+  GLASS_SCOPES,
   glassActive,
+  type GlassMaterial,
+  type GlassScope,
   glassSurfaceKeep,
+  normalizeMaterial,
   normalizeMode,
+  normalizeScope,
   normalizeState,
   TRANSLUCENCY_CURVE,
   TRANSLUCENCY_MAX,
@@ -75,6 +83,7 @@ export {
   TRANSLUCENCY_STEP,
   type TranslucencyMode,
   type TranslucencyState,
+  vibrancyFor,
   windowOpacityFor
 } from './translucency'
 export {

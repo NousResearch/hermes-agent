@@ -12,14 +12,23 @@ import { describe, expect, it } from 'vitest'
 
 import {
   clampIntensity,
+  DEFAULT_GLASS_MATERIAL,
+  DEFAULT_GLASS_SCOPE,
+  GLASS_MATERIALS,
+  GLASS_SCOPES,
   glassActive,
+  type GlassMaterial,
   glassSurfaceKeep,
+  normalizeMaterial,
   normalizeMode,
+  normalizeScope,
   normalizeState,
   TRANSLUCENCY_CURVE,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_OPACITY_FLOOR,
+  type TranslucencyState,
+  vibrancyFor,
   windowBackingOptions,
   windowOpacityFor
 } from './translucency'
@@ -27,8 +36,19 @@ import {
 /** The linear ramp the curve replaced. Endpoints must still agree with it. */
 const legacyOpacity = (intensity: number) => 1 - (intensity / 100) * 0.7
 
-const clear = (intensity: number) => ({ intensity, mode: 'clear' as const })
-const glass = (intensity: number) => ({ intensity, mode: 'glass' as const })
+const clear = (intensity: number): TranslucencyState => ({
+  intensity,
+  mode: 'clear',
+  material: DEFAULT_GLASS_MATERIAL,
+  scope: DEFAULT_GLASS_SCOPE
+})
+
+const glass = (intensity: number, material: GlassMaterial = DEFAULT_GLASS_MATERIAL): TranslucencyState => ({
+  intensity,
+  mode: 'glass',
+  material,
+  scope: DEFAULT_GLASS_SCOPE
+})
 
 describe('lever bounds', () => {
   it('keeps the bounds and floor stable so persisted settings survive upgrades', () => {
@@ -132,33 +152,86 @@ describe('windowOpacityFor', () => {
 })
 
 describe('glassSurfaceKeep', () => {
-  it('mirrors the clear-mode ramp floor so glass stays matte, never bare desktop', () => {
+  // Full range on purpose: the top of the lever is bare, untinted blur, so the
+  // slider spans opaque theme -> clean glass. Text and cards keep their own
+  // opaque tokens, which is what makes 100% usable rather than unreadable.
+  it('runs linear to zero so the top of the lever is untinted glass', () => {
     expect(glassSurfaceKeep(0)).toBe(100)
-    expect(glassSurfaceKeep(50)).toBe(65)
-    expect(glassSurfaceKeep(100)).toBeCloseTo(30)
+    expect(glassSurfaceKeep(50)).toBe(50)
+    expect(glassSurfaceKeep(100)).toBe(0)
   })
 
   it('clamps its input like every other consumer of the lever', () => {
     expect(glassSurfaceKeep(-40)).toBe(100)
-    expect(glassSurfaceKeep(240)).toBeCloseTo(30)
+    expect(glassSurfaceKeep(240)).toBe(0)
+  })
+})
+
+describe('normalizeMaterial / normalizeScope', () => {
+  it('accepts every shipped material and area', () => {
+    for (const material of GLASS_MATERIALS) {
+      expect(normalizeMaterial(material)).toBe(material)
+    }
+
+    for (const scope of GLASS_SCOPES) {
+      expect(normalizeScope(scope)).toBe(scope)
+    }
+  })
+
+  // The picker was rebuilt from a material census precisely because several
+  // NSVisualEffectView materials composite identically; a value that isn't in
+  // the shipped ladder must not reach setVibrancy.
+  it('falls back for junk, and for materials deliberately left out of the ladder', () => {
+    expect(normalizeMaterial('sidebar')).toBe(DEFAULT_GLASS_MATERIAL)
+    expect(normalizeMaterial('hud')).toBe(DEFAULT_GLASS_MATERIAL)
+    expect(normalizeMaterial(undefined)).toBe(DEFAULT_GLASS_MATERIAL)
+    expect(normalizeMaterial(7)).toBe(DEFAULT_GLASS_MATERIAL)
+    expect(normalizeScope('rail')).toBe(DEFAULT_GLASS_SCOPE)
+    expect(normalizeScope(null)).toBe(DEFAULT_GLASS_SCOPE)
+  })
+})
+
+describe('vibrancyFor', () => {
+  it('uses the chosen frost material only while glass is actually on', () => {
+    expect(vibrancyFor(glass(60, 'header'))).toBe('header')
+    expect(vibrancyFor(glass(60, 'popover'))).toBe('popover')
+  })
+
+  // 'sidebar' is what the titlebar band was designed against, so every
+  // non-glass state has to land back on it rather than keeping a stale pick.
+  it('falls back to the long-standing sidebar material otherwise', () => {
+    expect(vibrancyFor(glass(0, 'header'))).toBe('sidebar')
+    expect(vibrancyFor(clear(60))).toBe('sidebar')
   })
 })
 
 describe('normalizeState', () => {
   it('parses a modern payload', () => {
-    expect(normalizeState({ intensity: 40, mode: 'glass' }, true)).toEqual({ intensity: 40, mode: 'glass' })
+    expect(normalizeState({ intensity: 40, mode: 'glass', material: 'header', scope: 'sidebar' }, true)).toEqual({
+      intensity: 40,
+      mode: 'glass',
+      material: 'header',
+      scope: 'sidebar'
+    })
   })
 
   // The migration contract: a pre-glass translucency.json is intensity-only and
   // always meant clear. It must NOT silently become glass on update.
   it('keeps a legacy intensity-only payload on clear', () => {
-    expect(normalizeState({ intensity: 70 }, true)).toEqual({ intensity: 70, mode: 'clear' })
+    expect(normalizeState({ intensity: 70 }, true)).toEqual({
+      intensity: 70,
+      mode: 'clear',
+      material: DEFAULT_GLASS_MATERIAL,
+      scope: DEFAULT_GLASS_SCOPE
+    })
   })
 
   it('survives junk payloads', () => {
-    expect(normalizeState(null, true)).toEqual({ intensity: 0, mode: 'clear' })
-    expect(normalizeState('nope', true)).toEqual({ intensity: 0, mode: 'clear' })
-    expect(normalizeState({ intensity: 'x', mode: 'glass' }, false)).toEqual({ intensity: 0, mode: 'clear' })
+    const fallback = { intensity: 0, material: DEFAULT_GLASS_MATERIAL, mode: 'clear', scope: DEFAULT_GLASS_SCOPE }
+
+    expect(normalizeState(null, true)).toEqual(fallback)
+    expect(normalizeState('nope', true)).toEqual(fallback)
+    expect(normalizeState({ intensity: 'x', material: 'nope', mode: 'glass', scope: 'nope' }, false)).toEqual(fallback)
   })
 })
 

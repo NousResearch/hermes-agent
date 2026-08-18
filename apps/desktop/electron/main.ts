@@ -291,6 +291,7 @@ import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeig
 import {
   glassActive,
   normalizeState as normalizeTranslucency,
+  vibrancyFor as vibrancyForTranslucency,
   windowBackingOptions,
   windowOpacityFor
 } from './translucency'
@@ -936,10 +937,18 @@ function applyWindowTranslucency(win) {
   }
 
   try {
-    // Backing swap is scoped to registered chat windows (see
+    // Backing swap + material are scoped to registered chat windows (see
     // translucencyBackedWindows above).
-    if (translucencyBackedWindows.has(win) && typeof win.setBackgroundColor === 'function') {
-      win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
+    if (translucencyBackedWindows.has(win)) {
+      if (typeof win.setBackgroundColor === 'function') {
+        win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
+      }
+
+      // Glass frost level = the vibrancy material (macOS has no blur-radius
+      // knob). Animate the hop so slider-adjacent switches feel continuous.
+      if (IS_MAC && typeof win.setVibrancy === 'function') {
+        win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
+      }
     }
 
     if (typeof win.setOpacity === 'function') {
@@ -963,7 +972,14 @@ function applyWindowTranslucency(win) {
 // deliberately not chat windows.
 function chatWindowSurfaceOptions() {
   return {
-    vibrancy: IS_MAC ? ('sidebar' as const) : undefined,
+    vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
+    // Pin the material to its ACTIVE appearance: several NSVisualEffectView
+    // materials collapse to a shared inactive look when the window blurs
+    // (measured on macOS 26: sidebar, popover and under-window composited
+    // pixel-identically once unfocused), which would quietly erase the
+    // user's frost choice whenever they click elsewhere. Only observable
+    // under glass — everywhere else the page buries the material.
+    visualEffectState: IS_MAC ? ('active' as const) : undefined,
     opacity: windowOpacity(),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
@@ -13794,7 +13810,12 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
 ipcMain.on('hermes:translucency', (_event, payload) => {
   const next = normalizeTranslucency(payload, IS_MAC)
 
-  if (next.intensity === translucencyState.intensity && next.mode === translucencyState.mode) {
+  if (
+    next.intensity === translucencyState.intensity &&
+    next.mode === translucencyState.mode &&
+    next.material === translucencyState.material &&
+    next.scope === translucencyState.scope
+  ) {
     return
   }
 

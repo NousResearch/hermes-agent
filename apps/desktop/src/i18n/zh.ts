@@ -479,6 +479,18 @@ export const zh: Translations = {
       translucencyGlassDesc: '磨砂玻璃：桌面以柔和模糊透出，文字保持清晰。仅支持 macOS。',
       translucencyModeClear: '透明',
       translucencyModeGlass: '玻璃',
+      translucencyFrostTitle: '磨砂质感',
+      translucencyFrost: {
+        'under-window': '深邃',
+        popover: '柔和',
+        titlebar: '明亮',
+        header: '透亮'
+      },
+      translucencyScopeTitle: '应用范围',
+      translucencyScope: {
+        window: '整个窗口',
+        sidebar: '仅侧边栏'
+      },
       backdropTitle: '聊天背景',
       backdropDesc: '对话后方那张淡淡的雕像图片。',
       reactionsTitle: '消息回应',

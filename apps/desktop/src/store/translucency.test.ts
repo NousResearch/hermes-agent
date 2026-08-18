@@ -5,10 +5,17 @@ import { onPersistenceEvent, type PersistenceEvent } from '@/lib/storage'
 
 import {
   $translucency,
+  $translucencyPeek,
+  beginTranslucencyPeek,
+  DEFAULT_GLASS_MATERIAL,
+  DEFAULT_GLASS_SCOPE,
+  endTranslucencyPeek,
   GLASS_SUPPORTED,
   isChatWindow,
   setTranslucency,
+  setTranslucencyMaterial,
   setTranslucencyMode,
+  setTranslucencyScope,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_STEP
@@ -33,7 +40,12 @@ describe('window translucency lever', () => {
   })
 
   it('defaults to off and clear', () => {
-    expect($translucency.get()).toEqual({ intensity: TRANSLUCENCY_MIN, mode: 'clear' })
+    expect($translucency.get()).toEqual({
+      intensity: TRANSLUCENCY_MIN,
+      mode: 'clear',
+      material: DEFAULT_GLASS_MATERIAL,
+      scope: DEFAULT_GLASS_SCOPE
+    })
   })
 
   it('accepts every step the slider can emit', () => {
@@ -78,17 +90,29 @@ describe('window translucency lever', () => {
       stop()
     }
 
-    expect(writes.at(-1)).toEqual({ key: KEY, op: 'write', value: JSON.stringify({ intensity: 23, mode: 'clear' }) })
+    expect(writes.at(-1)).toEqual({
+      key: KEY,
+      op: 'write',
+      value: JSON.stringify({
+        intensity: 23,
+        mode: 'clear',
+        material: DEFAULT_GLASS_MATERIAL,
+        scope: DEFAULT_GLASS_SCOPE
+      })
+    })
   })
 
   it('mirrors the whole state to the desktop bridge', () => {
-    const calls: Array<{ intensity: number; mode: string }> = []
-    window.hermesDesktop = {
-      setTranslucency: (payload: { intensity: number; mode: 'clear' | 'glass' }) => calls.push(payload)
-    } as never
+    const calls: unknown[] = []
+    window.hermesDesktop = { setTranslucency: (payload: unknown) => calls.push(payload) } as never
 
     setTranslucency(40)
-    expect(calls.at(-1)).toEqual({ intensity: 40, mode: 'clear' })
+    expect(calls.at(-1)).toEqual({
+      intensity: 40,
+      mode: 'clear',
+      material: DEFAULT_GLASS_MATERIAL,
+      scope: DEFAULT_GLASS_SCOPE
+    })
   })
 })
 
@@ -105,7 +129,7 @@ describe('glass mode', () => {
     if (GLASS_SUPPORTED) {
       expect($translucency.get().mode).toBe('glass')
       expect(glassAttr()).toBe(true)
-      expect(keep()).toBe('65%')
+      expect(keep()).toBe('50%')
     } else {
       expect($translucency.get().mode).toBe('clear')
       expect(glassAttr()).toBe(false)
@@ -142,6 +166,75 @@ describe('glass mode', () => {
     setTranslucency(0)
     expect(clearAttr()).toBe(false)
     expect(glassAttr()).toBe(false)
+  })
+})
+
+describe('frost and area', () => {
+  beforeEach(() => {
+    setTranslucencyMode('clear')
+    setTranslucency(TRANSLUCENCY_MIN)
+    setTranslucencyMaterial(DEFAULT_GLASS_MATERIAL)
+    setTranslucencyScope(DEFAULT_GLASS_SCOPE)
+  })
+
+  it('carries the chosen material without disturbing the rest of the state', () => {
+    setTranslucency(40)
+    setTranslucencyMaterial('header')
+
+    expect($translucency.get().material).toBe('header')
+    expect($translucency.get().intensity).toBe(40)
+  })
+
+  it('rejects a material outside the shipped ladder', () => {
+    setTranslucencyMaterial('sidebar' as never)
+    expect($translucency.get().material).toBe(DEFAULT_GLASS_MATERIAL)
+  })
+
+  // The sidebar scope is the Finder shape, and styles.css keys its split-paint
+  // gradient off this attribute — so the attribute IS the contract.
+  it('publishes the area as an attribute only while glass is on', () => {
+    setTranslucency(50)
+    setTranslucencyScope('sidebar')
+
+    if (GLASS_SUPPORTED) {
+      setTranslucencyMode('glass')
+      expect(document.documentElement.getAttribute('data-hermes-glass-scope')).toBe('sidebar')
+
+      setTranslucencyScope('window')
+      expect(document.documentElement.getAttribute('data-hermes-glass-scope')).toBe('window')
+
+      setTranslucencyMode('clear')
+    }
+
+    expect(document.documentElement.hasAttribute('data-hermes-glass-scope')).toBe(false)
+  })
+})
+
+// A held slider drag and a timed pulse from a picker click can overlap, which
+// is why the peek counts rather than toggling: the drag must not be cancelled
+// by a pulse expiring underneath it.
+describe('translucency peek', () => {
+  it('stays open until every overlapping hold has ended', () => {
+    beginTranslucencyPeek()
+    beginTranslucencyPeek()
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(true)
+
+    endTranslucencyPeek()
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(true)
+
+    endTranslucencyPeek()
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(false)
+  })
+
+  it('never goes negative, so a stray release cannot wedge the next peek open', () => {
+    endTranslucencyPeek()
+    endTranslucencyPeek()
+    expect($translucencyPeek.get()).toBe(0)
+
+    beginTranslucencyPeek()
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(true)
+    endTranslucencyPeek()
+    expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(false)
   })
 })
 

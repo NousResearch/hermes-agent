@@ -22,9 +22,16 @@ import { $sessionListDensity, type SessionListDensity, setSessionListDensity } f
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import {
   $translucency,
+  beginTranslucencyPeek,
+  endTranslucencyPeek,
+  GLASS_MATERIALS,
+  GLASS_SCOPES,
   GLASS_SUPPORTED,
+  pulseTranslucencyPeek,
   setTranslucency,
+  setTranslucencyMaterial,
   setTranslucencyMode,
+  setTranslucencyScope,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_STEP
@@ -255,6 +262,19 @@ function MarketplaceThemeResults({
   )
 }
 
+// Keys a range input treats as a step, so the peek can flash the live window
+// for keyboard adjustment the way a pointer drag holds it open.
+const SLIDER_STEP_KEYS = new Set([
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'End',
+  'Home',
+  'PageDown',
+  'PageUp'
+])
+
 export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
@@ -470,12 +490,23 @@ export function AppearanceSettings() {
 
           <ListRow
             action={
-              <div className="flex items-center gap-3">
+              <div
+                className="flex items-center gap-3"
+                // Arms the peek for the overlay this row lives in — the
+                // ghosting rules in styles.css scope to it, so no other
+                // overlay pays for an opacity transition it never uses.
+                data-translucency-peek-scope=""
+              >
                 {GLASS_SUPPORTED && (
                   <SegmentedControl
                     onChange={id => {
                       triggerHaptic('selection')
                       setTranslucencyMode(id)
+
+                      // Show the change through the overlay it just altered.
+                      if (translucency.intensity > 0) {
+                        pulseTranslucencyPeek()
+                      }
                     }}
                     options={[
                       { id: 'clear' as const, label: a.translucencyModeClear },
@@ -489,10 +520,24 @@ export function AppearanceSettings() {
                   className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
                   max={TRANSLUCENCY_MAX}
                   min={TRANSLUCENCY_MIN}
+                  // Peek while the hand is on the slider: the overlay (scrim +
+                  // near-opaque card) ghosts so the window behind IS the live
+                  // preview. Pointer pair covers mouse/touch drags; the
+                  // keyboard path pulses per step instead (blur ends any
+                  // residual hold).
+                  onBlur={endTranslucencyPeek}
                   onChange={event => {
                     triggerHaptic('selection')
                     setTranslucency(Number(event.target.value))
                   }}
+                  onKeyDown={event => {
+                    if (SLIDER_STEP_KEYS.has(event.key)) {
+                      pulseTranslucencyPeek()
+                    }
+                  }}
+                  onLostPointerCapture={endTranslucencyPeek}
+                  onPointerDown={beginTranslucencyPeek}
+                  onPointerUp={endTranslucencyPeek}
                   step={TRANSLUCENCY_STEP}
                   style={{ accentColor: 'var(--dt-primary)' }}
                   type="range"
@@ -502,6 +547,52 @@ export function AppearanceSettings() {
                   {translucency.intensity}%
                 </span>
               </div>
+            }
+            below={
+              translucency.mode === 'glass' && GLASS_SUPPORTED ? (
+                <div className="mt-3 flex flex-col gap-2.5">
+                  <div className="flex items-center gap-3">
+                    <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                      {a.translucencyFrostTitle}
+                    </span>
+                    <SegmentedControl
+                      onChange={id => {
+                        triggerHaptic('selection')
+                        setTranslucencyMaterial(id)
+
+                        if (translucency.intensity > 0) {
+                          pulseTranslucencyPeek()
+                        }
+                      }}
+                      options={GLASS_MATERIALS.map(material => ({
+                        id: material,
+                        label: a.translucencyFrost[material]
+                      }))}
+                      value={translucency.material}
+                    />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                      {a.translucencyScopeTitle}
+                    </span>
+                    <SegmentedControl
+                      onChange={id => {
+                        triggerHaptic('selection')
+                        setTranslucencyScope(id)
+
+                        if (translucency.intensity > 0) {
+                          pulseTranslucencyPeek()
+                        }
+                      }}
+                      options={GLASS_SCOPES.map(scope => ({
+                        id: scope,
+                        label: a.translucencyScope[scope]
+                      }))}
+                      value={translucency.scope}
+                    />
+                  </div>
+                </div>
+              ) : undefined
             }
             description={translucency.mode === 'glass' ? a.translucencyGlassDesc : a.translucencyDesc}
             title={a.translucencyTitle}

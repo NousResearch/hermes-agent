@@ -587,6 +587,32 @@
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }
 
+  /* Sidebar scope (the Finder shape): glass rail, opaque content column.
+     <body> stays the one painter but splits at the rail's visual edge — the
+     store publishes it as --glass-rail-edge (live-tracked through collapse
+     animation and pane resizes). Left of the seam: the normal glass mix.
+     Right of it: the full opaque chrome. A hard gradient stop, so there is
+     no smear across the seam; RTL mirrors via html[dir='rtl']. The content
+     column's own surfaces stay transparent (they'd double-paint the tint
+     otherwise) — the body backdrop alone restores the opaque look. */
+  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'] body {
+    background: linear-gradient(
+      to right,
+      color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
+        var(--glass-rail-edge, 0px),
+      var(--ui-bg-chrome) var(--glass-rail-edge, 0px)
+    );
+  }
+
+  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'][dir='rtl'] body {
+    background: linear-gradient(
+      to left,
+      color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
+        var(--glass-rail-edge, 0px),
+      var(--ui-bg-chrome) var(--glass-rail-edge, 0px)
+    );
+  }
+
   /* The app shell's two full-window opaque painters (the contrib controller
      root and the SidebarProvider wrapper) sit between <body> and every
      surface. Their fills are Tailwind utilities (bg-(--ui-bg-chrome) /
@@ -640,6 +666,30 @@
   :root[data-hermes-clear] [data-overlay-surface] {
     background-color: rgb(0 0 0 / 0.55) !important;
     backdrop-filter: blur(0.5rem) !important;
+  }
+
+  /* Translucency peek: while the user holds the intensity slider (or for a
+     short pulse after a frost/area/mode click) the entire overlay layer —
+     scrim, blur and near-opaque card as ONE group — ghosts down so the live
+     window behind it becomes the preview. The layer keeps pointer events:
+     a held drag keeps delivering to the slider it started on. Opacity is
+     the one property that fades the scrim, its backdrop-blur and the card
+     together without relayout. Asymmetric easing: quick reveal while the
+     hand is on the control, unhurried return.
+
+     Both the peek and its return are scoped to a settings overlay that has
+     ARMED the interaction ([data-translucency-peek-scope], set by the
+     appearance row). An unscoped `[data-overlay-surface] { transition:
+     opacity … }` would tax every overlay in the app — command center, cron,
+     agents, model picker — with a 420ms opacity transition for the life of
+     the process, to serve one slider. */
+  :root [data-overlay-surface]:has([data-translucency-peek-scope]) {
+    transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  :root[data-hermes-translucency-peek] [data-overlay-surface]:has([data-translucency-peek-scope]) {
+    opacity: 0.08;
+    transition: opacity 160ms cubic-bezier(0.32, 0.72, 0, 1);
   }
 
   * {

@@ -13,33 +13,49 @@
 
 import {
   clampIntensity,
+  DEFAULT_GLASS_MATERIAL,
+  DEFAULT_GLASS_SCOPE,
+  GLASS_MATERIALS,
+  GLASS_SCOPES,
+  type GlassMaterial,
+  type GlassScope,
   glassSurfaceKeep,
+  normalizeMaterial,
+  normalizeScope,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_STEP,
-  type TranslucencyMode
+  type TranslucencyMode,
+  type TranslucencyState
 } from '@hermes/shared/translucency'
 import { atom } from 'nanostores'
 
 import { isMacPlatform } from '@/lib/platform'
 import { readJson, writeJson } from '@/lib/storage'
 
-export { TRANSLUCENCY_MAX, TRANSLUCENCY_MIN, TRANSLUCENCY_STEP, type TranslucencyMode }
+export {
+  DEFAULT_GLASS_MATERIAL,
+  DEFAULT_GLASS_SCOPE,
+  GLASS_MATERIALS,
+  GLASS_SCOPES,
+  type GlassMaterial,
+  type GlassScope,
+  glassSurfaceKeep,
+  TRANSLUCENCY_MAX,
+  TRANSLUCENCY_MIN,
+  TRANSLUCENCY_STEP,
+  type TranslucencyMode
+}
 
 /** Glass rides on the macOS vibrancy material; other platforms only have Clear. */
 export const GLASS_SUPPORTED = isMacPlatform()
 
 const KEY = 'hermes.desktop.translucency.v1'
 
-interface PersistedTranslucency {
-  intensity: number
-  mode: TranslucencyMode
-}
-
 // The v1 key used to hold a bare intensity (`"23"`). Anything without a mode
 // predates glass and always behaved as clear, so it stays clear — a saved
 // setting must not change how the window looks on update.
-const read = (): PersistedTranslucency => {
+const read = (): TranslucencyState => {
   const stored = readJson<unknown>(KEY)
 
   const record: Record<string, unknown> =
@@ -47,14 +63,18 @@ const read = (): PersistedTranslucency => {
 
   return {
     intensity: clampIntensity(record.intensity),
-    mode: record.mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear'
+    mode: record.mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear',
+    material: normalizeMaterial(record.material),
+    scope: normalizeScope(record.scope)
   }
 }
 
-const initial: PersistedTranslucency =
-  typeof window === 'undefined' ? { intensity: TRANSLUCENCY_MIN, mode: 'clear' } : read()
+const initial: TranslucencyState =
+  typeof window === 'undefined'
+    ? { intensity: TRANSLUCENCY_MIN, mode: 'clear', material: DEFAULT_GLASS_MATERIAL, scope: DEFAULT_GLASS_SCOPE }
+    : read()
 
-export const $translucency = atom<PersistedTranslucency>(initial)
+export const $translucency = atom<TranslucencyState>(initial)
 
 export function setTranslucency(intensity: number): void {
   $translucency.set({ ...$translucency.get(), intensity: clampIntensity(intensity) })
@@ -62,6 +82,14 @@ export function setTranslucency(intensity: number): void {
 
 export function setTranslucencyMode(mode: TranslucencyMode): void {
   $translucency.set({ ...$translucency.get(), mode: mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear' })
+}
+
+export function setTranslucencyMaterial(material: GlassMaterial): void {
+  $translucency.set({ ...$translucency.get(), material: normalizeMaterial(material) })
+}
+
+export function setTranslucencyScope(scope: GlassScope): void {
+  $translucency.set({ ...$translucency.get(), scope: normalizeScope(scope) })
 }
 
 // Glass thins surfaces only in real chat windows (the primary window and
@@ -78,7 +106,120 @@ export const isChatWindow = (search = typeof window === 'undefined' ? '' : windo
   }
 }
 
-const applyGlassSurfaces = ({ intensity, mode }: PersistedTranslucency): void => {
+/* Sidebar scope needs the rail's visual edge published on :root so <body>
+   can split its paint there (glass left of the seam, opaque chrome right of
+   it — the Finder shape). The rail is an in-flow div whose WIDTH animates
+   (components/ui/sidebar.tsx, collapsible='none' branch), so a
+   ResizeObserver sees every collapse/expand frame; a window resize listener
+   and a re-measure on every store sync cover the rest. RTL flips which side
+   the seam is measured from; styles.css picks the matching gradient
+   direction off html[dir]. */
+let railObserver: null | ResizeObserver = null
+let railTarget: Element | null = null
+let railTrackingOn = false
+
+const measureRailEdge = (): void => {
+  const root = document.documentElement
+  const rail = document.querySelector('[data-slot="sidebar"]')
+
+  if (rail !== railTarget) {
+    if (railObserver && railTarget) {
+      railObserver.unobserve(railTarget)
+    }
+
+    railTarget = rail
+
+    if (railObserver && rail) {
+      railObserver.observe(rail)
+    }
+  }
+
+  if (!rail) {
+    // No rail in this window (e.g. a pane-only layout): the seam sits at the
+    // window edge and the whole field stays opaque — glass simply waits for
+    // a rail to exist.
+    root.style.setProperty('--glass-rail-edge', '0px')
+
+    return
+  }
+
+  const rect = rail.getBoundingClientRect()
+  const rtl = getComputedStyle(root).direction === 'rtl'
+  const edge = rtl ? window.innerWidth - rect.left : rect.right
+
+  root.style.setProperty('--glass-rail-edge', `${Math.max(0, Math.round(edge))}px`)
+}
+
+const startRailTracking = (): void => {
+  if (railTrackingOn) {
+    measureRailEdge()
+
+    return
+  }
+
+  railTrackingOn = true
+
+  if (typeof ResizeObserver !== 'undefined' && !railObserver) {
+    railObserver = new ResizeObserver(() => measureRailEdge())
+  }
+
+  window.addEventListener('resize', measureRailEdge)
+  measureRailEdge()
+}
+
+const stopRailTracking = (): void => {
+  if (!railTrackingOn) {
+    return
+  }
+
+  railTrackingOn = false
+
+  if (railObserver && railTarget) {
+    railObserver.unobserve(railTarget)
+  }
+
+  railTarget = null
+  window.removeEventListener('resize', measureRailEdge)
+  document.documentElement.style.removeProperty('--glass-rail-edge')
+}
+
+/* Peek: while the user is actively adjusting translucency from Settings, the
+   overlay they stand in covers the very effect they're tuning — the scrim
+   plus a deliberately near-opaque card ([data-glass-raised]). A peek ghosts
+   the whole overlay layer so the live window IS the preview (see the
+   [data-hermes-translucency-peek] rules in styles.css). A counter rather
+   than a boolean: a held slider drag and a timed pulse from a picker click
+   can overlap. */
+const PEEK_ATTR = 'data-hermes-translucency-peek'
+
+export const $translucencyPeek = atom<number>(0)
+
+export function beginTranslucencyPeek(): void {
+  $translucencyPeek.set($translucencyPeek.get() + 1)
+}
+
+export function endTranslucencyPeek(): void {
+  $translucencyPeek.set(Math.max(0, $translucencyPeek.get() - 1))
+}
+
+/**
+ * Timed peek for one-shot changes (frost / area / mode clicks, keyboard
+ * slider steps): long enough to read the effect, short enough to hand the
+ * settings back without feeling stuck.
+ */
+export function pulseTranslucencyPeek(ms = 900): void {
+  beginTranslucencyPeek()
+
+  if (typeof window === 'undefined') {
+    endTranslucencyPeek()
+
+    return
+  }
+
+  window.setTimeout(endTranslucencyPeek, ms)
+}
+
+const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void => {
   if (typeof document === 'undefined') {
     return
   }
@@ -95,9 +236,17 @@ const applyGlassSurfaces = ({ intensity, mode }: PersistedTranslucency): void =>
   root.toggleAttribute('data-hermes-clear', clearOn)
 
   if (glassOn) {
+    root.setAttribute('data-hermes-glass-scope', scope)
     root.style.setProperty('--translucency-glass-keep', `${glassSurfaceKeep(intensity)}%`)
   } else {
+    root.removeAttribute('data-hermes-glass-scope')
     root.style.removeProperty('--translucency-glass-keep')
+  }
+
+  if (glassOn && scope === 'sidebar') {
+    startRailTracking()
+  } else {
+    stopRailTracking()
   }
 }
 
@@ -106,5 +255,13 @@ if (typeof window !== 'undefined') {
     writeJson(KEY, state)
     applyGlassSurfaces(state)
     window.hermesDesktop?.setTranslucency?.(state)
+  })
+
+  $translucencyPeek.subscribe(count => {
+    if (typeof document === 'undefined') {
+      return
+    }
+
+    document.documentElement.toggleAttribute(PEEK_ATTR, count > 0)
   })
 }

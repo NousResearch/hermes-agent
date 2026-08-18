@@ -20,9 +20,44 @@
 
 export type TranslucencyMode = 'clear' | 'glass'
 
+/**
+ * macOS vibrancy materials offered as glass "frost" levels, ordered sheer →
+ * heavy. macOS exposes no blur-radius knob (VibrancyOptions is only an
+ * animation duration), so the material IS the frost control: each maps to a
+ * different NSVisualEffectView material with its own luminance lift.
+ *
+ * Curated by pixel census on macOS 26 (one window, visualEffectState pinned
+ * to 'active', cycling all 14 materials over the same wallpaper): the 14
+ * collapse to 9 distinct looks (sidebar≡hud, window≡fullscreen-ui,
+ * tooltip≡content≡under-window≡under-page). These four are the ladder with
+ * the widest separations that stay distinct in BOTH appearances — dark lum
+ * 26/63/84/127, light lum 217/233/254/242. sidebar/hud sit 9 lum from
+ * under-window when focused and collapse INTO it when unfocused, which
+ * shipped as two indistinguishable picker options once — don't re-add them.
+ */
+export const GLASS_MATERIALS = ['under-window', 'popover', 'titlebar', 'header'] as const
+
+export type GlassMaterial = (typeof GLASS_MATERIALS)[number]
+
+export const DEFAULT_GLASS_MATERIAL: GlassMaterial = 'under-window'
+
+/**
+ * Where the glass field lives. 'window' thins every field surface; 'sidebar'
+ * is the Finder shape — glass rail, opaque content column. The scope is a
+ * renderer concern (which surfaces thin); the main process only persists and
+ * echoes it.
+ */
+export const GLASS_SCOPES = ['window', 'sidebar'] as const
+
+export type GlassScope = (typeof GLASS_SCOPES)[number]
+
+export const DEFAULT_GLASS_SCOPE: GlassScope = 'window'
+
 export interface TranslucencyState {
   intensity: number
   mode: TranslucencyMode
+  material: GlassMaterial
+  scope: GlassScope
 }
 
 export const TRANSLUCENCY_MIN = 0
@@ -58,13 +93,25 @@ export function normalizeMode(value: unknown, isMac: boolean): TranslucencyMode 
   return value === 'glass' && isMac ? 'glass' : 'clear'
 }
 
+/** Unknown or unsupported values fall back to the default material. */
+export function normalizeMaterial(value: unknown): GlassMaterial {
+  return GLASS_MATERIALS.includes(value as GlassMaterial) ? (value as GlassMaterial) : DEFAULT_GLASS_MATERIAL
+}
+
+/** Unknown or unsupported values fall back to whole-window glass. */
+export function normalizeScope(value: unknown): GlassScope {
+  return GLASS_SCOPES.includes(value as GlassScope) ? (value as GlassScope) : DEFAULT_GLASS_SCOPE
+}
+
 /** Parse a persisted translucency.json / IPC payload into a safe state. */
 export function normalizeState(payload: unknown, isMac: boolean): TranslucencyState {
   const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 
   return {
     intensity: clampIntensity(record.intensity),
-    mode: normalizeMode(record.mode, isMac)
+    mode: normalizeMode(record.mode, isMac),
+    material: normalizeMaterial(record.material),
+    scope: normalizeScope(record.scope)
   }
 }
 
@@ -91,10 +138,21 @@ export function glassActive({ intensity, mode }: TranslucencyState): boolean {
 }
 
 /**
- * Percent of the surface tint the renderer KEEPS at a given intensity. Mirrors
- * clear mode's opacity floor: at 100 the field still holds a 30% wash, so glass
- * reads as tinted blur rather than bare desktop.
+ * Percent of the surface tint the renderer KEEPS at a given intensity. Linear
+ * to zero: at 100 the tint is fully gone — bare vibrancy glass — so the slider
+ * spans the whole range from opaque theme to untinted blur. Text and cards
+ * keep their own opaque tokens for contrast; only the field surfaces thin.
  */
 export function glassSurfaceKeep(intensity: number): number {
-  return TRANSLUCENCY_MAX - clampIntensity(intensity) * (1 - TRANSLUCENCY_OPACITY_FLOOR)
+  return TRANSLUCENCY_MAX - clampIntensity(intensity)
+}
+
+/**
+ * The vibrancy material a chat window should carry. 'sidebar' is the
+ * long-standing default the titlebar band was designed against; glass mode
+ * swaps the whole window onto the user's chosen material (setVibrancy is
+ * cheap and animatable at runtime, unlike the backing).
+ */
+export function vibrancyFor(state: TranslucencyState): GlassMaterial | 'sidebar' {
+  return glassActive(state) ? state.material : 'sidebar'
 }

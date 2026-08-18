@@ -58,12 +58,9 @@ function satisfiesClause(version: string, clause: string): boolean {
 }
 
 function satisfiesRange(version: string, range: string): boolean {
-  return range.split('||').some(alternative =>
-    alternative
-      .trim()
-      .split(/\s+/)
-      .every(clause => satisfiesClause(version, clause))
-  )
+  const alternatives = range.split('||').map(alternative => alternative.trim().split(/\s+/))
+  alternatives.flat().forEach(clause => satisfiesClause(version, clause))
+  return alternatives.some(clauses => clauses.every(clause => satisfiesClause(version, clause)))
 }
 
 const rootManifest = readJson<Manifest>('package.json')
@@ -95,5 +92,16 @@ describe('Node engine alignment', () => {
   test('lockfile workspace mirrors match their manifests', () => {
     assert.equal(nodeRange(lockfile.packages?.[''] ?? {}, 'root lock entry'), rootRange)
     assert.equal(nodeRange(lockfile.packages?.['apps/desktop'] ?? {}, 'desktop lock entry'), desktopRange)
+  })
+
+  test.each(['~22.22.0', '22.x', '>=26.0.0-rc.1'])(
+    'the alignment helper rejects unsupported semver clause %s instead of misclassifying it',
+    clause => {
+      assert.throws(() => satisfiesRange('26.0.0', clause), /unsupported semver clause/)
+    }
+  )
+
+  test('unsupported clauses are rejected even after a matching alternative', () => {
+    assert.throws(() => satisfiesRange('26.0.0', '>=26.0.0 || ~28.0.0'), /unsupported semver clause/)
   })
 })

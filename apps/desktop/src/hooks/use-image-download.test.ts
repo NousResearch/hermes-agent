@@ -11,6 +11,12 @@ describe('imageFilename', () => {
     expect(imageFilename('https://example.com/')).toBe('image')
     expect(imageFilename(undefined)).toBe('image')
   })
+
+  it('preserves the original filename when the display source is a data URL', () => {
+    expect(imageFilename('data:image/png;base64,AAAA', 'slashstack-worktree-feedback-2026-08-18.png')).toBe(
+      'slashstack-worktree-feedback-2026-08-18.png'
+    )
+  })
 })
 
 describe('downloadFilename', () => {
@@ -30,6 +36,12 @@ describe('downloadFilename', () => {
     expect(downloadFilename('https://cdn.example.com/abc123', 'image/png; charset=binary')).toBe('abc123.png')
     expect(downloadFilename('https://cdn.example.com/abc123', 'application/octet-stream')).toBe('abc123.png')
     expect(downloadFilename('https://cdn.example.com/abc123', undefined)).toBe('abc123.png')
+  })
+
+  it('uses a preferred semantic filename when the source has no filename', () => {
+    expect(downloadFilename('data:image/png;base64,AAAA', 'image/png', 'slashstack-worktree-feedback-2026-08-18.png')).toBe(
+      'slashstack-worktree-feedback-2026-08-18.png'
+    )
   })
 
   it('does not treat a dotted hash suffix as an extension', () => {

@@ -15,6 +15,7 @@ import {
   type ComposerAttachment,
   type ComposerDraftSyncMode,
   onComposerDraftSyncRequest,
+  onComposerSessionAppendRequest,
   reloadPersistedDrafts,
   stashSessionDraft,
   takeSessionDraft
@@ -426,6 +427,14 @@ export function useComposerDraft({
       clearDraftSuggestions(sessionIdRef.current)
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useLayoutEffect(() => onComposerSessionAppendRequest(detail => {
+    if (detail.handled || detail.sessionKey !== draftScopeRef.current) return
+    if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) return
+    detail.handled = true
+    appendExternalText(detail.text, 'block')
+    detail.attachments.forEach(attachment => attachmentScope.add(attachment))
+  }), [appendExternalText, attachmentScope, queueEditRef])
 
   // The HUD handoff's two verbs. Entering HUD mode flushes this editor's text
   // into the shared stash so the HUD's composer boots with it; leaving repaints

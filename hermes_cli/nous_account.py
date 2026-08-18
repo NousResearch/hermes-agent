@@ -58,6 +58,10 @@ class NousPaidServiceAccessInfo:
     subscription_credits_remaining: Optional[float] = None
     purchased_credits_remaining: Optional[float] = None
     total_usable_credits: Optional[float] = None
+    member_spend_cap_exceeded: Optional[bool] = None
+    member_spend_cap_usd: Optional[float] = None
+    member_spend_usd: Optional[float] = None
+    member_spend_cap_remaining_usd: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -267,6 +271,23 @@ def _no_paid_access_message(
     total_usable = access.total_usable_credits if access else None
     subscription_credits = access.subscription_credits_remaining if access else None
     purchased_credits = access.purchased_credits_remaining if access else None
+
+    if access and access.member_spend_cap_exceeded:
+        cap = access.member_spend_cap_usd
+        spent = access.member_spend_usd
+        credit_detail = _credit_detail(total_usable, subscription_credits, purchased_credits)
+        cap_detail = ""
+        if cap is not None and spent is not None:
+            cap_detail = f" Your organisation's per-member spend cap is ${cap:.2f} and you've spent ${spent:.2f} of it."
+        elif cap is not None:
+            cap_detail = f" Your organisation's per-member spend cap is ${cap:.2f}."
+        return (
+            f"Your Nous Portal access is paused because you've exceeded the"
+            f" per-member spend cap set by your organisation.{cap_detail}"
+            f"{credit_detail} Ask your organisation admin to raise the"
+            f" member spend cap at {billing_url}, then run `hermes model`"
+            f" to refresh."
+        )
 
     if has_active_subscription and active_subscription_is_paid:
         credit_detail = _credit_detail(total_usable, subscription_credits, purchased_credits)
@@ -713,6 +734,10 @@ def _paid_service_access_from_payload(value: Any) -> Optional[NousPaidServiceAcc
         subscription_credits_remaining=_coerce_float(value.get("subscription_credits_remaining")),
         purchased_credits_remaining=_coerce_float(value.get("purchased_credits_remaining")),
         total_usable_credits=_coerce_float(value.get("total_usable_credits")),
+        member_spend_cap_exceeded=_coerce_bool(value.get("member_spend_cap_exceeded")),
+        member_spend_cap_usd=_coerce_float(value.get("member_spend_cap_usd")),
+        member_spend_usd=_coerce_float(value.get("member_spend_usd")),
+        member_spend_cap_remaining_usd=_coerce_float(value.get("member_spend_cap_remaining_usd")),
     )
 
 

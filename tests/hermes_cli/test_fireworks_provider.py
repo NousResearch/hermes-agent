@@ -155,13 +155,13 @@ class TestFireworksAuxiliary:
             client, model = resolve_provider_client(name)
         return client, model, mock_openai.call_args.kwargs
 
-    def test_client_has_no_partner_attribution_headers(self, monkeypatch):
+    def test_client_sends_attribution_headers(self, monkeypatch):
         monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
         client, model, kwargs = self._resolve("fireworks")
         assert client is not None
         headers = kwargs.get("default_headers", {})
-        assert "HTTP-Referer" not in headers
-        assert "X-Title" not in headers
+        assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
+        assert headers["X-Title"] == "Hermes Agent"
         assert kwargs["base_url"] == "https://api.fireworks.ai/inference/v1"
 
     def test_client_sends_hermes_user_agent(self, monkeypatch):

@@ -9,6 +9,7 @@ Dependencies (optional):
     or: uv sync --extra voice
 """
 
+import difflib
 import logging
 import math
 import os
@@ -1310,6 +1311,76 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
     return cleaned in stop_phrases
 
 
+# Similarity ratio (difflib.SequenceMatcher, 0..1) above which a
+# playback-phase barge transcript is treated as a self-capture of Hermes'
+# own just-spoken TTS rather than genuine user speech. See #75780: the
+# full-duplex listener has no acoustic echo cancellation, so speaker bleed
+# on the mic can trip the barge trigger and get transcribed nearly
+# verbatim from the TTS text, creating a TTS -> STT -> TTS feedback loop.
+DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD = 0.6
+
+# Minimum normalized-transcript length (in characters) required before the
+# fragment sliding-window fallback runs. Below this, any same-length window
+# of `spoken_text` that happens to contain the transcript verbatim (e.g. a
+# genuine one-word barge-in like "yes" landing inside a longer reply that
+# also says "yes") scores a trivial 1.0 ratio and would otherwise be
+# misread as a self-capture. A real self-capture fragment spans at least
+# the pre-roll buffer plus time-to-silence, so it is normally well above
+# this length; a short genuine interjection is not (#75792 review).
+MIN_FRAGMENT_LENGTH_FOR_ECHO = 10
+
+
+def _normalize_for_echo_compare(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def is_tts_echo(
+    transcript: str,
+    spoken_text: str,
+    threshold: float = DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD,
+) -> bool:
+    """Return True when *transcript* looks like a self-capture of *spoken_text*.
+
+    Compares a playback-phase barge-in transcript against the TTS text
+    Hermes just spoke using a character-level similarity ratio, which works
+    across languages without word-tokenization. A genuine user interjection
+    is very unlikely to closely match Hermes' own words, so a high ratio is
+    a strong signal of speaker-bleed self-capture (fail-closed guard for the
+    playback-phase full-duplex listener, which has no acoustic echo
+    cancellation; see #75780).
+
+    The playback-phase capture is cut immediately when the barge trigger
+    fires and only spans the pre-roll buffer plus time-to-silence, so for
+    any spoken reply longer than a clause the transcript is a short
+    FRAGMENT of `spoken_text`, not a near-verbatim repeat of the whole
+    thing. A whole-string ratio dilutes towards 0 as `spoken_text` grows
+    past the fragment's length, so when the whole-string check misses, we
+    also slide a window sized to the transcript's character length across
+    `spoken_text` and compare against each window, catching a short
+    fragment echoed from within a much longer multi-sentence reply. This
+    windowing is character-based (not word-split), so it also works for
+    languages without whitespace between words. Transcripts shorter than
+    `MIN_FRAGMENT_LENGTH_FOR_ECHO` skip this fallback entirely, since a
+    short genuine interjection can trivially match an equally short window
+    of unrelated spoken text.
+    """
+    if not transcript or not spoken_text:
+        return False
+    a = _normalize_for_echo_compare(transcript)
+    b = _normalize_for_echo_compare(spoken_text)
+    if not a or not b:
+        return False
+    if difflib.SequenceMatcher(None, a, b).ratio() >= threshold:
+        return True
+    if len(a) < MIN_FRAGMENT_LENGTH_FOR_ECHO or len(a) >= len(b):
+        return False
+    for start in range(0, len(b) - len(a) + 1):
+        window = b[start : start + len(a)]
+        if difflib.SequenceMatcher(None, a, window).ratio() >= threshold:
+            return True
+    return False
+
+
 def voice_stop_hint() -> str:
     """One-line 'Say "stop" to end the voice chat.' hint for voice-mode start.
 
@@ -1343,7 +1414,7 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     """
     from tools.transcription_tools import MAX_FILE_SIZE, transcribe_audio
 
-    result = transcribe_audio(wav_path, model=model)
+    result = transcribe_audio(wav_path, model=model, source="voice_mode")
 
     # Only chunk when the provider itself reports "File too large" —
     # local providers (faster-whisper, whisper.cpp, etc.) have no upload
@@ -1402,7 +1473,7 @@ def _transcribe_wav_in_chunks(
 
         logger.info("Transcribing oversized WAV in %d chunks: %s", len(chunk_paths), wav_path)
         for index, chunk_path in enumerate(chunk_paths, start=1):
-            result = transcribe_audio(chunk_path, model=model)
+            result = transcribe_audio(chunk_path, model=model, source="voice_mode")
             if not result.get("success"):
                 error = result.get("error", "Unknown transcription error")
                 return {

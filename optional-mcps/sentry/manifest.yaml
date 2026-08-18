@@ -1,0 +1,33 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: sentry
+description: >-
+  Issues, stack traces, and error context from Sentry.
+source: https://docs.sentry.io/product/sentry-mcp/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration;
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.sentry.dev/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - sentry
+    - stack trace
+    - crash report
+  hosts:
+    - sentry.io
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Sentry (or run `hermes mcp login sentry`). Approve access,
+  then restart the session so tools load.

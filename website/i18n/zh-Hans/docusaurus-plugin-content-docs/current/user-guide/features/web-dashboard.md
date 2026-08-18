@@ -238,7 +238,7 @@ Web Dashboard 暴露了一个供前端使用的 REST API。你也可以直接调
 
 ### GET /api/sessions/\{session_id\}/messages
 
-返回会话的完整消息历史，包含工具调用和时间戳。
+返回有上限的会话消息页，包含工具调用和时间戳。默认按时间升序返回最近 500 条；可用 `limit`（最大 500）、`offset` 和 `order=oldest|latest` 显式分页。
 
 ### GET /api/sessions/search
 

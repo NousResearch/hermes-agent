@@ -274,6 +274,9 @@ class TestBrowserVisionConfig:
         assert result["analysis"] == "Annotated screenshot analysis"
         assert mock_llm.call_args.kwargs["temperature"] == 1.0
         assert mock_llm.call_args.kwargs["timeout"] == 45.0
+        # No hardcoded output cap — the aux client omits max_tokens so the
+        # provider uses its full output budget (max-tokens-knob policy).
+        assert "max_tokens" not in mock_llm.call_args.kwargs
 
 
     def test_browser_vision_native_fast_path_returns_multimodal(self, tmp_path):

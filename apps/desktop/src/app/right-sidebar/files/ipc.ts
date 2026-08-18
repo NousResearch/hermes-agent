@@ -3,6 +3,7 @@ import ignore from 'ignore'
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
 import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { ALWAYS_EXCLUDED } from '@/lib/excluded-paths'
+import { cleanPath, comparisonPath } from '@/lib/path-compare'
 
 export type ProjectTreeEntry = HermesReadDirEntry
 
@@ -28,21 +29,10 @@ function decodeDataUrl(dataUrl: string) {
   return new TextDecoder().decode(bytes)
 }
 
-function clean(path: string) {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
-}
-
-// Windows path identity is case-insensitive. Fold only comparison keys so the
-// relative path returned below keeps the filesystem's original spelling;
-// POSIX paths remain case-sensitive.
-function comparisonPath(path: string) {
-  return /^[A-Za-z]:(?:\/|$)/.test(path) || path.startsWith('//') ? path.toLowerCase() : path
-}
-
 /** Strict POSIX-style relative path; null if `child` is not inside `root`. */
 function relativeTo(root: string, child: string) {
-  const r = clean(root)
-  const c = clean(child)
+  const r = cleanPath(root)
+  const c = cleanPath(child)
   const rKey = comparisonPath(r)
   const cKey = comparisonPath(c)
 
@@ -55,7 +45,7 @@ function relativeTo(root: string, child: string) {
 
 /** Repo-root → repo-root/a → repo-root/a/b → … for every dir between root and `dir`. */
 function ancestorDirs(root: string, dir: string) {
-  const r = clean(root)
+  const r = cleanPath(root)
   const rel = relativeTo(r, dir)
 
   if (rel === null || rel === '') {
@@ -74,11 +64,11 @@ function ancestorDirs(root: string, dir: string) {
 }
 
 async function gitRootFor(start: string) {
-  const key = `${desktopFsCacheKey()}:${clean(start)}`
+  const key = `${desktopFsCacheKey()}:${cleanPath(start)}`
   let cached = gitRootCache.get(key)
 
   if (!cached) {
-    cached = desktopGitRoot(clean(start))
+    cached = desktopGitRoot(cleanPath(start))
     gitRootCache.set(key, cached)
   }
 
@@ -103,11 +93,11 @@ async function readGitignore(dir: string): Promise<GitignoreRule | null> {
 }
 
 async function gitignoreFor(dir: string) {
-  const key = `${desktopFsCacheKey()}:${clean(dir)}`
+  const key = `${desktopFsCacheKey()}:${cleanPath(dir)}`
   let cached = gitignoreCache.get(key)
 
   if (!cached) {
-    cached = readGitignore(clean(dir))
+    cached = readGitignore(cleanPath(dir))
     gitignoreCache.set(key, cached)
   }
 
@@ -159,7 +149,7 @@ export function clearProjectDirCache(rootPath?: string) {
     return
   }
 
-  const key = `${desktopFsCacheKey()}:${clean(rootPath)}`
+  const key = `${desktopFsCacheKey()}:${cleanPath(rootPath)}`
   gitRootCache.delete(key)
   gitignoreCache.delete(key)
 }

@@ -260,19 +260,37 @@ class TestPreloadResumedSession:
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "reopen_session", "title": None}
         mock_db.get_resume_conversations.return_value = (messages, messages)
-        mock_conn = MagicMock()
-        mock_db._conn = mock_conn
+        mock_db.resolve_resume_session_id.return_value = "reopen_session"
         cli._session_db = mock_db
 
         buf = StringIO()
         cli.console.file = buf
         cli._preload_resumed_session()
 
-        # Should have executed UPDATE to clear ended_at
-        mock_conn.execute.assert_called_once()
-        call_args = mock_conn.execute.call_args
-        assert "ended_at = NULL" in call_args[0][0]
-        mock_conn.commit.assert_called_once()
+        mock_db.reopen_session.assert_called_once_with("reopen_session")
+
+    def test_rejects_runaway_transcript_before_history_load(self):
+        from hermes_state import SessionResumeTooLargeError
+
+        cli = _make_cli(resume="runaway-session")
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {
+            "id": "runaway-session",
+            "title": None,
+        }
+        mock_db.resolve_resume_session_id.return_value = "runaway-session"
+        mock_db.assert_resume_safe = MagicMock(
+            side_effect=SessionResumeTooLargeError(20_001)
+        )
+        cli._session_db = mock_db
+
+        output = StringIO()
+        cli.console.file = output
+        result = cli._preload_resumed_session()
+
+        assert result is False
+        assert "safe resume limit is 20000" in output.getvalue()
+        mock_db.get_resume_conversations.assert_not_called()
 
 
 
@@ -406,4 +424,3 @@ class TestResumeDisplaySanitization:
         assert "\x07" not in output
         assert "hi" in output and "there" in output
         assert "fine" in output
-

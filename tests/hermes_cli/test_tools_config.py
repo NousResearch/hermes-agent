@@ -1,11 +1,13 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
 import logging
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli.nous_subscription import NousSubscriptionFeatures
 from hermes_cli.tools_config import (
@@ -343,6 +345,340 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
 
 
+
+
+class TestAgentBrowserPostSetup:
+    """_run_post_setup('agent_browser'/'browserbase') — #43564.
+
+    agent-browser is no longer a root package.json dependency (there's no
+    local `npm install` step anymore); it resolves at runtime via
+    tools.browser_tool._find_agent_browser (PATH -> Homebrew/Hermes-managed
+    node -> local .bin -> npx). This class exercises the Chromium-install
+    branch of _run_post_setup, which now delegates to that same resolution
+    cascade instead of hand-rolling its own node_modules/.bin/agent-browser
+    (and Windows .cmd-shim) lookup.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_browser_use_install(self):
+        """Both browser branches now attempt a Browser Use CLI install first
+        (the CLI drives every non-Camofox backend). Stub it so these
+        Chromium-branch tests never bootstrap uv / hit the network, and so
+        their print/subprocess assertions stay scoped to the agent-browser
+        logic under test."""
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as stub:
+            yield stub
+
+    def test_warns_when_neither_npx_nor_agent_browser_on_path(self):
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as run, patch("hermes_cli.tools_config._print_warning") as warn:
+            _run_post_setup("agent_browser")
+
+        run.assert_not_called()
+        warn.assert_called_once()
+        assert "npx not found" in warn.call_args.args[0]
+
+    def test_browserbase_returns_before_any_chromium_check(self):
+        """browserbase hosts its own Chromium; it must never reach the
+        agent-browser-only Chromium-install branch."""
+        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "subprocess.run"
+        ) as run, patch(
+            "tools.browser_tool._chromium_installed"
+        ) as chromium_check:
+            _run_post_setup("browserbase")
+
+        run.assert_not_called()
+        chromium_check.assert_not_called()
+
+    def test_chromium_already_installed_skips_subprocess(self):
+        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
+            "subprocess.run"
+        ) as run, patch(
+            "tools.browser_tool._chromium_installed", return_value=True
+        ), patch(
+            "hermes_cli.tools_config._print_success"
+        ) as success:
+            _run_post_setup("agent_browser")
+
+        run.assert_not_called()
+        success.assert_called_once()
+        assert "already installed" in success.call_args.args[0]
+
+    def test_docker_with_missing_chromium_warns_instead_of_installing(self):
+        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
+            "subprocess.run"
+        ) as run, patch(
+            "tools.browser_tool._chromium_installed", return_value=False
+        ), patch(
+            "tools.browser_tool._running_in_docker", return_value=True
+        ), patch(
+            "hermes_cli.tools_config._print_warning"
+        ) as warn:
+            _run_post_setup("agent_browser")
+
+        run.assert_not_called()
+        assert any("Docker" in c.args[0] for c in warn.call_args_list)
+
+    def test_find_agent_browser_not_found_warns_before_any_chromium_check(self):
+        """_find_agent_browser is resolved up front now (shared with the
+        browserbase early-return gate), so a FileNotFoundError here must
+        short-circuit before even checking Chromium/Docker status."""
+        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "subprocess.run"
+        ) as run, patch(
+            "tools.browser_tool._chromium_installed"
+        ) as chromium_check, patch(
+            "tools.browser_tool._running_in_docker"
+        ) as docker_check, patch(
+            "tools.browser_tool._find_agent_browser",
+            side_effect=FileNotFoundError("agent-browser CLI not found"),
+        ), patch(
+            "hermes_cli.tools_config._print_warning"
+        ) as warn:
+            _run_post_setup("agent_browser")
+
+        run.assert_not_called()
+        chromium_check.assert_not_called()
+        docker_check.assert_not_called()
+        assert any("browser tools require Node.js" in c.args[0] for c in warn.call_args_list)
+
+    def test_installs_chromium_via_npx_when_no_local_binary_resolved(self):
+        """When _find_agent_browser falls through to npx, the install command
+        must shell out to npx directly (not the unresolved 'npx agent-browser'
+        string as a single argv element)."""
+        with patch(
+            "shutil.which",
+            # accepts the `path=` kwarg _resolve_npx_bin's extended-path rung
+            # calls shutil.which with, not just the bare-PATH positional form.
+            side_effect=lambda name, path=None: "/usr/bin/npx" if name == "npx" else None,
+        ), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch("subprocess.run") as run, patch(
+            "tools.browser_tool._chromium_installed", return_value=False
+        ), patch(
+            "tools.browser_tool._running_in_docker", return_value=False
+        ), patch(
+            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
+        ), patch(
+            "hermes_cli.tools_config._print_success"
+        ):
+            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+            _run_post_setup("agent_browser")
+
+        run.assert_called_once()
+        assert run.call_args.args[0] == [
+            "/usr/bin/npx", "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
+        ]
+
+    def test_installs_chromium_via_npx_resolved_only_through_extended_path(self):
+        """Hermes-managed-Node-only setups: npx resolves via
+        _find_agent_browser's extended-PATH fallback, not a bare PATH lookup.
+        The install command must use that same resolved npx, not silently
+        hand subprocess.run a None argument from a bare shutil.which('npx')
+        re-derivation (#43564 regression — Copilot review, task #9)."""
+        hermes_npx = "/home/user/.hermes/node/bin/npx"
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as run, patch(
+            "tools.browser_tool._chromium_installed", return_value=False
+        ), patch(
+            "tools.browser_tool._running_in_docker", return_value=False
+        ), patch(
+            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
+        ), patch(
+            "tools.browser_tool._resolve_npx_bin", return_value=hermes_npx
+        ), patch(
+            "hermes_cli.tools_config._print_success"
+        ):
+            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+            _run_post_setup("agent_browser")
+
+        run.assert_called_once()
+        assert run.call_args.args[0] == [
+            hermes_npx, "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
+        ]
+
+    def test_warns_instead_of_crashing_when_npx_unresolvable_after_all(self):
+        """Defensive: if _resolve_npx_bin somehow returns None even though
+        _find_agent_browser resolved "npx agent-browser" (e.g. a race where
+        npx disappears between the two calls), warn and return instead of
+        building a command with a None argv element."""
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as run, patch(
+            "tools.browser_tool._chromium_installed", return_value=False
+        ), patch(
+            "tools.browser_tool._running_in_docker", return_value=False
+        ), patch(
+            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
+        ), patch(
+            "tools.browser_tool._resolve_npx_bin", return_value=None
+        ), patch(
+            "hermes_cli.tools_config._print_warning"
+        ) as warn:
+            _run_post_setup("agent_browser")  # must not raise
+
+        run.assert_not_called()
+        assert any("npx not found" in c.args[0] for c in warn.call_args_list)
+
+    def test_installs_chromium_via_resolved_local_binary_path(self):
+        """When _find_agent_browser resolves a concrete executable (global
+        install, Homebrew, or the Windows .cmd shim it already knows how to
+        pick), that path must be invoked directly — not re-wrapped in npx."""
+        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "subprocess.run"
+        ) as run, patch(
+            "tools.browser_tool._chromium_installed", return_value=False
+        ), patch(
+            "tools.browser_tool._running_in_docker", return_value=False
+        ), patch(
+            "tools.browser_tool._find_agent_browser",
+            return_value="/usr/local/bin/agent-browser",
+        ), patch(
+            "hermes_cli.tools_config._print_success"
+        ):
+            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+            _run_post_setup("agent_browser")
+
+        run.assert_called_once()
+        assert run.call_args.args[0] == [
+            "/usr/local/bin/agent-browser", "install", "--with-deps",
+        ]
+
+    def test_install_success_invalidates_chromium_cache(self):
+        import tools.browser_tool as _bt
+
+        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
+            "subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ), patch(
+            "tools.browser_tool._chromium_installed", return_value=False
+        ), patch(
+            "tools.browser_tool._running_in_docker", return_value=False
+        ), patch(
+            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
+        ), patch(
+            "hermes_cli.tools_config._print_success"
+        ):
+            _bt._cached_chromium_installed = True
+            _run_post_setup("agent_browser")
+
+        assert _bt._cached_chromium_installed is None, (
+            "a successful install must invalidate the cached chromium-missing "
+            "result so the next check_browser_requirements() call re-probes"
+        )
+
+    def test_install_failure_prints_stderr_tail_and_does_not_invalidate_cache(self):
+        import tools.browser_tool as _bt
+
+        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
+            "subprocess.run",
+            return_value=SimpleNamespace(
+                returncode=1, stdout="", stderr="line1\nline2\nfatal: network error"
+            ),
+        ), patch(
+            "tools.browser_tool._chromium_installed", return_value=False
+        ), patch(
+            "tools.browser_tool._running_in_docker", return_value=False
+        ), patch(
+            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
+        ), patch(
+            "hermes_cli.tools_config._print_warning"
+        ) as warn, patch(
+            "hermes_cli.tools_config._print_info"
+        ) as info:
+            _bt._cached_chromium_installed = "sentinel"
+            _run_post_setup("agent_browser")
+
+        assert any("Chromium install failed" in c.args[0] for c in warn.call_args_list)
+        assert any("fatal: network error" in c.args[0] for c in info.call_args_list)
+        assert _bt._cached_chromium_installed == "sentinel", (
+            "a failed install must not invalidate the chromium cache"
+        )
+
+    def test_install_timeout_warns_without_raising(self):
+        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["npx"], timeout=600),
+        ), patch(
+            "tools.browser_tool._chromium_installed", return_value=False
+        ), patch(
+            "tools.browser_tool._running_in_docker", return_value=False
+        ), patch(
+            "tools.browser_tool._find_agent_browser", return_value="npx agent-browser"
+        ), patch(
+            "hermes_cli.tools_config._print_warning"
+        ) as warn:
+            _run_post_setup("agent_browser")  # must not raise
+
+        assert any("timed out" in c.args[0] for c in warn.call_args_list)
+
+
+class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
+    """The Browser Use CLI is the primary driver engine for every browser
+    backend except Camofox — so EVERY browser picker selection except
+    Camofox must attempt the CLI install, not just the explicit
+    "Browser Use" row."""
+
+    @pytest.mark.parametrize("key", ["agent_browser", "browserbase", "browser_use_cli"])
+    def test_browser_post_setup_attempts_cli_install(self, key):
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
+            "shutil.which", return_value=None
+        ), patch("subprocess.run"):
+            _run_post_setup(key)
+        ensure.assert_called_once()
+
+    def test_camofox_post_setup_never_touches_browser_use(self):
+        """Camofox is Firefox-based with no CDP surface; the CDP-only
+        browser-use harness cannot drive it, so its setup must not pull
+        the CLI in."""
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
+            "hermes_constants.find_node_executable", return_value=None
+        ), patch("subprocess.run"):
+            _run_post_setup("camofox")
+        ensure.assert_not_called()
+
+    def test_ensure_helper_always_delegates_to_install_cli(self):
+        """MANAGED-FIRST: a browser-use on PATH must not short-circuit the
+        helper — install_cli() owns the managed-copy check and provisions
+        $HERMES_HOME/bin when only side installs exist."""
+        with patch(
+            "hermes_cli.tools_config.shutil.which", return_value="/usr/bin/browser-use"
+        ), patch(
+            "tools.browser_use_cli.install_cli",
+            return_value=(True, "browser-use CLI already installed (/managed/bin/browser-use)"),
+        ) as install:
+            from hermes_cli.tools_config import _ensure_browser_use_cli
+
+            _ensure_browser_use_cli()
+        install.assert_called_once()
+
+    def test_ensure_helper_install_failure_is_non_fatal(self):
+        """A failed install must warn and fall back, never raise — the
+        uvx zero-install path and the built-in tools remain available."""
+        from hermes_cli.tools_config import _ensure_browser_use_cli
+
+        with patch(
+            "hermes_cli.tools_config.shutil.which", return_value=None
+        ), patch(
+            "tools.browser_use_cli.install_cli",
+            return_value=(False, "`uv tool install browser-use` failed:\nboom"),
+        ), patch("hermes_cli.tools_config._print_warning") as warn:
+            _ensure_browser_use_cli()  # must not raise
+
+        assert any("failed" in c.args[0] for c in warn.call_args_list)
 
 
 class TestImagegenBackendRegistry:
@@ -718,6 +1054,36 @@ def test_agent_disabled_toolsets_still_wins():
 
 
 @_requires_recently_shipped
+def test_agent_disabled_toolsets_json_array_string_form_still_wins():
+    """#86661: the suppression list may arrive as a JSON-array string (e.g.
+    `hermes config set agent.disabled_toolsets '["memory"]'`). It must be
+    parsed, not treated as one dead toolset name that filters nothing."""
+    config = _saved_list_from_before()
+    import json as _json
+
+    config["agent"] = {
+        "disabled_toolsets": _json.dumps(sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
+def test_agent_disabled_toolsets_python_literal_string_form_still_wins():
+    """Single-quoted Python-literal form (as written by some config editors)
+    must resolve the same way as the JSON form."""
+    config = _saved_list_from_before()
+    quoted = ", ".join(repr(ts) for ts in sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    config["agent"] = {"disabled_toolsets": f"[{quoted}]"}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
 def test_platforms_whose_composite_excludes_it_are_left_narrow():
     """Parity is the justification, so don't widen a deliberately small
     composite (hermes-acp, hermes-webhook) that never carried the toolset."""
@@ -742,3 +1108,94 @@ def test_platforms_whose_composite_excludes_it_are_left_narrow():
             include_default_mcp_servers=False,
         )
         assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled), platform
+
+
+# Regression for issue #81163 (Layer 2): an explicitly-listed plugin toolset
+# in ``platform_toolsets.<platform>`` must survive the filter, not be dropped
+# because it isn't a built-in CONFIGURABLE_TOOLSETS entry.
+
+
+def test_explicit_plugin_toolset_admitted_in_platform_toolsets(monkeypatch):
+    """When a plugin toolset key is explicitly listed under
+    ``platform_toolsets.<platform>`` (alongside a composite like
+    ``hermes-cli``), it MUST be admitted as a configurable key instead of
+    being silently dropped by the has_explicit_config filter.
+
+    Reproduces the second half of #81163: even after the eager register_tools
+    fix lands, ``_get_platform_tools`` was filtering against
+    ``CONFIGURABLE_TOOLSETS`` only, so plugin keys in the explicit list were
+    excluded from ``enabled_toolsets``.
+    """
+    # Force a plugin toolset key to be present without depending on the a2a
+    # plugin being installed on disk. _get_plugin_toolset_keys() calls
+    # discover_plugins(); we patch its source so the test is hermetic.
+    import hermes_cli.plugins as _plugins_mod
+    import hermes_cli.tools_config as _tc_mod
+
+    class _StubMgr:
+        _plugin_tool_names = {"dplat_call"}
+
+        def __getattr__(self, _name):
+            return lambda *_a, **_kw: None
+
+    monkeypatch.setattr(
+        _plugins_mod, "get_plugin_toolsets",
+        lambda: [("dplat_client", "Test", "test toolset")],
+    )
+    monkeypatch.setattr(
+        _tc_mod, "_get_plugin_toolset_keys", lambda: {"dplat_client"},
+    )
+    # Discover_plugins must succeed silently under the stub.
+    monkeypatch.setattr(_plugins_mod, "discover_plugins", lambda: None)
+    # Resolve dplat_call inside the dplat_client toolset — _get_platform_tools
+    # ends up calling resolve_toolset() which can fall back to the registry
+    # for plugin-provided names. Patch resolve_toolset for "dplat_client".
+    from toolsets import TOOLSETS as _BASE_TOOLSETS
+    import toolsets as _toolsets_mod
+
+    original_resolve = _toolsets_mod.resolve_toolset
+
+    def _resolve_with_plugin(ts_key, include_registry=True):
+        if ts_key == "dplat_client":
+            return ["dplat_call"]
+        return original_resolve(ts_key, include_registry=include_registry)
+
+    monkeypatch.setattr(_toolsets_mod, "resolve_toolset", _resolve_with_plugin)
+    monkeypatch.setattr(
+        _tc_mod, "resolve_toolset", _resolve_with_plugin,
+        raising=False,
+    )
+
+    # An explicit platform_toolsets list with a plugin key alongside the
+    # standard composite — exactly the "I want hermes-cli AND a2a in my CLI
+    # session" config the issue's user was trying to write.
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "dplat_client"]}}
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "dplat_client" in enabled, (
+        "plugin toolset 'dplat_client' listed in platform_toolsets.cli was "
+        "dropped by _get_platform_tools — Layer 2 of #81163 not fixed"
+    )
+
+
+def test_explicit_plugin_toolset_admitted_against_real_a2a_plugin(monkeypatch):
+    """End-to-end Layer 2 regression: with the bundled a2a plugin enabled and
+    a real config like ``platform_toolsets.cli: [hermes-cli, a2a]``, ``a2a``
+    must appear in the resolved enabled toolset set. Before the fix, the
+    filter dropped all non-CONFIGURABLE keys (a2a included)."""
+    # Discover real plugins so _get_plugin_toolset_keys() sees the a2a key.
+    # If the worktree lacks bundled plugin manifests, skip — this test
+    # exercises real bundled state and is meaningless without it.
+    from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+    discover_plugins()
+    plugin_ts_keys = {k for k, _, _ in get_plugin_toolsets()}
+    if "a2a" not in plugin_ts_keys:
+        pytest.skip("bundled a2a plugin not discoverable in this worktree")
+
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "a2a"]}}
+    enabled = _get_platform_tools(config, "cli")
+    assert "a2a" in enabled, (
+        f"plugin-provided 'a2a' toolset dropped by _get_platform_tools "
+        f"(Layer 2 of #81163); enabled={sorted(enabled)}"
+    )

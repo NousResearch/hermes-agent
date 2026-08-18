@@ -39,7 +39,8 @@ module and never touches app internals (they are lint-fenced out of a bundled
 plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 
 - **`host.state.*`** — readonly views over the app's live state (nanostore
-  atoms): active session, cwd, gateway status, model, profile, viewport.
+  atoms): active session, per-session turn-busy, cwd, gateway socket status,
+  model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
   restart the gateway, subscribe to the gateway event stream.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
@@ -54,11 +55,15 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 | Mode | Where | Who | Build step |
 |------|-------|-----|------------|
 | **Disk** (recommended) | `$HERMES_HOME/desktop-plugins/<id>/plugin.js` | users, agents | none — plain ESM, loaded uncompiled |
+| **Unified package** | `$HERMES_HOME/plugins/<id>/desktop/plugin.js` | plugins that also ship agent-side code | none — same disk pipeline |
 | **Bundled** | `apps/desktop/src/plugins/<id>/plugin.tsx` | in-tree, shipped with the app | the app's own Vite build |
 
-Both take the same `HermesPlugin` contract, appear in **Settings → Plugins**, and
-enable/disable live. Everything on this page is written against the disk door
-(what you and the agent write); [Bundled plugins](#bundled-plugins) notes the two
+All three take the same `HermesPlugin` contract, appear in **Settings → Plugins**,
+and enable/disable live. A unified package is just the disk door scanning inside
+your agent plugin's folder — see
+[One package, both SDKs](#one-package-both-sdks). Everything on this page is
+written against the disk door (what you and the agent write);
+[Bundled plugins](#bundled-plugins) notes the two
 differences. No desktop plugins ship in the core tree today — reference demos
 live in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
@@ -242,6 +247,12 @@ data: {
 `'top' | 'bottom' | 'left' | 'right' | 'center'`. Declare a `width`/`height` so
 the pane doesn't claim half the zone.
 
+Closing the only pane contributed by a plugin disables that plugin, which can
+be re-enabled from **Settings → Plugins**. When a plugin contributes multiple
+panes, closing one dismisses only that pane and leaves the plugin's other panes,
+commands, and middleware active. **Reset layout** restores dismissed contributed
+panes.
+
 ### Pages and sidebar nav
 
 A route mounts a full page in the workspace pane, like any built-in view. Pair it
@@ -364,12 +375,27 @@ components.
 
 ```ts
 host.state.activeSessionId  // ReadableAtom<string | null>
+host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assistant payload
+host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
+host.state.busyBySession    // ReadableAtom<Record<string, boolean>>  runtime id → mid-turn
+host.state.focusedSessionId // ReadableAtom<string | null>  (runtime id of the FOCUSED session — tile-aware; prefer for session.* RPC)
+host.state.focusedStoredSessionId // ReadableAtom<string | null>  (durable id — navigation / session-list matching)
+host.state.focusedUsage     // ReadableAtom<UsageStats | null>  (live streamed usage of the focused session, no RPC needed)
 host.state.cwd              // ReadableAtom<string>
-host.state.gateway          // ReadableAtom<string>  ('idle' | 'connecting' | 'open' | …)
+host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'connecting' | 'open' | …)
 host.state.model            // ReadableAtom<string>
 host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
+```
 
+`host.state.gateway` is the WebSocket connection, not whether a chat turn is
+running. A session can be mid-turn while the socket is `open`; another session
+can be idle at the same time. Disable composer or plugin actions from the
+**focused session's** turn-busy (`host.state.busyBySession[sessionId]`, or that
+session's `view.$busy`) — never from `gateway`, and never from a process-global
+busy flag.
+
+```ts
 host.notify({ kind, message, title?, detail?, action? })  // toast; returns id
 host.notifyError(error, fallbackMessage)                   // toast an error
 ctx.os.notify({ title, body?, silent? })   // native OS notification (attributed to your plugin)
@@ -377,15 +403,60 @@ ctx.os.openExternal(url)                   // OS default handler (browser, mail,
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
 host.navigate('/route')                    // hash-route navigation
+host.openSession(id, { profile?, intent? }) // open a stored session core-style;
+                                           //   profile: soft-swap to that profile's backend first
+                                           //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
+host.newChat(profile?)                     // fresh chat draft, optionally in another profile
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
-host.request<T>(method, params?)           // gateway JSON-RPC — the real power
+host.profileRoutes()                       // [{ profile, targetProfile, connectionId, mode }]
+host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
+host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
+host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
-cron, kanban, …). `host.onEvent` streams live gateway events (message deltas,
+cron, kanban, …). `host.requestProfile` accepts a descriptor from
+`host.profileRoutes()` and routes that RPC through its exact registry source and
+profile without changing the active chat or gateway. The profile-only overload is
+retained only for the sole-local/legacy topology; registry-aware plugins should pass
+the descriptor so two sources exposing the same profile name cannot collide.
+
+`host.profileRoutes()` inventories every registered source in the current connection
+registry. Connect-on-demand SSH sources expose a credential-free `default` seed
+route without opening a tunnel, so a plugin can be the first caller that dials them;
+an SSH `remoteProfile` remains the route's backend `targetProfile`. `connectionId`
+is the registry routing identity;
+pair it with `profile` for keys and persistence. Endpoint, token, SSH host/key, and
+other raw connection fields never cross the plugin IPC boundary. `profile` is the
+source-local route used
+for requests; `targetProfile` is the backend Hermes profile served by that route.
+They differ when a route explicitly maps to another backend profile (for example an
+SSH `remoteProfile` override or a legacy per-profile URL alias). This distinction
+preserves backend identity without exposing connection secrets.
+
+Profile-shaped plugins get first-class methods too:
+`profiles.list` (each profile + its most recent conversation as
+`last_session`; pass `include_sessions: false` to skip the per-profile DB
+probe) and `profiles.create` (`name`, `description`, `clone_from`,
+`clone_all`, `no_skills`, `soul`, optional `model` + `provider` pin) — the
+ws twins of the dashboard's `/api/profiles` REST routes.
+`host.state.busy` is the focused chat's live turn (thinking and streaming).
+`host.state.awaitingResponse` stays true from send until the first assistant
+payload. Both follow the chat the user is actually looking at — the focused
+session tile when one holds focus, else the primary workspace chat (the same
+signal the statusbar's busy pulse reads). Subscribe in a component:
+
+```javascript
+const busy = useValue(host.state.busy)
+```
+
+For token-level detail, listen with `host.onEvent` (`message.start`,
+`message.delta`, `message.complete`).
+
+`host.onEvent` streams live gateway events (message deltas,
 session lifecycle, tool activity). Listeners are isolated — a throw in your
 listener can't affect app dispatch. Every `host` door is async-safe: a sync throw
 from an internal helper (e.g. no desktop bridge in a plain browser) becomes a
@@ -463,6 +534,44 @@ plugin reskin automatically with every theme.
 If your plugin needs server-side work, ship a Python `plugin_api.py` and reach it
 through `ctx.rest` / `ctx.socket` — a namespace scoped to your plugin **by
 construction**.
+
+### One package, both SDKs {#one-package-both-sdks}
+
+A feature that needs a desktop UI **and** agent-side code (a Python plugin, its
+backend routes, skills) doesn't have to ship as two co-dependent installs. The
+desktop app also scans `$HERMES_HOME/plugins/<id>/` — the regular agent-plugin
+root — for a `desktop/plugin.js`, and loads it through the exact same pipeline
+as the standalone disk door (hot reload included):
+
+```
+~/.hermes/plugins/<id>/           # ONE installable folder
+├── plugin.yaml                   # the agent half: tools, hooks, commands
+├── skills/…
+├── dashboard/
+│   ├── manifest.json             # { "name": "<id>", "api": "plugin_api.py" }
+│   └── plugin_api.py             # backend routes → /api/plugins/<id>/
+└── desktop/
+    └── plugin.js                 # the desktop half: panes, commands, ctx.rest
+```
+
+The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
+imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
+Installing, sharing, or removing the feature is one folder.
+
+Two enable switches still apply, on purpose, and both default to **off**: the
+desktop half ships opt-in — it inventories in **Settings → Plugins** but stays
+disabled until the user toggles it — matching the Python half's
+`plugins.enabled` gate in `config.yaml` (the security boundary below). Dropping
+a package into `~/.hermes/plugins` is inert on every surface until the user
+says otherwise. The desktop half degrades gracefully when the backend half is
+off — `ctx.rest` returns errors, not crashes.
+
+:::note
+The scan is local to the machine the desktop app runs on. Against a remote
+backend, the remote box's `~/.hermes/plugins` is not reachable as a filesystem —
+only locally installed packages contribute a desktop half (same rule as the
+standalone door).
+:::
 
 ### The Python side
 

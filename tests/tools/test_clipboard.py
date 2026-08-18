@@ -402,24 +402,28 @@ class TestHasClipboardImage:
         import hermes_cli.clipboard as cb
         cb._wsl_detected = None
 
+    @pytest.mark.macos_only
     def test_macos_dispatch(self):
-        with patch("hermes_cli.clipboard.sys") as mock_sys:
-            mock_sys.platform = "darwin"
-            with patch("hermes_cli.clipboard._macos_has_image", return_value=True) as m:
-                assert has_clipboard_image() is True
-                m.assert_called_once()
+        """Faking darwin selected the branch but left `_macos_has_image`'s real
+        facility (osascript) absent — only a real macOS host has it."""
+        with patch("hermes_cli.clipboard._macos_has_image", return_value=True) as m:
+            assert has_clipboard_image() is True
+            m.assert_called_once()
 
+    @pytest.mark.linux_only
     def test_wsl_falls_through_to_wayland_when_windows_path_empty(self):
-        """WSLg often bridges images to wl-paste even when powershell.exe check fails."""
-        with patch("hermes_cli.clipboard.sys") as mock_sys:
-            mock_sys.platform = "linux"
-            with patch("hermes_cli.clipboard._is_wsl", return_value=True):
-                with patch("hermes_cli.clipboard._wsl_has_image", return_value=False) as wsl:
-                    with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
-                        with patch("hermes_cli.clipboard._wayland_has_image", return_value=True) as wl:
-                            assert has_clipboard_image() is True
-                            wsl.assert_called_once()
-                            wl.assert_called_once()
+        """WSLg often bridges images to wl-paste even when powershell.exe check fails.
+
+        WSL is Linux, so the host reaches the fallthrough on its own; only the
+        WSL/Wayland environment probes below are stubbed.
+        """
+        with patch("hermes_cli.clipboard._is_wsl", return_value=True):
+            with patch("hermes_cli.clipboard._wsl_has_image", return_value=False) as wsl:
+                with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+                    with patch("hermes_cli.clipboard._wayland_has_image", return_value=True) as wl:
+                        assert has_clipboard_image() is True
+                        wsl.assert_called_once()
+                        wl.assert_called_once()
 
 
 # ═════════════════════════════════════════════════════════════════════════

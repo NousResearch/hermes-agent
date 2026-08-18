@@ -9,6 +9,7 @@ Tests cover:
 
 import json
 import os
+import re
 import sys
 import textwrap
 from datetime import datetime, timedelta, timezone
@@ -130,7 +131,11 @@ class TestRunJobScript:
         assert success is True
         assert output == "ABSENT"
 
+    @pytest.mark.windows_only
     def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
+        # Windows-only: the fake ``sys.platform`` could not reproduce the
+        # ``Scripts/python.exe`` launcher layout or the CREATE_NO_WINDOW
+        # creationflags this branch exists for.
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script
 
@@ -152,28 +157,130 @@ class TestRunJobScript:
 
         captured = {}
 
-        def fake_run(argv, **kwargs):
-            captured["argv"] = argv
-            captured["kwargs"] = kwargs
-            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+        class FakeProc:
+            def __init__(self, argv, **kwargs):
+                captured["argv"] = argv
+                captured["kwargs"] = kwargs
+                self.returncode = 0
 
-        monkeypatch.setattr(sched_mod.sys, "platform", "win32")
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return ("ok\n", "")
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        fake_run = FakeProc
+
         monkeypatch.setattr(sched_mod.sys, "executable", str(venv_python))
         monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
-        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_run)
 
         success, output = _run_job_script("probe.py")
 
         assert success is True
         assert output == "ok"
-        assert captured["argv"] == [str(base_python), str(script.resolve())]
-        assert captured["kwargs"]["creationflags"] == 0x08000000
+        # Overlay mode bootstraps with site.addsitedir() so .pth files
+        # (editable installs) are processed — plain PYTHONPATH cannot do that.
+        assert captured["argv"][0] == str(base_python)
+        assert captured["argv"][1] == "-c"
+        assert "site.addsitedir" in captured["argv"][2]
+        m = re.search(r"site\.addsitedir\('([^']*)'\)", captured["argv"][2])
+        assert m is not None
+        assert Path(m.group(1)) == site_packages
+        assert captured["argv"][3] == str(script.resolve())
+        # The script runner always adds CREATE_NEW_PROCESS_GROUP on win32 so a
+        # cancel can taskkill the whole tree; on POSIX the getattr default is
+        # 0 and the flag set is exactly windows_hide_flags().
+        expected_flags = sched_mod.windows_hide_flags() | getattr(
+            sched_mod.subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+        assert captured["kwargs"]["creationflags"] == expected_flags
         env = captured["kwargs"]["env"]
         assert env["VIRTUAL_ENV"] == str(venv)
         assert str(site_packages) in env["PYTHONPATH"]
 
+    def test_bootstrap_argv_makes_pth_editable_installs_importable(self, cron_env, tmp_path):
+        """The bootstrap must process .pth files — the whole reason the
+        overlay mode exists is that PYTHONPATH alone cannot (editable
+        installs would raise ModuleNotFoundError in cron scripts)."""
+        import subprocess
 
+        from cron.scheduler import _windows_cron_bootstrap_argv
+
+        venv = tmp_path / "venv"
+        site_packages = venv / "Lib" / "site-packages"
+        site_packages.mkdir(parents=True)
+        # Simulate `pip install -e`: a .pth file pointing at a source dir.
+        editable_src = tmp_path / "editable_pkg"
+        editable_src.mkdir()
+        (editable_src / "mypkg.py").write_text("VALUE = 42\n", encoding="utf-8")
+        (site_packages / "editable.pth").write_text(
+            str(editable_src) + "\n", encoding="utf-8"
+        )
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text("import mypkg; print(mypkg.VALUE)\n", encoding="utf-8")
+
+        argv = _windows_cron_bootstrap_argv(
+            sys.executable, {"VIRTUAL_ENV": str(venv)}, str(script)
+        )
+        # Run the bootstrap with the current interpreter (stands in for the
+        # base python.exe on Windows; the semantics are interpreter-agnostic).
+        result = subprocess.run(argv, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "42"
+
+    def test_bootstrap_keeps_script_directory_on_sys_path(self, cron_env, tmp_path):
+        """`python script.py` puts the script's directory on sys.path, so a
+        script may import a sibling module. The bootstrap must preserve that
+        (runpy.run_path alone does not add it)."""
+        import subprocess
+
+        from cron.scheduler import _windows_cron_bootstrap_argv
+
+        venv = tmp_path / "venv"
+        site_packages = venv / "Lib" / "site-packages"
+        site_packages.mkdir(parents=True)
+
+        (cron_env / "scripts" / "sibling_helper.py").write_text(
+            "GREETING = 'sibling ok'\n", encoding="utf-8"
+        )
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text(
+            "import sibling_helper; print(sibling_helper.GREETING)\n",
+            encoding="utf-8",
+        )
+
+        argv = _windows_cron_bootstrap_argv(
+            sys.executable, {"VIRTUAL_ENV": str(venv)}, str(script)
+        )
+        result = subprocess.run(argv, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "sibling ok"
+
+    def test_bootstrap_argv_falls_back_without_site_packages(self, cron_env, tmp_path):
+        """Unresolvable venv layout must not break the run — fall back to a
+        plain invocation (pre-existing PYTHONPATH behaviour)."""
+        from cron.scheduler import _windows_cron_bootstrap_argv
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+
+        argv = _windows_cron_bootstrap_argv(
+            sys.executable, {"VIRTUAL_ENV": str(tmp_path / "missing")}, str(script)
+        )
+        assert argv == [sys.executable, str(script)]
+
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows always takes the overlay/creationflags branch",
+    )
     def test_non_windows_script_preserves_default_text_decoding(self, cron_env, monkeypatch):
+        # No platform patching: the Linux CI host already takes this branch.
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script
 
@@ -182,13 +289,25 @@ class TestRunJobScript:
 
         captured = {}
 
-        def fake_run(argv, **kwargs):
-            captured["argv"] = argv
-            captured["kwargs"] = kwargs
-            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+        class FakeProc:
+            def __init__(self, argv, **kwargs):
+                captured["argv"] = argv
+                captured["kwargs"] = kwargs
+                self.returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return ("ok\n", "")
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        fake_run = FakeProc
 
         monkeypatch.setattr(sched_mod.sys, "platform", "linux")
-        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_run)
 
         success, output = _run_job_script("probe.py")
 
@@ -199,6 +318,87 @@ class TestRunJobScript:
         assert "creationflags" not in captured["kwargs"]
         assert "encoding" not in captured["kwargs"]
         assert "errors" not in captured["kwargs"]
+
+    def test_non_overlay_branch_keeps_plain_argv(self, cron_env, monkeypatch):
+        """When the Windows uv-venv overlay is NOT active, the invocation must
+        stay a plain `python script.py` — the bootstrap is overlay-only.
+        Cross-platform: forces the non-overlay branch explicitly."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+
+        captured = {}
+
+        class FakeProc:
+            def __init__(self, argv, **kwargs):
+                captured["argv"] = argv
+                self.returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return ("ok\n", "")
+
+        monkeypatch.setattr(
+            sched_mod,
+            "_windows_cron_python_invocation",
+            lambda python_exe: (python_exe, {}),
+        )
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", FakeProc)
+
+        success, output = _run_job_script("probe.py")
+
+        assert success is True
+        assert output == "ok"
+        assert captured["argv"] == [sys.executable, str(script.resolve())]
+
+    def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
+        """Emoji in script stdout must reach the caller intact (#42384).
+
+        On Windows the fix is the utf-8 + errors='replace' popen kwargs
+        (asserted above); on POSIX the UTF-8 locale default must already
+        carry emoji through. Either way the delivery content is the real
+        text, never an exception.
+        """
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "emoji.py"
+        script.write_text(
+            'import sys\n'
+            'sys.stdout.buffer.write("backup done \\N{PARTY POPPER} 日次".encode("utf-8"))\n',
+            encoding="utf-8",
+        )
+
+        success, output = _run_job_script("emoji.py")
+
+        assert success is True
+        assert "backup done 🎉 日次" == output
+
+    def test_invalid_utf8_stdout_does_not_raise(self, cron_env):
+        """Truncated/invalid UTF-8 in script stdout must never escape as an
+        exception (#47393) — a raised UnicodeDecodeError higher up would
+        silently drop the whole delivery (#42384). The run may fail, but it
+        must fail as a (False, message) result the scheduler can deliver.
+        """
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "bad_bytes.py"
+        # b'\xe6\x97' is the first two bytes of a three-byte CJK sequence —
+        # a truncated write, exactly the shape reported in #47393.
+        script.write_text(
+            "import sys\n"
+            "sys.stdout.buffer.write(b'partial \\xe6\\x97')\n",
+            encoding="utf-8",
+        )
+
+        success, output = _run_job_script("bad_bytes.py")  # must not raise
+
+        assert isinstance(success, bool)
+        assert isinstance(output, str)
+        assert output  # a message is always produced, never a silent drop
 
 
 class TestBuildJobPromptWithScript:

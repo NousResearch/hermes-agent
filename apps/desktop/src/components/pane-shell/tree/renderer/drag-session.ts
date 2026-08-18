@@ -32,6 +32,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import { createDragGhost, type DragGhost } from '@/lib/drag-ghost'
 import { ESCAPE_PRIORITY, pushEscapeLayer } from '@/lib/escape-layers'
+import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { reorderCommitHaptic, reorderStepHaptic } from '@/lib/reorder'
 
 import type { DropPosition } from '../model'
@@ -235,6 +236,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
   const restoreSelect = document.body.style.userSelect
   let engaged = false
   let releaseEscapeLayer: (() => void) | null = null
+  let releaseGuests: (() => void) | null = null
   let ghost: DragGhost | null = null
   let cursor: string | null = null
   // rAF-coalesced move processing: the raw handler only records the latest
@@ -275,6 +277,9 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
 
     setCursor('grabbing')
     document.body.style.userSelect = 'none'
+    // Webview/iframe guests hit-test in their own process — dragging a tab
+    // across the in-app browser would go silent without this.
+    releaseGuests = guardGuestPointers()
     // While dragging, Esc belongs to the drag ALONE — lower layers (edit
     // mode, overlays) must not also fire on the same press.
     releaseEscapeLayer = pushEscapeLayer(ESCAPE_PRIORITY.drag)
@@ -339,6 +344,8 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     ghost = null
     releaseEscapeLayer?.()
     releaseEscapeLayer = null
+    releaseGuests?.()
+    releaseGuests = null
 
     try {
       handle.releasePointerCapture?.(pointerId)

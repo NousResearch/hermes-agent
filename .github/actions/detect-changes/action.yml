@@ -33,6 +33,9 @@ outputs:
   deps:
     description: Check pyproject.toml dependency upper bounds.
     value: ${{ steps.classify.outputs.deps }}
+  uv_lock:
+    description: Run `uv lock --check` (pyproject.toml / uv.lock changes only).
+    value: ${{ steps.classify.outputs.uv_lock }}
   npm_lock:
     description: Post/update the semantic package-lock.json diff PR comment.
     value: ${{ steps.classify.outputs.npm_lock }}

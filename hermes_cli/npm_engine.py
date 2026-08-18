@@ -37,6 +37,7 @@ from pathlib import Path
 from hermes_constants import (
     bootstrap_hermes_managed_node,
     get_hermes_home,
+    managed_node_tree_in_use,
     with_hermes_node_path,
 )
 
@@ -184,6 +185,20 @@ def upgrade_managed_npm(
             f"→ Upgrading Hermes-managed npm to satisfy {npm_range}…",
             flush=True,
         )
+    # The managed npm lives inside the very tree the desktop app's Node
+    # processes execute from; an in-place upgrade while it is in use fails
+    # with PermissionError: [WinError 5] on npm.cmd (#80926). Defer instead
+    # of forcing the write — the upgrade re-triggers on the next resolution
+    # (e.g. the next update once the app is closed).
+    if managed_node_tree_in_use():
+        if not quiet:
+            print(
+                "  ⚠ deferred: the Hermes-managed Node.js tree is in use by a "
+                "running app; the npm upgrade will apply on a later update "
+                "once the app is closed.",
+                file=sys.stderr,
+            )
+        return False
     try:
         # A temp cwd keeps the checkout's .npmrc (engine-strict, min-release-age)
         # from applying to the upgrade itself.

@@ -479,13 +479,15 @@ def workspace_fingerprint(cwd: Optional[str] = None) -> str:
     try:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10, cwd=workdir,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, cwd=workdir,
         )
         if head.returncode != 0:
             return ""
         status = subprocess.run(
             ["git", "status", "--porcelain"],
-            capture_output=True, text=True, timeout=30, cwd=workdir,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, cwd=workdir,
         )
         if status.returncode != 0:
             return ""
@@ -509,6 +511,14 @@ def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, s
             shell=True,
             capture_output=True,
             text=True,
+            # A gate runs whatever the operator configured, so its output is
+            # arbitrary bytes. The default text mode decodes with the process
+            # codepage under errors="strict": one byte the codepage can't map
+            # (emoji or CJK from a test runner on a non-UTF-8 Windows console,
+            # or stray binary) kills the reader thread, leaves stdout as None,
+            # and the tail the agent needs to fix the failure arrives empty.
+            encoding="utf-8",
+            errors="replace",
             timeout=max(1, int(gate.timeout_seconds)),
             cwd=cwd or None,
         )
@@ -1965,9 +1975,11 @@ KANBAN_GOAL_CONTINUATION_TEMPLATE = (
     "[Continuing toward this kanban task — judge says it is not done yet]\n"
     "Reason: {reason}\n\n"
     "Take the next concrete step toward completing the task. When the work "
-    "is genuinely finished, call kanban_complete with a summary. If you are "
-    "blocked and need human input, call kanban_block with a reason. Do not "
-    "stop without calling one of them."
+    "is genuinely finished, call kanban_complete with a summary. If it is a "
+    "code change that needs same-card review before counting as done, call "
+    "kanban_request_review with a summary instead. If you are blocked and "
+    "need human input, call kanban_block with a reason. Do not stop without "
+    "calling one of them."
 )
 
 # Fed when the judge believes the work is done but the worker never called
@@ -1977,8 +1989,9 @@ KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "[The work looks complete, but the task is still open]\n"
     "Reason: {reason}\n\n"
     "If the task is genuinely done, call kanban_complete now with a short "
-    "summary of what you did. If something still blocks completion, call "
-    "kanban_block with the reason instead."
+    "summary of what you did. If it is a code change awaiting same-card review, "
+    "call kanban_request_review with that summary instead. If something still "
+    "blocks completion, call kanban_block with the reason instead."
 )
 
 
@@ -2017,7 +2030,8 @@ def run_kanban_goal_loop(
     (reason: str -> None).
 
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
-    outcome is one of ``"completed_by_worker"``, ``"blocked_budget"``,
+    outcome is one of ``"completed_by_worker"``, ``"review_requested_by_worker"``,
+    ``"changes_requested_by_reviewer"``, ``"blocked_budget"``,
     ``"blocked_by_worker"``, or ``"stopped"``.
     """
 
@@ -2051,6 +2065,15 @@ def run_kanban_goal_loop(
         if status == "blocked":
             _log(f"kanban goal loop: task {task_id} blocked by worker after {turns_used} turn(s)")
             return {"outcome": "blocked_by_worker", "turns_used": turns_used, "reason": "worker blocked the task"}
+        if status == "review":
+            # A legitimate worker-driven terminator (kanban_request_review),
+            # not an unexpected stop: the implementation is done and the task
+            # is awaiting a reviewer. Stop the loop cleanly.
+            _log(f"kanban goal loop: task {task_id} handed off for review by worker after {turns_used} turn(s)")
+            return {"outcome": "review_requested_by_worker", "turns_used": turns_used, "reason": "worker requested review"}
+        if status == "changes_requested":
+            _log(f"kanban goal loop: reviewer returned task {task_id} for changes after {turns_used} turn(s)")
+            return {"outcome": "changes_requested_by_reviewer", "turns_used": turns_used, "reason": "reviewer requested changes"}
         if status not in ("running", "ready"):
             # Reclaimed / archived / unexpected — let the dispatcher own it.
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")

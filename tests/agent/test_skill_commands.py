@@ -200,6 +200,61 @@ class TestScanSkillCommands:
             assert "/telegram-only" in discord_commands
             assert "/discord-only" not in discord_commands
 
+    def test_get_skill_commands_rescans_when_profile_home_changes(self, tmp_path):
+        """Switching profiles must rescan even when the platform is unchanged
+        (#88023): a Desktop session that switches profiles mid-session keeps
+        the same platform scope, so only ``HERMES_HOME`` moves. Each profile
+        declares its own ``skills.external_dirs``, and the previous profile's
+        skill list must not leak into the new one.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        empty_local_dir = tmp_path / "no-local-skills"
+        empty_local_dir.mkdir()
+
+        profile_a = tmp_path / "profile_a"
+        profile_b = tmp_path / "profile_b"
+        external_a = tmp_path / "external_a"
+        external_b = tmp_path / "external_b"
+        profile_a.mkdir()
+        profile_b.mkdir()
+        _make_skill(external_a, "a-only")
+        _make_skill(external_b, "b-only")
+        (profile_a / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_a}\n"
+        )
+        (profile_b / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_b}\n"
+        )
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+        ):
+            token = set_hermes_home_override(profile_a)
+            try:
+                profile_a_commands = dict(get_skill_commands())
+            finally:
+                reset_hermes_home_override(token)
+
+            assert "/a-only" in profile_a_commands
+            assert "/b-only" not in profile_a_commands
+
+            # Switching profiles without touching the cache directly must
+            # rescan — not keep serving profile_a's stale view.
+            token = set_hermes_home_override(profile_b)
+            try:
+                profile_b_commands = dict(get_skill_commands())
+            finally:
+                reset_hermes_home_override(token)
+
+            assert "/b-only" in profile_b_commands
+            assert "/a-only" not in profile_b_commands
+
     def test_get_skill_commands_rescans_when_leaving_platform_scope(self, tmp_path, monkeypatch):
         """Returning to no-platform-scope (CLI / cron / RL) after a gateway
         session must rescan so the unfiltered view is repopulated (#14536).

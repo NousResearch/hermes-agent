@@ -165,6 +165,111 @@ class TestRuntimeStaleGuard:
         db.create_session.assert_called_once()
 
 
+class TestRecoveredSessionResetPolicy:
+    """Recovery must not resurrect sessions as freshly active.
+
+    ``_create_entry_from_recovered_row`` used to stamp ``updated_at=now`` on
+    the rebuilt entry, so an opt-in idle/daily ``session_reset`` policy could
+    never fire across a gateway restart: the recovered session always looked
+    freshly active, and every subsequent message bumped ``updated_at`` again
+    — a recovered stale session could never age out. The entry now carries
+    the durable ``last_activity_at`` the finder already returns on the row
+    and the recovery paths evaluate ``_should_reset`` before resuming.
+    """
+
+    def test_recovered_entry_carries_durable_last_activity(self, tmp_path):
+        """A recovered mapping reports the DB's last message time, not now()."""
+        source = _source()
+        started = (datetime.now() - timedelta(hours=3)).timestamp()
+        last_activity = (datetime.now() - timedelta(hours=2)).timestamp()
+        db = _db_returning({})
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_recovered",
+            "started_at": started,
+            "last_activity_at": last_activity,
+        }
+        store = _make_store_with_db(tmp_path, db)  # default mode="none"
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id == "sid_recovered"
+        assert result.created_at == datetime.fromtimestamp(started)
+        assert result.updated_at == datetime.fromtimestamp(last_activity)
+        assert result.reset_had_activity is True
+
+    def test_recovered_session_past_idle_policy_resets_instead_of_resuming(
+        self, tmp_path,
+    ):
+        """Lost mapping + overdue recoverable row → reset, not silent resume."""
+        source = _source()
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=60),
+        )
+        db = _db_returning({})
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_idle",
+            "started_at": (datetime.now() - timedelta(hours=3)).timestamp(),
+            "last_activity_at": (
+                datetime.now() - timedelta(hours=2)
+            ).timestamp(),
+        }
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+        # No in-memory entry: the mapping was lost (e.g. crash before save).
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id != "sid_idle"
+        assert result.was_auto_reset is True
+        assert result.auto_reset_reason == "idle"
+        assert result.reset_had_activity is True
+        assert result.prev_session_id == "sid_idle"
+        db.reopen_session.assert_not_called()
+        db.promote_to_session_reset.assert_called_once_with("sid_idle", "idle")
+        db.end_session.assert_not_called()
+        db.create_session.assert_called_once()
+
+    def test_default_none_policy_recovery_resumes_unchanged(self, tmp_path):
+        """mode="none" (the default) still resumes recoverable rows as before."""
+        source = _source()
+        db = _db_returning({})
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_recovered",
+            "started_at": (datetime.now() - timedelta(days=30)).timestamp(),
+            "last_activity_at": (
+                datetime.now() - timedelta(days=30)
+            ).timestamp(),
+        }
+        store = _make_store_with_db(tmp_path, db)  # default mode="none"
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id == "sid_recovered"
+        db.reopen_session.assert_called_once_with("sid_recovered")
+        db.promote_to_session_reset.assert_not_called()
+        db.end_session.assert_not_called()
+        db.create_session.assert_not_called()
+
+    def test_recovery_tolerates_row_without_last_activity(self, tmp_path):
+        """A row lacking last_activity_at falls back to created_at."""
+        source = _source()
+        started = (datetime.now() - timedelta(hours=3)).timestamp()
+        db = _db_returning({})
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_recovered",
+            "started_at": started,
+        }
+        store = _make_store_with_db(tmp_path, db)
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id == "sid_recovered"
+        assert result.updated_at == datetime.fromtimestamp(started)
+        assert result.reset_had_activity is False
+
+
 class TestAdvanceCompressionSession:
     def test_cas_advances_route_without_reopening_rows(self, tmp_path):
         db = _db_returning({})
@@ -186,5 +291,26 @@ class TestAdvanceCompressionSession:
         assert store.peek_session_id(key) == "sid_tip"
         db.end_session.assert_not_called()
         db.reopen_session.assert_not_called()
+
+    def test_repoint_does_not_touch_activity_clock(self, tmp_path):
+        """Compression repoint is bookkeeping — it must not bump updated_at.
+
+        A background compression on an idle session must not make it look
+        fresh to reset policy or the restart-resume freshness gate (#85709).
+        """
+        db = _db_returning({})
+        store = _make_store_with_db(tmp_path, db)
+        source = _source()
+        key = store._generate_session_key(source)
+        original = _make_entry(key, "sid_parent")
+        idle = datetime.now() - timedelta(days=21)
+        original.updated_at = idle
+        store._entries[key] = original
+
+        result = store.advance_compression_session(key, "sid_parent", "sid_tip")
+
+        assert result is not None
+        assert result.updated_at == idle
+        assert store.suspend_recently_active(max_age_seconds=120) == 0
 
 

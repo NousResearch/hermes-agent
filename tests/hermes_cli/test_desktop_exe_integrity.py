@@ -138,26 +138,36 @@ def _fake_windll(
     return _windll
 
 
-def test_native_machine_reports_os_arch_not_process_arch(monkeypatch):
+@pytest.mark.windows_only
+def test_native_machine_reports_os_arch_not_process_arch():
     """The #69179 WoA regression: x64 Python under ARM64 emulation must report
     ARM64 (the OS), not AMD64 (the process) — otherwise the integrity gate
-    rejects the correct ARM64 rebuild."""
+    rejects the correct ARM64 rebuild.
+
+    ``windows_only``: the probe under test is a ``ctypes.WinDLL("kernel32")``
+    call to ``IsWow64Process2``. A patched ``sys.platform`` only got the branch
+    entered — there is no kernel32 to bind on Linux, so nothing below the
+    branch (the HANDLE typing that #71218 was about) was ever executed.
+    """
     import ctypes
 
-    monkeypatch.setattr(cli_main.sys, "platform", "win32")
     # WinDLL only exists on Windows; create=True so Linux/macOS CI can stub it.
     with patch.object(ctypes, "WinDLL", _fake_windll(PE_ARM64), create=True), \
          patch("platform.machine", return_value="AMD64"):
         assert cli_main._windows_native_machine() == "ARM64"
 
 
+@pytest.mark.windows_only
 def test_expected_machines_prefers_user_runnable_api_over_arch_name(monkeypatch):
     """GetMachineTypeAttributes answers "can this host load PE machine X?"
     directly, so a WoA host that reports AMD64 everywhere else still accepts an
-    ARM64 exe."""
+    ARM64 exe.
+
+    ``windows_only``: ``GetMachineTypeAttributes`` is a real kernel32 export
+    the fake host could not provide.
+    """
     import ctypes
 
-    monkeypatch.setattr(cli_main.sys, "platform", "win32")
     monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
     monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
     with patch.object(
@@ -225,8 +235,11 @@ def test_rollback_restores_backup_and_keeps_corrupt_copy(tmp_path):
 
 
 
-def test_gate_fails_clearly_without_backup(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+@pytest.mark.windows_only
+def test_gate_fails_clearly_without_backup(tmp_path, capsys):
+    """``windows_only``: ``_ensure_desktop_exe_launchable`` is a documented
+    no-op off Windows, so the fake was the only reason the gate ran at all.
+    """
     desktop_dir, exe = _win_tree(tmp_path)
     fake = exe
     fake.parent.mkdir(parents=True)
@@ -261,16 +274,21 @@ def _ns(**kw):
     return argparse.Namespace(**defaults)
 
 
+@pytest.mark.windows_only
 def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, capsys):
     """The updater chain's contract: a rebuild whose Hermes.exe cannot launch
     must exit nonzero (so hermes-setup's retry-once kicks in) and must restore
-    the previous working build instead of leaving the corrupt one."""
+    the previous working build instead of leaving the corrupt one.
+
+    ``windows_only``: the whole chain is Windows-gated — ``win-unpacked``
+    candidate discovery in ``_desktop_packaged_executable`` and the integrity
+    gate itself both short-circuit off Windows.
+    """
     root = tmp_path / "hermes-agent"
     desktop_dir = root / "apps" / "desktop"
     desktop_dir.mkdir(parents=True)
     (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    monkeypatch.setattr(cli_main.sys, "platform", "win32")
 
     exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
     make_pe(exe, PE_AMD64, truncate_to=0x300)  # what the failed pack produced
@@ -280,6 +298,7 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._resolve_node_runtime_npm", return_value="npm.cmd"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \

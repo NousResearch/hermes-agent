@@ -286,24 +286,30 @@ class TestShellFileOpsHelpers:
         assert file_ops._escape_shell_arg("hello") == "'hello'"
 
 
-    def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, monkeypatch, file_ops):
-        import tools.environments.local as local_mod
-
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    @pytest.mark.windows_only
+    def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, file_ops):
+        """Windows-only: ``_bash_safe_path`` only rewrites drive paths to the
+        Git Bash form on Windows, where the MSYS path mangling it works around
+        actually happens."""
         assert file_ops._escape_shell_arg(
             "C:/Users/alice/notes.txt"
         ) == "'/c/Users/alice/notes.txt'"
 
-    def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
-        import tools.environments.local as local_mod
-
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    @pytest.mark.windows_only
+    def test_read_file_uses_bash_safe_windows_paths(self, mock_env):
+        """Windows-only: proves read_file's shell commands carry the MSYS path
+        form Git Bash needs — a translation that is a no-op off Windows."""
         commands = []
 
         def side_effect(command, **kwargs):
             commands.append(command)
-            if command.startswith("wc -c"):
+            # The size probe gates `wc -c` behind `[ -f ]` so a FIFO or device
+            # cannot block the read; it still reports a plain byte count.
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 return {"output": "5\n", "returncode": 0}
+            if command.startswith("head -c") and "| base64" in command:
+                import base64 as b64
+                return {"output": b64.b64encode(b"hello").decode(), "returncode": 0}
             if command.startswith("head -c"):
                 return {"output": "hello", "returncode": 0}
             if command.startswith("sed -n"):
@@ -317,9 +323,15 @@ class TestShellFileOpsHelpers:
         result = ops.read_file(r"C:\Users\alice\notes.txt")
 
         assert result.error is None
-        assert commands[0] == "wc -c < '/c/Users/alice/notes.txt' 2>/dev/null"
-        assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null"
-        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt'"
+        assert commands[0] == (
+            "if [ -f '/c/Users/alice/notes.txt' ]; "
+            "then wc -c < '/c/Users/alice/notes.txt' 2>/dev/null; "
+            "elif [ -e '/c/Users/alice/notes.txt' ]; "
+            "then echo __hermes_not_regular__; "
+            "else exit 1; fi"
+        )
+        assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64"
+        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt' | cut -b1-8001"
         assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
 
     def test_is_likely_binary_by_extension(self, file_ops):
@@ -343,7 +355,7 @@ class TestShellFileOpsHelpers:
         )
 
         def side_effect(command, **kwargs):
-            if command.startswith("wc -c"):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 return {"output": "12\n", "returncode": 0}
             if command.startswith("head -c"):
                 return {"output": "print('ok')\n", "returncode": 0}
@@ -371,7 +383,7 @@ class TestShellFileOpsHelpers:
         )
 
         def side_effect(command, **kwargs):
-            if command.startswith("wc -c"):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 return {"output": "6\n", "returncode": 0}
             if command.startswith("head -c"):
                 return {"output": "alpha\n", "returncode": 0}
@@ -507,7 +519,7 @@ class TestPatchReplacePostWriteVerification:
             if command.startswith("mkdir "):
                 return {"output": "", "returncode": 0}
             # wc -c for byte count after write
-            if command.startswith("wc -c"):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 for path in file_contents:
                     if path in command:
                         return {"output": str(len(file_contents[path].encode())), "returncode": 0}
@@ -544,7 +556,7 @@ class TestPatchReplacePostWriteVerification:
                 return {"output": "", "returncode": 1}
             if command.startswith("mkdir "):
                 return {"output": "", "returncode": 0}
-            if command.startswith("wc -c"):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 return {"output": str(len(state["content"].encode())), "returncode": 0}
             return {"output": "", "returncode": 0}
 
@@ -673,3 +685,216 @@ class TestReadNonUtf8IsBinary:
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         # Proper UTF-8 (including non-ASCII) must still read as text.
         assert ops._is_likely_binary("notes.txt", "café résumé\nsecond\n") is False
+
+# =========================================================================
+# Byte-layer binary detection (#80308 class: CJK/multibyte text flagged
+# binary because the byte-boundary sample manufactured U+FFFD in transit)
+# =========================================================================
+
+class TestByteLayerBinaryDetection:
+    """Regression suite for the misclassification class behind #80308.
+
+    Fragment reports/fixes each caught one member: #80261, #80250, #80188,
+    #80349, #79834, #79534, #79408. The boundary contract: text = valid
+    UTF-8 allowing one incomplete multibyte sequence at the sample's end;
+    NUL or mid-stream invalid UTF-8 = read-only.
+    """
+
+    # --- unit: _is_likely_binary_bytes -----------------------------------
+
+    def test_cjk_text_cut_mid_character_is_text(self, file_ops):
+        # 999 ASCII bytes + a 3-byte CJK char cut after its first byte —
+        # exactly what `head -c 1000` does to a CJK file.
+        sample = (b"a" * 999 + "中".encode("utf-8"))[:1000]
+        assert sample[-1:] != b"a"  # the cut really is mid-character
+        assert file_ops._is_likely_binary_bytes(sample) is False
+
+    def test_pure_cjk_text_cut_mid_character_is_text(self, file_ops):
+        sample = ("汉字" * 400).encode("utf-8")[:1000]
+        assert file_ops._is_likely_binary_bytes(sample) is False
+
+    def test_emoji_cut_at_boundary_is_text(self, file_ops):
+        # 4-byte sequence cut after 2 bytes.
+        sample = (b"x" * 998 + "🎉".encode("utf-8"))[:1000]
+        assert file_ops._is_likely_binary_bytes(sample) is False
+
+    def test_utf8_bom_is_text(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"\xef\xbb\xbfhello") is False
+
+    def test_file_containing_real_replacement_char_is_text(self, file_ops):
+        # A log file that legitimately stores U+FFFD is valid UTF-8. The old
+        # text-layer check could not tell it from transport damage.
+        assert file_ops._is_likely_binary_bytes("log: \ufffd bad byte\n".encode("utf-8")) is False
+
+    def test_nul_byte_is_binary(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"MZ\x00\x01text") is True
+
+    def test_elf_header_is_binary(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8) is True
+
+    def test_latin1_text_stays_read_only(self, file_ops):
+        # Mid-stream invalid UTF-8 (0xE9 = latin-1 é). Reading it through the
+        # replace-decoding transport would mojibake a read→edit→write
+        # round-trip, so it must stay flagged (the old check's guarantee).
+        assert file_ops._is_likely_binary_bytes(b"caf\xe9 au lait, plus padding") is True
+
+    def test_empty_sample_is_text(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"") is False
+
+    def test_short_ascii_is_text(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"hello\n") is False
+
+    def test_truncated_garbage_tail_after_invalid_prefix_is_binary(self, file_ops):
+        # Error near the end but the prefix itself is not clean UTF-8.
+        assert file_ops._is_likely_binary_bytes(b"\xff\xfe" + b"a" * 10 + b"\xe4") is True
+
+    # --- transport: _sample_file_bytes ------------------------------------
+
+    def test_sample_decodes_base64_transport(self, mock_env):
+        import base64 as b64
+        payload = ("汉字" * 400).encode("utf-8")[:1000]
+        mock_env.execute.return_value = {
+            "output": b64.b64encode(payload).decode() + "\n",
+            "returncode": 0,
+        }
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/x.txt") == payload
+
+    def test_sample_falls_back_on_non_base64_output(self, mock_env):
+        mock_env.execute.return_value = {"output": "not base64 at all!!", "returncode": 0}
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/x.txt") is None
+
+    def test_sample_falls_back_on_nonzero_exit(self, mock_env):
+        mock_env.execute.return_value = {"output": "", "returncode": 127}
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/x.txt") is None
+
+    # --- integration: read_file over the mocked terminal ------------------
+
+    def _dispatch(self, cjk_bytes):
+        import base64 as b64
+
+        def side_effect(command, **kwargs):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
+                return {"output": f"{len(cjk_bytes)}\n", "returncode": 0}
+            if command.startswith("head -c") and "| base64" in command:
+                return {"output": b64.b64encode(cjk_bytes[:1000]).decode(), "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": cjk_bytes.decode("utf-8", errors="replace"), "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "1\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        return side_effect
+
+    def test_read_file_returns_cjk_content_instead_of_binary_error(self, mock_env):
+        content = ("汉字测试" * 300).encode("utf-8")  # > 1000 bytes, cut mid-char
+        mock_env.execute.side_effect = self._dispatch(content)
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/notes-中文.txt")
+        assert result.is_binary is False
+        assert result.error is None
+        assert "汉字测试" in (result.content or "")
+
+    def test_read_file_still_blocks_nul_binaries(self, mock_env):
+        content = b"\x7fELF\x00\x00binarybinary" + b"\x00" * 100
+        mock_env.execute.side_effect = self._dispatch(content)
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/a.out")
+        assert result.is_binary is True
+
+
+
+class TestEscapeNativeToolArg:
+    """Regression tests for _escape_native_tool_arg (Windows native-binary paths).
+
+    Live failure (Windows, Aug 2026): search_files passed rg the MSYS form
+    (/c/Users/...) that _escape_shell_arg produces, but Hermes sets
+    MSYS_NO_PATHCONV=1 / MSYS2_ARG_CONV_EXCL=* for its bash subprocesses,
+    so nothing converted the path back for the native (winget) ripgrep
+    binary — every search on a drive-letter path failed with
+    "The system cannot find the path specified. (os error 3)". Native
+    Windows binaries need C:/... (forward-slash native), which bash also
+    passes through untouched.
+    """
+
+    def _ops(self, mock_env):
+        return ShellFileOperations(mock_env)
+
+    def test_windows_native_path_kept_native(self, mock_env, monkeypatch):
+        import tools.environments.local as local_mod
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        ops = self._ops(mock_env)
+        out = ops._escape_native_tool_arg(r"C:\Users\alice\project")
+        assert out == "'C:/Users/alice/project'"
+
+    def test_msys_path_translated_back_to_native(self, mock_env, monkeypatch):
+        import tools.environments.local as local_mod
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        ops = self._ops(mock_env)
+        out = ops._escape_native_tool_arg("/c/Users/alice/project")
+        assert out == "'C:/Users/alice/project'"
+
+    def test_posix_path_untouched_on_windows(self, mock_env, monkeypatch):
+        """Multi-segment POSIX paths (/home/x, /tmp/y) are not drive paths."""
+        import tools.environments.local as local_mod
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        ops = self._ops(mock_env)
+        assert ops._escape_native_tool_arg("/tmp/workdir") == "'/tmp/workdir'"
+
+    def test_non_windows_behaves_like_escape_shell_arg(self, mock_env, monkeypatch):
+        import tools.environments.local as local_mod
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        ops = self._ops(mock_env)
+        assert ops._escape_native_tool_arg("/home/u/it's here") == (
+            ops._escape_shell_arg("/home/u/it's here")
+        )
+
+    def test_rg_content_search_uses_native_form(self, mock_env, monkeypatch):
+        """_search_with_rg must pass the path in native C:/ form to rg."""
+        import tools.environments.local as local_mod
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = self._ops(mock_env)
+        ops.search("needle", path=r"C:\Users\alice\project")
+        rg_cmds = [c for c in commands if "rg " in c or c.startswith("rg")]
+        assert rg_cmds, f"no rg command captured in: {commands}"
+        assert any("'C:/Users/alice/project'" in c for c in rg_cmds), rg_cmds
+        assert all("/c/Users" not in c for c in rg_cmds), rg_cmds
+
+    def test_shell_linter_uses_native_form(self, mock_env, monkeypatch):
+        """_check_lint must hand node/python/etc. the native C:/ path.
+
+        Regression for the double-prefix failure (#84303): node given the
+        MSYS /c/Users/... form resolves it as C:\\c\\Users\\... and every
+        .js write reports a phantom ENOENT lint error.
+        """
+        import tools.environments.local as local_mod
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = self._ops(mock_env)
+        result = ops._check_lint(r"C:\Users\alice\app\main.js")
+        assert result.skipped is False
+        node_cmds = [c for c in commands if "node --check" in c]
+        assert node_cmds, f"no node command captured in: {commands}"
+        assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
+        assert "/c/Users" not in node_cmds[0]

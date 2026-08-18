@@ -9,6 +9,8 @@
 export const EVENTS_RECONNECT_BASE_MS = 1_000;
 export const EVENTS_RECONNECT_MAX_MS = 30_000;
 export const EVENTS_MAX_RECONNECT_ATTEMPTS = 15;
+/** Bound ticket minting plus the WebSocket opening handshake. */
+export const EVENTS_CONNECT_TIMEOUT_MS = 15_000;
 
 /** Normal closure — the server said goodbye, don't chase it. */
 const WS_CLOSE_NORMAL = 1000;

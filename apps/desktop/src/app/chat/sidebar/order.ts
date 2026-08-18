@@ -35,10 +35,11 @@ function mergeFreshByPosition(currentIds: string[], keptIds: string[]): string[]
 export function reconcileFreshFirst(currentIds: string[], orderIds: string[]): string[] {
   const current = new Set(currentIds)
 
-  return mergeFreshByPosition(
-    currentIds,
-    orderIds.filter(id => current.has(id))
-  )
+  // Dedupe both inputs: a corrupted persisted order (same id twice) must not
+  // self-perpetuate through reconcile, and duplicate live ids (e.g. the same
+  // repo surfacing under several projects) must not be written back into the
+  // saved order — either one paints as duplicate headers (#73314).
+  return mergeFreshByPosition([...new Set(currentIds)], [...new Set(orderIds.filter(id => current.has(id)))])
 }
 
 export function resolveManualSessionOrderIds(currentIds: string[], orderIds: string[], manual: boolean): string[] {
@@ -74,7 +75,10 @@ export function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: 
   for (const id of orderIds) {
     const item = byId.get(id)
 
-    if (item) {
+    // Guard against duplicates in the persisted order: pushing the same item
+    // twice renders the row/header twice (e.g. two identical repo headers
+    // under one project).
+    if (item && !seen.has(id)) {
       ordered.push(item)
       seen.add(id)
     }
@@ -89,9 +93,16 @@ export function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: 
   const older: T[] = []
 
   items.forEach((item, index) => {
-    if (seen.has(getId(item))) {
+    const itemId = getId(item)
+
+    // `seen` doubles as the duplicate guard for live items: two rows carrying
+    // the same id (e.g. one repo surfacing under several projects) must render
+    // once, not once per occurrence (#73314).
+    if (seen.has(itemId)) {
       return
     }
+
+    seen.add(itemId)
 
     if (firstOrdered >= 0 && index < firstOrdered) {
       newer.push(item)
@@ -103,6 +114,15 @@ export function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: 
   return [...newer, ...ordered, ...older]
 }
 
+/**
+ * Apply the active sort key (as an id order) to a set of session rows, leaving
+ * them in the order they came in when nothing is ranked. Grouped views call
+ * this on their own lane so a sort key reaches rows the flat list never renders.
+ */
+export function rankSessions<T extends { id: string }>(sessions: T[], rankIds?: string[]): T[] {
+  return rankIds?.length ? orderByIds(sessions, session => session.id, rankIds) : sessions
+}
+
 /** Reconcile a persisted order against the live id set. */
 export function reconcileOrderIds(currentIds: string[], orderIds: string[]): string[] {
   if (!currentIds.length) {
@@ -110,7 +130,9 @@ export function reconcileOrderIds(currentIds: string[], orderIds: string[]): str
   }
 
   if (!orderIds.length) {
-    return currentIds
+    // Still dedupe: persisting duplicate live ids here is what seeded the
+    // #73314 feedback loop in the first place.
+    return [...new Set(currentIds)]
   }
 
   return reconcileFreshFirst(currentIds, orderIds)

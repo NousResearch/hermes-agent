@@ -4,6 +4,7 @@ import pytest
 from agent.error_classifier import (
     ClassifiedError,
     FailoverReason,
+    PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     classify_api_error,
     _extract_status_code,
     _extract_error_body,
@@ -231,6 +232,38 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_404_requires_available_credits_is_billing(self):
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={
+                "status": 404,
+                "message": (
+                    "Model 'openai/gpt-5.5-pro' requires available credits. "
+                    "Your account balance is too low to use paid models — "
+                    "add credits at https://portal.nousresearch.com or pick a free model."
+                ),
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="openai/gpt-5.5-pro")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_wrapped_402_uses_nested_body_message(self):
+        inner = MockAPIError(
+            "inner",
+            status_code=402,
+            body={"error": {"message": "Usage limit reached, try again in 5 minutes"}},
+        )
+        outer = Exception("outer")
+        outer.__cause__ = inner
+
+        result = classify_api_error(outer)
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.message == "Usage limit reached, try again in 5 minutes"
 
     # ── Rate limit ──
 
@@ -340,6 +373,43 @@ class TestClassifyApiError:
 
 
 
+    def test_non_json_stream_validation_error_is_non_retryable(self):
+        e = MockAPIError(
+            "Provider stream returned non-JSON SSE data",
+            body={
+                "error": {
+                    "code": PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+                    "message": (
+                        "request validation failed: unsupported reasoning_effort"
+                    ),
+                }
+            },
+        )
+
+        result = classify_api_error(e)
+
+        assert result.status_code is None
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_non_json_stream_unknown_error_remains_retryable(self):
+        e = MockAPIError(
+            "Provider stream returned non-JSON SSE data",
+            body={
+                "error": {
+                    "code": PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+                    "message": "upstream sent opaque plain-text stream data",
+                }
+            },
+        )
+
+        result = classify_api_error(e)
+
+        assert result.status_code is None
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+        assert result.should_fallback is False
 
     # ── 5xx that are actually context overflow ──
     # Some local inference servers (llama.cpp / llama-server, and vLLM/Ollama
@@ -483,9 +553,55 @@ class TestClassifyApiError:
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 
+    def test_llama_cpp_unable_to_generate_parser_template(self):
+        e = MockAPIError(
+            "Unable to generate parser for this template. "
+            "Automatic parser generation failed: error parsing grammar",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="local-llama")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+        assert result.retryable is True
+        assert result.should_compress is False
 
+    def test_qwen_apply_prompt_template_no_user_query_not_llama_cpp_grammar(self):
+        """Local engines wrap Qwen raise_exception as applyPromptTemplate 400.
 
+        Must NOT classify as llama_cpp_grammar_pattern (which strips tool
+        schema keywords and retries). Fail fast as format_error so the user
+        sees a request-shape failure instead of a misleading template/parser
+        loop — typical after context overflow + failed compression.
+        """
+        e = MockAPIError(
+            "Engine protocol applyPromptTemplate request returned 400: "
+            '{"error":{"code":400,"message":"Unable to generate parser for '
+            "this template. Automatic parser generation failed: "
+            "While executing CallExpression ... multi_step_tool %} "
+            "{{- raise_exception('No user query found in messages')",
+            status_code=400,
+        )
+        result = classify_api_error(
+            e,
+            provider="custom",
+            model="qwen/qwen3.6-35b-a3b",
+            approx_tokens=226_000,
+            context_length=100_864,
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+        assert result.should_fallback is True
 
+    def test_bare_no_user_query_found_is_format_error_even_on_large_session(self):
+        e = MockAPIError("No user query found in messages", status_code=400)
+        result = classify_api_error(
+            e,
+            approx_tokens=226_000,
+            context_length=100_864,
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
 
     # ── Provider-specific: Anthropic long-context tier ──
 
@@ -696,7 +812,13 @@ class TestAdversarialEdgeCases:
         """Anthropic returns 400 with 'out of extra usage' when the user's
         extra-usage allowance is depleted. Must classify as billing so the
         fallback chain engages (with credential rotation) instead of the
-        generic format_error path, which never rotates. (#11736, #13170)"""
+        generic format_error path, which never rotates. (#11736, #13170)
+
+        #82154: the identical body is ALSO returned when Anthropic's content
+        filter rejects part of the request on a subscription OAuth token, so
+        the billing verdict must be marked unverified — downstream surfaces
+        hedge instead of asserting exhaustion, and the credential pool skips
+        the one-hour billing bench."""
         e = MockAPIError(
             "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
             status_code=400,
@@ -710,6 +832,33 @@ class TestAdversarialEdgeCases:
         assert result.should_fallback is True
         assert result.retryable is False
         assert result.should_rotate_credential is True
+        assert result.billing_unverified is True
+        assert result.error_context.get("possible_content_filter") is True
+
+    def test_400_unambiguous_billing_body_is_not_marked_unverified(self):
+        """A 400 whose billing evidence is NOT the ambiguous 'out of extra
+        usage' body keeps a confirmed verdict (#82154)."""
+        e = MockAPIError(
+            "Your credit balance is too low to access the Anthropic API.",
+            status_code=400,
+            body={"error": {
+                "type": "invalid_request_error",
+                "message": "Your credit balance is too low to access the Anthropic API.",
+            }},
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.billing_unverified is False
+
+    def test_statusless_extra_usage_is_marked_unverified(self):
+        """Adapters can strip the HTTP status from the Anthropic 400; the
+        message-only path must carry the same ambiguity marking (#82154)."""
+        e = Exception(
+            "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.billing_unverified is True
 
     def test_200_with_error_body(self):
         """200 status with error in body — should be unknown, not crash."""
@@ -1019,6 +1168,67 @@ class Test408RequestTimeout:
         assert result.should_compress is False
 
 
+# ── Test: connection/DNS failure message patterns on generic exception types ──
+# Port of anomalyco/opencode#40707 (expand retryable error patterns): errors
+# whose TYPE is generic (RuntimeError/Exception from local shims, MCP bridges,
+# re-raising SDKs) but whose MESSAGE carries a connection-establishment or DNS
+# failure must classify as retryable transport, not FailoverReason.unknown.
+
+class TestConnectionMessagePatterns:
+    """Generic-typed connect/DNS failures route to the transport bucket."""
+
+    @pytest.mark.parametrize("message", [
+        "connect ECONNREFUSED 127.0.0.1:11434",
+        "Connection refused by proxy",
+        "getaddrinfo failed",
+        "getaddrinfo ENOTFOUND api.example.com",
+        "[Errno -3] Temporary failure in name resolution",
+        "[Errno 8] nodename nor servname provided, or not known",
+        "getaddrinfo EAI_AGAIN openrouter.ai",
+        "Name or service not known",
+        "No route to host",
+        "[Errno 101] Network is unreachable",
+        "fetch failed",
+        "TypeError: Failed to fetch",
+        "upstream connect error or disconnect/reset before headers",
+    ])
+    def test_generic_exception_with_connect_failure_message_is_timeout(self, message):
+        # RuntimeError — NOT in _TRANSPORT_ERROR_TYPES, not a ConnectionError
+        # subclass, no status code. Without message matching this falls to
+        # FailoverReason.unknown and misses the eager transport fallback.
+        result = classify_api_error(RuntimeError(message))
+        assert result.reason == FailoverReason.timeout, message
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_connect_failure_never_routes_to_compression_on_large_session(self):
+        # A connection that was never established is not an overflow signal,
+        # even when the session is huge (the disconnect+large-session
+        # heuristic must not apply to connect-phase failures).
+        result = classify_api_error(
+            RuntimeError("connect ECONNREFUSED 10.0.0.5:443"),
+            approx_tokens=180000, context_length=200000, num_messages=400,
+        )
+        assert result.reason == FailoverReason.timeout
+        assert result.should_compress is False
+
+    def test_midstream_disconnect_patterns_still_use_disconnect_path(self):
+        # "connection reset by peer" is deliberately NOT in the connect-phase
+        # list — it stays on the _SERVER_DISCONNECT_PATTERNS path, which
+        # routes large sessions to context-overflow compression.
+        result = classify_api_error(
+            RuntimeError("Connection reset by peer"),
+            approx_tokens=180000, context_length=200000, num_messages=400,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_plain_unknown_error_still_unknown(self):
+        # Guard against over-matching: an unrelated message stays unknown.
+        result = classify_api_error(RuntimeError("something exploded"))
+        assert result.reason == FailoverReason.unknown
+
+
 # ── Test: throttle vs overflow disambiguation + new overflow shapes ─────
 # Port of anomalyco/opencode#37848 (expand context overflow patterns +
 # rate-limit exclusion guard).
@@ -1080,6 +1290,5 @@ class TestExpandedOverflowPatterns:
         )
         result = classify_api_error(e, provider="openrouter", model="m")
         assert result.reason == FailoverReason.context_overflow
-
 
 

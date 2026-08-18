@@ -90,6 +90,27 @@ class TestConfigIssueDataclass:
         assert a == b
 
 
+class TestVoiceSubmitModeValidation:
+    def test_default_is_direct(self):
+        assert DEFAULT_CONFIG["voice"]["submit_mode"] == "direct"
+
+    def test_direct_and_draft_are_valid(self):
+        for mode in ("direct", "draft"):
+            issues = validate_config_structure({"voice": {"submit_mode": mode}})
+            assert not any("voice.submit_mode" in issue.message for issue in issues)
+
+    def test_invalid_mode_is_reported(self):
+        issues = validate_config_structure({"voice": {"submit_mode": "refine"}})
+
+        assert any(
+            issue.severity == "error"
+            and "voice.submit_mode" in issue.message
+            and "direct" in issue.hint
+            and "draft" in issue.hint
+            for issue in issues
+        )
+
+
 class TestUnknownTopLevelKeys:
     """Arbitrary top-level keys must NOT warn — they are bridged to os.environ.
 

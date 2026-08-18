@@ -241,9 +241,11 @@ User-modified skills are never overwritten.
 hermes profile list           # show all profiles with status
 hermes profile show coder     # detailed info for one profile
 hermes profile rename coder dev-bot   # rename (updates alias + service)
-hermes profile export coder   # export to coder.tar.gz
-hermes profile import coder.tar.gz   # import from archive
+hermes profile export coder   # pack into coder.tar.gz (shareable; keys stripped)
+hermes profile import coder.tar.gz   # install an archive as a new profile
 ```
+
+In chat, the same two live as `/export` and `/import` — and in the desktop app as **⌘K → Export/Import profile…**. See [Sharing a profile](#sharing-a-profile).
 
 ## Deleting a profile
 
@@ -305,9 +307,19 @@ the actual account home when `home_mode: profile` is active.
 
 The default profile is simply `~/.hermes` itself. No migration needed — existing installs work identically.
 
-## Sharing profiles as distributions
+## Sharing a profile
 
-A profile you built on one machine can be packaged as a **git repository** and installed with one command on another machine — your own workstation, a teammate's laptop, or a community user's environment. The shared package includes the SOUL, config, skills, cron jobs, and MCP connections. Credentials, memories, and sessions stay per-machine.
+A profile you built on one machine can go to another — your own workstation, a teammate's laptop, or the community. Two paths:
+
+**Send a file.** `/export` packs the profile into one `.tar.gz` — skills, memory, persona, crons, plugins, settings, and (from the desktop) your theme and layout. API keys are stripped. The recipient runs `/import`.
+
+```bash
+# In chat, run /export, hand over the file, and they run /import on it
+hermes profile export coder
+hermes profile import ./coder.tar.gz --name coder
+```
+
+**Publish a distribution.** Package the profile as a **git repository** so recipients install it with one command and pull versioned updates later. Carries the SOUL, config, skills, cron jobs, and MCP connections; credentials, memories, and sessions stay per-machine.
 
 ```bash
 # Install a whole agent from a git repo
@@ -317,4 +329,4 @@ hermes profile install github.com/you/research-bot --alias
 hermes profile update research-bot
 ```
 
-See **[Profile Distributions: Share a Whole Agent](./profile-distributions.md)** for the full guide — authoring, publishing, update semantics, security model, and use cases.
+Use an export file for a one-time handoff or a move; use a distribution for an agent you'll keep shipping. See **[Profile Distributions: Share a Whole Agent](./profile-distributions.md)** for both — the comparison table, authoring, publishing, update semantics, and the security model.

@@ -7,6 +7,7 @@ from agent.prompt_caching import (
     _can_carry_marker,
     apply_anthropic_cache_control,
     build_prompt_cache_plan,
+    effective_cache_ttl,
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
@@ -463,6 +464,43 @@ class TestStripAnthropicCacheControl:
         assert isinstance(content, list) and len(content) == 2
         assert content[0] == {"type": "text", "text": "see"}
         assert content[1]["type"] == "image_url"
+
+
+class TestEffectiveCacheTtl:
+    """#84733: Qwen/Alibaba routes document a 5-minute context cache only.
+
+    ``effective_cache_ttl`` clamps a requested ``1h`` tier down to ``5m`` on
+    those routes so the marker the provider would ignore/reject is never
+    shipped and no false 1h-cache expectation survives.
+    """
+
+    def test_none_resolves_to_default_5m(self):
+        assert effective_cache_ttl(None) == "5m"
+        assert effective_cache_ttl(None, provider="anthropic", model="claude-x") == "5m"
+
+    def test_5m_passthrough_everywhere(self):
+        assert effective_cache_ttl("5m") == "5m"
+        assert effective_cache_ttl("5m", provider="opencode", model="qwen3.6-plus") == "5m"
+
+    def test_1h_preserved_on_non_qwen_routes(self):
+        assert effective_cache_ttl("1h", provider="anthropic", model="claude-opus-4.8") == "1h"
+        assert effective_cache_ttl("1h", provider="openrouter", model="claude-3-5-sonnet") == "1h"
+        assert effective_cache_ttl("1h", provider="", model="") == "1h"
+
+    def test_1h_clamped_for_qwen_model_on_any_route(self):
+        assert effective_cache_ttl("1h", provider="openrouter", model="qwen3.6-plus") == "5m"
+        assert effective_cache_ttl("1h", provider="anthropic", model="Qwen-Max") == "5m"
+
+    def test_1h_clamped_for_alibaba_family_providers(self):
+        for provider in ("opencode", "opencode-zen", "opencode-go", "alibaba"):
+            assert effective_cache_ttl("1h", provider=provider, model="qwen-max") == "5m", provider
+            assert effective_cache_ttl("1h", provider=provider.upper(), model="claude-x") == "5m", provider
+
+    def test_marker_built_from_clamped_ttl_has_no_1h_key(self):
+        marker = _build_marker(effective_cache_ttl("1h", provider="opencode", model="qwen3.6-plus"))
+        assert marker == {"type": "ephemeral"}
+        marker = _build_marker(effective_cache_ttl("1h", provider="anthropic", model="claude-x"))
+        assert marker == {"type": "ephemeral", "ttl": "1h"}
 
 
 

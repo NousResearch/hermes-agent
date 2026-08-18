@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $sessionStates, publishSessionState } from '@/store/session-states'
+import { $sessionStates, $sessionTiles, publishSessionState } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
@@ -19,10 +19,13 @@ const ACTIVE_SID = 'session-active'
 const ACTIVE_PROFILE = 'compass'
 let handleEvent: ((event: RpcEvent) => void) | null = null
 let queryClient: QueryClient
+let wiringCache: Map<string, ClientSessionState>
 
 function Harness() {
   const activeSessionIdRef = useRef<string | null>(ACTIVE_SID)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
+
+  wiringCache = sessionStateByRuntimeIdRef.current
 
   const stream = useMessageStream({
     activeGatewayProfile: ACTIVE_PROFILE,
@@ -66,11 +69,13 @@ beforeEach(() => {
   handleEvent = null
   queryClient = new QueryClient()
   $sessionStates.set({})
+  $sessionTiles.set([])
 })
 
 afterEach(() => {
   cleanup()
   $sessionStates.set({})
+  $sessionTiles.set([])
   vi.restoreAllMocks()
 })
 
@@ -121,5 +126,40 @@ describe('session.reclaimed', () => {
 
       expect($sessionStates.get()['live-gone'], reason).toBeUndefined()
     }
+  })
+
+  // A TILE bound to the reclaimed runtime is the #82620 blank-pane case: the
+  // state drop above empties the tile's view, but with `runtimeId` still set
+  // the tile's resume effect (gated on !runtimeId) never refires — an empty
+  // transcript under live chrome, unrecoverable without closing the tab.
+  it('unbinds a tile holding the reclaimed runtime so its resume can refire', async () => {
+    await mountStream()
+    publishSessionState('live-gone', createClientSessionState('stored-1'))
+    $sessionTiles.set([
+      { runtimeId: 'live-gone', storedSessionId: 'stored-1' },
+      { runtimeId: 'live-kept', storedSessionId: 'stored-2' }
+    ])
+
+    reclaim('live-gone')
+
+    const tiles = $sessionTiles.get()
+    // The reclaimed tile survives as a pane (its stored session is intact) but
+    // sheds the dead runtime; the bystander tile keeps its live binding.
+    expect(tiles.find(t => t.storedSessionId === 'stored-1')?.runtimeId).toBeUndefined()
+    expect(tiles.find(t => t.storedSessionId === 'stored-2')?.runtimeId).toBe('live-kept')
+  })
+
+  // The wiring cache is resumeTile's warm path: a leftover entry for the dead
+  // runtime would be handed straight back on the re-resume, rebinding the tile
+  // to the same reclaimed id the backend just forgot.
+  it('purges the wiring cache entry for the reclaimed runtime', async () => {
+    await mountStream()
+    wiringCache.set('live-gone', createClientSessionState('stored-1'))
+    wiringCache.set('live-kept', createClientSessionState('stored-2'))
+
+    reclaim('live-gone')
+
+    expect(wiringCache.has('live-gone')).toBe(false)
+    expect(wiringCache.has('live-kept')).toBe(true)
   })
 })

@@ -797,6 +797,129 @@ class TestOptionalSkillSourceBinaryAssets:
         assert bundle is None
 
 
+class TestOptionalSkillSourceLiveRepoFallback:
+    """Skills merged to main after the local install was cut must still be
+    searchable and installable without `hermes update` (live-repo fallback)."""
+
+    def _make_source(self, tmp_path, remote_dirs):
+        optional_root = tmp_path / "optional-skills"
+        optional_root.mkdir(exist_ok=True)
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+        src._remote_dirs = dict.fromkeys(remote_dirs, True)
+        return src
+
+    @staticmethod
+    def _fake_github_with_tree(remote_dirs, extra_files=()):
+        """MagicMock GitHubSource whose repo tree contains each skill dir's
+        SKILL.md plus any extra files, served byte-exact by _fetch_file_bytes."""
+        entries = []
+        contents = {}
+        for rel_dir in remote_dirs:
+            p = f"optional-skills/{rel_dir}/SKILL.md"
+            entries.append({"type": "blob", "path": p, "mode": "100644"})
+            contents[p] = b"---\nname: " + rel_dir.rsplit("/", 1)[-1].encode() + b"\n---\nBody"
+        for rel_path, data in extra_files:
+            entries.append({"type": "blob", "path": rel_path, "mode": "100644"})
+            contents[rel_path] = data
+        fake = MagicMock()
+        fake._get_repo_tree.return_value = ("main", entries)
+        fake._fetch_file_bytes.side_effect = lambda repo, path: contents.get(path)
+        return fake
+
+    def test_fetch_falls_back_to_live_repo_when_missing_locally(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+        src._github = self._fake_github_with_tree(
+            ["software-development/ast-grep"],
+            extra_files=[
+                ("optional-skills/software-development/ast-grep/install.sh", b"#!/bin/sh\n"),
+                ("optional-skills/software-development/ast-grep/LICENSE", b"MIT"),
+            ],
+        )
+
+        bundle = src.fetch("official/software-development/ast-grep")
+
+        assert bundle is not None
+        # Provenance is rewritten to official/builtin
+        assert bundle.source == "official"
+        assert bundle.identifier == "official/software-development/ast-grep"
+        assert bundle.trust_level == "builtin"
+        # FULL directory arrives — including root-level files GitHubSource.fetch drops
+        assert bundle.files["install.sh"] == b"#!/bin/sh\n"
+        assert bundle.files["LICENSE"] == b"MIT"
+
+    def test_fetch_bare_name_resolves_via_remote_tree(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+        src._github = self._fake_github_with_tree(["software-development/ast-grep"])
+
+        bundle = src.fetch("official/ast-grep")
+
+        assert bundle is not None
+        assert bundle.identifier == "official/software-development/ast-grep"
+
+    def test_fetch_ambiguous_bare_name_refuses(self, tmp_path):
+        src = self._make_source(
+            tmp_path, ["security/scanner", "devops/scanner"]
+        )
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src.fetch("official/scanner") is None
+        fake_github.fetch.assert_not_called()
+
+    def test_local_checkout_wins_over_remote(self, tmp_path):
+        src = self._make_source(tmp_path, ["research/local-skill"])
+        skill_dir = src._optional_dir / "research" / "local-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: local-skill\ndescription: local\n---\nBody",
+            encoding="utf-8",
+        )
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        bundle = src.fetch("official/research/local-skill")
+
+        assert bundle is not None
+        fake_github.fetch.assert_not_called()
+
+    def test_fallback_rejects_traversal_rel(self, tmp_path):
+        src = self._make_source(tmp_path, ["security/whatever"])
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src._fetch_from_live_repo("../../etc/passwd") is None
+        fake_github.fetch.assert_not_called()
+
+    def test_search_surfaces_remote_only_skills(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+
+        results = src.search("ast-grep")
+
+        assert any(
+            r.identifier == "official/software-development/ast-grep"
+            and r.trust_level == "builtin"
+            for r in results
+        )
+
+    def test_inspect_surfaces_remote_only_skill(self, tmp_path):
+        src = self._make_source(tmp_path, ["software-development/ast-grep"])
+
+        meta = src.inspect("official/software-development/ast-grep")
+
+        assert meta is not None
+        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.path == "optional-skills/software-development/ast-grep"
+
+    def test_offline_degrades_to_local_only(self, tmp_path):
+        src = self._make_source(tmp_path, [])
+        fake_github = MagicMock()
+        src._github = fake_github
+
+        assert src.fetch("official/never-heard-of-it") is None
+        assert src.search("never-heard-of-it") == []
+
+
 class TestQuarantineBundleBinaryAssets:
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
         import tools.skills_hub as hub
@@ -879,6 +1002,63 @@ class TestQuarantineBundleBinaryAssets:
                 quarantine_bundle(bundle)
 
         assert not absolute_target.exists()
+
+    def test_quarantine_bundle_rejects_ads_colon_file_paths(self, tmp_path):
+        """F-02: a bundle member with a colon in a component (``file.py:payload``)
+        is an NTFS Alternate Data Stream marker — the visible file passes
+        ``rglob``-based review while hidden, scanner-invisible bytes are written
+        into it. Reject it before it reaches disk, on any OS."""
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo",
+                files={
+                    "SKILL.md": "---\nname: demo\n---\n",
+                    "scripts/helper.py:payload": "print(24680)",
+                },
+                source="well-known",
+                identifier="well-known:https://example.com/.well-known/skills/demo",
+                trust_level="community",
+            )
+
+            with pytest.raises(ValueError, match="Unsafe bundle file path"):
+                quarantine_bundle(bundle)
+
+        assert not (tmp_path / "skills" / "scripts").exists()
+
+    def test_normalize_bundle_path_rejects_colon_anywhere(self):
+        """The colon guard covers the whole class, not just ``helper.py:payload``:
+        a colon in any component (leading drive letter, mid-path, or bare) is
+        rejected, while ordinary portable paths still normalize."""
+        from tools.skills_hub import _normalize_bundle_path
+
+        rejected = (
+            "scripts/helper.py:payload",   # trailing-component ADS marker
+            "scripts/a:b.py",              # mid-component colon
+            "a:b/scripts/helper.py",       # leading-component colon
+            "scripts/helper.py:",          # empty stream name
+            "C:",                          # bare Windows drive letter
+            "C:/Windows/System32",         # drive-qualified absolute-ish path
+        )
+        for bad in rejected:
+            with pytest.raises(ValueError, match="Unsafe bundle file path"):
+                _normalize_bundle_path(bad, field_name="bundle file path", allow_nested=True)
+
+        # Legitimate portable paths are unaffected.
+        assert _normalize_bundle_path(
+            "scripts/helper.py", field_name="bundle file path", allow_nested=True
+        ) == "scripts/helper.py"
+        assert _normalize_bundle_path(
+            "assets/data/sample.wav", field_name="bundle file path", allow_nested=True
+        ) == "assets/data/sample.wav"
 
 
 # ---------------------------------------------------------------------------

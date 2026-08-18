@@ -323,6 +323,14 @@ def _validate_operations(
                 replace_lines = [l.content for l in hunk.lines if l.prefix in {' ', '+'}]
                 replacement = '\n'.join(replace_lines)
 
+                if search_lines == replace_lines:
+                    # Degenerate hunk whose -/+ lines are identical: the apply
+                    # phase skips it as a no-op, so validation must not fail it
+                    # — fuzzy_find_and_replace would reject the identical
+                    # search/replacement with old_string/new_string guidance
+                    # that has no meaning in V4A patch mode.
+                    continue
+
                 new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(
                     simulated, search_pattern, replacement, replace_all=False
                 )

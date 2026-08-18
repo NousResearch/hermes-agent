@@ -158,16 +158,32 @@ GPT Image 2 maps to 4:3 presets rather than 16:9 because its minimum pixel count
 
 This translation happens in `_build_fal_payload()` — agent code never has to know about per-model schema differences.
 
-## Automatic Upscaling
+## Upscaling
 
-Upscaling via FAL's **Clarity Upscaler** is gated per-model:
+### Opt-in only
 
-| Model | Upscale? | Why |
-|---|---|---|
-| `fal-ai/flux-2-pro` | ✓ | Backward-compat (was the pre-picker default) |
-| All others | ✗ | Fast models would lose their sub-second value prop; hi-res models don't need it |
+No model upscales by default. Modern image models emit their best quality
+natively, and the available upscalers are *creative* enhancers (diffusion
+passes) that can subtly redraw content — degrading rendered text, faces, and
+fine detail. Upscaling only runs when the agent explicitly requests it.
 
-When upscaling runs, it uses these settings:
+### The `upscale` parameter (per-call opt-in)
+
+- `upscale: true` — chain a high-resolution pass after generation:
+
+| Backend | Upscaler |
+|---|---|
+| **FAL.ai** | Clarity Upscaler (2×, +$0.03/MP) |
+| **Krea** | Krea Enhance (2×, up to 8K ceiling) |
+| Other backends | no upscaler; native resolution returned |
+
+- `upscale: false` / omitted — native resolution (the default)
+
+`video_generate` also accepts `upscale: true` on the FAL backend, chaining
+ByteDance's **SeedVR2** video upscaler (2×, $0.001/MP of output video) after
+generation.
+
+When the FAL image pass runs, it uses these settings:
 
 | Setting | Value |
 |---|---|
@@ -177,14 +193,14 @@ When upscaling runs, it uses these settings:
 | Guidance scale | 4 |
 | Inference steps | 18 |
 
-If upscaling fails (network issue, rate limit), the original image is returned automatically.
+If upscaling fails (network issue, rate limit), the original image is returned automatically. The response reports `upscaled: true/false` so the agent knows which resolution it got.
 
 ## How It Works Internally
 
 1. **Model resolution** — `_resolve_fal_model()` reads `image_gen.model` from `config.yaml`, falls back to the `FAL_IMAGE_MODEL` env var, then to `fal-ai/flux-2/klein/9b`.
 2. **Payload building** — `_build_fal_payload()` translates your `aspect_ratio` into the model's native format (preset enum, aspect-ratio enum, or GPT literal), merges the model's default params, applies any caller overrides, then filters to the model's `supports` whitelist so unsupported keys are never sent.
 3. **Submission** — `_submit_fal_request()` routes via direct FAL credentials or the managed Nous gateway.
-4. **Upscaling** — runs only if the model's metadata has `upscale: True`.
+4. **Upscaling** — runs only when the agent passed `upscale: true`; every model's catalog default is off.
 5. **Delivery** — final image URL returned to the agent, which emits a `MEDIA:<url>` tag that platform adapters convert to native media.
 
 ## Debugging

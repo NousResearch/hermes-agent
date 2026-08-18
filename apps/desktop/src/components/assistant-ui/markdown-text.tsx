@@ -14,6 +14,7 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
@@ -422,6 +423,12 @@ const MARKDOWN_CONTAINER_CLASS_NAME = cn(
   'aui-md prose w-full max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
   'prose-p:leading-(--dt-line-height) prose-li:leading-(--dt-line-height)',
   'prose-headings:text-foreground prose-strong:text-foreground',
+  // Typography styles `pre` as a dark slab: light text (`--tw-prose-pre-code`,
+  // gray-200) on a dark bg. We strip its bg for our own light code card but its
+  // near-white foreground survives — invisible under Shiki's opaque token
+  // spans, but it's what un-highlighted text inherits (streaming delay,
+  // Suspense fallback, budget-exceeded blocks): unreadable in light mode.
+  'prose-pre:text-foreground',
   'prose-a:break-words prose-p:[overflow-wrap:anywhere]',
   'prose-li:marker:text-muted-foreground/70',
   'prose-code:rounded-[0.25rem] prose-code:px-[0.1875rem] prose-code:py-px prose-code:font-mono prose-code:text-[0.9em] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none',
@@ -596,23 +603,46 @@ function MarkdownTextSurface({
   }
 
   return (
-    <StreamdownTextPrimitive
-      components={components}
-      containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
-      containerProps={containerProps}
-      defer={defer}
-      lineNumbers={false}
-      mode="streaming"
-      // Incomplete-markdown repair runs in preprocessWithTailRepair on the
-      // full accumulated text; the built-in tail-bounded remend is disabled
-      // because a custom parseMarkdownIntoBlocksFn is supplied, and
-      // parseIncompleteMarkdown stays false to avoid a second full-text
-      // remend pass.
-      parseIncompleteMarkdown={false}
-      parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
-      plugins={plugins}
-      preprocess={preprocessWithTailRepair}
-    />
+    // Last line of defence for the whole markdown surface — assistant answers,
+    // reasoning, tool output and user bubbles all render through here.
+    //
+    // The pipeline is recursive in several places we don't own (parse5 →
+    // `hast-util-from-parse5` on raw HTML, `mdast-util-to-hast` on nested
+    // block structure), so pathological content can still throw
+    // `RangeError: Maximum call stack size exceeded` from inside Streamdown's
+    // render. `clampHtmlNestingDepth` removes the reachable cause we found;
+    // this catches whatever we haven't. Without it the throw unwinds past
+    // MessageRenderBoundary — which deliberately re-throws anything that isn't
+    // the transient assistant-ui lookup race — and blanks the entire workspace
+    // behind "workspace failed to render", on every reload, because the
+    // offending message is replayed from the session each time.
+    //
+    // Degrading to HugeTextFallback keeps the text readable and the rest of
+    // the transcript alive. The error stays latched for this surface: content
+    // that overflowed the stack will overflow again, and remounting per token
+    // during streaming would cost far more than the plain rendering saves.
+    <ErrorBoundary
+      fallback={() => <HugeTextFallback containerClassName={containerClassName} text={text} />}
+      label="markdown-render"
+    >
+      <StreamdownTextPrimitive
+        components={components}
+        containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
+        containerProps={containerProps}
+        defer={defer}
+        lineNumbers={false}
+        mode="streaming"
+        // Incomplete-markdown repair runs in preprocessWithTailRepair on the
+        // full accumulated text; the built-in tail-bounded remend is disabled
+        // because a custom parseMarkdownIntoBlocksFn is supplied, and
+        // parseIncompleteMarkdown stays false to avoid a second full-text
+        // remend pass.
+        parseIncompleteMarkdown={false}
+        parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
+        plugins={plugins}
+        preprocess={preprocessWithTailRepair}
+      />
+    </ErrorBoundary>
   )
 }
 

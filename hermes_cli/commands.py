@@ -18,10 +18,50 @@ import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
+
+# mtime-keyed memo of the /personality completion source. load_cli_config()
+# does a full YAML parse + deep merge of the built-in defaults on every call,
+# and the completer runs on every keystroke of /personality. The personalities
+# list only changes when the config file changes on disk, so keying on
+# path+mtime keeps the memo freshness-correct (same pattern as load_env and
+# _nous_auth_status_cache). Falls back to a fresh load when the file cannot
+# be stat'ed.
+_personalities_memo: Optional[
+    Tuple[Tuple[Optional[str], Optional[int], Optional[int]], Dict[str, Any]]
+] = None
+
+
+def _personalities_from_cli_config() -> Dict[str, Any]:
+    """Return the available personalities map, memoised on config mtime.
+
+    Wraps ``available_personalities(load_cli_config())`` — the single owner of
+    built-ins + user overrides. Built-ins are static for the process lifetime,
+    so keying on the config file's path+mtime+size keeps the memo
+    freshness-correct.
+    """
+    global _personalities_memo
+    from cli import load_cli_config
+    from hermes_cli.personality import available_personalities
+
+    try:
+        from hermes_cli.config import get_config_path
+
+        cfg_path = get_config_path()
+        st = cfg_path.stat()
+        sig = (str(cfg_path), st.st_mtime_ns, st.st_size)
+    except Exception:
+        sig = (None, None, None)
+
+    if _personalities_memo is not None and _personalities_memo[0] == sig:
+        return _personalities_memo[1]
+
+    personalities = available_personalities(load_cli_config())
+    _personalities_memo = (sig, personalities)
+    return personalities
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +154,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
-    CommandDef("save", "Save the current conversation", "Session",
-               cli_only=True),
+    CommandDef("save", "Export the current conversation (bare /save shows usage)", "Session",
+               args_hint="<json|md|html> [filename] [redact]"),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
     CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),
@@ -127,10 +167,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
+    CommandDef("worktree", "Show, list, or create isolated git worktrees for this session", "Session",
+               cli_only=True, args_hint="[new [name]|list]",
+               subcommands=("new", "list")),
     CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
                aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]"),
-    CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
-               args_hint="[number]"),
+    CommandDef("rollback", "List or restore filesystem checkpoints (restores keep your hand-edits; --all overrides)", "Session",
+               args_hint="[number] [--all]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
                cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
     CommandDef("export", "Export a profile (config, skills, theme) to a shareable archive", "Configuration",
@@ -139,6 +182,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<archive.tar.gz> [--name <name>]"),
     CommandDef("stop", "Kill all running background processes", "Session",
                busy_policy="interrupt_then_dispatch", busy_handler="stop"),
+    CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
+               gateway_only=True, args_hint="[reason | off]",
+               busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]", busy_policy="dispatch"),
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
@@ -165,6 +211,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch"),
     CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
                args_hint="[focus instructions]"),
+    CommandDef("loop", "Re-run a prompt on a recurring interval in this session", "Session",
+               aliases=("proactive",),
+               args_hint="[interval] <prompt> [--times N] [--until <condition>] | status | pause | resume | stop",
+               busy_policy="dispatch", busy_handler="loop"),
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>", busy_policy="reject", busy_handler="moa"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
@@ -298,9 +348,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
-    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
-               cli_only=True, args_hint="[connect|disconnect|status]",
-               subcommands=("connect", "disconnect", "status")),
+    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP, or switch to Browser Use mode", "Tools & Skills",
+               cli_only=True, args_hint="[connect|disconnect|status|use]",
+               subcommands=("connect", "disconnect", "status", "use")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 
@@ -926,11 +976,12 @@ def _collect_gateway_skill_entries(
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
         _skills_dir = str(SKILLS_DIR.resolve())
         _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
         # Build set of allowed directory prefixes: local skills dir + any
-        # user-configured ``skills.external_dirs``. Ensure each prefix ends
+        # user-configured ``skills.external_dirs`` + trusted project dirs.
+        # Ensure each prefix ends
         # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
         # Without this widening, external skills are visible in
         # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
@@ -938,6 +989,9 @@ def _collect_gateway_skill_entries(
         _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
         _allowed_prefixes.extend(
             str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
+        )
+        _allowed_prefixes.extend(
+            str(d).rstrip("/") + "/" for d in get_project_skills_dirs()
         )
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
@@ -1106,7 +1160,7 @@ def discord_skill_commands_by_category(
 
     try:
         from agent.skill_commands import get_skill_commands
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
         from tools.skills_tool import SKILLS_DIR
 
         _skills_dir = SKILLS_DIR.resolve()
@@ -1119,6 +1173,14 @@ def discord_skill_commands_by_category(
             for ext in get_external_skills_dirs():
                 try:
                     _scan_roots.append(_P(ext).resolve())
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        try:
+            for proj in get_project_skills_dirs():
+                try:
+                    _scan_roots.append(_P(proj).resolve())
                 except Exception:
                     continue
         except Exception:
@@ -1272,7 +1334,19 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - refine: on-demand memory/skill review; reached via /hermes refine on
 #     Slack. Added at the 50-cap — a native slot would clamp an existing
 #     native slash.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine"})
+#   - pause: global emergency stop; reached via /hermes pause [off] on
+#     Slack. Added at the 50-cap — a native slot would clamp /platform.
+#   - whoami: one-off identity lookup; reached via /hermes whoami on Slack.
+#     Demoted when /loop claimed a native slot (loop is a recurring
+#     interactive surface; whoami is a rare debug lookup) — without this
+#     entry /loop tips the registry past the 50-cap and silently clamps
+#     /platform, breaking Telegram parity.
+#   - platform: informational platform/environment lookup; reached via
+#     /hermes platform on Slack. Demoted when /save became gateway-available
+#     (session export is an interactive surface; platform is a rare
+#     informational lookup) — without this entry /save tips the registry
+#     past the 50-cap and silently clamps /platform, breaking parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1776,7 +1850,14 @@ class SlashCommandCompleter(Completer):
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:
-                        rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        try:
+                            rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        except ValueError:
+                            # Windows: relpath raises for paths on a different
+                            # mount than cwd — device paths (\\.\nul, \\.\con)
+                            # or another drive letter. One bad entry must not
+                            # crash the @ autocomplete event loop (#42016).
+                            continue
                         files.append(rel)
                     break
             except (subprocess.TimeoutExpired, OSError):
@@ -1922,14 +2003,19 @@ class SlashCommandCompleter(Completer):
         already = set(parts[1:] if trailing_space else parts[1:-1])
 
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import load_config_readonly
             from hermes_cli.tools_config import (
                 CONFIGURABLE_TOOLSETS,
                 _get_platform_tools,
                 _get_plugin_toolset_keys,
             )
 
-            config = load_config()
+            # Read-only path: the completer only inspects the config (toolset
+            # enable state + MCP server names) — it never mutates it. Use the
+            # readonly loader so the per-keystroke completion doesn't pay the
+            # defensive deepcopy (perf(agent) #74322 converted 29 call sites
+            # to the readonly loader; this per-keystroke site was missed).
+            config = load_config_readonly()
             enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 
             for ts_key, label, _desc in CONFIGURABLE_TOOLSETS:
@@ -2017,15 +2103,22 @@ class SlashCommandCompleter(Completer):
 
     @staticmethod
     def _personality_completions(sub_text: str, sub_lower: str):
-        """Yield completions for /personality from configured personalities."""
+        """Yield completions for /personality via hermes_cli.personality."""
         try:
-            # Resolve from the same source the runtime applies personalities —
-            # agent.personalities via the CLI config (which ships the built-ins).
-            # load_config()'s schema has no agent.personalities, so the completer
-            # used to come back empty even with personalities available.
+            # Single owner: built-ins + user overrides from agent.personalities.
             from cli import load_cli_config
+            from hermes_cli.personality import (
+                available_personalities,
+                describe_personality,
+            )
 
-            personalities = (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
+            # mtime-keyed memo: load_cli_config() does a full YAML parse + deep
+            # merge of the built-in defaults on every call, and this completer
+            # runs on every keystroke of /personality. The personalities list
+            # only changes when config.yaml changes on disk, so the memo stays
+            # freshness-correct (same pattern as load_env / _nous_auth_status_cache).
+            personalities = _personalities_from_cli_config()
+
             if "none".startswith(sub_lower) and "none" != sub_lower:
                 yield Completion(
                     "none",
@@ -2035,15 +2128,11 @@ class SlashCommandCompleter(Completer):
                 )
             for name, prompt in personalities.items():
                 if name.startswith(sub_lower) and name != sub_lower:
-                    if isinstance(prompt, dict):
-                        meta = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                    else:
-                        meta = str(prompt)[:50]
                     yield Completion(
                         name,
                         start_position=-len(sub_text),
                         display=name,
-                        display_meta=meta,
+                        display_meta=describe_personality(prompt),
                     )
         except Exception:
             pass

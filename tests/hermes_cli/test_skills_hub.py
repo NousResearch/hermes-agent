@@ -313,3 +313,84 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
 
+
+
+# ---------------------------------------------------------------------------
+# Local-edit protection in do_update (ported from paperclipai/paperclip#10978)
+# ---------------------------------------------------------------------------
+
+
+def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool):
+    """Install a fake hub skill on disk, optionally edit it, and wire mocks.
+
+    Returns (console_sink, installs_list).
+    """
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    from tools.skills_guard import content_hash
+
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "category" / "hub-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# hub-skill\noriginal\n")
+
+    recorded = content_hash(skill_dir)
+    if edit_after_install:
+        (skill_dir / "SKILL.md").write_text("# hub-skill\nuser edited\n")
+
+    monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: [{
+        "name": "hub-skill",
+        "identifier": "someone/hub-skill",
+        "source": "github",
+        "status": "update_available",
+    }])
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("L", (), {
+        "get_installed": lambda self, name: {
+            "install_path": "category/hub-skill",
+            "content_hash": recorded,
+        }
+    })())
+
+    installs = []
+    monkeypatch.setattr(
+        cli_hub, "do_install",
+        lambda identifier, category="", force=False, console=None, source_id=None:
+            installs.append(identifier),
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    return console, sink, installs
+
+
+def test_do_update_skips_locally_edited_skill(monkeypatch, tmp_path):
+    """A hub skill whose on-disk hash drifted from the lockfile is skipped."""
+    console, sink, installs = _update_env(monkeypatch, tmp_path, edit_after_install=True)
+
+    do_update(console=console)
+
+    assert installs == []
+    out = sink.getvalue()
+    assert "local edits" in out
+    assert "--force" in out
+
+
+def test_do_update_force_overwrites_local_edits(monkeypatch, tmp_path):
+    """--force restores the destructive replace for edited skills."""
+    console, sink, installs = _update_env(monkeypatch, tmp_path, edit_after_install=True)
+
+    do_update(console=console, force=True)
+
+    assert installs == ["someone/hub-skill"]
+    assert "local edits" not in sink.getvalue()
+
+
+def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
+    """No local drift -> the update proceeds without --force."""
+    console, sink, installs = _update_env(monkeypatch, tmp_path, edit_after_install=False)
+
+    do_update(console=console)
+
+    assert installs == ["someone/hub-skill"]
+    assert "Updated 1 skill(s)" in sink.getvalue()

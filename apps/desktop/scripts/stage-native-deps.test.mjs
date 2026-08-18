@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  stageGetWindows,
+  stageGetWindowsInto,
   stageNodePtyInto,
   classifyNativeBinary
 } from '../scripts/stage-native-deps.mjs'
@@ -356,4 +358,225 @@ test('validation rejects a staged binary with the wrong platform magic', () => {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+// ─── stageGetWindowsInto tests ──────────────────────────────────────
+
+/** Create a minimal fake get-windows source tree in a temp dir. */
+function makeFakeGetWindows(srcRoot, { version = '9.3.0', bindings = [] } = {}) {
+  fs.mkdirSync(join(srcRoot, 'lib'), { recursive: true })
+  fs.writeFileSync(join(srcRoot, 'package.json'), JSON.stringify({ name: 'get-windows', version, main: 'index.js' }))
+  fs.writeFileSync(join(srcRoot, 'index.js'), 'export {};')
+  fs.writeFileSync(join(srcRoot, 'lib', 'windows.js'), '// upstream pre-gyp loader')
+  fs.writeFileSync(join(srcRoot, 'main'), '#!/bin/sh\n')
+
+  for (const { dir, platform } of bindings) {
+    makeFakeNode(join(srcRoot, 'lib', 'binding', dir, 'node-get-windows.node'), platform)
+  }
+}
+
+test('win32 staging skips the darwin binding the tarball bundles on every platform', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    // The shape every real Windows build host has: the darwin binding
+    // committed into the published tarball PLUS the win32 binding
+    // node-pre-gyp downloaded at install time.
+    makeFakeGetWindows(srcRoot, {
+      bindings: [
+        { dir: 'napi-9-darwin-unknown-arm64', platform: 'darwin' },
+        { dir: 'napi-9-win32-unknown-x64', platform: 'win32' }
+      ]
+    })
+
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' })
+
+    assert.ok(existsSync(join(destRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node')))
+    assert.ok(!existsSync(join(destRoot, 'lib', 'binding', 'napi-9-darwin-unknown-arm64')))
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('win32 staging rejects a binding dir that claims win32 but holds a foreign binary', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot, {
+      bindings: [{ dir: 'napi-9-win32-unknown-x64', platform: 'darwin' }]
+    })
+
+    assert.throws(
+      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' }),
+      /expected win32, got darwin/
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('win32-x64 staging fails when only foreign bindings exist', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot, {
+      bindings: [{ dir: 'napi-9-darwin-unknown-arm64', platform: 'darwin' }]
+    })
+
+    assert.throws(
+      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' }),
+      /no win32-x64 prebuilt binding/
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('win32-arm64 staging omits incompatible bindings and keeps the fail-soft JS surface', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot, {
+      bindings: [
+        { dir: 'napi-9-darwin-unknown-arm64', platform: 'darwin' },
+        { dir: 'napi-9-win32-unknown-x64', platform: 'win32' }
+      ]
+    })
+
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'arm64' })
+
+    assert.ok(existsSync(join(destRoot, 'lib', 'windows.js')))
+    assert.ok(!existsSync(join(destRoot, 'lib', 'binding')))
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('win32 staging self-heals through the rebuild hook when the binding is missing', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    // The bricked state a blocked install script leaves behind: the package is
+    // present, lib/binding was never populated by node-pre-gyp.
+    makeFakeGetWindows(srcRoot, { bindings: [] })
+
+    let calls = 0
+    const rebuild = () => {
+      calls += 1
+      makeFakeNode(
+        join(srcRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'),
+        'win32'
+      )
+    }
+
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64', rebuild })
+
+    assert.equal(calls, 1)
+    assert.ok(
+      existsSync(join(destRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'))
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('win32 staging reports the recovery steps when the rebuild hook produces nothing', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot, { bindings: [] })
+
+    assert.throws(
+      () =>
+        stageGetWindowsInto(srcRoot, destRoot, {
+          platform: 'win32',
+          arch: 'x64',
+          rebuild: () => {}
+        }),
+      /npm rebuild get-windows/
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('staging refuses a get-windows version the lib/windows.js rewrite was not verified against', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot, { version: '9.4.0' })
+
+    assert.throws(
+      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' }),
+      /verified against 9\.3\.0/
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('darwin staging ships the Swift helper executable and the rewritten windows.js', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot)
+
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' })
+
+    assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+    const staged = fs.readFileSync(join(destRoot, 'lib', 'windows.js'), 'utf8')
+    assert.match(staged, /Rewritten by stage-native-deps\.mjs/)
+    assert.ok(!staged.includes('node-pre-gyp'), 'pre-gyp loader must not survive staging')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+// ─── stageGetWindows (optionalDependency gate) ──────────────────────
+//
+// get-windows is an optionalDependency: on Linux its node-pre-gyp install
+// script fails because no prebuilt exists. Windows ARM64 has the same package
+// state: its prebuilt URL returns 404 and npm may omit the optional dependency.
+// Staging skips those unsupported targets, but supported native targets remain
+// a hard failure when the package is missing.
+
+test('linux staging skips when get-windows is absent (optional dep skipped by npm)', () => {
+  assert.equal(stageGetWindows({ platform: 'linux', resolveRoot: () => null }), undefined)
+})
+
+test('darwin staging fails when get-windows is absent', () => {
+  assert.throws(
+    () => stageGetWindows({ platform: 'darwin', arch: 'arm64', resolveRoot: () => null }),
+    /get-windows is not installed/
+  )
+})
+
+test('win32-arm64 staging skips when get-windows is absent after its optional install fails', () => {
+  assert.equal(
+    stageGetWindows({ platform: 'win32', arch: 'arm64', resolveRoot: () => null }),
+    undefined
+  )
+})
+
+test('win32-x64 staging fails when get-windows is absent', () => {
+  assert.throws(
+    () => stageGetWindows({ platform: 'win32', arch: 'x64', resolveRoot: () => null }),
+    /get-windows is not installed/
+  )
 })

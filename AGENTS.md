@@ -797,11 +797,44 @@ as a side effect of importing `model_tools.py`. Code paths that read plugin
 state without importing `model_tools.py` first must call `discover_plugins()`
 explicitly (it's idempotent).
 
+#### Native plugin compatibility policy
+
+The canonical contract and deprecation policy live in
+`website/docs/developer-guide/plugins/index.md#native-plugin-compatibility-contract`.
+Compatibility is enforced as a behavior contract, not through a monolithic
+`PLUGIN_API_VERSION`, a manifest-wide native `api:` match, or version literals
+on unrelated payloads. Keep documented plugin surfaces additive:
+
+- add hook payload data as keyword fields; signature-inspect callbacks so old
+  narrow signatures receive only fields they declare, while `**kwargs`
+  callbacks receive the complete payload;
+- do not remove or rename `PluginContext` methods; make new parameters optional
+  with defaults and keyword-only where possible;
+- ignore unknown native manifest fields;
+- give new provider methods default implementations, and signature-inspect
+  optional callback kwargs rather than forwarding them unconditionally;
+- use a local schema version only for a capability with a wire or persisted
+  contract, and preserve old state/config/session replay or ship a migration.
+
+Deprecations require a once-per-process warning, a documented replacement and
+migration note, and at least two subsequent minor releases before removal.
+Compatibility tests must load frozen plugins through the real discovery path
+and assert outcomes. Do not replace these with exact registry/catalog counts,
+source-reading tests, or assertions that a global version literal changed.
+
 ### Memory-provider plugins (`plugins/memory/<name>/`)
 
 Separate discovery system for pluggable memory backends. Current built-in
 providers include **honcho, mem0, supermemory, byterover, hindsight,
 holographic, openviking, retaindb**.
+
+Discovery covers the same four sources as the general `PluginManager` —
+bundled, `$HERMES_HOME/plugins/`, `./.hermes/plugins/` (opt-in via
+`HERMES_ENABLE_PROJECT_PLUGINS`), and `hermes_agent.memory_providers` entry
+points — but with **bundled-first** precedence, the reverse of the general
+system's later-wins order: a memory provider is activated by name, so a
+dropped-in directory must not be able to shadow a shipped one. Discovery
+enumerates without importing; nothing runs until `memory.provider` names it.
 
 Each provider implements the `MemoryProvider` ABC (see `agent/memory_provider.py`)
 and is orchestrated by `agent/memory_manager.py`. Lifecycle hooks include
@@ -1135,15 +1168,16 @@ kanban task.
 - **CLI:** `hermes_cli/kanban.py` wires `hermes kanban` with verbs
   `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
   `unlink`, `comment`, `attach`, `attachments`, `attach-rm`, `complete`,
-  `block`, `unblock`, `archive`, `tail`, plus less-commonly-used `watch`,
-  `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-*`,
-  `dispatch`, `daemon`, `gc`.
+  `request-review`, `request-changes`, `reopen-review`, `block`, `unblock`, `archive`,
+  `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
+  `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
 - **Worker/orchestrator toolset:** `tools/kanban_tools.py` exposes
-  `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`,
-  `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_attach`,
-  `kanban_attach_url`, `kanban_attachments`; profiles that explicitly
-  enable the `kanban` toolset outside a dispatcher-spawned task also get
-  `kanban_list` and `kanban_unblock` for board routing.
+  `kanban_show`, `kanban_complete`, `kanban_request_review`,
+  `kanban_request_changes`, `kanban_block`,
+  `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`,
+  `kanban_attach`, `kanban_attach_url`, `kanban_attachments`; profiles that
+  explicitly enable the `kanban` toolset outside a dispatcher-spawned
+  task also get `kanban_list` and `kanban_unblock` for board routing.
 - **Dispatcher:** long-lived loop that (default every 60s) reclaims
   stale claims, promotes ready tasks, atomically claims, and spawns
   assigned profiles. Runs **inside the gateway** by default via
@@ -1190,9 +1224,10 @@ detects process completion and triggers a new agent turn. Control verbosity of b
 messages with `display.background_process_notifications`
 in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 
-- `all` — running-output updates + final message (default)
-- `result` — only the final completion message
-- `error` — only the final message when exit code != 0
+- `concise` — one-line status message on completion; failures append a short output tail (default)
+- `all` — running-output updates + final raw-output message
+- `result` — only the final raw-output completion message
+- `error` — only the final raw-output message when exit code != 0
 - `off` — no watcher messages at all
 
 ---
@@ -1253,6 +1288,30 @@ automatically scope to the active profile.
    This is intentional — it lets `hermes -p coder profile list` see all profiles regardless
    of which one is active.
 
+7. **Multiplex profile-scoped env reads MUST fail closed — never borrow from `os.environ`**
+   (`agent/secret_scope.py` contract; #72348, #86905). Under `gateway.multiplex_profiles`,
+   `os.environ` holds the **default profile's** values; a secondary profile's `.env` lives
+   only in its secret scope (installed per-turn by `_profile_runtime_scope`). Any
+   profile-level env config — credentials (`app_secret`, tokens) AND authorization
+   (`FEISHU_ALLOWED_USERS`, `{PLATFORM}_ALLOW_ALL_USERS`, `GATEWAY_ALLOW_ALL_USERS`,
+   `group_policy`, `allow_bots`, ...) — must be read scope-aware:
+   - Adapters: `_get_scoped_secret()` (canonical fail-closed copy in
+     `plugins/platforms/feishu/adapter.py`, #86905).
+   - Gateway authz: `_auth_env()` / `_platform_gate_env()` (`gateway/authz_mixin.py`).
+   Rules:
+   - Scope installed + multiplex active → a scoped miss returns the **default**.
+     NEVER fall through to `os.environ` — that leaks another profile's value and
+     silently breaks routing/admission (a leaked default allowlist skips the
+     allow-all check and rejects every secondary-profile sender, #86905).
+   - Unscoped default-profile path (`UnscopedSecretError`) and single-profile
+     deployments keep the `os.environ` read — there it IS the profile's own value.
+   - Authorization config is the sharpest edge: allowlist/allow-all leaks cause
+     silent rejections (or worse, fail-open) that only show up as missing replies.
+   - The `_get_scoped_secret` wrapper is copy-pasted across ~15 platform adapters —
+     when touching any of them, make sure the fail-closed semantics are present;
+     do not reintroduce the `except _UnscopedSecretError: val = os.getenv(...)`
+     fallback-after-miss shape.
+
 ## Known Pitfalls
 
 ### DO NOT hardcode `~/.hermes` paths
@@ -1260,12 +1319,8 @@ Use `get_hermes_home()` from `hermes_constants` for code paths. Use `display_her
 for user-facing print/log messages. Hardcoding `~/.hermes` breaks profiles — each profile
 has its own `HERMES_HOME` directory. This was the source of 5 bugs fixed in PR #3575.
 
-### DO NOT introduce new `simple_term_menu` usage
-Existing call sites in `hermes_cli/main.py` remain for legacy fallback only;
-the preferred UI is curses (stdlib) because `simple_term_menu` has
-ghost-duplication rendering bugs in tmux/iTerm2 with arrow keys. New
-interactive menus must use `hermes_cli/curses_ui.py` — see
-`hermes_cli/tools_config.py` for the canonical pattern.
+### All CLI menu-pickers MUST use curses.
+Interactive menus must use `hermes_cli/curses_ui.py`. See `hermes_cli/tools_config.py` for an example.
 
 ### DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code
 Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding: `f"\r{line}{' ' * pad}"`.
@@ -1368,6 +1423,44 @@ classifier fails open and runs everything).
 Any test that reads or asserts about `package.json`,
 `package-lock.json`, `tsconfig.json`, `.ts`/`.tsx`/`.js`/`.mjs`/`.cjs`
 source files configuration belongs in the JS (vitest) test suite, not in `tests/*.py`.
+
+### Don't fake the host OS
+
+Hermes supports Linux, macOS and native Windows, and plenty of its behaviour
+genuinely differs per host. Those differences are tested by running on the
+host, not by patching `sys.platform`.
+
+```python
+@pytest.mark.linux_only
+@pytest.mark.macos_only
+@pytest.mark.windows_only
+```
+
+Things that are host-independent can stay unmarked:
+
+- **Pure functions that take a platform as data** —
+  `hidden_windows_child_options(opts, is_windows=True)` is input→output, not a
+  fake host. (Contrast: setting a module-level `IS_WINDOWS` flag and then
+  calling `windows_detach_flags()` *is* a fake.)
+- **Declaration/packaging invariants** — "pyproject declares `tzdata` with a
+  `sys_platform == 'win32'` marker" asserts about a file, not about runtime.
+
+The line: **if the test needs the interpreter to believe it is on another OS
+in order to pass, it belongs on that OS.**
+When one test body walks several platforms in sequence, split it.
+Keep the host-native arm on the Linux lane and move the other arm into its own marked test.
+
+**Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
+decides which files the macOS/Windows lanes import by grepping for the marker
+*name*, and the lane then filters with `-m <marker>`. A test gated with
+`@pytest.mark.skipif(sys.platform != "win32")` therefore skips on Linux AND is
+never imported on the Windows lane — it runs on no host at all, silently. The
+same trap catches a file-local alias (`windows_only = pytest.mark.skipif(...)`):
+the grep matches the name, so the file *is* listed, but `-m windows_only`
+deselects every test in it and the lane reports green over zero coverage.
+Equally, don't `pytest.skip()` the non-host rows of a `@parametrize` over
+platforms — split it into one marked test per OS, or only the host's row ever
+executes.
 
 ### Don't write change-detector tests
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-03T22:03:15Z",
+  "updated_at": "2026-08-14T17:59:48Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -81,16 +81,20 @@
           "description": ""
         },
         {
-          "id": "google/gemini-3.6-flash",
+          "id": "google/gemini-3.7-flash",
           "description": ""
         },
         {
-          "id": "x-ai/grok-4.5",
+          "id": "x-ai/grok-4.6",
           "description": ""
         },
         {
           "id": "deepseek/deepseek-v4-pro",
           "description": ""
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro-0813",
+          "description": "dated snapshot of v4-pro"
         },
         {
           "id": "deepseek/deepseek-v4-flash",
@@ -223,13 +227,16 @@
           "id": "google/gemini-3.1-pro-preview"
         },
         {
-          "id": "google/gemini-3.6-flash"
+          "id": "google/gemini-3.7-flash"
         },
         {
-          "id": "x-ai/grok-4.5"
+          "id": "x-ai/grok-4.6"
         },
         {
           "id": "deepseek/deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro-0813"
         },
         {
           "id": "deepseek/deepseek-v4-flash"

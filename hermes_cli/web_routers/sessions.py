@@ -13,11 +13,14 @@ the late-binding seam in :mod:`hermes_cli.web_deps` so tests that
 """
 
 import asyncio  # noqa: F401 — used by handlers
+import json
 import logging
 import time  # noqa: F401
 from typing import Any, Dict, List, Optional  # noqa: F401
 
 from fastapi import APIRouter, HTTPException, Query, Request  # noqa: F401
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 
 from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
@@ -601,7 +604,15 @@ async def get_session_messages(
     profile: Optional[str] = None,
     limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0),
+    order: Optional[str] = Query(None),
+    include_compacted: bool = Query(False),
 ):
+    if order not in (None, "oldest", "latest"):
+        raise HTTPException(
+            status_code=400,
+            detail="order must be one of: oldest, latest",
+        )
+
     def _read():
         db = _open_session_db_for_profile(profile, read_only=True)
         try:
@@ -609,9 +620,21 @@ async def get_session_messages(
             if not sid:
                 return None
             sid = db.resolve_resume_session_id(sid)
-            # Clamp limit to prevent abuse (max 500 per page)
-            _limit = min(limit, 500) if limit is not None else None
-            return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
+            # Always page this endpoint. An omitted limit used to load an
+            # entire transcript, which can be hundreds of thousands of rows
+            # for a runaway session and exhaust the dashboard process. Keep
+            # explicit pagination anchored at the start, while the default
+            # dashboard view returns the latest page in chronological order.
+            default_page = limit is None
+            latest_page = order == "latest" or (order is None and default_page)
+            _limit = 500 if default_page else min(limit, 500)
+            return sid, _limit, db.get_messages(
+                sid,
+                limit=_limit,
+                offset=offset,
+                latest=latest_page,
+                include_compacted=include_compacted,
+            )
         finally:
             db.close()
 
@@ -625,6 +648,7 @@ async def get_session_messages(
         "pagination": {
             "limit": _limit,
             "offset": offset,
+            "order": order or ("latest" if limit is None else "oldest"),
             "returned": len(messages),
         },
     }
@@ -660,11 +684,13 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
 
 @manage_router.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename):
-    """Update a session: rename, archive, and/or pin it.
+    """Update a session: rename, archive, pin, and/or mark read/unread.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
     restores the session; ``pinned`` sets the durable keep flag (exempts the
-    session from the auto-archive sweep). Any field may be omitted. ``profile``
+    session from the auto-archive sweep); ``unread`` toggles the read-state
+    watermark (True = explicitly unread, False = read up to now — see
+    ``SessionDB.set_session_read``). Any field may be omitted. ``profile``
     targets another profile's session.
     """
     db = _open_session_db_for_profile(body.profile, read_only=False)
@@ -672,10 +698,15 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        if body.title is None and body.archived is None and body.pinned is None:
+        if (
+            body.title is None
+            and body.archived is None
+            and body.pinned is None
+            and body.unread is None
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update; provide 'title', 'archived', and/or 'pinned'.",
+                detail="Nothing to update; provide 'title', 'archived', 'pinned', and/or 'unread'.",
             )
         if body.title is not None:
             try:
@@ -687,11 +718,15 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
             db.set_session_archived(sid, body.archived)
         if body.pinned is not None:
             db.set_session_pinned(sid, body.pinned)
+        if body.unread is not None:
+            db.set_session_read(sid, read=not body.unread)
         result = {"ok": True, "title": db.get_session_title(sid) or ""}
         if body.archived is not None:
             result["archived"] = bool(body.archived)
         if body.pinned is not None:
             result["pinned"] = bool(body.pinned)
+        if body.unread is not None:
+            result["unread"] = bool(body.unread)
         return result
     finally:
         db.close()
@@ -699,19 +734,64 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
 
 @manage_router.get("/api/sessions/{session_id}/export")
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
-    """Export a single session (metadata + messages) as JSON."""
-    def _export():
+    """Stream a single session (metadata + messages) as JSON."""
+    def _prepare_export():
         db = _open_session_db_for_profile(profile, read_only=True)
         try:
             sid = db.resolve_session_id(session_id)
-            return db.export_session(sid) if sid else None
+            return (sid, db.get_session(sid)) if sid else None
         finally:
             db.close()
 
-    data = await asyncio.to_thread(_export)
-    if data is None:
+    prepared = await asyncio.to_thread(_prepare_export)
+    if prepared is None or prepared[1] is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return data
+
+    sid, session = prepared
+
+    def _stream_export():
+        db = _open_session_db_for_profile(profile, read_only=True)
+        try:
+            metadata = json.dumps(
+                jsonable_encoder(session),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            yield metadata[:-1] + ',"messages":['
+
+            # Keyset pagination (id > last_seen): O(n) total over the
+            # transcript, vs OFFSET's O(n²) on huge sessions.
+            last_id = None
+            first = True
+            while True:
+                messages = db.get_messages(
+                    sid,
+                    limit=500,
+                    after_id=last_id if last_id is not None else 0,
+                )
+                for message in messages:
+                    if not first:
+                        yield ","
+                    yield json.dumps(
+                        jsonable_encoder(message),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    first = False
+                if len(messages) < 500:
+                    break
+                last_id = messages[-1].get("id")
+                if last_id is None:
+                    break  # defensive: cannot keyset without row ids
+
+            yield "]}"
+        finally:
+            db.close()
+
+    return StreamingResponse(
+        _stream_export(),
+        media_type="application/json",
+    )
 
 
 @manage_router.post("/api/sessions/prune")

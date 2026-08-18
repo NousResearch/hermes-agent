@@ -192,7 +192,16 @@ def _install_fake_tools_package():
         def cleanup(self):
             return None
 
-    sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyEnvironment)
+    class _DummyConnectionError(Exception):
+        def __init__(self, message="", backend="", detail="", *args):
+            super().__init__(message, *args)
+            self.backend = backend
+            self.detail = detail
+
+    sys.modules["tools.environments.base"] = types.SimpleNamespace(
+        BaseEnvironment=_DummyEnvironment,
+        EnvironmentConnectionError=_DummyConnectionError,
+    )
     sys.modules["tools.environments.local"] = types.SimpleNamespace(LocalEnvironment=_DummyEnvironment)
     sys.modules["tools.environments.singularity"] = types.SimpleNamespace(
         _get_scratch_dir=lambda: Path(tempfile.gettempdir()),

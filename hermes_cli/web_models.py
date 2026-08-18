@@ -233,6 +233,18 @@ class GitFileBody(BaseModel):
     file: Optional[str] = None
 
 
+class GitPrListBody(BaseModel):
+    path: str
+    branches: List[str] = []
+    # PRs a session recovered from its transcript, which we know by number
+    # rather than by the branch it came from.
+    numbers: List[int] = []
+
+
+class SessionPrScanBody(BaseModel):
+    ids: List[str] = []
+
+
 class GitCommitBody(BaseModel):
     path: str
     message: str
@@ -321,6 +333,10 @@ class SessionRename(BaseModel):
     # Durable "keep" flag mirrored from the Desktop sidebar's pins; pinned
     # sessions are exempt from the sessions.auto_archive stale sweep.
     pinned: Optional[bool] = None
+    # Read-state watermark toggle (sessions.last_read_at): True marks the
+    # session explicitly unread, False marks it read up to now. Mirrored from
+    # the Desktop sidebar's "Mark as unread"/"Mark as read". None = leave alone.
+    unread: Optional[bool] = None
     # Mutate a session belonging to another profile (opens its state.db). Omit
     # for the current/default profile.
     profile: Optional[str] = None

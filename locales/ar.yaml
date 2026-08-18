@@ -192,6 +192,8 @@ gateway:
       status_default:      "تغيّرت الحالة"
       status_joiner:       "، "
       message:             "[kanban] المهمة {task_id} {status}.\nالعنوان: {title}\nالمُكلَّف: @{assignee}\nاللوحة: {board}\n\nراجع النتيجة أو قرّر الخطوة التالية."
+      handoff:             "Result: {summary}"
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "لا توجد شخصيات مُهيّأة في `{path}/config.yaml`"
@@ -297,6 +299,7 @@ gateway:
     none_found:            "لم يُعثر على نقاط تحقّق لـ {cwd}"
     invalid_number:        "رقم نقطة تحقّق غير صالح. استخدم 1-{max}."
     restored:              "✅ استُعيد إلى نقطة التحقّق {hash}: {reason}\nحُفظت لقطة ما قبل التراجع تلقائيًا."
+    kept_user_edits:       "↷ احتُفظ بتعديلاتك اليدوية: {files}\nاستخدم ‎/rollback <N> --all لاستعادتها أيضًا."
     restore_failed:        "❌ {error}"
 
   diff:

@@ -211,7 +211,10 @@ def load_env() -> Dict[str, str]:
     if not env_path.exists():
         return env_vars
 
-    with env_path.open(encoding="utf-8") as f:
+    # utf-8-sig: users hand-edit .env in Notepad, which prepends a BOM that
+    # would otherwise glue U+FEFF onto the first key name (same dialect as
+    # the canonical readers in hermes_cli/config.py).
+    with env_path.open(encoding="utf-8-sig", errors="replace") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
@@ -682,7 +685,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     signature changes (dir/category mtimes or the disabled-set) and expires
     after a short TTL to bound staleness from in-place SKILL.md edits.
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_external_skills_dirs,
+        get_project_skills_dirs,
+        iter_skill_index_files,
+    )
 
     cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
 
@@ -692,8 +699,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     # Collect directories to scan — same resolution as the scan loop below
     # (_skills_dir() resolves the LIVE profile HERMES_HOME; the module-level
-    # SKILLS_DIR can be stale in long-lived runtimes).
-    dirs_to_scan: list = []
+    # SKILLS_DIR can be stale in long-lived runtimes). Trusted project-local
+    # dirs come FIRST: first-wins dedup below gives them precedence over
+    # same-named local/external skills.
+    dirs_to_scan: list = list(get_project_skills_dirs())
     active_skills_dir = _skills_dir()
     if active_skills_dir.exists():
         dirs_to_scan.append(active_skills_dir)
@@ -726,7 +735,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             skill_dir = skill_md.parent
 
             try:
-                content = skill_md.read_text(encoding="utf-8")[:4000]
+                content = skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000]
                 frontmatter, body = _parse_frontmatter(content)
 
                 if not skill_matches_platform(frontmatter):
@@ -801,18 +810,22 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         active_skills_dir = _skills_dir()
         if not active_skills_dir.exists():
             active_skills_dir.mkdir(parents=True, exist_ok=True)
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
-                },
-                ensure_ascii=False,
-            )
 
         # Find all skills
         all_skills = _find_all_skills()
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            discover_plugins()
+            for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
+                frontmatter = plugin_skill.pop("frontmatter", {})
+                if not skill_matches_platform(frontmatter):
+                    continue
+                if _is_skill_disabled(plugin_skill["name"]):
+                    continue
+                all_skills.append(plugin_skill)
+        except Exception:
+            logger.debug("Plugin skill listing failed", exc_info=True)
 
         if not all_skills:
             return json.dumps(
@@ -859,6 +872,7 @@ def _serve_plugin_skill(
     skill_md: Path,
     namespace: str,
     bare: str,
+    file_path: str | None = None,
     *,
     preprocess: bool = True,
     session_id: str | None = None,
@@ -879,7 +893,12 @@ def _serve_plugin_skill(
         )
 
     try:
-        content = skill_md.read_text(encoding="utf-8")
+        # utf-8-sig + errors="replace": SKILL.md files are user-authored and
+        # sometimes carry a Notepad BOM or stray non-UTF-8 bytes. Pinning
+        # UTF-8 with replacement keeps skill_view deterministic across
+        # platforms — falling back to the machine locale (cp1252/GBK) would
+        # make the same skill render differently per host (see PR #51701).
+        content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
     except Exception as e:
         return json.dumps(
             {"success": False, "error": f"Failed to read skill '{namespace}:{bare}': {e}"},
@@ -892,12 +911,75 @@ def _serve_plugin_skill(
     except Exception:
         pass
 
+    qualified_name = f"{namespace}:{bare}"
+    if _is_skill_disabled(qualified_name):
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Skill '{qualified_name}' is disabled.",
+            },
+            ensure_ascii=False,
+        )
+
     if not skill_matches_platform(parsed_frontmatter):
         return json.dumps(
             {
                 "success": False,
-                "error": f"Skill '{namespace}:{bare}' is not supported on this platform.",
+                "error": f"Skill '{qualified_name}' is not supported on this platform.",
                 "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
+            },
+            ensure_ascii=False,
+        )
+
+    if file_path:
+        from tools.path_security import has_traversal_component, validate_within_dir
+
+        skill_root = skill_md.parent
+        if has_traversal_component(file_path):
+            return json.dumps(
+                {"success": False, "error": "Path traversal ('..') is not allowed."},
+                ensure_ascii=False,
+            )
+        target = skill_root / file_path
+        path_error = validate_within_dir(target, skill_root)
+        if path_error:
+            return json.dumps(
+                {"success": False, "error": path_error}, ensure_ascii=False
+            )
+        if not target.is_file():
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"File '{file_path}' not found in skill '{namespace}:{bare}'.",
+                },
+                ensure_ascii=False,
+            )
+        try:
+            content = target.read_text(encoding="utf-8-sig", errors="replace")
+        except UnicodeDecodeError:
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": f"{namespace}:{bare}",
+                    "file": file_path,
+                    "content": f"[Binary file: {target.name}, size: {target.stat().st_size} bytes]",
+                    "is_binary": True,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            return json.dumps(
+                {"success": False, "error": f"Failed to read '{file_path}': {exc}"},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "success": True,
+                "name": f"{namespace}:{bare}",
+                "file": file_path,
+                "content": content,
+                "file_type": target.suffix,
+                "_source_path": str(target),
             },
             ensure_ascii=False,
         )
@@ -952,11 +1034,30 @@ def _serve_plugin_skill(
             "name": f"{namespace}:{bare}",
             "content": f"{banner}{rendered_content}" if banner else rendered_content,
             "description": description,
-            "linked_files": None,
+            "linked_files": _plugin_skill_linked_files(skill_md.parent),
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
         },
         ensure_ascii=False,
     )
+
+
+def _plugin_skill_linked_files(skill_root: Path) -> Dict[str, List[str]] | None:
+    from tools.path_security import validate_within_dir
+
+    linked: Dict[str, List[str]] = {}
+    for category in ("references", "templates", "assets", "scripts"):
+        base = skill_root / category
+        if not base.is_dir():
+            continue
+        files = [
+            str(path.relative_to(skill_root))
+            for path in sorted(base.rglob("*"))
+            if path.is_file()
+            and validate_within_dir(path, skill_root) is None
+        ]
+        if files:
+            linked[category] = files
+    return linked or None
 
 
 def skill_view(
@@ -1019,7 +1120,41 @@ def skill_view(
 
             discover_plugins()  # idempotent
             pm = get_plugin_manager()
+            active_memory_provider = None
+            try:
+                from plugins.memory import (
+                    _get_active_memory_provider,
+                    _prune_inactive_memory_provider_skills,
+                )
+
+                active_memory_provider = _get_active_memory_provider()
+                _prune_inactive_memory_provider_skills(active_memory_provider)
+            except Exception as exc:
+                logger.debug(
+                    "Failed pruning inactive memory-provider skills: %s",
+                    exc,
+                )
+
             plugin_skill_md = pm.find_plugin_skill(name)
+
+            # Memory provider plugins are loaded through plugins.memory rather
+            # than the general PluginManager. If a memory provider shim also
+            # registers skills, load the namespaced provider once so its
+            # collector can forward those skills into the plugin skill registry
+            # before declaring the qualified skill missing.
+            if plugin_skill_md is None:
+                try:
+                    from plugins.memory import load_memory_provider
+
+                    if namespace == active_memory_provider:
+                        load_memory_provider(namespace)
+                        plugin_skill_md = pm.find_plugin_skill(name)
+                except Exception as exc:
+                    logger.debug(
+                        "Failed lazy memory-provider skill load for %s: %s",
+                        namespace,
+                        exc,
+                    )
 
             if plugin_skill_md is not None:
                 if not plugin_skill_md.exists():
@@ -1041,6 +1176,7 @@ def skill_view(
                     plugin_skill_md,
                     namespace,
                     bare,
+                    file_path=file_path,
                     preprocess=preprocess,
                     session_id=task_id,
                 )
@@ -1064,7 +1200,7 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
 
         # The categorized fall-through form (namespace/bare) joins onto each
         # search dir too; re-validate it since `bare` is not namespace-checked.
@@ -1080,8 +1216,11 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
-        # Build list of all skill directories to search
-        all_dirs = []
+        # Build list of all skill directories to search. Project dirs first —
+        # they're the highest-precedence tier and the collision resolver
+        # below uses this ordering.
+        project_dirs = get_project_skills_dirs()
+        all_dirs = list(project_dirs)
         active_skills_dir = _skills_dir()
         if active_skills_dir.exists():
             all_dirs.append(active_skills_dir)
@@ -1163,7 +1302,7 @@ def skill_view(
                     _record(found_skill_md.parent, found_skill_md)
                     continue
                 try:
-                    fm_content = found_skill_md.read_text(encoding="utf-8")
+                    fm_content = found_skill_md.read_text(encoding="utf-8-sig", errors="replace")
                     fm, _ = _parse_frontmatter(fm_content)
                 except Exception:
                     fm = {}
@@ -1179,6 +1318,30 @@ def skill_view(
                     found_md
                 ):
                     _record(None, found_md)
+
+        if len(candidates) > 1 and project_dirs:
+            # Cross-tier collision resolution: a project skill intentionally
+            # overrides a same-named local/external skill, so when at least
+            # one candidate lives under a trusted project dir, narrow to
+            # those. Ambiguity WITHIN the project tier still refuses below.
+            def _in_project(smd: Path) -> bool:
+                try:
+                    resolved = smd.resolve()
+                except Exception:
+                    resolved = smd
+                for pd in project_dirs:
+                    try:
+                        resolved.relative_to(pd)
+                        return True
+                    except ValueError:
+                        continue
+                return False
+
+            project_candidates = [
+                (sd, smd) for sd, smd in candidates if _in_project(smd)
+            ]
+            if project_candidates:
+                candidates = project_candidates
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
@@ -1221,7 +1384,7 @@ def skill_view(
 
         # Read the file once — reused for platform check and main content below
         try:
-            content = skill_md.read_text(encoding="utf-8")
+            content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
         except Exception as e:
             return json.dumps(
                 {
@@ -1232,11 +1395,12 @@ def skill_view(
             )
 
         # Security: warn if skill is loaded from outside trusted directories
-        # (local skills dir + configured external_dirs are all trusted)
+        # (project dirs + local skills dir + configured external_dirs — i.e.
+        # everything in all_dirs — are trusted)
         _outside_skills_dir = True
         _trusted_dirs = [active_skills_dir.resolve()]
         try:
-            _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
+            _trusted_dirs.extend(d.resolve() for d in all_dirs)
         except Exception:
             pass
         for _td in _trusted_dirs:
@@ -1366,7 +1530,7 @@ def skill_view(
 
             # Read the file content
             try:
-                content = target_file.read_text(encoding="utf-8")
+                content = target_file.read_text(encoding="utf-8-sig", errors="replace")
             except UnicodeDecodeError:
                 # Binary file - return info about it instead
                 return json.dumps(
@@ -1593,7 +1757,7 @@ def skill_view(
                                     / "_org"
                                     / prov_org
                                     / ORG_PROVENANCE_FILE
-                                ).read_text(encoding="utf-8")
+                                ).read_text(encoding="utf-8-sig", errors="replace")
                             )
                             author = str(
                                 prov.get("author_device")

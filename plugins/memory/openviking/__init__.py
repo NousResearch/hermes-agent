@@ -451,8 +451,39 @@ class _VikingClient:
         )
         return self._parse_response(resp)
 
+    def _authenticated_json(self, path: str) -> dict:
+        """JSON GET with the configured API key (no tenant headers).
+
+        Used only after an anonymous probe is rejected for missing auth, so we
+        still avoid disclosing credentials to a server that answers health
+        anonymously.
+        """
+        headers = self._headers(include_tenant=False)
+        resp = self._httpx.get(
+            self._url(path), headers=headers, timeout=3.0
+        )
+        return self._parse_response(resp)
+
+    @staticmethod
+    def _health_requires_credentials(exc: Exception) -> bool:
+        """True when /health rejected the anonymous probe for auth reasons."""
+        return _status_code_from_error(exc) in {401, 403}
+
     def health_payload(self) -> dict:
-        return self._anonymous_json("/health")
+        """Fetch ``GET /health``.
+
+        Prefer an anonymous probe so credentials are never sent to an unknown
+        host during identity checks. Hosted OpenViking (e.g. Volcengine cloud)
+        requires authentication on ``/health``; when an API key is configured
+        and the anonymous call is rejected for auth, retry once with that key
+        so automatic memory mirroring is not silently disabled (#78410).
+        """
+        try:
+            return self._anonymous_json("/health")
+        except _OpenVikingHTTPError as exc:
+            if not self._api_key or not self._health_requires_credentials(exc):
+                raise
+            return self._authenticated_json("/health")
 
     def openapi_payload(self) -> dict:
         return self._anonymous_json("/openapi.json")
@@ -1186,7 +1217,15 @@ def _env_line_safe(value: Any) -> str:
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     remove_set = set(remove_keys) - set(env_writes)
-    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    # A Windows editor can leave a UTF-8 BOM, which prevents the first key
+    # from matching, or save the file as cp1252, which makes a strict UTF-8
+    # read fail. Strip the BOM and round-trip undecodable bytes unchanged so
+    # updating one credential cannot corrupt an unrelated value.
+    existing_lines = (
+        env_path.read_text(encoding="utf-8-sig", errors="surrogateescape").splitlines()
+        if env_path.exists()
+        else []
+    )
     updated_keys = set()
     new_lines = []
     for line in existing_lines:
@@ -1203,7 +1242,11 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
             new_lines.append(f"{key}={_env_line_safe(val)}")
     # Pre-create with 0600 so secrets are never briefly world-readable.
     _precreate_secret_file(env_path)
-    env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+    env_path.write_text(
+        "\n".join(new_lines) + ("\n" if new_lines else ""),
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
     _restrict_secret_file_permissions(env_path)
 
 
@@ -1505,6 +1548,18 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
     log_path = _openviking_server_log_path()
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Do not let the server child inherit this process's PYTHONPATH.
+        # The Hermes Desktop backend can include the Hermes venv's
+        # site-packages in PYTHONPATH. If inherited, openviking-server would
+        # import aiohttp and friends from the Hermes venv instead of its own
+        # (its venv's site-packages are shadowed because PYTHONPATH precedes
+        # them) —
+        # and on Windows the loaded DLLs then lock the Hermes venv,
+        # aborting `hermes update` with access-denied on .pyd files.
+        # Strip PYTHONPATH so the server resolves packages from its own
+        # venv. (#78153)
+        child_env = os.environ.copy()
+        child_env.pop("PYTHONPATH", None)
         with log_path.open("ab") as log_file:
             subprocess.Popen(
                 [server_cmd, "--host", host, "--port", str(port)],
@@ -1512,6 +1567,7 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
                 stderr=log_file,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                env=child_env,
             )
     except Exception as e:
         return _LOCAL_SERVER_FAILED, f"Could not start openviking-server: {e}"

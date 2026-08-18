@@ -2,10 +2,19 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
+  // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
+  getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
+  getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
+  // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of
+  // getGatewayWsUrl, minted against that connection's backend.
+  getGatewayWsUrlFor: payload => ipcRenderer.invoke('hermes:gateway:ws-url-for', payload),
+  // Union agent roster across every registered connection.
+  getAgentRoster: () => ipcRenderer.invoke('hermes:agents:roster'),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
+  openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
   wakeIndicator: {
@@ -44,6 +53,42 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:pet-overlay:control', listener)
 
       return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
+    }
+  },
+  // HUD mode: the chrome-free floating chat. A full app renderer (own gateway)
+  // sized as a floating bar, so it mounts the real composer. Main owns the
+  // window; `onChanged` keeps every window's toggle truthful.
+  hud: {
+    open: request => ipcRenderer.invoke('hermes:hud:open', request),
+    close: () => ipcRenderer.invoke('hermes:hud:close'),
+    setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
+    moveBy: delta => ipcRenderer.send('hermes:hud:move-by', delta),
+    setBounds: bounds => ipcRenderer.send('hermes:hud:set-bounds', bounds),
+    setVibrancy: on => ipcRenderer.invoke('hermes:hud:vibrancy', on),
+    // The HUD tells main which session it is on; main hands that back to the
+    // app window when the HUD closes, so the app can re-home onto it.
+    setSession: sessionId => ipcRenderer.send('hermes:hud:session', sessionId),
+    onGoto: callback => {
+      const listener = (_event, sessionId) => callback(sessionId)
+      ipcRenderer.on('hermes:hud:goto', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:goto', listener)
+    },
+    onChanged: callback => {
+      const listener = (_event, state) => callback(state)
+      ipcRenderer.on('hermes:hud:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:changed', listener)
+    },
+    // Linux only, and silent elsewhere: where the cursor is, in page
+    // coordinates, or null when it has left the window. Stands in for the
+    // mousemove that `setIgnoreMouseEvents(true, { forward: true })` delivers on
+    // macOS and Windows but not here.
+    onCursor: callback => {
+      const listener = (_event, point) => callback(point)
+      ipcRenderer.on('hermes:hud:cursor', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:cursor', listener)
     }
   },
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
@@ -86,6 +131,25 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),
   testConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:test', payload),
+  // v2 multi-connection registry: named agent sources (local / remote / cloud / ssh).
+  connections: {
+    list: () => ipcRenderer.invoke('hermes:connections:list'),
+    save: payload => ipcRenderer.invoke('hermes:connections:save', payload),
+    remove: id => ipcRenderer.invoke('hermes:connections:remove', id),
+    setPrimary: id => ipcRenderer.invoke('hermes:connections:set-primary', id),
+    test: id => ipcRenderer.invoke('hermes:connections:test', id),
+    // Fan out `hermes update` to every eligible registered connection.
+    updateAll: () => ipcRenderer.invoke('hermes:connections:update-all'),
+    // Registry lifecycle push (main → renderer): a connection was removed or
+    // materially edited, so secondaries scoped to it must be disposed (and,
+    // for edits, re-dialed at the new target).
+    onChanged: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:connections:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:connections:changed', listener)
+    }
+  },
   sshConfigHosts: () => ipcRenderer.invoke('hermes:ssh-config:hosts'),
   sshResolveHost: host => ipcRenderer.invoke('hermes:ssh-config:resolve', host),
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
@@ -107,6 +171,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
+  readWindowBelow: () => ipcRenderer.invoke('hermes:window:readBelow'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
   readFileDataUrlForAttach: filePath => ipcRenderer.invoke('hermes:readFileDataUrlForAttach', filePath),
   dataUrlReadMax: {
@@ -118,6 +183,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   selectSavePath: options => ipcRenderer.invoke('hermes:selectSavePath', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
   readClipboard: () => ipcRenderer.invoke('hermes:readClipboard'),
+  saveGatewayFile: payload => ipcRenderer.invoke('hermes:saveGatewayFile', payload),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),
   saveImageBuffer: (data, ext) => ipcRenderer.invoke('hermes:saveImageBuffer', { data, ext }),
   saveClipboardImage: () => ipcRenderer.invoke('hermes:saveClipboardImage'),
@@ -137,6 +203,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
+  setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),
@@ -162,11 +229,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
+  // Fire-and-forget: persists a renderer error-boundary catch (with component
+  // stack) to desktop.log so crashes survive the window (#79428).
+  reportRendererError: report => ipcRenderer.send('hermes:logs:renderer-error', report),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
+  agentPluginsRoot: () => ipcRenderer.invoke('hermes:fs:agentPluginsRoot'),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
@@ -193,6 +264,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       commitContext: repoPath => ipcRenderer.invoke('hermes:git:review:commitContext', repoPath),
       push: repoPath => ipcRenderer.invoke('hermes:git:review:push', repoPath),
       shipInfo: repoPath => ipcRenderer.invoke('hermes:git:review:shipInfo', repoPath),
+      prList: (repoPath, branches, numbers) =>
+        ipcRenderer.invoke('hermes:git:review:prList', repoPath, branches, numbers),
+      fetchPrComment: (repoPath, url) => ipcRenderer.invoke('hermes:git:review:fetchPrComment', repoPath, url),
       createPr: repoPath => ipcRenderer.invoke('hermes:git:review:createPr', repoPath)
     }
   },
@@ -351,5 +425,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:found-in-page', listener)
 
     return () => ipcRenderer.removeListener('hermes:found-in-page', listener)
+  },
+  // Main-process `before-input-event` forwards Ctrl/Cmd+F here so renderer
+  // can open the FindBar even when the GTK compositor has already grabbed
+  // the chord at the windowing layer (#81727).
+  onOpenFindBarRequested: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:open-find-bar', listener)
+
+    return () => ipcRenderer.removeListener('hermes:open-find-bar', listener)
   }
 })

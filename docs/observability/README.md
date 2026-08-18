@@ -55,7 +55,7 @@ behavior-affecting hooks:
 | Hook | Return behavior |
 | --- | --- |
 | `pre_llm_call` | May return a string or `{"context": "..."}` to inject ephemeral context into the current user message. |
-| `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution. |
+| `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution, or `{"action": "modify", "args": {...}}` to transform the tool's input arguments. |
 | `transform_tool_result` | May return a replacement tool result string after `post_tool_call`. |
 | `transform_llm_output` | May return a replacement final assistant text string. |
 

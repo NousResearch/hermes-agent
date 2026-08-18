@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
+from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
     load_skills_config as _load_skills_config,
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
+_skill_commands_home: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -68,6 +70,23 @@ SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
 # the joint (a bundle instruction cut off by the head window); callers cut the
 # description there rather than show the skill body on the far side.
 SKILL_EXCERPT_JOINT = "\x1e"
+
+
+def append_user_instruction(parts: list, instruction: str) -> str:
+    """Append the instruction line to ``parts``; return the stable prefix.
+
+    Shared by every builder that ends a static skill scaffold with the
+    caller-supplied volatile instruction (single-skill invocations, cron job
+    prompts). The returned prefix ends exactly at the instruction marker, so
+    registering it with ``agent.prompt_cache_boundary`` lets the Anthropic
+    cache planner put a breakpoint on the scaffold instead of caching the
+    whole message as one atomic block (#81867). Keeping construction in one
+    place guarantees the registered prefix stays a byte-prefix of the built
+    message — the invariant the request-time split depends on.
+    """
+    stable_prefix = "\n".join(parts) + "\n" + _SINGLE_SKILL_INSTRUCTION
+    parts.append(f"{_SINGLE_SKILL_INSTRUCTION}{instruction}")
+    return stable_prefix
 
 
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
@@ -188,6 +207,22 @@ def _resolve_skill_commands_platform() -> Optional[str]:
     except Exception:
         resolved_platform = os.getenv("HERMES_PLATFORM")
     return resolved_platform or None
+
+
+def _resolve_skill_commands_home() -> str:
+    """Return the effective Hermes home the skill scan should be scoped to.
+
+    A gateway session can switch between profiles that each carry their own
+    ``skills.external_dirs`` (via ``set_hermes_home_override``), but the
+    module-level scan only tracked ``_resolve_skill_commands_platform()``.
+    Switching profiles without a platform change left the previous profile's
+    skill list cached, so ``get_skill_commands()`` reported a cache miss for
+    skills that only exist under the new profile (#88023).
+    """
+    from hermes_constants import get_hermes_home
+
+    return str(get_hermes_home())
+
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -360,15 +395,25 @@ def _build_skill_message(
             f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
+    stable_prefix = None
     if user_instruction:
         parts.append("")
-        parts.append(f"The user has provided the following instruction alongside the skill invocation: {user_instruction}")
+        # Everything before the caller-supplied instruction is a stable
+        # scaffold; declare the exact boundary so the Anthropic cache planner
+        # can put a breakpoint on it instead of caching the whole message as
+        # one atomic block (#81867). The static instruction prose stays on
+        # the stable side; the volatile instruction (webhook payload, ticket
+        # IDs, timestamps) and any runtime note ride in the tail.
+        stable_prefix = append_user_instruction(parts, user_instruction)
 
     if runtime_note:
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
 
-    return "\n".join(parts)
+    message = "\n".join(parts)
+    if stable_prefix is not None and message.startswith(stable_prefix) and len(message) > len(stable_prefix):
+        register_stable_prefix(stable_prefix)
+    return message
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
@@ -377,18 +422,19 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands, _skill_commands_platform
+    global _skill_commands, _skill_commands_platform, _skill_commands_home
     _skill_commands_platform = _resolve_skill_commands_platform()
+    _skill_commands_home = _resolve_skill_commands_home()
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
-        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs, iter_skill_index_files
         from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
-        dirs_to_scan = []
+        # Scan project dirs first (highest precedence), then local, then external
+        dirs_to_scan = list(get_project_skills_dirs())
         if SKILLS_DIR.exists():
             dirs_to_scan.append(SKILLS_DIR)
         dirs_to_scan.extend(get_external_skills_dirs())
@@ -472,11 +518,14 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
 
     Rescans when the active platform scope changes (e.g. a gateway
     process serving Telegram and Discord concurrently) so each platform
-    sees its own ``skills.platform_disabled`` view (#14536).
+    sees its own ``skills.platform_disabled`` view (#14536), and when the
+    active profile's Hermes home changes (e.g. Desktop switching profiles
+    mid-session) so each profile sees its own ``skills.external_dirs`` (#88023).
     """
     if (
         not _skill_commands
         or _skill_commands_platform != _resolve_skill_commands_platform()
+        or _skill_commands_home != _resolve_skill_commands_home()
     ):
         scan_skill_commands()
     return _skill_commands

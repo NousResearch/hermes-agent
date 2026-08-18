@@ -418,6 +418,27 @@ class GatewayStreamConsumer:
         self._accumulated += text
         self._stream_ledger += text
 
+    def _mark_skip_redundant_finalize(self) -> None:
+        """Mark the turn final as delivered by a prior mid-stream edit.
+
+        Used by the run loop when the final accumulated content was already
+        delivered by the last visible edit and the explicit finalize edit is
+        skipped. Records what was actually ACKED on the wire, not what was
+        accumulated: a throttled edit-transport stream can reach this state
+        with the last acked edit still holding an earlier preview snapshot
+        (cursor-suffixed). Recording ``_accumulated`` would let a frozen
+        preview reconcile as the delivered final and suppress the corrective
+        send, leaving the user a cut-off message. The multi-message split
+        path keeps its ledger substitution inside
+        ``_record_turn_final_payload``.
+        """
+        self._final_response_sent = True
+        self._final_content_delivered = True
+        acked = self._last_sent_text or self._accumulated
+        if self.cfg.cursor and acked.endswith(self.cfg.cursor):
+            acked = acked[: -len(self.cfg.cursor)]
+        self._record_turn_final_payload(acked)
+
     def _record_turn_final_payload(self, text: str) -> None:
         """Record what the user has actually seen as this turn's final answer.
 
@@ -1089,9 +1110,12 @@ class GatewayStreamConsumer:
                             # the full text would overflow-split again into
                             # the adopted continuation, duplicating chunks
                             # on screen.
-                            self._final_response_sent = True
-                            self._final_content_delivered = True
-                            self._record_turn_final_payload(self._accumulated)
+                            #
+                            # Delivery is recorded via the shared helper so
+                            # the recorded payload is the last ACKED edit,
+                            # not the accumulated text (frozen-preview
+                            # incident class; see _mark_skip_redundant_finalize).
+                            self._mark_skip_redundant_finalize()
                         elif self._message_id:
                             # Either the mid-stream edit didn't run (no
                             # visible update this tick) OR the adapter needs
@@ -1257,7 +1281,10 @@ class GatewayStreamConsumer:
                 chat_id=self.chat_id,
                 content=text,
                 reply_to=reply_to_id,
-                metadata=self._metadata_for_send(final=final, expect_edits=True),
+                metadata=self._metadata_for_send(
+                    final=final,
+                    expect_edits=not final,
+                ),
             )
             if result.success and result.message_id:
                 self._message_id = str(result.message_id)
@@ -2371,7 +2398,7 @@ class GatewayStreamConsumer:
                     reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(
                         final=finalize,
-                        expect_edits=True,
+                        expect_edits=not finalize,
                     ),
                 )
                 if result.success:

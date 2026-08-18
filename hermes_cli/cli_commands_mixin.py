@@ -53,7 +53,10 @@ class CLICommandsMixin:
 
         Syntax:
             /rollback                 — list checkpoints
-            /rollback <N>             — restore checkpoint N (also undoes last chat turn)
+            /rollback <N>             — restore checkpoint N, preserving user
+                                        hand-edits (also undoes last chat turn)
+            /rollback <N> --all       — classic full restore (may overwrite
+                                        files you edited after Hermes did)
             /rollback diff <N>        — preview changes since checkpoint N
             /rollback <N> <file>      — restore a single file from checkpoint N
         """
@@ -73,6 +76,16 @@ class CLICommandsMixin:
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         parts = command.split()
         args = parts[1:] if len(parts) > 1 else []
+
+        # --all / --force: classic full restore, overwriting user edits too.
+        restore_all = False
+        filtered = []
+        for a in args:
+            if a.lower() in ("--all", "--force"):
+                restore_all = True
+            else:
+                filtered.append(a)
+        args = filtered
 
         if not args:
             # List checkpoints
@@ -126,12 +139,21 @@ class CLICommandsMixin:
         # Check for file-level restore: /rollback <N> <file>
         file_path = args[1] if len(args) > 1 else None
 
-        result = mgr.restore(cwd, target_hash, file_path=file_path)
+        result = mgr.restore(
+            cwd, target_hash, file_path=file_path,
+            safe=not restore_all and not file_path,
+        )
         if result["success"]:
             if file_path:
                 print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
             else:
                 print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+            skipped = result.get("skipped_user_edits") or []
+            if skipped:
+                shown = ", ".join(skipped[:5])
+                more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+                print(f"  ↷ Kept your hand-edits: {shown}{more}")
+                print("  Use /rollback <N> --all to restore those too.")
             print("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context
@@ -928,6 +950,14 @@ class CLICommandsMixin:
                 _cprint(f"  ↻ Handoff complete. The session is now active on {platform_name}.")
                 _cprint(f"  Resume it on this CLI later with: /resume {session_title}")
                 _cprint("")
+                # Mark this session as handed off so _run_cleanup does NOT
+                # finalize it on CLI exit.  The gateway reopened the session
+                # row and now owns its lifecycle; a CLI cleanup finalize would
+                # set end_reason on the row the gateway is actively writing
+                # to, causing the handoff leg to vanish from session history
+                # and session_search (#88234).
+                from cli import _handed_off_session_ids
+                _handed_off_session_ids.add(self.session_id)
                 # End the CLI cleanly — same exit semantics as /quit.
                 self._should_exit = True
                 return False
@@ -1110,7 +1140,11 @@ class CLICommandsMixin:
                 pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
-        msg_count = len([m for m in self._resume_display_history if m.get("role") == "user" and not m.get("display_kind")])
+        from agent.context_compressor import is_user_originated_turn
+
+        # Count only user-originated turns (#80622): legacy compaction
+        # handoffs are durable role=user rows without display_kind.
+        msg_count = len([m for m in self._resume_display_history if is_user_originated_turn(m)])
         if self.conversation_history:
             _cprint(
                 f"  ↻ Resumed session {target_id}{title_part}"
@@ -1134,6 +1168,11 @@ class CLICommandsMixin:
         # the approval session key just changed. Same contract as a startup
         # --resume.
         self._restore_session_yolo(session_meta)
+
+        # Restore the target session's model/provider so a mid-chat /resume
+        # doesn't silently revert to the config default. Same contract as a
+        # startup --resume (_preload_resumed_session / _init_agent path).
+        self._restore_session_model(session_meta)
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
@@ -1167,6 +1206,98 @@ class CLICommandsMixin:
 
         # /sessions <id_or_title> behaves the same as /resume <id_or_title>.
         self._handle_resume_command(f"/resume {arg}")
+
+    def _handle_worktree_command(self, cmd_original: str) -> None:
+        """Handle /worktree — inspect or create isolated git worktrees.
+
+        Syntax:
+            /worktree              — show the active worktree (if any)
+            /worktree new [name]   — create a worktree and move this session into it
+            /worktree list         — list worktrees under the repo's .worktrees/
+
+        Inspired by Copilot CLI's ``/worktree new``: start isolated work in a
+        fresh worktree without leaving the session. Creating one retargets the
+        terminal/file tools (``TERMINAL_CWD`` + process cwd) at the new tree;
+        the launcher's exit cleanup applies (kept only when it has unpushed
+        commits, same as ``hermes -w``).
+        """
+        import subprocess
+
+        import cli as _cli
+
+        parts = cmd_original.split(None, 2)
+        sub = parts[1].lower() if len(parts) > 1 else ""
+
+        repo_root = _cli._git_repo_root()
+
+        if not sub or sub in {"status", "show"}:
+            active = _cli._active_worktree
+            if active:
+                print(f"  Active worktree: {active['path']}")
+                print(f"  Branch: {active['branch']}")
+            else:
+                print("  No active worktree for this session.")
+            if repo_root:
+                print("  /worktree new [name] — create one and move this session into it")
+            else:
+                print("  (not inside a git repository)")
+            return
+
+        if sub in {"list", "ls"}:
+            if not repo_root:
+                print("  Not inside a git repository.")
+                return
+            try:
+                result = subprocess.run(
+                    ["git", "worktree", "list"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=10, cwd=repo_root,
+                )
+                out = result.stdout.strip() if result.returncode == 0 else ""
+            except Exception:
+                out = ""
+            if out:
+                for line in out.splitlines():
+                    print(f"  {line}")
+            else:
+                print("  Could not list worktrees.")
+            return
+
+        if sub in {"new", "add", "create"}:
+            if not repo_root:
+                print("  ❌ /worktree new requires being inside a git repository.")
+                return
+            name = parts[2].strip() if len(parts) > 2 else None
+            from hermes_cli.config import load_config
+            try:
+                sync_base = bool(load_config().get("worktree_sync", True))
+            except Exception:
+                sync_base = True
+            wt_info = _cli._setup_worktree(
+                repo_root=repo_root, sync_base=sync_base, name=name,
+            )
+            if not wt_info:
+                return  # _setup_worktree already printed the failure
+            # Retarget the session's terminal/file tools at the new tree, the
+            # same way `hermes -w` and session-resume cwd restore do.
+            try:
+                os.chdir(wt_info["path"])
+            except OSError as e:
+                print(f"  ⚠ Created worktree but could not enter it: {e}")
+            os.environ["TERMINAL_CWD"] = wt_info["path"]
+            # Register for the same keep-if-unpushed cleanup as `hermes -w`.
+            # Only one worktree is tracked as "active" per process; an earlier
+            # one keeps its own atexit registration (explicit info arg).
+            import atexit
+            _cli._active_worktree = wt_info
+            atexit.register(_cli._cleanup_worktree, wt_info)
+            print(f"  ✅ Worktree ready: {wt_info['path']}")
+            print(f"  Branch: {wt_info['branch']}")
+            print("  Terminal and file tools now operate in the worktree.")
+            return
+
+        print(f"  Unknown /worktree subcommand: {sub}")
+        print("  Usage: /worktree [new [name] | list]")
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
@@ -1259,6 +1390,9 @@ class CLICommandsMixin:
                         "tool_calls": msg.get("tool_calls"),
                         "tool_call_id": msg.get("tool_call_id"),
                         "reasoning": msg.get("reasoning"),
+                        "reasoning_details": msg.get("reasoning_details"),
+                        "codex_reasoning_items": msg.get("codex_reasoning_items"),
+                        "codex_message_items": msg.get("codex_message_items"),
                         # Keep the api_content sidecar so the branch's first turn
                         # replays the parent's exact wire bytes (warm provider
                         # prompt cache) instead of a full cold prefill.
@@ -1327,49 +1461,80 @@ class CLICommandsMixin:
         _cprint(f"  Branch session:   {new_session_id}")
 
     def _handle_personality_command(self, cmd: str):
-        """Handle the /personality command to set predefined personalities."""
-        from cli import save_config_value
+        """Handle the /personality command to set predefined personalities.
+
+        All resolution/persistence goes through hermes_cli.personality —
+        the single owner of personality state on every surface.
+        """
+        from hermes_cli.personality import (
+            describe_personality,
+            normalize_personality_name,
+            persist_personality,
+            prompt_text,
+            resolve_personality,
+        )
         parts = cmd.split(maxsplit=1)
-        
+
         if len(parts) > 1:
             # Set personality
-            personality_name = parts[1].strip().lower()
-            
-            if personality_name in {"none", "default", "neutral"}:
-                self.system_prompt = ""
+            personality_name = parts[1].strip()
+
+            try:
+                name, personality_prompt = resolve_personality(
+                    personality_name, getattr(self, "config", None)
+                )
+            except ValueError:
+                print(f"(._.) Unknown personality: {personality_name.lower()}")
+                print(f"  Available: none, {', '.join(self.personalities.keys())}")
+                return
+
+            saved = persist_personality(name)
+            if not name:
+                # Neutral reset — fall back to the user-owned manual prompt.
+                try:
+                    from hermes_cli.config import cfg_get, read_raw_config
+
+                    self.system_prompt = prompt_text(
+                        cfg_get(read_raw_config(), "agent", "system_prompt", default="")
+                    )
+                except Exception:
+                    self.system_prompt = ""
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", ""):
+                if saved:
                     print("(^_^)b Personality cleared (saved to config)")
                 else:
                     print("(^_^) Personality cleared (session only)")
                 print("  No personality overlay — using base agent behavior.")
-            elif personality_name in self.personalities:
-                self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
-                self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", self.system_prompt):
-                    print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
-                else:
-                    print(f"(^_^) Personality set to '{personality_name}' (session only)")
-                print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
             else:
-                print(f"(._.) Unknown personality: {personality_name}")
-                print(f"  Available: none, {', '.join(self.personalities.keys())}")
+                self.system_prompt = personality_prompt
+                self.agent = None  # Force re-init
+                if saved:
+                    print(f"(^_^)b Personality set to '{name}' (saved to config)")
+                else:
+                    print(f"(^_^) Personality set to '{name}' (session only)")
+                print(f"  \"{personality_prompt[:60]}{'...' if len(personality_prompt) > 60 else ''}\"")
         else:
             # Show available personalities
+            try:
+                from hermes_cli.config import read_raw_config
+
+                current = normalize_personality_name(
+                    (read_raw_config().get("display") or {}).get("personality", "")
+                )
+            except Exception:
+                current = ""
             print()
             print("+" + "-" * 50 + "+")
             print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
             print("+" + "-" * 50 + "+")
             print()
-            print(f"  {'none':<12} - (no personality overlay)")
+            marker = " *" if not current else "  "
+            print(f" {marker}{'none':<12} - (no personality overlay)")
             for name, prompt in self.personalities.items():
-                if isinstance(prompt, dict):
-                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                else:
-                    preview = str(prompt)[:50]
-                print(f"  {name:<12} - {preview}")
+                marker = " *" if name == current else "  "
+                print(f" {marker}{name:<12} - {describe_personality(prompt)}")
             print()
-            print("  Usage: /personality <name>")
+            print("  Usage: /personality <name>   (* = active)")
             print()
 
     def _handle_pet_command(self, cmd: str):
@@ -2149,6 +2314,44 @@ class CLICommandsMixin:
         _DEFAULT_CDP = DEFAULT_BROWSER_CDP_URL
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
+        if sub == "use" or sub.startswith("use "):
+            # /browser use [off] — toggle Browser Use mode (browser.backend),
+            arg = sub.split(None, 1)[1].strip() if " " in sub else "on"
+            from hermes_cli.config import load_config, save_config
+            from tools.registry import invalidate_check_fn_cache
+
+            if arg not in {"on", "off"}:
+                print()
+                print("Usage: /browser use [off]")
+                print("   /browser use       — switch to Browser Use mode (browser_exec via CLI 3.0)")
+                print("   /browser use off   — revert to the built-in browser tools")
+                print()
+                return
+
+            config = load_config()
+            browser_cfg = config.setdefault("browser", {})
+            if arg == "on":
+                browser_cfg["backend"] = "browser-use"
+                save_config(config)
+                invalidate_check_fn_cache()
+                self.new_session()
+                print()
+                print("🌐 Browser Use mode enabled — browser_exec via the Browser Use CLI 3.0")
+                print("   Session reset. New tool configuration is active.")
+                print()
+            else:
+                from tools.browser_use_cli import BACKEND_DISABLED
+
+                browser_cfg["backend"] = BACKEND_DISABLED
+                save_config(config)
+                invalidate_check_fn_cache()
+                self.new_session()
+                print()
+                print("🌐 Browser Use mode disabled — built-in browser tools restored")
+                print("   Session reset. New tool configuration is active.")
+                print()
+            return
+
         if sub.startswith("connect"):
             # Optionally accept a custom CDP URL: /browser connect ws://host:port
             connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
@@ -2312,6 +2515,18 @@ class CLICommandsMixin:
 
         elif sub == "status":
             print()
+            try:
+                from tools.browser_use_cli import is_browser_use_cli_mode
+                _bu_mode = is_browser_use_cli_mode()
+            except Exception:
+                _bu_mode = False
+            if _bu_mode:
+                print("🌐 Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)")
+                print("   Local Chrome via CDP, or Browser Use cloud browsers")
+                print()
+                print("   /browser use off      — revert to the built-in browser tools")
+                print()
+                return
             if current:
                 print("🌐 Browser: connected to live Chromium-family browser via CDP")
                 print(f"   Endpoint: {current}")
@@ -2361,11 +2576,12 @@ class CLICommandsMixin:
 
         else:
             print()
-            print("Usage: /browser connect|disconnect|status")
+            print("Usage: /browser connect|disconnect|status|use")
             print()
             print("   connect      Connect browser tools to your live Chromium-family browser session")
             print("   disconnect   Revert to default browser backend")
             print("   status       Show current browser mode")
+            print("   use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools")
             print()
 
     def _handle_heartbeat_command(self, cmd: str) -> None:
@@ -2712,6 +2928,39 @@ class CLICommandsMixin:
             self._pending_input.put(state.goal)
         except Exception:
             pass
+
+    def _handle_loop_command(self, cmd: str) -> None:
+        """Dispatch /loop — recurring in-session wakeups (Claude Code parity).
+
+        Forms:
+          /loop [interval] <prompt> [--times N] [--until <cond>]   start a loop
+          /loop status | pause | resume | stop                     controls
+        """
+        from cli import _DIM, _RST, _cprint
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        mgr = self._get_loop_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Loops unavailable (no active session).{_RST}")
+            return
+
+        from hermes_cli.loops import dispatch_loop_command
+
+        result = dispatch_loop_command(mgr, arg)
+        for line in (result.get("output") or "").splitlines():
+            _cprint(f"  {line}")
+        if result.get("created"):
+            try:
+                from hermes_cli.loops import goal_blocks_loop_tick
+
+                if goal_blocks_loop_tick(mgr.session_id):
+                    _cprint(
+                        f"  {_DIM}Note: an active /goal is driving this session — "
+                        f"loop wakeups defer until the goal finishes, pauses, or parks.{_RST}"
+                    )
+            except Exception:
+                pass
 
     def _handle_subgoal_command(self, cmd: str) -> None:
         """Dispatch /subgoal subcommands.

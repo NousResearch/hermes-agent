@@ -191,6 +191,111 @@ def test_candidate_list_marks_cron_referenced_skills(curator_env, monkeypatch):
     assert "cron=no" in plain_line
 
 
+def _write_cron_job(home: Path, skill_ref: str, monkeypatch):
+    """Write a real jobs.json referencing *skill_ref* and reload ``cron.jobs``.
+
+    Deliberately does NOT stub ``_cron_referenced_skills`` — these cases
+    exercise the real protection lookup end to end. ``SKILLS_DIR`` is pinned
+    because the path resolver reads it at call time to decide which roots are
+    trusted (the same attribute the repo's other skill tests patch).
+    """
+    import importlib
+    import json
+
+    import tools.skills_tool as skills_tool
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", home / "skills")
+
+    cron_dir = home / "cron"
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    (cron_dir / "jobs.json").write_text(
+        json.dumps([{
+            "id": "job1",
+            "name": "quarterly digest",
+            "enabled": True,
+            "prompt": "write the digest",
+            "skills": [skill_ref],
+            "schedule": {"kind": "cron", "expr": "0 9 1 */3 *"},
+        }]),
+        encoding="utf-8",
+    )
+    import cron.jobs as cron_jobs
+    importlib.reload(cron_jobs)
+    return cron_jobs
+
+
+def test_cron_referenced_skill_by_name_survives_inactivity(curator_env, monkeypatch):
+    """Control: the plain-name reference form has always been protected."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "quarterly-report")
+    _backdate(u, "quarterly-report", 200)
+    _write_cron_job(curator_env["home"], "quarterly-report", monkeypatch)
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 0
+    assert u.load_usage()["quarterly-report"]["state"] == u.STATE_ACTIVE
+
+
+def test_cron_referenced_skill_by_absolute_path_survives_inactivity(curator_env, monkeypatch):
+    """A job may store an absolute skill path — the scheduler resolves it
+    before ``skill_view``. The protection set has to resolve it the same way,
+    or the skill is archived out from under a live job and the next run
+    silently proceeds without its instructions.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "quarterly-report")
+    _backdate(u, "quarterly-report", 200)
+    _write_cron_job(curator_env["home"], str(skills_dir / "quarterly-report"), monkeypatch)
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 0
+    assert u.load_usage()["quarterly-report"]["state"] == u.STATE_ACTIVE
+
+
+def test_referenced_names_canonicalize_absolute_paths(curator_env, monkeypatch):
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "quarterly-report")
+    cron_jobs = _write_cron_job(
+        curator_env["home"], str(skills_dir / "quarterly-report"), monkeypatch
+    )
+
+    assert cron_jobs.referenced_skill_names() == {"quarterly-report"}
+
+
+def test_unresolvable_reference_is_kept_verbatim(curator_env, tmp_path, monkeypatch):
+    """A path outside the skills roots can't be canonicalized; keep it rather
+    than dropping the name (the resolver passes such values through)."""
+    outside = tmp_path / "elsewhere" / "some-skill"
+    cron_jobs = _write_cron_job(curator_env["home"], str(outside), monkeypatch)
+
+    assert cron_jobs.referenced_skill_names() == {
+        str(outside).strip().lstrip("/")
+    }
+
+
+def test_unreferenced_skill_is_still_archived(curator_env, monkeypatch):
+    """Guard against over-protecting: a skill no job mentions still ages out."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "quarterly-report")
+    _write_skill(skills_dir, "orphan")
+    _backdate(u, "quarterly-report", 200)
+    _backdate(u, "orphan", 200)
+    _write_cron_job(curator_env["home"], str(skills_dir / "quarterly-report"), monkeypatch)
+
+    c.apply_automatic_transitions()
+
+    usage = u.load_usage()
+    assert usage["quarterly-report"]["state"] == u.STATE_ACTIVE
+    assert usage["orphan"]["state"] == u.STATE_ARCHIVED
+
+
 
 
 

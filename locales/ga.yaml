@@ -173,6 +173,8 @@ gateway:
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "Níl aon phearsantachtaí cumraithe in `{path}/config.yaml`"
@@ -281,6 +283,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Níor aimsíodh aon seicphointe do {cwd}"
     invalid_number:        "Uimhir seicphointe neamhbhailí. Úsáid 1-{max}."
     restored:              "✅ Aischurtha go seicphointe {hash}: {reason}\nSábháladh roghchóip réamh-rollback go huathoibríoch."
+    kept_user_edits:       "↷ Coinníodh do chuid athruithe láimhe: {files}\nÚsáid /rollback <N> --all chun iad sin a aischur freisin."
     restore_failed:        "❌ {error}"
 
   diff:

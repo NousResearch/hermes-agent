@@ -18,6 +18,8 @@ For PPTX: see the `powerpoint` skill (full create/read/edit support).
 For PDF manipulation (merge, split, forms, watermarks, creation): see the `pdf` skill.
 This skill covers **text extraction from PDFs and scanned documents**.
 
+> **Coming from a `read_file` EXTRACTION COVERAGE WARNING?** `read_file` auto-converts local PDFs but reads the text layer only; the warning footer lists the pages that yielded no text (scanned images). For a handful of pages, render + vision is fastest: `pdftoppm -jpeg -r 150 -f N -l N file.pdf /tmp/page` then `vision_analyze` each image. For bulk OCR of many pages, use marker-pdf below (Step 2).
+
 ## Step 1: Remote URL Available?
 
 If the document has a URL, **always try `web_extract` first**:
@@ -75,7 +77,7 @@ python scripts/extract_pymupdf.py document.pdf --pages 0-4   # Specific pages
 
 **Inline**:
 ```bash
-python3 -c "
+python -c "
 import pymupdf
 doc = pymupdf.open('document.pdf')
 for page in doc:

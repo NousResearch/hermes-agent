@@ -6,15 +6,72 @@ import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
+  $sessionStates,
+  $sessionTiles,
   blankDraftTile,
   focusedSessionNeedsRoute,
   markSelectionRestore,
   orderTilesByTree,
-  selectionHomesToWorkspace
+  releaseSessionTranscript,
+  resetTileRuntimeBindings,
+  selectionHomesToWorkspace,
+  type SessionTileDelegate,
+  setSessionTileDelegate
 } from '@/store/session-states'
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`
+
+describe('resetTileRuntimeBindings', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('invalidates the delegate wiring cache AND drops tile runtime ids (sleep/wake reconnect)', () => {
+    // The reconnect path must bust BOTH layers: the tile atoms' runtimeId and
+    // the delegate's stored→runtime warm cache. Clearing only the atoms let
+    // resumeTile's warm path re-bind the same dead runtime id after wake.
+    const invalidateRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+
+    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
+    resetTileRuntimeBindings()
+
+    expect(invalidateRuntimeBindings).toHaveBeenCalledTimes(1)
+    expect($sessionTiles.get()).toEqual([
+      { anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }
+    ])
+  })
+
+  it('tolerates a delegate without invalidateRuntimeBindings (older wiring)', () => {
+    setSessionTileDelegate({} as unknown as SessionTileDelegate)
+    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
+
+    expect(() => resetTileRuntimeBindings()).not.toThrow()
+    expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
+  })
+})
+
+describe('releaseSessionTranscript', () => {
+  afterEach(() => {
+    $sessionStates.set({})
+  })
+
+  it('normalizes legacy state whose messages field is undefined', () => {
+    const legacy = { busy: false, storedSessionId: 'stored' } as ClientSessionState
+    $sessionStates.set({ runtime: legacy })
+
+    expect(() => releaseSessionTranscript('runtime')).not.toThrow()
+    expect($sessionStates.get().runtime).toEqual({ ...legacy, messages: [] })
+  })
+
+  it('ignores a legacy undefined state without throwing', () => {
+    $sessionStates.set({ runtime: undefined } as unknown as Record<string, ClientSessionState>)
+
+    expect(() => releaseSessionTranscript('runtime')).not.toThrow()
+    expect($sessionStates.get()).toHaveProperty('runtime', undefined)
+  })
+})
 
 describe('orderTilesByTree', () => {
   it('no-ops (null) without a tree or below two tiles', () => {

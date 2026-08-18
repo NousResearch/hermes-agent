@@ -127,6 +127,15 @@ Quick Entry is a small always-available composer summoned by a **global hotkey f
 
 Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md) available elsewhere. On macOS the OS will prompt once for microphone access.
 
+### HUD mode
+
+**⌘/Ctrl+Shift+H** (or the titlebar button) detaches the chat into a chrome-free, always-on-top floating bar that sits over whatever you are working in. The app window steps aside; the HUD keeps your live conversation and a composer. Where you park it is context — the bar's position tells Hermes which app and screen you're asking about, so "this", "here", and "that page" resolve to what's underneath it.
+
+- **Moving the bar** — **press and hold** anywhere on the composer for a beat, then drag. A quick press still types; a held press grabs the window. This is the only way to move the HUD — there is no titlebar to drag.
+- **Resizing** — drag the bottom-right corner of the bar.
+- **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is.
+- **Exiting** — click the exit button on the bar, or press **⌘/Ctrl+Shift+H** again. The app window comes back with your session intact.
+
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
@@ -153,6 +162,29 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Messaging** — set up gateway channels.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
+### Bot Mode (built in)
+
+**Bot Mode** ships with the app and is on by default: a "one chat per agent"
+roster where every [Hermes profile](./profiles.md) appears as a bot with its
+own avatar (geometric face, uploaded image, AI-generated portrait, or a pixel
+pet), its own canonical **Bot Chat** conversation, and its own **Routines**
+(recurring tasks backed by Hermes cron). Create new agents from the roster —
+Name / Title / Description plus an Advanced disclosure with the full
+capabilities surface (model, SOUL, skills, toolsets, MCP servers) — group
+them into sections, and open group chats where several bots deliberate.
+
+Bots message each other: type `@researcher have a look at this` in any chat
+and the active bot hands the message off and reports back, and bots reach
+each other's Bot Chats directly (`hermes -p <bot> chat`). The backend teaches
+each bot's canonical **Bot Chat** session the messaging protocol
+automatically (config `agent.bot_mode_protocol`, default on) — including
+when a teammate bot opens it headlessly from the CLI — so bot-to-bot
+replies and handoffs work without touching your SOUL.md, and your regular
+sessions stay untouched.
+
+Don't want it? Flip it off in **Settings → Plugins → Bots** — the roster,
+routines pane, and composer middleware unregister live, no restart needed.
+
 ### Keyboard & navigation
 
 - **Command palette** — press **Cmd+K** or **Cmd+P** (Ctrl+K / Ctrl+P on Windows/Linux) to jump to actions and navigate the app from the keyboard: open any page or settings section, jump to a session by title or id, switch model/theme/color mode, spawn a terminal, restart the gateway, update Hermes, and more.
@@ -165,6 +197,7 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Session-list overhaul** — a reworked session list with archiving and general session hygiene to keep the list manageable as it grows.
 - **Search sessions by id** — find a specific session directly by its id.
 - **Concurrent multi-profile sessions** — run sessions across multiple [profiles](./profiles.md) at the same time, and reference a session in another profile with cross-profile `@session` links.
+- **Export / import a profile** — share a whole setup as a single file. **⌘K → Export profile…** (or right-click a profile square in the rail) writes a `.tar.gz` with skills, memory, persona, crons, plugins, and settings; API keys are stripped. Exporting from the desktop also bundles your appearance and interface — skin, light/dark mode, custom themes, the profile's rail color, and your window layout — so an imported profile arrives looking the way the sender had it. Import via **⌘K → Import profile…** or the button beside the rail's **+**; it applies the overlay and drops you into the new profile. The same archive works with `/export` / `/import` in chat and `hermes profile export` / `import` from a shell. See [Export and import a profile file](./profile-distributions.md#export-and-import-a-profile-file).
 
 ## Updating
 
@@ -217,6 +250,19 @@ By default the app starts and manages its own **local** backend. You can instead
 - **Hermes Cloud** — sign in once to Hermes Cloud and pick from the agents on your account; no URL to paste. The app discovers your agents (with an organization picker if your account spans several orgs), and connecting to one switches the session over automatically. The status bar shows the cloud connection while it's active.
 
 Connection modes are configured **per profile** — a per-profile override can point one profile at a remote or cloud backend while others stay local (**Use default gateway** removes an override).
+
+### Settings → Connections: the multi-connection registry
+
+Alongside the per-profile connection mode above, **Settings → Connections** manages a named registry of every agent source the app knows about — the local runtime, any number of remote gateways (LAN, Tailscale, internet), Hermes Cloud instances, and SSH hosts — all persisted together in one place. You can jump there from the plug button at the right end of the sidebar profile rail (**Connect another Hermes gateway…**) or via **⌘K → Connections**. The full guide, including the union agent roster, `@name-device` handles, fleet-wide updates, and the plugin SDK surface, is at [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md).
+
+- **Every connection needs a unique name** (a device name such as "Homelab" or "Work laptop"). When the same profile name exists on several registered sources, surfaces disambiguate it as `@profile-device` (e.g. `@research-homelab`).
+- **Add / edit / remove / test** connections from the panel. The local entry is managed by the app and cannot be removed. **Test** probes the connection's own HTTP and WebSocket legs directly.
+- Existing settings are **imported automatically** the first time you run a build with the registry: your current global connection and any per-profile overrides become named entries. The legacy settings file is left untouched, so older builds keep working.
+- Cloud entries come from the Hermes Cloud sign-in/discovery flow above, not from a hand-typed URL.
+- Tokens are stored encrypted with the OS keyring (with the same explicit plain-text opt-in as Settings → Gateway on keyring-less Linux).
+
+Side-by-side routing is live: each registered source dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** in the Connections panel dispatches `hermes update` to every eligible source at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
+
 
 :::info The remote backend is a running `hermes serve` process
 "Remote backend" means a **`hermes serve`** server running on the remote machine — that is the process the desktop app connects to. Nothing in this section works unless that backend is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes serve` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a *separate* long-running process you start independently — see the note after the setup steps.

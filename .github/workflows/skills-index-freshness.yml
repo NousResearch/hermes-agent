@@ -23,6 +23,14 @@ jobs:
     timeout-minutes: 10
     environment: trusted-automation
     steps:
+      # `Get GitHub App token` below is a LOCAL composite action
+      # (./.github/actions/get-app-token), so the repository must be on disk
+      # before it can be resolved. Without this checkout the job dies with
+      # "Can't find 'action.yml' ... under .github/actions/get-app-token"
+      # every time the probe is non-ok — i.e. exactly when the watchdog is
+      # supposed to file its issue.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: Probe live index
         id: probe
         run: |

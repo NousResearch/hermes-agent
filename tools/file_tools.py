@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """File Tools Module - LLM agent file manipulation tools."""
 
+import base64
 import errno
 import json
 import logging
@@ -11,7 +12,11 @@ import threading
 from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_read_block_error
-from tools.binary_extensions import has_binary_extension
+from tools.binary_extensions import (
+    has_binary_extension,
+    has_opaque_document_extension,
+    is_pdf_path,
+)
 from tools.file_operations import (
     ShellFileOperations,
     normalize_read_pagination,
@@ -702,6 +707,318 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
+# ---------------------------------------------------------------------------
+# Protected agent-instruction files (always-ask approval gate)
+# ---------------------------------------------------------------------------
+# Files that steer FUTURE agent behavior are a prompt-injection persistence
+# vector: an injected instruction that edits AGENTS.md / CLAUDE.md / SOUL.md /
+# .cursorrules (or a project-local .hermes config tree) outlives the current
+# turn and poisons every later session that loads it. Writes to these files
+# therefore ALWAYS require human approval — even under --yolo / auto-approve —
+# and fail closed when no human channel exists.
+#
+# Ported from: RooCodeInc/Roo-Code RooProtectedController (Apache-2.0).
+# Companion: the terminal-tool vector is covered separately (#58631); this
+# gate covers the write_file/patch vector. Symlink lesson from #41351:
+# always realpath before matching.
+#
+# Scope decision (documented): basenames match in ANY directory, because
+# project-context instruction files are loaded from cwd trees — an
+# AGENTS.md anywhere the agent might later run from is a live target.
+# Basenames match case-insensitively so case-variant spellings on
+# case-insensitive filesystems (macOS/Windows) cannot slip past; on
+# case-sensitive filesystems most loaders probe common case variants too,
+# so the stricter behavior is kept uniform.
+_PROTECTED_INSTRUCTION_BASENAMES = frozenset({
+    "agents.md", "claude.md", "soul.md", ".cursorrules",
+})
+
+_real_hermes_home_cached: str | None = None
+_real_hermes_home_loaded = False
+
+
+def _get_real_hermes_home() -> str | None:
+    """Return the realpath of the authoritative Hermes home (cached)."""
+    global _real_hermes_home_cached, _real_hermes_home_loaded
+    if _real_hermes_home_loaded:
+        return _real_hermes_home_cached
+    _real_hermes_home_loaded = True
+    try:
+        from hermes_constants import get_hermes_home
+        _real_hermes_home_cached = os.path.realpath(str(get_hermes_home()))
+    except Exception:
+        try:
+            _real_hermes_home_cached = os.path.realpath(_expand_tilde("~/.hermes"))
+        except Exception:
+            _real_hermes_home_cached = None
+    return _real_hermes_home_cached
+
+
+def _protected_instruction_config() -> tuple[bool, list[str]]:
+    """Read the protected-instruction-files gate config.
+
+    Returns ``(enabled, extra_patterns)``. Defaults to enabled with no extra
+    patterns; config read failures keep the gate ON (fail-safe for a
+    security boundary).
+
+    Config keys (config.yaml)::
+
+        security:
+          protected_instruction_files: true       # default
+          protected_instruction_extra_patterns: []  # fnmatch on basename
+    """
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        enabled = cfg_get(cfg, "security", "protected_instruction_files",
+                          default=True)
+        extra = cfg_get(cfg, "security", "protected_instruction_extra_patterns",
+                        default=[])
+    except Exception:
+        return True, []
+    if not isinstance(enabled, bool):
+        enabled = True
+    if not isinstance(extra, list):
+        extra = []
+    return enabled, [str(p) for p in extra if p]
+
+
+def _protected_instruction_reason(filepath: str, task_id: str = "default",
+                                  *, enabled: bool | None = None,
+                                  extra_patterns: list[str] | None = None) -> str | None:
+    """Return a short label when ``filepath`` targets a protected
+    agent-instruction file, else ``None``.
+
+    Matching runs on BOTH the normalized input path and its realpath so
+    neither a symlink pointing AT a protected file (#41351) nor a protected
+    name that is itself a symlink escapes the gate. ``..`` traversal is
+    neutralized by normpath/realpath before the basename compare.
+    """
+    if enabled is None or extra_patterns is None:
+        enabled, extra_patterns = _protected_instruction_config()
+    if not enabled:
+        return None
+
+    normalized = os.path.normpath(_expand_tilde(filepath))
+    try:
+        resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
+    except (OSError, ValueError, RuntimeError):
+        resolved = os.path.realpath(normalized)
+
+    # The authoritative ~/.hermes home is governed by its own guards
+    # (config.yaml hard-block, cross-profile guard, write_approval); this
+    # gate targets PROJECT-LOCAL instruction files only. Checked before the
+    # ``.hermes`` component rule below, which would otherwise match the
+    # home directory itself.
+    real_home = _get_real_hermes_home()
+    if real_home and (resolved == real_home
+                      or resolved.startswith(real_home + os.sep)):
+        return None
+
+    import fnmatch
+    for candidate in (normalized, resolved):
+        base = os.path.basename(candidate)
+        base_lower = base.lower()
+        if base_lower in _PROTECTED_INSTRUCTION_BASENAMES:
+            return base
+        for pattern in extra_patterns:
+            if fnmatch.fnmatch(base_lower, pattern.lower()):
+                return base
+        # Project-local .hermes config dirs (e.g. <repo>/.hermes/config.yaml)
+        # are loaded as project context and steer behavior the same way.
+        # Scope: the file's IMMEDIATE parent must be ``.hermes`` — matching
+        # any ancestor named .hermes would gate every write inside a
+        # checkout that happens to live under ~/.hermes (e.g. the
+        # hermes-agent repo itself at ~/.hermes/hermes-agent).
+        parts = candidate.replace("\\", "/").rstrip("/").split("/")
+        if len(parts) >= 2 and parts[-2] == ".hermes":
+            return candidate
+    return None
+
+
+def _request_protected_instruction_approval(
+        reasons: list[str], task_id: str = "default") -> str | None:
+    """Ask the human to approve a write to protected instruction file(s).
+
+    Returns ``None`` when approved, or a BLOCKED error string. This gate
+    intentionally does NOT route through ``_run_approval_gate``: that gate
+    honors --yolo and session/permanent allowlists, and the entire point
+    here is one-operation approval EVERY time, with no persistent scope
+    and no yolo bypass. Fail-closed when no human channel exists.
+    """
+    targets = ", ".join(dict.fromkeys(reasons))
+    description = (
+        f"Write to protected agent-instruction file(s): {targets}. "
+        "These files steer future agent behavior; approval is always "
+        "required (not bypassed by auto-approve)."
+    )
+    display = f"<write to {targets}>"
+    blocked = (
+        f"BLOCKED: write to protected agent-instruction file(s) ({targets}) "
+        "{why} The user has NOT consented to this write. Do NOT retry it or "
+        "attempt the same edit via another path (terminal, execute_code, "
+        "etc.)."
+    )
+
+    try:
+        import tools.approval as _approval
+    except Exception:
+        return blocked.format(why="requires approval but the approval "
+                                  "subsystem is unavailable.")
+
+    # Gateway surface: block on the button round-trip when a notify callback
+    # is registered for this session (Telegram/Discord/Slack). One-operation
+    # only — no session/permanent buttons are offered.
+    session_key = _approval.get_current_session_key()
+    notify_cb = None
+    try:
+        with _approval._lock:
+            notify_cb = _approval._gateway_notify_cbs.get(session_key)
+    except Exception:
+        notify_cb = None
+
+    if notify_cb is not None:
+        approval_data = {
+            "command": display,
+            "pattern_key": "protected_instruction_file",
+            "pattern_keys": ["protected_instruction_file"],
+            "description": description,
+            "allow_permanent": False,
+            "allow_session": False,
+        }
+        decision = _approval._await_gateway_decision(
+            session_key, notify_cb, approval_data, surface="gateway",
+        )
+        if decision.get("notify_failed"):
+            return blocked.format(
+                why="requires approval but the approval request could not "
+                    "be delivered.")
+        choice = decision.get("choice")
+        if decision.get("resolved") and choice in {"once", "session", "always"}:
+            # One-operation grant regardless of the tapped scope — nothing
+            # is persisted for this gate.
+            return None
+        if not decision.get("resolved"):
+            return blocked.format(
+                why="approval prompt timed out without a user response. "
+                    "Silence is not consent.")
+        return blocked.format(why="was denied by the user.")
+
+    # CLI surface: per-thread approval callback (prompt_toolkit panel).
+    callback = None
+    try:
+        from tools.terminal_tool import _get_approval_callback
+        callback = _get_approval_callback()
+    except Exception:
+        callback = None
+
+    if callback is not None:
+        choice = _approval.prompt_dangerous_approval(
+            display, description,
+            allow_permanent=False,
+            approval_callback=callback,
+        )
+        if choice in {"once", "session", "always"}:
+            # One-operation grant; never persisted (see docstring).
+            return None
+        if choice == "timeout":
+            return blocked.format(
+                why="approval prompt timed out without a user response. "
+                    "Silence is not consent.")
+        return blocked.format(why="was denied by the user.")
+
+    # No human channel at all (script, cron, background thread): fail
+    # closed. Auto-approving here would recreate the persistence vector.
+    return blocked.format(
+        why="requires approval but no interactive user or gateway is "
+            "present to approve it.")
+
+
+def _check_protected_instruction_write(paths: list[str],
+                                       task_id: str = "default") -> str | None:
+    """Gate a write/patch touching protected instruction files.
+
+    Returns ``None`` when no target is protected or the human approved;
+    otherwise a BLOCKED error string. For multi-file V4A patches, ONE
+    protected file gates the ENTIRE patch: a single prompt lists every
+    protected target, and a deny applies nothing (including innocent
+    files) — partial application of an approved-in-part patch would be
+    more surprising than an atomic all-or-nothing outcome.
+    """
+    enabled, extra = _protected_instruction_config()
+    if not enabled:
+        return None
+    reasons: list[str] = []
+    for p in paths:
+        reason = _protected_instruction_reason(
+            p, task_id, enabled=enabled, extra_patterns=extra)
+        if reason:
+            reasons.append(reason)
+    if not reasons:
+        return None
+    return _request_protected_instruction_approval(reasons, task_id)
+
+
+def _check_approval_required_write(paths: list[str],
+                                   task_id: str = "default") -> str | None:
+    """Gate a write/patch touching an approval-required path (``~/.ssh/config``).
+
+    These paths are NOT credentials and NOT hard-denied, but a write must
+    be confirmed by a human because they can steer process execution
+    (an SSH ``ProxyCommand`` / ``Match exec``). Unlike the protected-
+    instruction gate this is a routine, user-initiated edit, so the prompt
+    offers once/session/always scopes and honors --yolo (the historical
+    dangerous-command semantics) rather than always re-asking.
+
+    Returns ``None`` when no target is approval-gated or the human
+    approved; otherwise a BLOCKED error string. Fail-closed when no
+    interactive/gateway channel exists (a background/ACP caller cannot
+    consent on the user's behalf).
+    """
+    try:
+        from agent.file_safety import is_write_approval_required
+    except Exception:
+        return None
+
+    targets = [p for p in paths if is_write_approval_required(p)]
+    if not targets:
+        return None
+
+    display_targets = ", ".join(dict.fromkeys(targets))
+    description = (
+        f"Write to SSH client config file(s): {display_targets}. "
+        "The SSH config can carry ProxyCommand / Match exec directives that "
+        "run commands, so writes require your approval."
+    )
+    blocked = (
+        f"BLOCKED: write to SSH config file(s) ({display_targets}) "
+        "{why} Do NOT retry it via another path (terminal, execute_code) "
+        "without the user's explicit consent."
+    )
+
+    try:
+        import tools.approval as _approval
+    except Exception:
+        return blocked.format(why="requires approval but the approval "
+                                  "subsystem is unavailable.")
+
+    result = _approval._run_approval_gate(
+        pattern_key="ssh_config_write",
+        description=description,
+        display_target=f"<write to {display_targets}>",
+        cron_deny_message=blocked.format(
+            why="requires approval but this cron session denies it."),
+        autoapprove_log_prefix="ssh_config_write",
+        fail_closed_when_no_human=True,
+        no_human_block_message=blocked.format(
+            why="requires approval but no interactive user or gateway is "
+                "present to approve it."),
+    )
+    if result.get("approved"):
+        return None
+    return result.get("message") or blocked.format(why="was denied.")
+
+
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
     """Return the container-side Hermes mirror prefix for Docker file tools."""
     try:
@@ -1100,6 +1417,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _creation_locks,
         _creation_locks_lock,
         _resolve_container_task_id,
+        _resolve_task_host_cwd,
         _is_unusable_container_cwd,
         _CONTAINER_BACKENDS,
     )
@@ -1123,11 +1441,21 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 # (fixes #26211: silent file-creation failures in long-running
                 # conversations). Usually a no-op: every completed command
                 # already recorded its cwd.
+                #
+                # Fill-only: ``cached.cwd`` is a snapshot of the SHARED env's
+                # cwd at cache-build time, so it is not attributable to this
+                # session (same class as the interrupted-command bug, #85658).
+                # Rescue a session that has no record, but never overwrite a
+                # record the session wrote for itself.
                 old_cwd = getattr(cached, "cwd", None)
                 if old_cwd:
                     try:
-                        from tools.terminal_tool import record_session_cwd
-                        record_session_cwd(raw_task_id, old_cwd)
+                        from tools.terminal_tool import (
+                            get_session_cwd,
+                            record_session_cwd,
+                        )
+                        if get_session_cwd(raw_task_id) is None:
+                            record_session_cwd(raw_task_id, old_cwd)
                     except Exception:
                         pass
                 with _file_ops_lock:
@@ -1235,7 +1563,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 container_config=container_config,
                 local_config=local_config,
                 task_id=task_id,
-                host_cwd=config.get("host_cwd"),
+                host_cwd=_resolve_task_host_cwd(config, raw_task_id),
             )
 
             with _env_lock:
@@ -1261,6 +1589,38 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
+def _special_file_kind(path) -> str | None:
+    """Return a human name for non-regular file types that block reads.
+
+    Stat-based sibling of the name-based ``_is_blocked_device`` guard: a
+    FIFO at ``logs/live.pipe`` or a socket in a workspace hangs ``read_file``
+    just as hard as ``/dev/zero``, but carries no recognizable name. Only
+    called for host-visible filesystems (see ``_file_ops_uses_host_paths``);
+    remote backends cannot be statted from here.
+
+    Returns None for regular files, missing paths, and anything unstattable
+    (those flow to the normal read path and its own error handling).
+    """
+    import stat as _stat
+
+    try:
+        st = os.stat(os.fspath(path))  # follows symlinks, matching a real read
+    except OSError:
+        return None
+    mode = st.st_mode
+    if _stat.S_ISREG(mode) or _stat.S_ISDIR(mode):
+        return None
+    if _stat.S_ISFIFO(mode):
+        return "a FIFO (named pipe)"
+    if _stat.S_ISSOCK(mode):
+        return "a socket"
+    if _stat.S_ISCHR(mode):
+        return "a character device"
+    if _stat.S_ISBLK(mode):
+        return "a block device"
+    return "a special (non-regular) file"
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
@@ -1278,18 +1638,75 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
         _resolved = _resolve_path_for_task(path, task_id)
 
+        # ── Special-file type guard (stat-based) ──────────────────────
+        # The name blocklist above catches /dev/* and /proc/* aliases; this
+        # catches the class — any FIFO/socket/device wherever it lives. A
+        # read on a FIFO blocks until the exec timeout: a self-shipped DoS.
+        if _file_ops_uses_host_paths(_get_file_ops(task_id)):
+            kind = _special_file_kind(_resolved)
+            if kind is not None:
+                return json.dumps({
+                    "success": False,
+                    "note": (
+                        f"'{path}' is {kind}, not a regular file — reading "
+                        "it would block indefinitely, so no read was "
+                        "attempted. Use terminal utilities if you need to "
+                        "interact with it."
+                    ),
+                })
+
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
-        from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
+        from tools.read_extract import (
+            ANYDOC_EXTENSIONS,
+            EXTRACTABLE_EXTENSIONS,
+            MAX_DOCUMENT_BYTES,
+            ExtractionError,
+            extract_document_bytes,
+            is_extractable_document,
+        )
 
         if is_extractable_document(str(_resolved)):
+            file_ops = _get_file_ops(task_id)
             try:
-                extracted_text = extract_document_text(str(_resolved))
-            except ExtractionError:
+                binary = file_ops.read_file_bytes(
+                    str(_resolved), max_bytes=MAX_DOCUMENT_BYTES
+                )
+                if binary.error or binary.base64_content is None:
+                    raise ExtractionError(binary.error or "Document bytes unavailable")
+                document_bytes = base64.b64decode(
+                    binary.base64_content, validate=True
+                )
+                extracted_text = extract_document_bytes(
+                    document_bytes, str(_resolved)
+                )
+            except (ExtractionError, ValueError, base64.binascii.Error) as exc:
                 logger.debug("document extraction failed for %s", path, exc_info=True)
+                # For binary document formats, surface the specific failure
+                # (size cap, encrypted, malformed…) instead of falling through
+                # — the fallthrough path can only produce a generic
+                # binary-file error or garbage raw bytes, hiding the
+                # actionable reason (e.g. "Document too large to convert").
+                # .ipynb stays on the fallthrough path: it is plain JSON text
+                # and a raw read is genuinely useful.  Byte-transport issues
+                # (ValueError / binascii) keep the fallthrough too — only a
+                # specific ExtractionError carries an actionable reason.
+                _doc_ext = _resolved.suffix.lower()
+                _binary_doc = _doc_ext in ANYDOC_EXTENSIONS or (
+                    _doc_ext in EXTRACTABLE_EXTENSIONS and _doc_ext != ".ipynb"
+                )
+                if (
+                    _binary_doc
+                    and isinstance(exc, ExtractionError)
+                    and not str(exc).startswith("Unsupported document type")
+                ):
+                    return tool_error(
+                        f"Cannot read '{path}' ({_doc_ext}): document "
+                        f"extraction failed — {exc}. Use terminal utilities "
+                        "to inspect or convert the file."
+                    )
             else:
-                file_ops = _get_file_ops(task_id)
                 lines = extracted_text.splitlines()
                 total_lines = len(lines)
                 end_line = offset + limit - 1
@@ -1297,7 +1714,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 result_dict = {
                     "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
                     "total_lines": total_lines,
-                    "file_size": os.path.getsize(_resolved),
+                    "file_size": binary.file_size,
                     "truncated": total_lines > end_line,
                     "extracted_document": True,
                 }
@@ -1338,7 +1755,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
-        # Block binary files by extension (no I/O).
+        # Block binary files by extension (no I/O). Name what we know:
+        # the extension is a claim, so keep this branch's message to the
+        # extension itself — the content-sniffing path below names the
+        # actual magic-byte type for extension-less/lying files.
         if has_binary_extension(str(_resolved)):
             _ext = _resolved.suffix.lower()
             return tool_error(
@@ -1754,6 +2174,51 @@ def _mark_verification_stale(
         logger.debug("verification stale marker failed", exc_info=True)
 
 
+def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
+    """Reject text-tool writes that would corrupt a binary document.
+
+    ``read_file`` auto-extracts .docx/.xlsx/.pptx (and PDF, via anydoc) to
+    readable text, so the model plausibly believes it holds the file's
+    contents and tries to write the edited text back with write_file/patch.
+    A plain-text write can never produce a valid OOXML/OLE/ODF container, so
+    that write silently destroys the document (port of nearai/ironclaw#7109).
+
+    Rules:
+    - Opaque container formats (.doc/.docx/.xls/.xlsx/.ppt/.pptx/.odt/.ods/
+      .odp): always rejected — text bytes are never a valid document, whether
+      creating or overwriting.
+    - .pdf: rejected only when OVERWRITING an existing regular file. Raw PDF
+      syntax is text-authorable, so new-file creation stays allowed.
+    """
+    if has_opaque_document_extension(filepath):
+        ext = filepath[filepath.rfind("."):].lower()
+        return (
+            f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
+            "A text write cannot produce a valid document container and would "
+            "corrupt the file (read_file showed you EXTRACTED text, not the real "
+            "bytes). Use the docx/xlsx/powerpoint skills or a library like "
+            "python-docx/openpyxl/python-pptx via the terminal to create or edit "
+            "this document."
+        )
+    if is_pdf_path(filepath):
+        try:
+            resolved = Path(_resolve_path_for_task(filepath, task_id))
+        except Exception:
+            resolved = Path(_expand_tilde(filepath))
+        try:
+            if resolved.is_file():
+                return (
+                    f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
+                    "read_file showed you EXTRACTED text, not the real bytes — writing "
+                    "text back would destroy the document. Use the pdf skill or a PDF "
+                    "library via the terminal to modify it. (Creating a NEW .pdf file "
+                    "is allowed.)"
+                )
+        except OSError:
+            pass
+    return None
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
                     session_id: str | None = None) -> str:
@@ -1768,6 +2233,15 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    binary_doc_err = _check_binary_document_write(path, task_id)
+    if binary_doc_err:
+        return tool_error(binary_doc_err)
+    protected_err = _check_protected_instruction_write([path], task_id)
+    if protected_err:
+        return tool_error(protected_err)
+    approval_err = _check_approval_required_write([path], task_id)
+    if approval_err:
+        return tool_error(approval_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
@@ -1849,8 +2323,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     """
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
+    # Paths whose CONTENT will be text-written (Update/Add + explicit path).
+    # V4A Delete/Move don't write text, so they skip the binary-document guard.
+    _content_write_paths = []
     if path:
         _paths_to_check.append(path)
+        _content_write_paths.append(path)
     if mode == "patch" and patch:
         import re as _re
         from tools.path_security import has_traversal_component
@@ -1876,12 +2354,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # it accepts ``***Update File:`` with no space after the asterisks
         # (patch_parser.py uses ``\*\*\*\s*Update\s+File:``). Requiring a space
         # here let a no-space header parse + apply while skipping this check.
-        for _m in _re.finditer(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            v4a_path = _m.group(1).strip()
+        for _m in _re.finditer(r'^\*\*\*\s*(Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
+            _op = _m.group(1)
+            v4a_path = _m.group(2).strip()
             _err = _reject_v4a_traversal(v4a_path)
             if _err:
                 return _err
             _paths_to_check.append(v4a_path)
+            if _op in ("Update", "Add"):
+                _content_write_paths.append(v4a_path)
         # ``*** Move File: src -> dst`` is a valid V4A op (patch_parser.py:114)
         # but was never extracted, so a Move targeting /etc/crontab skipped the
         # sensitive-path pre-check. Check BOTH endpoints, and run them through
@@ -1900,6 +2381,18 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
                 return tool_error(cross_warning)
+    for _p in _content_write_paths:
+        binary_doc_err = _check_binary_document_write(_p, task_id)
+        if binary_doc_err:
+            return tool_error(binary_doc_err)
+    # One approval prompt for the whole patch: a single protected file gates
+    # the ENTIRE patch (deny applies nothing — see the helper's docstring).
+    protected_err = _check_protected_instruction_write(_paths_to_check, task_id)
+    if protected_err:
+        return tool_error(protected_err)
+    approval_err = _check_approval_required_write(_paths_to_check, task_id)
+    if approval_err:
+        return tool_error(approval_err)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
@@ -2158,7 +2651,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text; PDF, legacy Office (.doc/.ppt/.xls), OpenDocument, RTF, and EPUB convert too when the optional anydoc converter is available (auto-installed on first use where installs are permitted). NOTE: Cannot read images or other binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text; PDF, legacy Office (.doc/.ppt/.xls), OpenDocument, RTF, and EPUB convert too when the optional anydoc converter is available (auto-installed on first use where installs are permitted). PDF conversion reads the text layer only: scanned/image pages yield no text, and when many pages come back empty the output ends with an EXTRACTION COVERAGE WARNING listing the affected pages — follow its instructions (render pages with pdftoppm and inspect via vision_analyze, or OCR) instead of treating the extraction as complete. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -2218,7 +2711,7 @@ PATCH_SCHEMA = {
             },
             "new_string": {
                 "type": "string",
-                "description": "REQUIRED when mode='replace'. Replacement text. Pass empty string '' to delete the matched text.",
+                "description": "REQUIRED when mode='replace'. Changed replacement text; it must differ from old_string. Pass empty string '' to delete the matched text.",
             },
             "replace_all": {
                 "type": "boolean",

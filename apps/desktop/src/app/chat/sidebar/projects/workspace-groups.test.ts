@@ -697,6 +697,121 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['dup'])
   })
 
+  it('does not fork a phantom main lane for a non-git backend workspace lane', () => {
+    // Backend non-git heuristic (`project_tree._place_by_heuristic`): lane id =
+    // folder path, label = basename, isMain=true. Live overlay used to always
+    // place under `::branch::main` / label "main", miss that lane by id+label,
+    // and CREATE a second main lane with the same sessions — dual lanes in the
+    // project drill-in (e.g. main + codex-research-guardian).
+    const root = '/home/hermes/hermes-workspace/codex-research-guardian'
+    const a = makeSession(root, { id: 's1' }) // empty git_branch / git_repo_root
+    const b = makeSession(root, { id: 's2' })
+
+    const project = projectNode({
+      id: root,
+      isAuto: true,
+      path: root,
+      repos: [
+        {
+          id: root,
+          label: 'codex-research-guardian',
+          path: root,
+          sessionCount: 2,
+          groups: [
+            lane({
+              id: root,
+              label: 'codex-research-guardian',
+              isMain: true,
+              path: root,
+              sessions: [a, b]
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [a, b])
+    const groups = overlaid.repos[0].groups
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].id).toBe(root)
+    expect(groups[0].label).toBe('codex-research-guardian')
+    expect(groups[0].sessions.map(s => s.id).sort()).toEqual(['s1', 's2'])
+    expect(groups.some(g => g.label === 'main' || g.id.endsWith('::branch::main'))).toBe(false)
+  })
+
+  it('joins a fresh live session into an existing non-git workspace lane (no branch id)', () => {
+    const root = '/work/notes'
+    const existing = makeSession(root, { id: 'old' })
+
+    const project = projectNode({
+      id: root,
+      isAuto: true,
+      path: root,
+      repos: [
+        {
+          id: root,
+          label: 'notes',
+          path: root,
+          sessionCount: 1,
+          groups: [lane({ id: root, label: 'notes', isMain: true, path: root, sessions: [existing] })]
+        }
+      ]
+    })
+
+    const fresh = makeSession(root, { id: 'fresh' })
+    const overlaid = overlayLiveLanes(project, [existing, fresh])
+    const groups = overlaid.repos[0].groups
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].id).toBe(root)
+    expect(groups[0].sessions.map(s => s.id).sort()).toEqual(['fresh', 'old'])
+  })
+
+  it('preserves backend recency order when live sessions overlay a lane', () => {
+    const recentlyActive = makeSession('/www/app', {
+      id: 'recently-active',
+      git_branch: 'main',
+      started_at: 1,
+      last_active: 3
+    })
+
+    const newlyCreated = makeSession('/www/app', {
+      id: 'newly-created',
+      git_branch: 'main',
+      started_at: 2,
+      last_active: 2
+    })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 2,
+          groups: [
+            lane({
+              id: '/www/app::branch::main',
+              label: 'main',
+              isMain: true,
+              path: '/www/app',
+              sessions: [recentlyActive, newlyCreated]
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [recentlyActive, newlyCreated])
+
+    expect(overlaid.repos[0].groups[0].sessions.map(session => session.id)).toEqual([
+      'recently-active',
+      'newly-created'
+    ])
+  })
+
   it('adds a new session to an existing worktree lane keyed by a divergent id (matches by path)', () => {
     // Backend keyed the worktree lane off a branch-style id (no live git probe),
     // but the lane PATH is the worktree dir. A new session under that worktree
@@ -830,6 +945,44 @@ describe('overlayLiveLanes', () => {
 
     expect(overlayLiveLanes(home, [makeSession('/www/app', { id: 'fresh' })])).toBe(home)
   })
+
+  it('evicts a session from the main lane when the live overlay places it into a worktree lane', () => {
+    // Session was in main when the backend tree was captured, but the live
+    // $sessions cache now has it under a worktree cwd. The overlay must place
+    // it ONLY in the worktree lane — not both.
+    const session = makeSession('/www/app/.worktrees/feature', { id: 'moved', git_branch: 'feature' })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [
+            lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app', sessions: [session] }),
+            lane({
+              id: '/www/app/.worktrees/feature',
+              label: 'feature',
+              path: '/www/app/.worktrees/feature',
+              sessions: []
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [session])
+    const mainLane = overlaid.repos[0].groups.find(g => g.isMain)
+    const featureLane = overlaid.repos[0].groups.find(g => g.path === '/www/app/.worktrees/feature')
+
+    // Session must NOT appear in the main lane
+    expect(mainLane?.sessions ?? []).toHaveLength(0)
+    // Session must appear only in the worktree lane
+    expect(featureLane?.sessions.map(s => s.id)).toEqual(['moved'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
 })
 
 describe('overlayLivePreviews', () => {
@@ -855,9 +1008,24 @@ describe('overlayLivePreviews', () => {
       ]
     })
 
-    const previews = overlayLivePreviews([project], [], [], 3, new Set(['gone']))
+    const previews = overlayLivePreviews([project], [], [], 3, { removed: new Set(['gone']) })
 
     expect(previews['/www/app'].map(s => s.id)).toEqual(['old'])
+  })
+
+  it('ranks by the active sort key before trimming, so the preview is its top rows', () => {
+    const project = projectNode({
+      id: '/www/app',
+      previewSessions: [
+        makeSession('/www/app', { id: 'newest', last_active: 9, started_at: 9 }),
+        makeSession('/www/app', { id: 'cheap', last_active: 8, started_at: 8 }),
+        makeSession('/www/app', { id: 'priciest', last_active: 1, started_at: 1 })
+      ]
+    })
+
+    const previews = overlayLivePreviews([project], [], [], 2, { rankIds: ['priciest', 'newest', 'cheap'] })
+
+    expect(previews['/www/app'].map(s => s.id)).toEqual(['priciest', 'newest'])
   })
 
   it('previews a detached session under Home, which no cwd could place', () => {

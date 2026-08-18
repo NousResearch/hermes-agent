@@ -52,6 +52,14 @@ function resultRows(result: unknown): Record<string, unknown>[] {
   return results.map(parseMaybeObject)
 }
 
+// The delegate tool settles result rows with statuses like 'ok', 'error',
+// 'timeout', 'failed'/'failure' (tools/delegate_tool.py). Anything that is
+// not a success must render as failed — mapping unknown statuses to
+// 'completed' hid timed-out children behind a green check (#73728, #85492).
+function settledRowStatus(status: string): DelegateRowStatus {
+  return status === '' || status === 'ok' || status === 'completed' ? 'completed' : 'failed'
+}
+
 function dispatchedGoals(result: unknown): string[] {
   const record = parseMaybeObject(result)
 
@@ -87,7 +95,7 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
       goal,
       id: `${toolCallId}:${index}`,
       model: entry ? field(entry, 'model') || undefined : undefined,
-      status: entry ? (field(entry, 'status') === 'failed' ? 'failed' : 'completed') : idle
+      status: entry ? settledRowStatus(field(entry, 'status')) : idle
     }
   })
 }

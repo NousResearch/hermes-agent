@@ -206,7 +206,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     }
 
     try:
-        atomic_json_write(DIRECTORY_PATH, directory)
+        await asyncio.to_thread(atomic_json_write, DIRECTORY_PATH, directory)
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
 
@@ -355,49 +355,70 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             continue
 
     # Merge in DM/group entries discovered from session history.
+    # Thread-qualified IDs are internal routing keys, not Slack API IDs.
+    def slack_lookup_id(entry_id: str) -> str:
+        return entry_id.split(":", 1)[0]
+
     # Build a lookup from API-discovered channels so we can enrich session entries.
     api_name_lookup = {ch["id"]: ch["name"] for ch in channels}
 
     for entry in await asyncio.to_thread(_build_from_sessions, "slack"):
         eid = entry.get("id")
+        if not isinstance(eid, str):
+            continue
         if eid not in seen_ids:
             # If the entry name is still a raw Slack ID (e.g. C0xxx / D0xxx),
-            # try to resolve it from the API lookup first.
+            # try to resolve it from the API lookup using the base conversation ID.
             if entry.get("name", "").startswith(("C0", "D0", "G0")):
-                if eid in api_name_lookup:
-                    entry["name"] = api_name_lookup[eid]
+                base_id = slack_lookup_id(eid)
+                if base_id in api_name_lookup:
+                    entry["name"] = api_name_lookup[base_id]
             channels.append(entry)
             seen_ids.add(eid)
 
     # Resolve remaining raw-ID entries (DMs, private channels not in bot scope)
-    # by calling conversations.info + users.info for each.
+    # by calling conversations.info + users.info once per base conversation,
+    # with all base-ID lookups running concurrently.
     unresolved = [ch for ch in channels if ch.get("name", "").startswith(("C0", "D0", "G0"))]
     if unresolved and team_clients:
         client = next(iter(team_clients.values()))
+        unresolved_by_base = {}
         for entry in unresolved:
+            unresolved_by_base.setdefault(slack_lookup_id(entry["id"]), []).append(entry)
+
+        async def _resolve_base(base_id: str, entries: list) -> None:
             try:
-                resp = await client.conversations_info(channel=entry["id"])
+                resp = await client.conversations_info(channel=base_id)
                 if not resp.get("ok"):
-                    continue
+                    return
                 ch_info = resp.get("channel", {})
+                resolved_name = None
+                resolved_type = None
                 if ch_info.get("is_im"):
                     peer_user = ch_info.get("user", "")
                     if peer_user:
                         user_resp = await client.users_info(user=peer_user)
                         if user_resp.get("ok"):
                             u = user_resp["user"]
-                            entry["name"] = (
+                            resolved_name = (
                                 u.get("profile", {}).get("display_name")
                                 or u.get("real_name")
                                 or u.get("name")
-                                or entry["id"]
                             )
-                            entry["type"] = "dm"
+                            resolved_type = "dm"
                 else:
-                    entry["name"] = ch_info.get("name") or ch_info.get("name_normalized") or entry["id"]
+                    resolved_name = ch_info.get("name") or ch_info.get("name_normalized")
+                if resolved_name:
+                    for entry in entries:
+                        entry["name"] = resolved_name
+                        if resolved_type:
+                            entry["type"] = resolved_type
             except Exception as e:
-                logger.debug("Channel directory: failed to resolve %s: %s", entry["id"], e)
-                continue
+                logger.debug("Channel directory: failed to resolve %s: %s", base_id, e)
+
+        await asyncio.gather(
+            *[_resolve_base(bid, ents) for bid, ents in unresolved_by_base.items()]
+        )
 
     return channels
 

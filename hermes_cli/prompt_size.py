@@ -65,7 +65,9 @@ def _build_inspection_agent(platform: str) -> Any:
     # Resolve platform-specific toolsets the same way the gateway does.
     enabled_toolsets = sorted(_get_platform_tools(cfg, platform))
     agent_cfg = cfg.get("agent") or {}
-    disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+    from agent.skill_utils import parse_config_string_list
+
+    disabled_toolsets = parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
 
     return AIAgent(
         model=model,

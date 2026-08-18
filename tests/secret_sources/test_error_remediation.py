@@ -13,7 +13,7 @@ import pytest
 
 from agent.secret_sources import bitwarden as bw
 from agent.secret_sources import onepassword as op
-from agent.secret_sources.base import ErrorKind, SecretSource
+from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
 from agent.secret_sources.bitwarden import (
     BitwardenSource,
     _classify_bws_error,
@@ -148,4 +148,37 @@ def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
     assert "rejected the machine-account access token" in err
     assert "hermes secrets bitwarden token" in err
 
+
+def test_remediation_hint_uses_explicit_profile_scope(tmp_path, monkeypatch):
+    from agent.secret_sources import registry
+    from hermes_cli import env_loader
+
+    class ScopedSource(SecretSource):
+        name = "scoped_hint"
+        label = "Scoped hint"
+        shape = "mapped"
+
+        def __init__(self, marker):
+            self.marker = marker
+
+        def fetch(self, cfg, home_path):
+            return FetchResult()
+
+        def remediation(self, kind, cfg):
+            return self.marker
+
+    monkeypatch.setattr(registry, "_ensure_builtin_sources", lambda: None)
+    registry._reset_registry_for_tests()
+    home_a = str((tmp_path / "hint-a").resolve())
+    home_b = str((tmp_path / "hint-b").resolve())
+    source_a = ScopedSource("profile-a")
+    source_b = ScopedSource("profile-b")
+    assert registry.register_source(source_a, scope=home_a)
+    assert registry.register_source(source_b, scope=home_b)
+    try:
+        assert env_loader._remediation_hint(
+            "scoped_hint", ErrorKind.AUTH_FAILED, {}, scope=home_b
+        ) == "profile-b"
+    finally:
+        registry._reset_registry_for_tests()
 

@@ -7741,7 +7741,7 @@ from openai import OpenAI
 import json
 openai_client = OpenAI(
     base_url = "http://127.0.0.1:8001/v1",
-    api_key = "sk-no-key-required",
+    api_key = "sk-no-key-required",  # dummy placeholder — local server ignores auth
 )
 completion = openai_client.chat.completions.create(
     model = "unsloth/GLM-4.6",
@@ -8231,7 +8231,7 @@ from openai import OpenAI
 import json
 openai_client = OpenAI(
     base_url = "http://127.0.0.1:8001/v1",
-    api_key = "sk-no-key-required",
+    api_key = "sk-no-key-required",  # dummy placeholder — local server ignores auth
 )
 completion = openai_client.chat.completions.create(
     model = "unsloth/DeepSeek-V3.1-Terminus",

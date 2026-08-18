@@ -971,7 +971,36 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
     _add_description_prompt_preview(result, content)
+    _attach_lint_findings(result, skill_md)
     return result
+
+
+def _attach_lint_findings(result: Dict[str, Any], skill_md: Path) -> None:
+    """Run the advisory SKILL.md linter and attach any findings to *result*.
+
+    The linter enforces the CONTRIBUTING "Skill authoring standards (HARDLINE)"
+    conventions that the hard validator does not (shell-utility references,
+    missing metadata, dangling reference links, POSIX gating, forbidden files).
+    Findings are ADVISORY — surfaced as guidance so the author can fix them,
+    never a hard block. The hard rejects already ran in _validate_frontmatter.
+    """
+    try:
+        from tools.skill_linter import lint_skill  # local import: optional path
+
+        findings = lint_skill(skill_md)
+    except Exception:
+        return
+    if not findings:
+        return
+    result["lint_warnings"] = [
+        {"severity": f.severity, "rule": f.rule, "message": f.message}
+        for f in findings
+    ]
+    result["lint_hint"] = (
+        "The skill was created. These are advisory authoring-convention "
+        "findings (not blockers) — fix them with skill_manage(action='patch') "
+        "to match Hermes skill standards."
+    )
 
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
@@ -1546,6 +1575,21 @@ def skill_manage(
     if gate_result is not None:
         return gate_result
 
+    # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the
+    # skill directory so every mutation — any actor — lands in the append-only
+    # JSONL ledger with before/after blobs. Telemetry, not a gate: failures
+    # here must NEVER block the mutation (capture_before returns None on
+    # error, and record_mutation below swallows everything).
+    _ledger_before = None
+    _ledger_before_dir = None
+    try:
+        from tools import skill_ledger as _ledger
+        _pre = _find_skill(name)
+        _ledger_before_dir = _pre["path"] if _pre else None
+        _ledger_before = _ledger.capture_before(_ledger_before_dir)
+    except Exception:
+        pass
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -1582,6 +1626,30 @@ def skill_manage(
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
 
     if result.get("success"):
+        # Audit ledger append (best-effort; never blocks the mutation).
+        try:
+            from tools import skill_ledger as _ledger
+            _post = _find_skill(name)
+            _after_dir = _post["path"] if _post else None
+            _evidence = {}
+            if action == "delete":
+                # Record delete intent: consolidation vs prune, and whether
+                # the recoverable-archive path handled it (curator pass).
+                _evidence["absorbed_into"] = absorbed_into
+                _evidence["archived"] = bool(result.get("_archived"))
+            if session_id:
+                _evidence["session_id"] = session_id
+            if file_path:
+                _evidence["file_path"] = file_path
+            _ledger.record_mutation(
+                action,
+                name,
+                before=_ledger_before if _ledger_before is not None else [],
+                after_root=_after_dir,
+                evidence=_evidence,
+            )
+        except Exception:
+            pass
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
@@ -1708,8 +1776,8 @@ SKILL_MANAGE_SCHEMA = {
             "new_string": {
                 "type": "string",
                 "description": (
-                    "Replacement text (required for 'patch'). Can be empty string "
-                    "to delete the matched text."
+                    "Replacement text (required for 'patch'); must differ from "
+                    "old_string. Can be empty string to delete the matched text."
                 )
             },
             "replace_all": {

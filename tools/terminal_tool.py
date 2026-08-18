@@ -54,6 +54,13 @@ from utils import env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+def _redact_terminal_error_text(value: Any) -> str:
+    """Force-redact text before serializing a terminal error envelope."""
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text("" if value is None else str(value), force=True)
+
+
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
 # The terminal tool polls this during command execution so it can kill
@@ -61,6 +68,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 from tools.registry import tool_error
+from tools.shell_heredoc import strip_inert_heredoc_bodies
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
@@ -1055,6 +1063,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
 
 # Environment classes now live in tools/environments/
+from tools.environments.base import EnvironmentConnectionError
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
@@ -1069,6 +1078,7 @@ import sys
 TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
 
 Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), sed/awk (use patch), or echo/heredoc file creation (use write_file). Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
+NEVER pipe a build/test command through tail/head/cat to shorten output (e.g. `cargo build | tail -20`): output is auto-truncated with the full text saved to a file, and the pipe makes exit_code report the LAST pipeline command's status (tail's 0), masking real failures. Run the command bare; the same applies to `cmd || echo failed`, which also masks the exit code.
 Environment state persists: activate a virtualenv or export variables once per session, not before every command.
 
 Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
@@ -1269,6 +1279,76 @@ def clear_task_env_overrides(task_id: str):
     """
     _task_env_overrides.pop(task_id, None)
     clear_session_cwd(task_id)
+    with _container_alias_lock:
+        _container_aliases.pop(task_id, None)
+
+
+# Subagent → parent container aliasing.  delegate_task children get their own
+# task_id (file-state tracking, TUI events) but must share the PARENT
+# session's container — one bash, one /workspace, one set of installed
+# packages.  With per-session container isolation active (docker +
+# container_persistent: false), the collapse-to-"default" shortcut no longer
+# provides that sharing, so the spawn site registers an explicit alias.
+_container_aliases: Dict[str, str] = {}
+_container_alias_lock = threading.Lock()
+
+
+def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) -> None:
+    """Make *child_task_id* resolve to *parent_task_id*'s container.
+
+    Called by ``delegate_task`` at child spawn so subagents share the parent
+    session's sandbox under per-session container isolation. A missing/empty
+    parent id aliases the child to ``"default"`` (top-level CLI parent).
+    """
+    if not child_task_id:
+        return
+    with _container_alias_lock:
+        _container_aliases[child_task_id] = str(parent_task_id or "default")
+
+
+def _resolve_container_alias(task_id: str) -> str:
+    """Follow the child→parent alias chain (cycle-safe) for *task_id*."""
+    seen = set()
+    key = task_id
+    with _container_alias_lock:
+        while key in _container_aliases and key not in seen:
+            seen.add(key)
+            key = _container_aliases[key]
+    return key
+
+
+def _docker_session_isolation_enabled() -> bool:
+    """True when docker sessions get their OWN containers (issue: stale
+    workspace mounts leaking between desktop sessions).
+
+    Gated on ``terminal.backend: docker`` + ``container_persistent: false``:
+    a non-persistent sandbox is a statement that state must not survive the
+    session, so sharing one container across sessions contradicts it. With
+    ``container_persistent: true`` the documented ONE-long-lived-container
+    contract is unchanged.
+    """
+    _ensure_terminal_env_bridged()
+    if os.getenv("TERMINAL_ENV", "local") != "docker":
+        return False
+    return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
+
+
+_ISOLATION_OVERRIDE_KEYS = frozenset({
+    "docker_image", "modal_image", "singularity_image",
+    "daytona_image", "env_type",
+})
+
+
+def _has_isolation_overrides(task_id: Optional[str]) -> bool:
+    """True when *task_id* registered backend-image/env_type overrides.
+
+    The single owner of the "is this an RL/benchmark-style isolated rollout"
+    predicate — shared by container-key resolution and container creation so
+    the two can't drift.
+    """
+    if not task_id or task_id not in _task_env_overrides:
+        return False
+    return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1294,15 +1374,18 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     tracking) are *not* isolation signals — they should not cause each
     session to spin up its own container.  Only overrides containing
     backend-specific image keys or ``env_type`` trigger isolation.
+
+    Per-session container isolation (docker + ``container_persistent:
+    false``): each session's task_id is its own container key, so a fresh
+    chat gets a fresh sandbox with only ITS mounts — a previous session's
+    workspace can no longer appear in a new session's container.
+    ``delegate_task`` children keep sharing the parent's container via the
+    alias registry (``register_container_alias``).
     """
-    _ISOLATION_KEYS = frozenset({
-        "docker_image", "modal_image", "singularity_image",
-        "daytona_image", "env_type",
-    })
-    if task_id and task_id in _task_env_overrides:
-        overrides = _task_env_overrides[task_id]
-        if set(overrides.keys()) & _ISOLATION_KEYS:
-            return task_id
+    if task_id and _has_isolation_overrides(task_id):
+        return task_id
+    if task_id and _docker_session_isolation_enabled():
+        return _resolve_container_alias(task_id)
     return "default"
 
 
@@ -1324,6 +1407,50 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
         or _task_env_overrides.get(_resolve_container_task_id(raw))
         or {}
     )
+
+
+def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
+    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
+
+    The single owner of the cwd-mount policy, shared by every environment
+    creation site (terminal tool, file tools, execute_code, lazy bring-up):
+
+    * Shared-container mode (the default): the process-global
+      ``TERMINAL_CWD``-derived ``config["host_cwd"]`` — unchanged legacy
+      behavior, ONE container whose mount tracks the configured workspace.
+    * Per-session isolation mode (docker + ``container_persistent: false``):
+      only the SESSION's own registered workspace may mount.  The process
+      env var is a launch artifact — the TUI/desktop workspace picker writes
+      ``os.environ["TERMINAL_CWD"]`` and it outlives the session that set it,
+      so deriving a fresh session's mount from it leaks the previous
+      session's directory into a chat that never attached one.  Overrides
+      tagged ``cwd_source: "process"`` (gateway fallback to the global env
+      var) are likewise refused as mount sources; only a workspace the user
+      actually attached to THIS session (``cwd_source: "session"`` or an
+      untagged override from ACP/RL surfaces) mounts.
+    """
+    if config.get("env_type") != "docker":
+        return None
+    if not config.get("docker_mount_cwd_to_workspace"):
+        return None
+    if not _docker_session_isolation_enabled():
+        return config.get("host_cwd")
+    if _resolve_container_task_id(task_id) == "default":
+        # Top-level CLI parent — single-session process, legacy behavior.
+        return config.get("host_cwd")
+    overrides = resolve_task_overrides(task_id)
+    if overrides.get("cwd_source") == "process":
+        return None
+    candidate = overrides.get("cwd")
+    if not isinstance(candidate, str) or not candidate.strip():
+        return None
+    candidate = os.path.abspath(os.path.expanduser(candidate))
+    if not os.path.isdir(candidate):
+        return None
+    if candidate.startswith(("/workspace", "/root")):
+        # Already an in-container path, not a host workspace.
+        return None
+    return candidate
 
 
 # Configuration from environment variables
@@ -1365,22 +1492,6 @@ def _safe_getcwd() -> str:
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
-
-
-def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
-    """Return True when *cwd* is a tilde path that the remote SSH shell must
-    expand itself, so the Hermes host/container must NOT ``expanduser`` it.
-
-    SSH ``cwd`` is interpreted by the *remote* shell (``cd ~`` / ``cd ~/x``
-    over ``ssh ... bash -c``). Expanding ``~`` locally would rewrite it to the
-    Hermes host HOME (often ``/opt/data`` under Docker) and inject a
-    nonexistent path into the remote session. Only ``~`` / ``~/...`` on the
-    ``ssh`` backend qualify; absolute remote paths still pass through
-    unchanged, and every other backend keeps expanding locally.
-    """
-    if (backend or "").strip().lower() != "ssh":
-        return False
-    return cwd == "~" or cwd.startswith("~/")
 
 
 def _is_unusable_container_cwd(cwd: str) -> bool:
@@ -1512,6 +1623,7 @@ def _get_env_config() -> Dict[str, Any]:
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
@@ -1599,11 +1711,53 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     )
 
 
+def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
+    """Build the ``ssh_config`` dict passed to :func:`_create_environment`.
+
+    Shared by the terminal tool's own get-or-create path and the lazy
+    :func:`ensure_task_env` bring-up so both derive SSH connection settings
+    from the resolved config identically.
+    """
+    return {
+        "host": config.get("ssh_host", ""),
+        "user": config.get("ssh_user", ""),
+        "port": config.get("ssh_port", 22),
+        "key": config.get("ssh_key", ""),
+        "persistent": config.get("ssh_persistent", False),
+    }
+
+
+def _container_config_from_config(config: Dict[str, Any]) -> dict:
+    """Build the ``container_config`` dict passed to :func:`_create_environment`.
+
+    Shared by the terminal tool's own get-or-create path and the lazy
+    :func:`ensure_task_env` bring-up (see :func:`_ssh_config_from_config`).
+    """
+    return {
+        "container_cpu": config.get("container_cpu", 1),
+        "container_memory": config.get("container_memory", 5120),
+        "container_disk": config.get("container_disk", 51200),
+        "container_persistent": config.get("container_persistent", True),
+        "modal_mode": config.get("modal_mode", "auto"),
+        "vercel_runtime": config.get("vercel_runtime", ""),
+        "docker_volumes": config.get("docker_volumes", []),
+        "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+        "docker_forward_env": config.get("docker_forward_env", []),
+        "docker_env": config.get("docker_env", {}),
+        "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+        "docker_extra_args": config.get("docker_extra_args", []),
+        "docker_shm_size": config.get("docker_shm_size", "1g"),
+        "docker_network": config.get("docker_network", True),
+        "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+        "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+    }
+
+
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
                         task_id: str = "default",
-                        host_cwd: str = None):
+                        host_cwd: Optional[str] = None):
     """
     Create an execution environment for sandboxed command execution.
     
@@ -1643,7 +1797,18 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         # subagents, RL benchmarks) don't run the reaper N times.
         # Disable via ``terminal.docker_orphan_reaper: false`` (issue #20561).
         _maybe_reap_docker_orphans(cc)
-        return _DockerEnvironment(
+        # Per-session container isolation: a session-keyed container must not
+        # outlive its session, so cross-process reuse/persist is disabled for
+        # it — cleanup_vm()/the idle reaper stop+rm it instead of leaving a
+        # running container behind for every chat ever opened. The shared
+        # "default" container and RL/benchmark override sandboxes keep their
+        # existing lifecycle.
+        session_scoped = (
+            _docker_session_isolation_enabled()
+            and task_id != "default"
+            and not _has_isolation_overrides(task_id)
+        )
+        docker_env_obj = _DockerEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
@@ -1655,9 +1820,22 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
             network=docker_network,
             extra_args=docker_extra_args,
-            persist_across_processes=cc.get("docker_persist_across_processes", True),
+            persist_across_processes=(
+                False if session_scoped
+                else cc.get("docker_persist_across_processes", True)
+            ),
             shm_size=cc.get("docker_shm_size", "1g"),
         )
+        # Marker read by is_persistent_env(): a session-scoped container
+        # survives BETWEEN turns (skip per-turn teardown) but is removed at
+        # session close / idle timeout. Guarded setattr: test doubles for
+        # _DockerEnvironment may not accept attributes.
+        if session_scoped:
+            try:
+                docker_env_obj._session_scoped = True
+            except AttributeError:
+                pass
+        return docker_env_obj
     
     elif env_type == "singularity":
         return _SingularityEnvironment(
@@ -1873,6 +2051,90 @@ def get_active_env(task_id: str):
         return _active_environments.get(lookup) or _active_environments.get(task_id)
 
 
+def ensure_task_env(task_id: Optional[str] = None):
+    """Lazily create and cache the sandbox env for *task_id* if none is active.
+
+    :func:`terminal_tool` creates the environment on the first terminal command,
+    but nothing else did — so under a non-local backend (ssh, docker, …) a
+    session whose first action is ``vision_analyze`` on a container-only path hit
+    "no active sandbox session" because the SSH/Docker handshake never ran
+    (issue #62825). vision reads such paths inside the sandbox (see
+    ``tools.image_source``), so it calls this to bring the env up on demand,
+    reusing the same creation machinery as the terminal tool.
+
+    No-op on the local backend (images are read host-side). Returns the env
+    instance, or ``None`` when local or when creation fails (best-effort: a
+    failure leaves the caller's fail-closed error path intact).
+    """
+    config = _get_env_config()
+    env_type = config["env_type"]
+    if env_type == "local":
+        return None
+
+    effective_task_id = _resolve_container_task_id(task_id)
+
+    # Fast path: already active — mirror terminal_tool and refresh activity.
+    existing = get_active_env(effective_task_id)
+    if existing is not None:
+        with _env_lock:
+            _last_activity[effective_task_id] = time.time()
+        return existing
+
+    overrides = resolve_task_overrides(task_id)
+    if env_type == "docker":
+        image = overrides.get("docker_image") or config["docker_image"]
+    elif env_type == "singularity":
+        image = overrides.get("singularity_image") or config["singularity_image"]
+    elif env_type == "modal":
+        image = overrides.get("modal_image") or config["modal_image"]
+    elif env_type == "daytona":
+        image = overrides.get("daytona_image") or config["daytona_image"]
+    else:
+        image = ""
+
+    _start_cleanup_thread()
+
+    # Per-task creation lock so a concurrent terminal_tool call and this helper
+    # don't each spawn a sandbox for the same task.
+    with _creation_locks_lock:
+        task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
+
+    with task_lock:
+        existing = get_active_env(effective_task_id)
+        if existing is not None:
+            return existing
+        try:
+            new_env = _create_environment(
+                env_type=env_type,
+                image=image,
+                cwd=config["cwd"],
+                timeout=config["timeout"],
+                ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
+                container_config=(
+                    _container_config_from_config(config)
+                    if env_type in _CONTAINER_BACKENDS else None
+                ),
+                local_config=None,
+                task_id=effective_task_id,
+                host_cwd=_resolve_task_host_cwd(config, task_id),
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort bring-up
+            logger.warning(
+                "Lazy %s environment init failed for task %s: %s",
+                env_type, effective_task_id[:8], exc,
+            )
+            return None
+
+        with _env_lock:
+            _active_environments[effective_task_id] = new_env
+            _last_activity[effective_task_id] = time.time()
+        logger.info(
+            "%s environment lazily initialized for task %s",
+            env_type, effective_task_id[:8],
+        )
+        return new_env
+
+
 def is_persistent_env(task_id: str) -> bool:
     """Return True if the active environment for task_id is configured for
     cross-turn persistence (``persistent_filesystem=True``).
@@ -1883,10 +2145,17 @@ def is_persistent_env(task_id: str) -> bool:
     down at end-of-turn to prevent leakage. The idle reaper
     (``_cleanup_inactive_envs``) handles persistent envs once they exceed
     ``terminal.lifetime_seconds``.
+
+    Session-scoped docker containers (per-session isolation mode) also count
+    as persistent HERE: their lifetime is the SESSION, not the turn — they
+    are removed by ``AIAgent.close()`` → ``cleanup_vm`` at session teardown
+    and by the idle reaper, not per-turn.
     """
     env = get_active_env(task_id)
     if env is None:
         return False
+    if getattr(env, "_session_scoped", False):
+        return True
     return bool(getattr(env, "_persistent", False))
 
 
@@ -2022,6 +2291,61 @@ atexit.register(_atexit_cleanup)
 # wastes a turn investigating something that just means "no matches".
 # This lookup adds a human-readable note so the agent can move on.
 
+# Signal-death notes for the lethal signals seen in practice. Keyed by
+# signum; used for both the ``-signum`` (subprocess) and ``128+signum``
+# (shell) encodings. Curated rather than exhaustive so we never mislabel a
+# legitimate application exit code (e.g. 130/SIGINT is handled by the
+# executor's interrupt-marker path and excluded here).
+_SIGNAL_EXIT_NOTES: dict[int, str] = {
+    3:  "SIGQUIT (quit from keyboard)",
+    4:  "SIGILL (illegal instruction — corrupt binary or wrong architecture)",
+    6:  "SIGABRT (abort — assertion failure, fatal runtime error, or glibc abort)",
+    7:  "SIGBUS (bus error — misaligned or unmapped memory access)",
+    8:  "SIGFPE (fatal arithmetic error, e.g. integer division by zero)",
+    9:  "SIGKILL — often the kernel OOM killer on memory exhaustion, "
+        "or an explicit kill -9",
+    11: "SIGSEGV (segmentation fault — the program crashed)",
+    13: "SIGPIPE (wrote to a closed pipe — e.g. output piped to a reader that exited)",
+    15: "SIGTERM (terminated — kill/timeout or shutdown requested it to stop)",
+    24: "SIGXCPU (CPU time limit exceeded)",
+    25: "SIGXFSZ (file size limit exceeded)",
+}
+
+
+def _interpret_signal_exit(exit_code: int) -> str | None:
+    """Map signal-termination exit codes to a human-readable note.
+
+    Returns None when ``exit_code`` does not look like a signal death.
+    Negative codes are Python ``subprocess`` semantics (definite); codes in
+    the 128+signum band are the shell convention (very likely but not
+    guaranteed, so those notes hedge with "usually").
+    """
+    if exit_code < 0:
+        signum = -exit_code
+        if signum == 2:  # SIGINT — executor's interrupt-marker path owns it
+            return None
+        note = _SIGNAL_EXIT_NOTES.get(signum)
+        if note:
+            return f"Command terminated by signal {signum}: {note}"
+        try:
+            import signal as _signal
+            name = _signal.Signals(signum).name
+        except (ValueError, ImportError):
+            name = f"signal {signum}"
+        return f"Command terminated by {name} (signal {signum})"
+
+    if exit_code > 128:
+        signum = exit_code - 128
+        note = _SIGNAL_EXIT_NOTES.get(signum)
+        if note:
+            return (
+                f"Exit code {exit_code} usually means the command was "
+                f"terminated by signal {signum}: {note}"
+            )
+
+    return None
+
+
 def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     """Return a human-readable note when a non-zero exit code is non-erroneous.
 
@@ -2031,6 +2355,21 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     """
     if exit_code == 0:
         return None
+
+    # Signal terminations (ported from Kilo-Org/kilocode#12698, adapted to
+    # Python semantics). Two shapes reach the model:
+    #   * negative codes — subprocess.Popen reports a signal-killed process
+    #     as ``-signum`` (definite signal death), and
+    #   * 128+signum — the conventional shell encoding when bash reports a
+    #     signal-killed child (heuristic: a program *can* ``exit 139``, so
+    #     these notes say "usually").
+    # Without a note the model sees a bare ``exit_code=-9`` or ``137`` and
+    # burns turns re-running or mis-diagnosing (137 = OOM kill is the big
+    # one). 130/SIGINT is deliberately absent: the executor has bespoke
+    # interrupt-marker handling for rc=130.
+    signal_note = _interpret_signal_exit(exit_code)
+    if signal_note is not None:
+        return signal_note
 
     # Extract the last command in a pipeline/chain — that determines the
     # exit code.  Handles  `cmd1 && cmd2`, `cmd1 | cmd2`, `cmd1; cmd2`.
@@ -2113,10 +2452,19 @@ def _strip_quotes(command: str) -> str:
 
     This prevents false positives when keywords like 'nohup' or 'setsid' appear
     in commit messages, Python -c code, echo arguments, or PR body text.
-    Also strips backtick-quoted content and heredoc-style inline text.
+    Also strips backtick-quoted content and provably-inert heredoc body text.
     """
+    # Mask inert heredoc bodies FIRST (before quote-stripping — a heredoc
+    # delimiter may be quoted, e.g. <<'EOF', and the body commonly contains
+    # characters like '&' that are literal payload, not shell operators).
+    # strip_inert_heredoc_bodies is deliberately conservative: it masks a body
+    # only when the delimiter is quoted (no expansion), terminated, on a
+    # simple opener, and fed to a known non-shell consumer — anything
+    # ambiguous stays visible so a real background operator can't hide behind
+    # a fake or executable heredoc.
+    result = strip_inert_heredoc_bodies(command)
     # Remove single-quoted strings (no escaping inside single quotes in shell)
-    result = re.sub(r"'[^']*'", "''", command)
+    result = re.sub(r"'[^']*'", "''", result)
     # Remove double-quoted strings (handle escaped quotes)
     result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
     # Remove backtick-quoted strings
@@ -2218,6 +2566,7 @@ def _resolve_command_cwd(
     workdir: Optional[str],
     default_cwd: str,
     session_key: Optional[str] = None,
+    env_type: Optional[str] = None,
 ) -> str:
     """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
 
@@ -2227,10 +2576,29 @@ def _resolve_command_cwd(
     ``cd`` lands in another record and can't affect us. A session with no
     record yet (first command) runs in ``default_cwd`` (config/override cwd),
     which is also what seeds a fresh environment.
+
+    ``env_type`` makes the record container-aware: on container backends a
+    recorded HOST path (a desktop/TUI surface registering its host workspace
+    via ``register_task_env_overrides`` → ``record_session_cwd``) is unusable
+    inside the sandbox — the shell prefixes every command with ``cd <host
+    path>`` and fails with exit 126. Same guard class as the env-creation
+    sanitizers (#50636, #54447); this is the per-command sibling site.
     """
     if workdir:
         return workdir
-    return get_session_cwd(session_key) or default_cwd
+    recorded = get_session_cwd(session_key)
+    if (
+        recorded
+        and env_type in _CONTAINER_BACKENDS
+        and _is_unusable_container_cwd(recorded)
+    ):
+        logger.info(
+            "Ignoring recorded session cwd %r for %s backend "
+            "(host/relative path won't work in sandbox). Using %r instead.",
+            recorded, env_type, default_cwd,
+        )
+        return default_cwd
+    return recorded or default_cwd
 
 
 def terminal_tool(
@@ -2320,6 +2688,10 @@ def terminal_tool(
             image = ""
 
         cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+        # Session-scoped mount resolution (single owner: _resolve_task_host_cwd).
+        # Under per-session isolation a fresh session must not inherit the
+        # process-global TERMINAL_CWD mount left behind by a previous session.
+        host_cwd = _resolve_task_host_cwd(config, task_id)
         # A per-task cwd override (registered by the gateway/TUI for workspace
         # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
         # config["cwd"] was already sanitized for container backends in
@@ -2328,17 +2700,20 @@ def terminal_tool(
         # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
         # container fails to start (exit 125). Re-apply the same host/relative
         # path guard to the *resolved* cwd so the override can't bypass it.
+        # When the host path IS this session's mounted workspace, remap it to
+        # /workspace (where the mount lands) instead of discarding it.
         # Valid in-container override paths (RL/benchmark sandboxes that set
         # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
         # through untouched.
         if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-            if cwd != config["cwd"]:
+            remapped = "/workspace" if host_cwd else config["cwd"]
+            if cwd != remapped:
                 logger.info(
-                    "Ignoring host/relative cwd override %r for %s backend "
+                    "Remapping host/relative cwd override %r for %s backend "
                     "(won't exist in sandbox). Using %r instead.",
-                    cwd, env_type, config["cwd"],
+                    cwd, env_type, remapped,
                 )
-            cwd = config["cwd"]
+            cwd = remapped
         default_timeout = config["timeout"]
 
         # Validate an explicit timeout before it flows into deadline math.
@@ -2422,36 +2797,11 @@ def terminal_tool(
                         _check_disk_usage_warning()
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
                     try:
-                        ssh_config = None
-                        if env_type == "ssh":
-                            ssh_config = {
-                                "host": config.get("ssh_host", ""),
-                                "user": config.get("ssh_user", ""),
-                                "port": config.get("ssh_port", 22),
-                                "key": config.get("ssh_key", ""),
-                                "persistent": config.get("ssh_persistent", False),
-                            }
-
-                        container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "modal_mode": config.get("modal_mode", "auto"),
-                                "vercel_runtime": config.get("vercel_runtime", ""),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                                "docker_forward_env": config.get("docker_forward_env", []),
-                                "docker_env": config.get("docker_env", {}),
-                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                                "docker_extra_args": config.get("docker_extra_args", []),
-                                "docker_shm_size": config.get("docker_shm_size", "1g"),
-                                "docker_network": config.get("docker_network", True),
-                                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-                            }
+                        ssh_config = _ssh_config_from_config(config) if env_type == "ssh" else None
+                        container_config = (
+                            _container_config_from_config(config)
+                            if env_type in _CONTAINER_BACKENDS else None
+                        )
 
                         local_config = None
                         if env_type == "local":
@@ -2468,13 +2818,15 @@ def terminal_tool(
                             container_config=container_config,
                             local_config=local_config,
                             task_id=effective_task_id,
-                            host_cwd=config.get("host_cwd"),
+                            host_cwd=host_cwd,
                         )
                     except ImportError as e:
                         return json.dumps({
                             "output": "",
                             "exit_code": -1,
-                            "error": f"Terminal tool disabled: environment creation failed ({e})",
+                            "error": _redact_terminal_error_text(
+                                f"Terminal tool disabled: environment creation failed ({e})"
+                            ),
                             "status": "disabled"
                         }, ensure_ascii=False)
 
@@ -2526,6 +2878,7 @@ def terminal_tool(
                 workdir=workdir,
                 default_cwd=guard_cwd_base,
                 session_key=session_key,
+                env_type=env_type,
             )
 
             def _read_script_in_env(script_path: str) -> Optional[str]:
@@ -2601,6 +2954,51 @@ def terminal_tool(
                     "status": "error",
                 }, ensure_ascii=False)
 
+        # Validate before the source guard resolves an explicit workdir.
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                               workdir[:200], _safe_command_preview(command))
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": workdir_error,
+                    "status": "blocked"
+                }, ensure_ascii=False)
+
+        # Windows-only: NTFS locks loaded module files, so rewriting the local
+        # checkout backing this interpreter can corrupt the running process.
+        # POSIX keeps old inodes alive for open handles, so the guard is off
+        # there. Remote backends cannot reach that checkout.
+        if env_type == "local":
+            from tools.self_repo_guard import (
+                detect_self_repo_git_mutation,
+                guard_active,
+            )
+
+            guard_cwd = _resolve_command_cwd(
+                workdir=workdir,
+                default_cwd=cwd,
+                session_key=session_key,
+            )
+            _self_repo_hit, _self_repo_msg = (
+                detect_self_repo_git_mutation(command, guard_cwd)
+                if guard_active()
+                else (False, None)
+            )
+            if _self_repo_hit:
+                logger.warning(
+                    "Blocked self-repo git mutation (command: %s)",
+                    _safe_command_preview(command),
+                )
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": _self_repo_msg,
+                    "status": "blocked",
+                }, ensure_ascii=False)
+
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
@@ -2650,19 +3048,6 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
-        # Validate workdir against shell injection
-        if workdir:
-            workdir_error = _validate_workdir(workdir)
-            if workdir_error:
-                logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                               workdir[:200], _safe_command_preview(command))
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": workdir_error,
-                    "status": "blocked"
-                }, ensure_ascii=False)
-
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty
@@ -2686,6 +3071,7 @@ def terminal_tool(
                 workdir=workdir,
                 default_cwd=cwd,
                 session_key=session_key,
+                env_type=env_type,
             )
             try:
                 if env_type == "local":
@@ -2871,6 +3257,15 @@ def terminal_tool(
                             proc_session.watcher_user_name = _gw_user_name
                             proc_session.watcher_thread_id = _gw_thread_id
                             proc_session.watcher_message_id = _gw_message_id
+                            # Stamp the spawning conversation's session-db id
+                            # so the gateway's completion pre-flight
+                            # (_classify_completion_target) can drop the
+                            # notification when the user closes this session
+                            # (/new) before the process finishes, instead of
+                            # injecting it into the chat's NEW session.
+                            proc_session.parent_session_id = _gse(
+                                "HERMES_SESSION_ID", ""
+                            )
 
                 # Mutual exclusion: if both notify_on_complete and watch_patterns
                 # are set, drop watch_patterns. The combination produces duplicate
@@ -2909,6 +3304,7 @@ def terminal_tool(
                             "thread_id": proc_session.watcher_thread_id,
                             "message_id": proc_session.watcher_message_id,
                             "notify_on_complete": True,
+                            "parent_session_id": proc_session.parent_session_id,
                         })
 
                 # Set watch patterns for output monitoring
@@ -2921,7 +3317,9 @@ def terminal_tool(
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
-                    "error": f"Failed to start background process: {str(e)}"
+                    "error": _redact_terminal_error_text(
+                        f"Failed to start background process: {e}"
+                    )
                 }, ensure_ascii=False)
         else:
             # Run foreground command with retry logic
@@ -2946,6 +3344,7 @@ def terminal_tool(
                         workdir=workdir,
                         default_cwd=cwd,
                         session_key=session_key,
+                        env_type=env_type,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,
@@ -2981,7 +3380,9 @@ def terminal_tool(
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": f"Command execution failed: {type(e).__name__}: {str(e)}"
+                        "error": _redact_terminal_error_text(
+                            f"Command execution failed: {type(e).__name__}: {e}"
+                        )
                     }, ensure_ascii=False)
                 
                 # Got a result
@@ -2998,7 +3399,14 @@ def terminal_tool(
             # (docstring: "Working directory for this command"). Recording it
             # would hijack the session's durable cwd for every later command
             # that doesn't pass ``workdir``. Skip the dual-write in that case.
-            if not workdir:
+            #
+            # AND only when the command actually reported its cwd. The marker
+            # is printed after the command returns, so an interrupted / killed
+            # / timed-out command emits none and env.cwd still holds whatever
+            # the last command to FINISH left there — on a shared env, that is
+            # another session's directory. Recording it silently re-homes this
+            # session into a directory the user never opened.
+            if not workdir and (result or {}).get("cwd_observed"):
                 record_session_cwd(session_key, getattr(env, "cwd", None))
 
             # Extract output
@@ -3093,6 +3501,19 @@ def terminal_tool(
                     failure_hint = annotate_failure(command, returncode, output)
                 except Exception:
                     failure_hint = None
+            elif returncode == 0:
+                # Masked-success backstop: `cargo build | tail -20` returns
+                # tail's exit 0 even when the build failed (bash reports the
+                # last pipeline command's status; same for `cmd || echo ...`).
+                # When the command shape can mask an upstream failure AND the
+                # output carries strong failure indicators, warn the model so
+                # exit_code 0 isn't read as a success signal. Advisory only —
+                # the exit code itself is never modified.
+                try:
+                    from tools.terminal_hints import annotate_masked_success
+                    failure_hint = annotate_masked_success(command, output)
+                except Exception:
+                    failure_hint = None
 
             result_dict = {
                 "output": output,
@@ -3105,8 +3526,13 @@ def terminal_tool(
             # defensive 'cd X && ' prefix because the model can't see cwd
             # state; echoing it on change removes the guesswork (pattern
             # borrowed from crush's <cwd> injection).
+            #
+            # Gated on the same observation flag as the record above: without
+            # it, an interrupted command echoes the shared env's leftover cwd
+            # and tells the model it moved to a directory another session
+            # opened.
             try:
-                post_cwd = getattr(env, "cwd", None)
+                post_cwd = getattr(env, "cwd", None) if (result or {}).get("cwd_observed") else None
                 if post_cwd and command_cwd and os.path.realpath(str(post_cwd)) != os.path.realpath(str(command_cwd)):
                     result_dict["cwd"] = str(post_cwd)
             except Exception:
@@ -3121,9 +3547,17 @@ def terminal_tool(
                 try:
                     _sp = Path(spill_file_path)
                     raw_spill = _sp.read_text(encoding="utf-8", errors="replace")
-                    _sp.write_text(
+                    from tools.spill_safety import write_text_exclusive
+
+                    # Rewrite in place via lstat-checked unlink + exclusive
+                    # create so the redacted copy can't be diverted through a
+                    # symlink planted between the collector's write and now.
+                    write_text_exclusive(
+                        _sp,
                         redact_terminal_output(strip_ansi(raw_spill), command),
-                        encoding="utf-8", errors="replace",
+                        private=True,
+                        overwrite=True,
+                        errors="replace",
                     )
                     result_dict["output_total_chars"] = spill_total_chars
                     result_dict["full_output_path"] = spill_file_path
@@ -3183,17 +3617,82 @@ def terminal_tool(
 
             return json.dumps(result_dict, ensure_ascii=False)
 
+    except EnvironmentConnectionError as e:
+        # Infrastructure/connection-class failure (SSH host down, Docker
+        # daemon unreachable) — distinct from a command failing with a
+        # nonzero exit code.  Config gate ``terminal.degraded_mode``:
+        #   warn (default) — return a structured degraded result the model
+        #                    can act on (reason + retry hint, no traceback).
+        #   fail           — preserve the historical error+traceback result.
+        degraded_mode = os.getenv("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
+        if degraded_mode == "fail":
+            import traceback
+            tb_str = traceback.format_exc()
+            logger.error("terminal_tool exception:\n%s", tb_str)
+            # Exception text can embed the failing command line (and any
+            # secrets inline in it) — redact before returning to the model.
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": _redact_terminal_error_text(f"Failed to execute command: {e}"),
+                "traceback": _redact_terminal_error_text(tb_str),
+                "status": "error"
+            }, ensure_ascii=False)
+
+        logger.warning("terminal backend degraded: %s", e.reason)
+        # Never keep a possibly-broken backend cached: evict it so the next
+        # call re-creates the environment from scratch and simply works once
+        # the backend is reachable again.
+        try:
+            _evict_environment_for_task(task_id)
+        except Exception:
+            logger.debug("degraded-env eviction failed", exc_info=True)
+        return json.dumps({
+            "output": "",
+            "exit_code": -1,
+            "status": "degraded",
+            "reason": e.reason,
+            "retry_hint": e.retry_hint,
+            "error": f"Terminal backend degraded: {e.reason}",
+        }, ensure_ascii=False)
+
     except Exception as e:
         import traceback
         tb_str = traceback.format_exc()
         logger.error("terminal_tool exception:\n%s", tb_str)
+        # Exception text can embed the failing command line (and any
+        # secrets inline in it) — redact before returning to the model.
         return json.dumps({
             "output": "",
             "exit_code": -1,
-            "error": f"Failed to execute command: {str(e)}",
-            "traceback": tb_str,
+            "error": _redact_terminal_error_text(f"Failed to execute command: {e}"),
+            "traceback": _redact_terminal_error_text(tb_str),
             "status": "error"
         }, ensure_ascii=False)
+
+
+def _evict_environment_for_task(task_id: Optional[str]) -> None:
+    """Drop any cached environment for *task_id* (and its collapsed key).
+
+    Used when a backend reports an infrastructure failure: keeping the dead
+    env cached would make every subsequent call fail against a stale
+    connection, defeating automatic recovery.
+    """
+    keys = {_resolve_container_task_id(task_id)}
+    if task_id:
+        keys.add(task_id)
+    evicted = []
+    with _env_lock:
+        for key in keys:
+            env = _active_environments.pop(key, None)
+            _last_activity.pop(key, None)
+            if env is not None:
+                evicted.append(env)
+    for env in evicted:
+        try:
+            env.cleanup()
+        except Exception:
+            logger.debug("cleanup of degraded environment failed", exc_info=True)
 
 
 def check_terminal_requirements() -> bool:
@@ -3408,6 +3907,17 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    # Mirror of execute_code's misplaced-argument recovery: models sometimes
+    # send execute_code's ``code`` argument here. Without this, the call
+    # falls through to command=None and fails with "Invalid command:
+    # expected string, got NoneType" — naming neither the stray argument
+    # nor the right tool.
+    if "command" not in args and "code" in args:
+        return tool_error(
+            "terminal received a 'code' parameter, but it requires a shell "
+            "command in 'command'. Use execute_code(code=...) for Python; "
+            "for shell, retry as terminal(command=...)."
+        )
     return terminal_tool(
         command=args.get("command"),
         background=args.get("background", False),

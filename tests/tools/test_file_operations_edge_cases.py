@@ -205,7 +205,7 @@ class TestPaginationBounds:
 
         def fake_exec(command, *args, **kwargs):
             commands.append(command)
-            if command.startswith("wc -c"):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 return MagicMock(exit_code=0, stdout="12")
             if command.startswith("head -c"):
                 return MagicMock(exit_code=0, stdout="line1\nline2\n")
@@ -221,7 +221,7 @@ class TestPaginationBounds:
         assert result.error is None
         assert "1|line1" in result.content
         sed_commands = [cmd for cmd in commands if cmd.startswith("sed -n")]
-        assert sed_commands == ["sed -n '1,1p' 'notes.txt'"]
+        assert sed_commands == ["sed -n '1,1p' 'notes.txt' | cut -b1-8001"]
 
     def test_search_clamps_offset_and_limit_before_building_head_pipeline(self):
         env = MagicMock()

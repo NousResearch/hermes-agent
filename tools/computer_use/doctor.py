@@ -693,13 +693,53 @@ def _drive_health_report_or_fallback(
 ) -> Dict[str, Any]:
     """Prefer real health_report; on denial/non-schema, synthesize via probes."""
     try:
-        return _drive_health_report(
+        report = _drive_health_report(
             binary, include=include, skip=skip, timeout=timeout,
         )
     except HealthReportUnavailable as e:
-        return _compose_fallback_report(
+        report = _compose_fallback_report(
             binary, reason=str(e), timeout=timeout,
         )
+    return _apply_display_count_guard(report)
+
+
+def _apply_display_count_guard(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Downgrade an 'ok' report whose screen capture has zero displays.
+
+    macOS ScreenCaptureKit reports ``display_count=0`` on headless Macs and
+    when the built-in panel is asleep — TCC grants are fine, health_report
+    can still say pass/ok, but every capture will come back 0x0. Marking
+    the check failed (with the recovery actions) turns an undiagnosable
+    silent failure into an actionable one. Applied at the report seam so
+    the real health_report path and the composed fallback both get it.
+
+    Composed from PR #52949 (sujeet111) and PR #67259 (webtecnica).
+    """
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        return report
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        if check.get("name") != "screen_capture_capability":
+            continue
+        data = check.get("data")
+        count = data.get("display_count") if isinstance(data, dict) else None
+        if count == 0 and check.get("status") == "pass":
+            check["status"] = "fail"
+            check["message"] = (
+                "ScreenCaptureKit reachable but 0 shareable display(s) — "
+                "every capture will return 0x0."
+            )
+            check["hint"] = (
+                "Wake the built-in display, connect a monitor or HDMI dummy "
+                "dongle (e.g. Headless Ghost), or enable a virtual display "
+                "(Screen Sharing/VNC, BetterDisplay). Verify with "
+                "`system_profiler SPDisplaysDataType`."
+            )
+            if report.get("overall") == "ok":
+                report["overall"] = "degraded"
+    return report
 
 
 def _print_text_report(

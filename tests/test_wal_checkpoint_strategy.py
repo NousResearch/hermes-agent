@@ -1,7 +1,9 @@
 """Tests for SessionDB WAL checkpoint strategy (issue #45383).
 
-Verifies that periodic checkpoints use PASSIVE mode (safe for large DBs)
-while close() and pre-VACUUM paths still use TRUNCATE.
+Verifies that ALL checkpoints on the shared state.db use PASSIVE mode:
+periodic, close(), and pre-VACUUM. TRUNCATE fires a full WAL reset, and
+transient per-cron-run connections closing many times an hour would race
+the live gateway writer and corrupt B-tree pages (#45383).
 """
 
 import sqlite3
@@ -11,6 +13,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_state import SessionDB
+
+
+class TrackingConnection:
+    """sqlite3.Connection proxy that records executed SQL strings."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.execute_calls = []
+
+    def execute(self, sql, *args, **kwargs):
+        self.execute_calls.append(sql)
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 
 @pytest.fixture()
@@ -73,11 +90,13 @@ class TestTryWalCheckpointPassive:
         db._try_wal_checkpoint()
 
 
-class TestCloseUsesTruncate:
-    """close() should still use TRUNCATE to shrink WAL on shutdown."""
+class TestCloseUsesPassive:
+    """close() must use PASSIVE. Transient per-cron-run SessionDB connections
+    close many times an hour; a TRUNCATE reset there races the live gateway
+    writer on the large WAL DB and corrupts B-tree pages (#45383)."""
 
-    def test_close_uses_truncate_mode(self, db):
-        """TRUNCATE at close is safe — no concurrent writers during shutdown."""
+    def test_close_uses_passive_mode(self, db):
+        """close() checkpoints PASSIVE, never TRUNCATE."""
         real_conn = db._conn
         execute_calls = []
 
@@ -92,12 +111,16 @@ class TestCloseUsesTruncate:
         db.close()
 
         truncate_calls = [c for c in execute_calls if "wal_checkpoint(TRUNCATE)" in c]
-        assert len(truncate_calls) == 1, (
-            f"Expected 1 TRUNCATE checkpoint at close, got {len(truncate_calls)}"
+        passive_calls = [c for c in execute_calls if "wal_checkpoint(PASSIVE)" in c]
+        assert len(truncate_calls) == 0, (
+            "close() must NOT TRUNCATE (races the live gateway writer, #45383)"
+        )
+        assert len(passive_calls) == 1, (
+            f"Expected 1 PASSIVE checkpoint at close, got {len(passive_calls)}"
         )
 
     def test_close_logs_debug_on_failure(self, db, caplog):
-        """Failed TRUNCATE at close logs debug (not warning — close is best-effort)."""
+        """Failed PASSIVE checkpoint at close logs debug (close is best-effort)."""
         mock_conn = MagicMock()
         mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
         db._conn = mock_conn
@@ -105,9 +128,71 @@ class TestCloseUsesTruncate:
         with caplog.at_level(logging.DEBUG):
             db.close()
 
-        assert any("WAL checkpoint (TRUNCATE) at close failed" in r.message for r in caplog.records), (
-            f"Expected debug log about TRUNCATE failure at close, got: {caplog.text}"
+        assert any("WAL checkpoint (PASSIVE) at close failed" in r.message for r in caplog.records), (
+            f"Expected debug log about PASSIVE failure at close, got: {caplog.text}"
         )
+
+
+class TestVacuumUsesPassive:
+    """Manual vacuum paths must checkpoint PASSIVE, never TRUNCATE."""
+
+    def test_vacuum_uses_passive_before_vacuum(self, db):
+        """SessionDB.vacuum() checkpoints PASSIVE before VACUUM.
+
+        A TRUNCATE checkpoint AFTER the VACUUM is expected: VACUUM rewrites
+        every page through the WAL, so without it a 3 GB database leaves a
+        3 GB state.db-wal behind and `sessions optimize` becomes a net disk
+        LOSS. The #45383 tearing concern is about truncating while another
+        writer is mid-transaction — the pre-VACUUM checkpoint stays PASSIVE
+        for that reason; the post-VACUUM truncate runs under the same
+        exclusive-lock window the VACUUM itself required.
+        """
+        real_conn = db._conn
+        tracking_conn = TrackingConnection(real_conn)
+        db._conn = tracking_conn
+
+        db.vacuum()
+
+        checkpoint_calls = [
+            c for c in tracking_conn.execute_calls if "wal_checkpoint" in c.lower()
+        ]
+        truncate_calls = [c for c in checkpoint_calls if "TRUNCATE" in c]
+        passive_calls = [c for c in checkpoint_calls if "PASSIVE" in c]
+        vacuum_calls = [
+            c for c in tracking_conn.execute_calls if c.strip().upper() == "VACUUM"
+        ]
+        assert passive_calls == ["PRAGMA wal_checkpoint(PASSIVE)"]
+        assert vacuum_calls == ["VACUUM"]
+        assert truncate_calls == ["PRAGMA wal_checkpoint(TRUNCATE)"]
+        vacuum_index = tracking_conn.execute_calls.index(vacuum_calls[0])
+        assert tracking_conn.execute_calls.index(passive_calls[0]) < vacuum_index
+        # TRUNCATE must come only AFTER the VACUUM (never before it).
+        assert tracking_conn.execute_calls.index(truncate_calls[0]) > vacuum_index
+
+    def test_optimize_storage_uses_passive_after_vacuum(self, db):
+        """optimize_fts_storage() checkpoints PASSIVE after its VACUUM."""
+        real_conn = db._conn
+        tracking_conn = TrackingConnection(real_conn)
+        db._conn = tracking_conn
+
+        result = db.optimize_fts_storage(vacuum=True)
+
+        checkpoint_calls = [
+            c for c in tracking_conn.execute_calls if "wal_checkpoint" in c.lower()
+        ]
+        truncate_calls = [c for c in checkpoint_calls if "TRUNCATE" in c]
+        passive_calls = [c for c in checkpoint_calls if "PASSIVE" in c]
+        vacuum_calls = [
+            c for c in tracking_conn.execute_calls if c.strip().upper() == "VACUUM"
+        ]
+        assert result["ok"] is True
+        assert result["vacuumed"] is True
+        assert truncate_calls == []
+        assert passive_calls == ["PRAGMA wal_checkpoint(PASSIVE)"]
+        assert vacuum_calls == ["VACUUM"]
+        assert tracking_conn.execute_calls.index(
+            vacuum_calls[0]
+        ) < tracking_conn.execute_calls.index(passive_calls[0])
 
 
 class TestCheckpointFrequency:

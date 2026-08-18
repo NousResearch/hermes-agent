@@ -25,6 +25,7 @@ See issue #72680 for the full incident report.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -58,8 +59,11 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> None:
-    """Atomically write one private, uniquely named recovery payload."""
+def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> Path:
+    """Atomically write one private, uniquely named recovery payload.
+
+    Returns the path of the published payload file.
+    """
     from utils import atomic_json_write
 
     file_id = uuid.uuid4().hex
@@ -77,6 +81,7 @@ def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> None:
         # The atomically published file is still the only recovery copy.
         # Keep it even if this filesystem cannot persist directory entries.
         logger.debug("Failed to fsync pending-message directory: %s", exc)
+    return final_path
 
 
 def flush_pending_to_file(
@@ -135,6 +140,118 @@ def flush_pending_to_file(
             flushed, flush_dir, reason,
         )
     return flushed
+
+
+# Reason tag for transcript messages dropped by the in-memory pending cap
+# during live operation (#78182). These payloads carry the full transcript
+# message dict so they can be replayed verbatim once the DB recovers.
+TRANSCRIPT_CAP_DROP_REASON = "transcript_cap_drop"
+
+
+def spool_dropped_transcript_message(
+    session_id: str,
+    message: Dict[str, Any],
+) -> Optional[Path]:
+    """Spool a transcript message evicted by the runtime pending cap.
+
+    Uses the same on-disk pending spool as :func:`flush_pending_to_file`
+    (one atomic JSON payload per message under
+    ``<hermes_home>/pending_messages/``), so a runtime cap rotation no
+    longer silently discards user data while the process stays up
+    (#78182).
+
+    Returns the written spool path, or ``None`` when spooling failed —
+    callers must degrade to the previous drop-and-log behaviour.
+    """
+    try:
+        flush_dir = _get_flush_dir()
+        return _write_payload(
+            flush_dir,
+            {
+                "session_key": session_id,
+                "reason": TRANSCRIPT_CAP_DROP_REASON,
+                "ts": int(time.time()),
+                "seq": next(_TRANSCRIPT_SPOOL_SEQ),
+                "data": {
+                    "session_id": session_id,
+                    "message": message,
+                },
+            },
+        )
+    except Exception as exc:
+        logger.debug(
+            "Failed to spool cap-dropped transcript message for %s: %s",
+            session_id, exc,
+        )
+        return None
+
+
+# Monotonic tiebreaker so same-second spool files replay in drop order.
+_TRANSCRIPT_SPOOL_SEQ = itertools.count()
+
+
+def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
+    """Replay cap-dropped transcript messages spooled for *session_id*.
+
+    ``replay(message_dict)`` is invoked for each spooled message in drop
+    order; the spool file is deleted only after a successful replay.  On
+    the first replay failure the drain stops and remaining files are kept
+    for the next attempt (the DB is likely still unhealthy).
+
+    Returns ``(replayed, remaining)`` — messages replayed and spool files
+    left behind for a later retry.
+    """
+    try:
+        flush_dir = _get_flush_dir()
+        candidates = list(flush_dir.glob("pending-*.json"))
+    except Exception as exc:
+        logger.debug("Cannot scan transcript spool: %s", exc)
+        return 0, 0
+
+    entries = []
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if payload.get("reason") != TRANSCRIPT_CAP_DROP_REASON:
+            continue
+        if payload.get("session_key") != session_id:
+            continue
+        message = (payload.get("data") or {}).get("message")
+        if not isinstance(message, dict):
+            logger.warning(
+                "Removing structurally invalid transcript spool file %s", path,
+            )
+            path.unlink(missing_ok=True)
+            continue
+        entries.append(
+            (payload.get("ts", 0), payload.get("seq", 0), path.name, path, message)
+        )
+
+    replayed = 0
+    ordered = sorted(entries, key=lambda e: e[:3])
+    remaining = 0
+    for idx, (_ts, _seq, _name, path, message) in enumerate(ordered):
+        try:
+            replay(message)
+        except Exception as exc:
+            logger.warning(
+                "Replay of spooled transcript message %s for %s failed; "
+                "keeping spool file for retry: %s",
+                path, session_id, exc,
+            )
+            remaining = len(ordered) - idx
+            break
+        path.unlink(missing_ok=True)
+        replayed += 1
+
+    if replayed:
+        logger.info(
+            "Replayed %d spooled transcript message(s) for %s after DB recovery",
+            replayed, session_id,
+        )
+    return replayed, remaining
 
 
 def _serialise_value(value: Any) -> Optional[dict]:
@@ -199,6 +316,14 @@ def recover_pending_to_db(
         session_db = SessionDB()
         own_db = True
 
+    def _close_owned_db() -> None:
+        if not own_db:
+            return
+        try:
+            session_db.close()
+        except Exception:
+            pass
+
     recovered = 0
     for path in flush_files:
         try:
@@ -207,6 +332,29 @@ def recover_pending_to_db(
             # messages list) and are meant for manual operator recovery,
             # not automatic DB insertion. Skip them silently.
             if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
+                continue
+            # Cap-dropped transcript payloads carry the full message dict
+            # keyed by session_id — replay directly (#78182). This handles
+            # spool files that were never drained before a restart.
+            if payload.get("reason") == TRANSCRIPT_CAP_DROP_REASON:
+                data = payload.get("data", {}) or {}
+                spooled_sid = data.get("session_id", "")
+                message = data.get("message")
+                if not spooled_sid or not isinstance(message, dict):
+                    logger.warning(
+                        "Cannot recover structurally invalid transcript spool "
+                        "file %s; preserved for manual inspection",
+                        path,
+                    )
+                    continue
+                session_db.append_message(
+                    session_id=spooled_sid,
+                    role=message.get("role", "unknown"),
+                    content=message.get("content") or "",
+                    timestamp=message.get("timestamp") or payload.get("ts"),
+                )
+                recovered += 1
+                path.unlink(missing_ok=True)
                 continue
             session_key = payload.get("session_key", "")
             data = payload.get("data", {})
@@ -249,6 +397,10 @@ def recover_pending_to_db(
             )
             recovered += 1
             path.unlink(missing_ok=True)
+        except BaseException:
+            # Shutdown cancellation/interrupt must not strand an owned DB.
+            _close_owned_db()
+            raise
         except Exception as exc:
             logger.warning(
                 "Failed to recover pending message from %s: %s",
@@ -256,11 +408,7 @@ def recover_pending_to_db(
             )
             # Leave the file for next startup retry.
 
-    if own_db:
-        try:
-            session_db.close()
-        except Exception:
-            pass
+    _close_owned_db()
 
     if recovered:
         logger.info(

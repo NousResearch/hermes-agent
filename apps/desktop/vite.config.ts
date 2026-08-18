@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import fs from 'fs'
+import { createRequire } from 'module'
 
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
@@ -24,6 +25,20 @@ const fsAllow = [
     ].filter((p): p is string => p !== null)
   )
 ]
+
+// React refuses to run when `react` and `react-dom` come from two different
+// installed copies ("Minified React error #527" — a blank window, since it
+// throws before the first paint). Both packages are pinned to one version in
+// this workspace's package.json, but npm hoists whatever *it* considers
+// compatible to the monorepo root: a root dependency whose react peer is a
+// loose range (e.g. `^18 || ^19`) pulls the newest react up there, while
+// react-dom stays at the pinned one. `^19.2.7` accepts `19.2.8`, so npm never
+// warns. Resolving from this workspace instead of a hardcoded root path yields
+// the versions declared here — npm nests a copy under the workspace exactly
+// when the hoisted one differs, so the pair can only ever match.
+const requireFromApp = createRequire(path.join(__dirname, 'vite.config.ts'))
+const reactDir = path.dirname(requireFromApp.resolve('react/package.json'))
+const reactDomDir = path.dirname(requireFromApp.resolve('react-dom/package.json'))
 
 // The dev-only render/state churn counters (src/debug) must be imported
 // STATICALLY above react-dom — react-dom captures the devtools hook at module
@@ -112,7 +127,7 @@ export default defineConfig(({ command }) => ({
             // the heavy chunk, and the entry then statically imports 19 MB of
             // shiki just to reach react/hast utils — putting the heavy chunk
             // right back on the boot path.
-            { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+            { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|scheduler|react-router)[\\/]/ },
             {
               name: 'vendor-md',
               test: /node_modules[\\/](property-information|hast-util-[^\\/]+|mdast-util-[^\\/]+|micromark[^\\/]*|unist-util-[^\\/]+|vfile[^\\/]*|unified|stringify-entities|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|devlop|style-to-js|style-to-object|clsx)[\\/]/
@@ -147,12 +162,12 @@ export default defineConfig(({ command }) => ({
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
       '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),
       '@hermes/shared': path.resolve(__dirname, '../shared/src'),
-      react: path.resolve(__dirname, '../../node_modules/react'),
-      'react-dom': path.resolve(__dirname, '../../node_modules/react-dom'),
-      'react/jsx-dev-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-dev-runtime.js'),
-      'react/jsx-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-runtime.js')
+      react: reactDir,
+      'react-dom': reactDomDir,
+      'react/jsx-dev-runtime': path.join(reactDir, 'jsx-dev-runtime.js'),
+      'react/jsx-runtime': path.join(reactDir, 'jsx-runtime.js')
     },
-    dedupe: ['react', 'react-dom']
+    dedupe: ['react', 'react-dom', 'react-router']
   },
   server: {
     host: '127.0.0.1',

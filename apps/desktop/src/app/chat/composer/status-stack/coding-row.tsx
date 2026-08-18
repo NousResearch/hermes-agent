@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { memo, useEffect } from 'react'
 
+import { PrTag } from '@/app/chat/pr-tag'
 import { StatusRow } from '@/components/chat/status-row'
 import {
   type ActionItemSpec,
@@ -18,6 +19,7 @@ import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { openWorktreeDialog, registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
+import { $pullRequestsByBranch, branchPrKey, refreshPullRequests } from '@/store/pull-requests'
 
 // Tiny uppercase section header, matching the composer "+" menu's labels.
 const MENU_SECTION = 'text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
@@ -76,6 +78,20 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   // turn-settle / tool-complete / focus edges re-probe it too (tiles otherwise
   // only refreshed when the MAIN cwd probe happened to cover them).
   useEffect(() => registerRepoStatusCwd(resolvedRepoPath), [resolvedRepoPath])
+
+  // The branch's PR, so the rail links to it instead of leaving you to go find
+  // it. One `gh` lookup for this one branch, TTL-cached in the store and shared
+  // with the sidebar's badges.
+  const prBranch = status?.detached ? null : status?.branch || null
+
+  useEffect(() => {
+    if (resolvedRepoPath && prBranch) {
+      void refreshPullRequests({ [resolvedRepoPath]: [prBranch] })
+    }
+  }, [resolvedRepoPath, prBranch])
+
+  const pr =
+    useStore($pullRequestsByBranch)[resolvedRepoPath && prBranch ? branchPrKey(resolvedRepoPath, prBranch) : '']
 
   const switchToBranch = async (branch: string) => {
     if (!onSwitchBranch) {
@@ -204,6 +220,11 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           }
         >
           <div className="flex min-w-0 flex-1 items-center gap-1">
+            {/* PR number first, right against the leading git glyph — the chip
+                borrows that icon instead of carrying a second one of its own
+                (`showIcon={false}`), so the row reads glyph → #number → branch. */}
+            {pr && <PrTag pr={pr} showIcon={false} />}
+
             {/* Branch name — the other half of the review-pane target. `contents`
                 so the button lays out nothing of its own: the label stays the
                 same flex child it always was, and the hit area is the text. */}

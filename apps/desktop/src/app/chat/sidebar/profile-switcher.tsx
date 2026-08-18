@@ -29,6 +29,7 @@ import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
@@ -65,9 +66,10 @@ import type { ProfileInfo } from '@/types/hermes'
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
-import { PROFILES_ROUTE } from '../../routes'
+import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
 import { useProfilePrewarm } from './use-profile-prewarm'
+import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
 
@@ -203,11 +205,13 @@ export function ProfileRail() {
     }
   }
 
-  // Re-pull the running profile + list on mount so a profile created elsewhere
-  // shows up; cheap and best-effort.
-  useEffect(() => {
-    void refreshActiveProfile()
-  }, [])
+  // Re-pull the running profile + list on mount, and again whenever the window
+  // regains focus/visibility -- a profile created, deleted, or renamed by
+  // another surface (Manage Profiles, another window, the CLI) leaves this
+  // rail's cached $profiles stale until something re-fetches it. See
+  // use-profile-rail-refresh-on-active.ts for the extracted (and tested)
+  // wiring.
+  useProfileRailRefreshOnActive()
 
   // Open the create dialog when the `profile.create` hotkey fires (the dialog
   // state lives here, so the global keybind bumps a request atom we watch).
@@ -313,6 +317,18 @@ export function ProfileRail() {
           single-profile user must be able to edit the default's persona
           without first creating a throwaway second profile. */}
       <ProfilePill active={false} glyph="ellipsis" label={p.manageProfiles} onSelect={() => navigate(PROFILES_ROUTE)} />
+
+      {/* Multi-gateway discoverability: a plug pinned beside Manage deep-links
+          to Settings → Connections. The registry (local runtime + remote
+          gateways + Hermes Cloud + SSH) is otherwise buried three levels into
+          Settings, and the rail is exactly where a user looks when they wonder
+          "how do I get my other machine's agents in here". */}
+      <ProfilePill
+        active={false}
+        glyph="plug"
+        label={p.connectGateway}
+        onSelect={() => navigate(`${SETTINGS_ROUTE}?tab=connections`)}
+      />
 
       {/* Land in the new profile on a fresh chat (selectProfile triggers the
           new-session reset), not stuck on the session you were just in. */}
@@ -496,19 +512,12 @@ function ProfileDropdown({
 // One dropdown row per profile — its own component so each row can own a
 // hover-intent prewarm timer (see useProfilePrewarm).
 function ProfileDropdownItem({ color, name }: { color: null | string; name: string }) {
-  const hue = color ?? 'var(--ui-text-quaternary)'
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
 
   return (
     <SelectItem onPointerEnter={startPrewarm} onPointerLeave={cancelPrewarm} value={name}>
       <span className="flex min-w-0 items-center gap-1.5">
-        <span
-          aria-hidden="true"
-          className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
-          style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
-        >
-          {name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
-        </span>
+        <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
         <span className="truncate">{name}</span>
       </span>
     </SelectItem>

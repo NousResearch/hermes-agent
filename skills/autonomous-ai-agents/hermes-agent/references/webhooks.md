@@ -25,7 +25,7 @@ platforms:
     enabled: true
     extra:
       port: 8644
-      secret: "generate-a-strong-secret-here"
+      secret: "your-webhook-secret-here"
 ```
 
 Omitting `host` uses the dual-stack default and listens on both IPv4 and IPv6.
@@ -36,7 +36,7 @@ Add to `${HERMES_HOME:-~/.hermes}/.env`:
 ```bash
 WEBHOOK_ENABLED=true
 WEBHOOK_PORT=8644
-WEBHOOK_SECRET=generate-a-strong-secret-here
+WEBHOOK_SECRET=your-webhook-secret-here
 ```
 
 After configuration, start (or restart) the gateway:

@@ -18,6 +18,8 @@ export interface PluginRecord {
   name: string
   kind: PluginKind
   status: PluginStatus
+  /** One-liner from the plugin's own metadata (what it adds). */
+  description?: string
   /** Load/registration failure message (status 'error'). */
   error?: string
   /** Absolute plugin.js path (disk plugins) — powers "Reveal in Finder". */

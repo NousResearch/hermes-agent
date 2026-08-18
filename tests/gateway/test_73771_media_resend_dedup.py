@@ -23,6 +23,8 @@ sibling):
 
 import asyncio
 import logging
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -216,6 +218,232 @@ async def test_bare_local_path_history_dedup_survives_and_logs(tmp_path, monkeyp
     assert any("Suppressing" in r.getMessage() for r in caplog.records), (
         "suppression must be logged (#73771 observability)"
     )
+
+
+@pytest.mark.asyncio
+async def test_plain_text_response_does_not_load_transcript():
+    """Ordinary text delivery must not touch SQLite-backed history at all."""
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+
+    class _ExplodingStore:
+        calls = 0
+
+        def peek_session_id(self, _session_key):
+            self.calls += 1
+            raise AssertionError("plain text delivery loaded session history")
+
+    store = _ExplodingStore()
+    adapter.set_session_store(store)
+
+    async def handler(_event):
+        return "Plain response with no local attachment path."
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert store.calls == 0
+    assert any("Plain response" in item["content"] for item in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_explicit_media_response_does_not_load_transcript(tmp_path, monkeypatch):
+    """Explicit MEDIA delivery must not touch SQLite-backed history."""
+    pdf = _allowed_file(tmp_path, monkeypatch, "explicit-no-history.pdf")
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+
+    class _ExplodingStore:
+        calls = 0
+
+        def peek_session_id(self, _session_key):
+            self.calls += 1
+            raise AssertionError("explicit MEDIA delivery loaded session history")
+
+    store = _ExplodingStore()
+    adapter.set_session_store(store)
+
+    async def handler(_event):
+        return f"Here is the file.\nMEDIA:{pdf}"
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert store.calls == 0
+    assert adapter.documents == [str(pdf)]
+
+
+@pytest.mark.asyncio
+async def test_bare_path_history_lookup_does_not_block_event_loop(tmp_path, monkeypatch):
+    """A slow transcript read must run outside the platform event loop."""
+    pdf = _allowed_file(tmp_path, monkeypatch, "slow-history.pdf")
+    monkeypatch.setattr("gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (pdf.parent,), raising=False)
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+    monkeypatch.setattr(
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+    )
+
+    class _GatedStore:
+        def __init__(self):
+            self.release = threading.Event()
+
+        def peek_session_id(self, _session_key):
+            return "sess-slow"
+
+        def load_transcript(self, _session_id):
+            # Block until the test has proven the event loop stayed
+            # responsive. An Event gate (instead of a fixed sleep) makes the
+            # assertion deterministic on slow/loaded CI hosts.
+            self.release.wait(timeout=5)
+            return [{"role": "user", "content": "current"}]
+
+    store = _GatedStore()
+    adapter.set_session_store(store)
+
+    async def handler(_event):
+        return f"Generated file: {pdf}"
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    delivery = asyncio.create_task(
+        adapter._process_message_background(event, build_session_key(event.source))
+    )
+    await asyncio.sleep(0.02)
+    # The transcript read is still parked on the gate. If load_transcript ran
+    # on the event-loop thread, the sleep above could never have resumed
+    # while the read was in progress — reaching this point with the delivery
+    # still pending proves the read happened off-loop.
+    assert not delivery.done()
+    assert not adapter.documents
+    store.release.set()
+    await delivery
+    assert adapter.documents == [str(pdf)]
+
+
+@pytest.mark.asyncio
+async def test_bare_path_history_lookup_timeout_fails_open(tmp_path, monkeypatch):
+    """A wedged transcript read must not hold response delivery indefinitely."""
+    pdf = _allowed_file(tmp_path, monkeypatch, "timeout-history.pdf")
+    monkeypatch.setattr("gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (pdf.parent,), raising=False)
+    monkeypatch.setattr("gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 0.02)
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+    monkeypatch.setattr(
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+    )
+
+    class _WedgedStore:
+        def peek_session_id(self, _session_key):
+            return "sess-wedged"
+
+        def load_transcript(self, _session_id):
+            time.sleep(0.2)
+            return []
+
+    adapter.set_session_store(_WedgedStore())
+
+    async def handler(_event):
+        return f"Generated file: {pdf}"
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    started = time.monotonic()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    # The lookup times out after 0.02s and fails open; the generous 1.0s
+    # bound only guards against delivery hanging on the wedged read
+    # indefinitely, without flaking on loaded CI hosts. Delivery of the
+    # document below is the real fail-open assertion.
+    assert time.monotonic() - started < 1.0
+    assert adapter.documents == [str(pdf)]
+
+
+@pytest.mark.asyncio
+async def test_history_lookup_saturation_fails_open_without_new_worker(monkeypatch):
+    """Wedged lookups are bounded and cannot consume unbounded worker threads."""
+    monkeypatch.setattr("gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(
+        "gateway.platforms.base._HISTORY_MEDIA_LOOKUP_ADMISSION",
+        threading.BoundedSemaphore(2),
+    )
+    adapter = _DummyAdapter()
+    release = threading.Event()
+    two_started = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def blocked_lookup(_session_key):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            if calls == 2:
+                two_started.set()
+        release.wait(timeout=1)
+        return None
+
+    monkeypatch.setattr(adapter, "_history_media_paths_for_session", blocked_lookup)
+    first = asyncio.create_task(adapter._bounded_history_media_paths_for_session("one"))
+    second = asyncio.create_task(adapter._bounded_history_media_paths_for_session("two"))
+    deadline = time.monotonic() + 1
+    while not two_started.is_set() and time.monotonic() < deadline:
+        await asyncio.sleep(0.005)
+    assert two_started.is_set()
+
+    began = time.monotonic()
+    third = await adapter._bounded_history_media_paths_for_session("three")
+    elapsed = time.monotonic() - began
+
+    assert third is None
+    # Saturation must fail open immediately (no waiting on the 1.0s lookup
+    # timeout); 0.5s is a generous bound that stays flake-free on loaded CI.
+    assert elapsed < 0.5
+    assert calls == 2
+    release.set()
+    await asyncio.gather(first, second)
+
+
+@pytest.mark.asyncio
+async def test_history_lookup_worker_start_failure_fails_open_and_releases_slot(
+    monkeypatch, caplog
+):
+    """If the worker thread cannot start, fail open without leaking a permit.
+
+    Regression: ``Thread.start()`` raising (thread exhaustion) used to
+    propagate into the delivery loop AND permanently leak the admission
+    permit acquired just above it, because the worker's finally-release
+    never runs when the worker never starts.
+    """
+    admission = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(
+        "gateway.platforms.base._HISTORY_MEDIA_LOOKUP_ADMISSION", admission
+    )
+    adapter = _DummyAdapter()
+
+    def _exhausted_start(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", _exhausted_start)
+
+    with caplog.at_level(logging.WARNING):
+        first = await adapter._bounded_history_media_paths_for_session("one")
+        # With only one permit, a leak on the first call would force this
+        # second call down the capacity-exhausted path instead of the
+        # start-failure path.
+        second = await adapter._bounded_history_media_paths_for_session("two")
+
+    assert first is None
+    assert second is None
+    assert "capacity exhausted" not in caplog.text
+    assert (
+        caplog.text.count("Could not start media-delivery history lookup worker")
+        == 2
+    )
+    # The permit was returned both times: it is still acquirable.
+    assert admission.acquire(blocking=False)
+    admission.release()
 
 
 # ---------------------------------------------------------------------------

@@ -353,6 +353,10 @@ export function useMainApp(gw: GatewayClient) {
   const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
   const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
   const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+
+  const historyThinkingExpanded =
+    thinkingDetailsVisible && (ui.detailsModeCommandOverride || ui.sections.thinking === 'expanded')
+
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
@@ -390,6 +394,7 @@ export function useMainApp(gw: GatewayClient) {
           }),
           virtualRows[index]!.msg
         ),
+        thinkingExpanded: historyThinkingExpanded,
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
@@ -399,6 +404,7 @@ export function useMainApp(gw: GatewayClient) {
       cols,
       detailsVisible,
       firstUserIdx,
+      historyThinkingExpanded,
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,
@@ -570,7 +576,7 @@ export function useMainApp(gw: GatewayClient) {
 
   useEffect(() => {
     if (!ui.sid) {
-      patchUiState({ liveSessionCount: 0 })
+      patchUiState({ liveSessionCount: 0, sessionTitle: '' })
 
       return
     }
@@ -1171,6 +1177,7 @@ export function useMainApp(gw: GatewayClient) {
       goodVibesTick,
       lastTurnEndedAt: ui.sid ? lastTurnEndedAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
+      sessionTitle: ui.sid ? ui.sessionTitle : '',
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
       stickyPrompt,

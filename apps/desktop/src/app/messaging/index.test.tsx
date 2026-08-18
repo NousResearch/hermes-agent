@@ -27,7 +27,7 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/store/gateway', () => ({
   $gateway: { get: () => null, subscribe: () => () => {} },
   ensureGatewayForAgent: vi.fn(async () => undefined),
-  ensureGatewayForProfile: vi.fn(async () => undefined),
+  ensureGatewayForProfile: vi.fn(async () => true),
   openGatewayForProfile: vi.fn(async () => undefined)
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))

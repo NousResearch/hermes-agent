@@ -690,14 +690,22 @@ def _planned_layouts(
     return candidates[:count]
 
 
-def _core_record_ids(catalog: ReferenceCatalog, visual_role: str, count: int, *, selection_seed: str = "") -> list[str]:
+def _core_record_ids(
+    catalog: ReferenceCatalog,
+    visual_role: str,
+    count: int,
+    *,
+    selection_seed: str = "",
+    excluded_ids: set[str] | None = None,
+) -> list[str]:
+    excluded = excluded_ids or set()
     candidates = [
         record.reference_id
         for record in catalog.records_for_contract()
-        if visual_role in record.allowed_roles
+        if visual_role in record.allowed_roles and record.reference_id not in excluded
     ]
     if not candidates:
-        raise ValueError(f"canonical core pack has no {visual_role!r} reference")
+        raise ValueError(f"canonical core pack has no unused {visual_role!r} reference")
     offset = int(selection_seed or "0", 16) % len(candidates)
     return [candidates[(offset + index) % len(candidates)] for index in range(count)]
 
@@ -719,8 +727,16 @@ def build_visual_plan_from_brief(
     selection_seed = str(brief.get("selection_seed", ""))
     layout_ids = _core_record_ids(catalog, "layout", asset_count, selection_seed=selection_seed)
     layouts = _planned_layouts(brief, asset_count, layout_ids)
-    style_ids = _core_record_ids(catalog, "style", asset_count, selection_seed=selection_seed)
-    composition_ids = _core_record_ids(catalog, "composition", asset_count, selection_seed=selection_seed)
+    style_ids = _core_record_ids(
+        catalog, "style", asset_count, selection_seed=selection_seed, excluded_ids=set(layout_ids)
+    )
+    composition_ids = _core_record_ids(
+        catalog,
+        "composition",
+        asset_count,
+        selection_seed=selection_seed,
+        excluded_ids=set(layout_ids) | set(style_ids),
+    )
     style = str(brief.get("style", "")).strip()
     palette = str(brief.get("palette", "")).strip()
     motif = str(brief.get("motif", "")).strip()

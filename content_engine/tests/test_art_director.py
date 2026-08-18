@@ -154,6 +154,9 @@ def test_core_references_rotate_from_article_seed():
             return [Record("a"), Record("b"), Record("c")]
 
     assert ad._core_record_ids(Catalog(), "layout", 2, selection_seed="0000000000000001") == ["b", "c"]
+    assert ad._core_record_ids(
+        Catalog(), "layout", 2, selection_seed="0000000000000001", excluded_ids={"b"}
+    ) == ["c", "a"]
 
 
 def test_full_article_in_user_prompt():

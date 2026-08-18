@@ -1038,6 +1038,31 @@ def sqlite_source_id() -> str:
     return str(row[0])
 
 
+def _database_has_content(conn: sqlite3.Connection) -> bool:
+    """Return whether the database file already holds pages.
+
+    Used to tell an EXISTING database apart from a brand-new one before
+    rewriting its journal mode. ``PRAGMA page_count`` is a header read, so
+    this costs nothing and takes no lock.
+
+    Fail-quiet: any error, or a database we cannot measure, answers False.
+    The only caller uses this to decide whether to emit a warning, and a
+    warning that fires when the answer is unknown would fire on every fresh
+    database -- precisely the case where there is provably no operator choice
+    being overwritten.
+    """
+    try:
+        row = conn.execute("PRAGMA page_count").fetchone()
+    except sqlite3.Error:
+        return False
+    if not row or row[0] is None:
+        return False
+    try:
+        return int(row[0]) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def resolve_journal_mode() -> str:
     """Return the configured journal mode (``wal`` or ``delete``).
 
@@ -1181,6 +1206,21 @@ def apply_wal_with_fallback(
             )
         return actual
 
+    # Decide BEFORE the flip whether it would silently overwrite a mode
+    # somebody chose. Both inputs are only readable while the file is still
+    # in its original state: `current_mode` is the probe above, and
+    # page_count distinguishes an existing database from a fresh one.
+    #
+    # A 0-page database has no prior choice to overwrite, and every caller
+    # reaches this before creating any schema (SessionDB._connect_and_init
+    # applies WAL, then _init_schema), so brand-new databases land here empty
+    # and stay quiet.
+    _upgrading_existing_db = (
+        current_mode is not None
+        and current_mode != "wal"
+        and _database_has_content(conn)
+    )
+
     try:
         # ``PRAGMA journal_mode=WAL`` is a query-that-sets: it RETURNS the
         # resulting journal mode. Network filesystems that refuse WAL by
@@ -1194,6 +1234,8 @@ def apply_wal_with_fallback(
         row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
         if mode == "wal":
+            if _upgrading_existing_db:
+                _log_journal_mode_upgrade_once(db_label, current_mode)
             _apply_wal_size_limit(conn)
             _apply_macos_checkpoint_barrier(conn)
             _enforce_macos_synchronous_full(conn)
@@ -1243,6 +1285,11 @@ def apply_wal_with_fallback(
                     else ""
                 )
                 if mode == "wal":
+                    # Same flip, later door: a transient EIO cleared and the
+                    # switch went through. The header rewrite is identical, so
+                    # the signal must be too.
+                    if _upgrading_existing_db:
+                        _log_journal_mode_upgrade_once(db_label, current_mode)
                     _apply_wal_size_limit(conn)
                     _apply_macos_checkpoint_barrier(conn)
                     _enforce_macos_synchronous_full(conn)
@@ -1400,6 +1447,12 @@ def _wal_reset_repair_hint() -> str:
     )
 
 
+# Dedup state for _log_journal_mode_upgrade_once, mirroring the
+# _wal_fallback_warned_* pair below it.
+_journal_upgrade_warned_paths: set = set()
+_journal_upgrade_warned_lock = threading.Lock()
+
+
 def _log_wal_reset_bug_once(
     db_label: str,
     *,
@@ -1439,6 +1492,47 @@ def _log_wal_reset_bug_once(
         sqlite3.sqlite_version,
         action,
         repair_hint,
+    )
+
+
+def _log_journal_mode_upgrade_once(db_label: str, previous_mode: str) -> None:
+    """Log a single WARNING per (process, db_label) about a non-WAL -> WAL flip.
+
+    ``PRAGMA journal_mode`` is a property of the FILE, not of the connection:
+    switching an existing database to WAL rewrites its header and outlives the
+    process that did it. Operators do set it directly on the file -- that was
+    the documented mitigation for the SQLite 3.50.4 WAL-reset bug -- and
+    nothing here told them the next open would silently put it back.
+
+    WARNING, not ERROR, and deliberately so. The reverse move is logged at
+    ERROR by ``_log_wal_fallback_once`` because dropping to DELETE is a real
+    loss of concurrency; this direction is normally the desirable one (see
+    ``hermes_cli/managed_uv._default_live_venv``, which treats a database
+    stuck on DELETE as a bug worth repairing on update). The problem is not
+    the change, it is that the change was invisible: an operator who chose
+    DELETE deliberately had no way to learn their choice had been overwritten,
+    or which lever makes it stick. So this says what happened and names the
+    durable setting, without claiming a degradation that is not there.
+
+    Deduped per process per ``db_label`` like its siblings: kanban opens a
+    fresh connection per operation, so an undeduped line here would be a log
+    flood rather than a signal.
+    """
+    with _journal_upgrade_warned_lock:
+        if db_label in _journal_upgrade_warned_paths:
+            return
+        _journal_upgrade_warned_paths.add(db_label)
+    logger.warning(
+        "%s: on-disk journal_mode was %s and has been switched to WAL. This "
+        "rewrites the database header and persists after this process exits. "
+        "If %s was a deliberate choice (for example the mitigation for the "
+        "SQLite WAL-reset bug, or a WAL-unsafe filesystem), setting it with "
+        "PRAGMA on the file will not survive -- every open re-applies the "
+        "configured mode. Set `database.journal_mode: delete` in config.yaml "
+        "to make it stick. This message fires once per process per database.",
+        db_label,
+        previous_mode,
+        previous_mode,
     )
 
 

@@ -20,7 +20,14 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { displayPath } from '@/lib/display-path'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
-import { $renamingPath, copyFilePath, revealFile, toRelativePath } from '@/store/file-actions'
+import {
+  $renamingPath,
+  copyFilePath,
+  downloadRemoteFile,
+  revealFile,
+  shouldOfferRemoteFileDownload,
+  toRelativePath
+} from '@/store/file-actions'
 import { $sidebarWorkspaceNodeOpen, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
@@ -513,6 +520,12 @@ function ReviewFileContextMenu({
           <ContextMenuItem onSelect={() => void copyFilePath(toRelativePath(dragPath, cwd))}>
             {m.copyRelativePath}
           </ContextMenuItem>
+        )}
+        {shouldOfferRemoteFileDownload(false) && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => void downloadRemoteFile(dragPath)}>{m.download}</ContextMenuItem>
+          </>
         )}
       </ContextMenuContent>
     </ContextMenu>

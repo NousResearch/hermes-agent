@@ -1,5 +1,14 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// jsdom reports an EMPTY navigator.platform and a userAgent of "darwin", so
+// GLASS_SUPPORTED resolves false and every glass assertion in this file
+// silently turns into a no-op — on a Mac too. Pin a real macOS platform
+// BEFORE the store module is evaluated (hoisted above the imports), so the
+// glass path is the one actually under test.
+vi.hoisted(() => {
+  Object.defineProperty(globalThis.navigator, 'platform', { configurable: true, value: 'MacIntel' })
+})
 
 import { onPersistenceEvent, type PersistenceEvent } from '@/lib/storage'
 
@@ -117,6 +126,12 @@ describe('window translucency lever', () => {
 })
 
 describe('glass mode', () => {
+  // Guard the guard: if this env ever stops reporting mac, every assertion in
+  // this block quietly turns into a no-op instead of failing.
+  it('runs its glass assertions for real in this environment', () => {
+    expect(GLASS_SUPPORTED).toBe(true)
+  })
+
   beforeEach(() => {
     setTranslucencyMode('clear')
     setTranslucency(TRANSLUCENCY_MIN)
@@ -191,21 +206,33 @@ describe('frost and area', () => {
   })
 
   // The sidebar scope is the Finder shape, and styles.css keys its split-paint
-  // gradient off this attribute — so the attribute IS the contract.
+  // gradient off this attribute — so the attribute IS the contract. It must
+  // also be REMOVED whenever glass goes away: a stale scope left on <html>
+  // keeps the split-paint gradient selector live over a non-glass field.
   it('publishes the area as an attribute only while glass is on', () => {
     setTranslucency(50)
     setTranslucencyScope('sidebar')
 
-    if (GLASS_SUPPORTED) {
-      setTranslucencyMode('glass')
-      expect(document.documentElement.getAttribute('data-hermes-glass-scope')).toBe('sidebar')
+    if (!GLASS_SUPPORTED) {
+      expect(document.documentElement.hasAttribute('data-hermes-glass-scope')).toBe(false)
 
-      setTranslucencyScope('window')
-      expect(document.documentElement.getAttribute('data-hermes-glass-scope')).toBe('window')
-
-      setTranslucencyMode('clear')
+      return
     }
 
+    setTranslucencyMode('glass')
+    expect(document.documentElement.getAttribute('data-hermes-glass-scope')).toBe('sidebar')
+
+    setTranslucencyScope('window')
+    expect(document.documentElement.getAttribute('data-hermes-glass-scope')).toBe('window')
+
+    // Each of the three ways glass can end has to clear it, independently.
+    setTranslucency(0)
+    expect(document.documentElement.hasAttribute('data-hermes-glass-scope')).toBe(false)
+
+    setTranslucency(50)
+    expect(document.documentElement.hasAttribute('data-hermes-glass-scope')).toBe(true)
+
+    setTranslucencyMode('clear')
     expect(document.documentElement.hasAttribute('data-hermes-glass-scope')).toBe(false)
   })
 })
@@ -235,6 +262,45 @@ describe('translucency peek', () => {
     expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(true)
     endTranslucencyPeek()
     expect(document.documentElement.hasAttribute('data-hermes-translucency-peek')).toBe(false)
+  })
+})
+
+// The store must actually CONSULT isChatWindow, not merely export it: glass
+// rewrites page-level surfaces, and the HUD / pet overlay / quick entry own
+// their own backgrounds. Driving window.location.search proves the wiring.
+describe('glass is confined to chat windows', () => {
+  const setSearch = (search: string) => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, search }
+    })
+  }
+
+  const originalLocation = window.location
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    setTranslucencyMode('clear')
+    setTranslucency(TRANSLUCENCY_MIN)
+  })
+
+  it('does not thin surfaces in a special-purpose window', () => {
+    setSearch('?win=hud')
+    setTranslucency(60)
+    setTranslucencyMode('glass')
+
+    // The mode is still the user's choice — only the page rewrite is withheld.
+    expect($translucency.get().mode).toBe('glass')
+    expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
+    expect(document.documentElement.style.getPropertyValue('--translucency-glass-keep')).toBe('')
+  })
+
+  it('thins them in the primary window', () => {
+    setSearch('')
+    setTranslucency(60)
+    setTranslucencyMode('glass')
+
+    expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(true)
   })
 })
 

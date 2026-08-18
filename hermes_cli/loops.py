@@ -415,6 +415,12 @@ def save_loop(session_id: str, state: LoopState) -> None:
         return
     db = _get_session_db()
     if db is None:
+        logger.warning(
+            "LoopManager: loop for %s not persisted — session DB "
+            "unavailable (bootstrap window exceeded, in-memory state "
+            "still active)",
+            session_id,
+        )
         return
     try:
         db.set_meta(_meta_key(session_id), state.to_json())

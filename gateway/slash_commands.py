@@ -3038,6 +3038,10 @@ class GatewaySlashCommandsMixin:
         except Exception as exc:
             logger.debug("loop manager unavailable: %s", exc)
             return None, None
+        # Warm the SessionDB cache off-loop. A cold cache drops the first
+        # /loop write while the reply claims the loop was set (same class
+        # as the /goal false-ack fix).
+        await self._warm_goals_session_db("loop manager")
         try:
             session_entry = await self.async_session_store.get_or_create_session(event.source)
         except Exception:

@@ -18411,7 +18411,10 @@ async def post_agent_plugin_enable(request: Request, name: str):
     _invalidate_plugins_hub_cache()
     # Config-only change: running gateway/TUI processes scan plugins once at
     # start and won't pick this up, so tell the UI a restart is needed —
-    # mirrors the CLI's "Takes effect on next session." (#54941).
+    # mirrors the CLI's "Takes effect on next session." (#54941). Contract:
+    # every ok toggle result carries an explicit `unchanged` boolean
+    # (pinned by test_real_toggle_always_reports_unchanged); a missing key
+    # errs on the side of prompting a restart.
     result["restart_required"] = not result.get("unchanged", False)
     return result
 

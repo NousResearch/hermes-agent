@@ -90,3 +90,40 @@ def test_failed_toggle_has_no_restart_field(loopback_client, monkeypatch):
     )
     resp = loopback_client.post("/api/dashboard/agent-plugins/nope/disable")
     assert resp.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("enabled_now", "toggle_to", "expect_unchanged"),
+    [
+        (True, True, True),  # already enabled → no-op
+        (False, True, False),  # actually enables
+        (False, False, True),  # already disabled → no-op
+        (True, False, False),  # actually disables
+    ],
+)
+def test_real_toggle_always_reports_unchanged(
+    monkeypatch, enabled_now, toggle_to, expect_unchanged
+):
+    """Pin the ``unchanged`` contract of the REAL toggle the endpoint's
+    ``restart_required`` derivation depends on: every ``ok: True`` return
+    carries an explicit ``unchanged`` boolean. If a future refactor drops the
+    key on some path, the endpoint would misreport a no-op as
+    "restart required" — this test fails first."""
+    name = "web/exa"
+    en = {name} if enabled_now else set()
+    dis = set() if enabled_now else {name}
+    monkeypatch.setattr(plugins_cmd, "_plugin_exists", lambda _n: True)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(en))
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(dis))
+    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", lambda _s: None)
+    monkeypatch.setattr(plugins_cmd, "_save_disabled_set", lambda _s: None)
+    monkeypatch.setattr(
+        plugins_cmd, "_toggle_plugin_toolset", lambda _n, enable: None
+    )
+
+    result = plugins_cmd.dashboard_set_agent_plugin_enabled(
+        name, enabled=toggle_to
+    )
+
+    assert result["ok"] is True
+    assert result["unchanged"] is expect_unchanged

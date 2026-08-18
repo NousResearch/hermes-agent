@@ -75,6 +75,9 @@ const SkillsView = typeof sdk === 'undefined' ? undefined : sdk.SkillsView
 // so those builds keep the staged checklists for remote targets.
 const skillsViewRoutesConnections = Boolean(SkillsView && SkillsView.supportsFixedConnection)
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
+// Deterministic blob avatars (name → face). Feature-detected: older SDKs
+// without the export fall back to the legacy math-face shapes below.
+const blobatarSvg = typeof sdk === 'undefined' ? undefined : sdk.blobatarSvg
 // Budgeted render loop (fps cap + observability pause + dormancy + teardown).
 // Feature-detected: older desktops fall back to the hand-rolled clock below.
 const createBudgetedLoop = typeof sdk === 'undefined' ? undefined : sdk.createBudgetedLoop
@@ -834,6 +837,62 @@ function defaultShapeFor(name) {
   return AVATAR_SHAPES[hash % AVATAR_SHAPES.length]
 }
 
+// ── blobatar shapes mode (default for new agents) ───────────────────────────
+// Deterministic soft-body faces drawn from a string. Shape strings:
+//   'blobatar'                — the face follows the bot's NAME (renaming the
+//                               bot re-rolls the face, live in the dialog)
+//   'blobatar:<seed>'         — seed locked (the 🔒 lock / 🎲 randomize picks)
+//   'blobatar:<seed>:<kind>'  — plus one of the six silhouettes pinned
+//   'blobatar::<kind>'        — silhouette pinned, seed still follows the name
+// Bot names are slugs (NAME_RE) and generated seeds are base36, so ':' never
+// appears inside a segment. Colors come from the library's own name-derived
+// palette (contrast-guaranteed) — the classic color swatches don't apply.
+
+const BLOB_KINDS = ['round', 'organic', 'boxy', 'nub', 'cloud', 'sun']
+
+// Trait positions at the center of each silhouette band. Band thresholds are
+// frozen per blobatar major (0.28 / 0.58 / 0.72 / 0.84 / 0.93).
+const BLOB_KIND_TRAIT = { round: 0.14, organic: 0.43, boxy: 0.65, nub: 0.78, cloud: 0.885, sun: 0.965 }
+
+function isBlobShape(shape) {
+  return shape === 'blobatar' || (typeof shape === 'string' && shape.startsWith('blobatar:'))
+}
+
+function parseBlobShape(shape, name) {
+  const parts = typeof shape === 'string' ? shape.split(':') : []
+  const seedPart = parts[1] || ''
+  const kind = BLOB_KINDS.includes(parts[2]) ? parts[2] : ''
+  return { seed: seedPart || name || 'agent', seedPart, kind }
+}
+
+function blobShapeString(seedPart, kind) {
+  if (kind) {
+    return `blobatar:${seedPart}:${kind}`
+  }
+  return seedPart ? `blobatar:${seedPart}` : 'blobatar'
+}
+
+/** Static SVG markup for a blob face, tagged data-bot-face so the roster's
+ *  PNG backfill (pushLocalAvatars → rasterizeSvgToPng) still finds it. */
+function blobMarkup(shape, name, size) {
+  if (!blobatarSvg) {
+    return null
+  }
+
+  const { seed, kind } = parseBlobShape(shape, name)
+  const opts = { size }
+
+  if (kind) {
+    opts.traits = { shape: BLOB_KIND_TRAIT[kind] }
+  }
+
+  try {
+    return blobatarSvg(seed, opts).replace('<svg ', '<svg data-bot-face=' + JSON.stringify(name) + ' ')
+  } catch {
+    return null
+  }
+}
+
 /** The colored body of the avatar (no eyes). Platonic solids are a filled
  *  silhouette + translucent internal edge lines (the projected wireframe);
  *  legacy flat shapes keep their old geometry so stored picks still render. */
@@ -1445,6 +1504,26 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
       'aria-hidden': true,
       style: { width: size, height: size, borderRadius: '22%', objectFit: 'cover', display: 'block' }
     })
+  }
+
+  // Blobatar shapes: the library draws the whole face (body + eyes + its own
+  // name-derived palette). Inline SVG via innerHTML so the roster PNG
+  // backfill's `svg[data-bot-face=…]` query still finds it; the math clock
+  // ignores it (no data-hb-math). Falls back to the legacy math face when the
+  // SDK predates the export.
+  if (isBlobShape(shape)) {
+    const markup = blobMarkup(shape, name, size)
+
+    if (markup) {
+      return jsx('span', {
+        'aria-hidden': true,
+        style: { width: size, height: size, display: 'block', lineHeight: 0 },
+        dangerouslySetInnerHTML: { __html: markup }
+      })
+    }
+
+    // Older SDK without blobatar: legacy deterministic shape from the name.
+    shape = defaultShapeFor(name)
   }
 
   // Sigils are line art (no filled body) — the math clock rebuilds filled
@@ -2071,7 +2150,88 @@ function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generate
         : null,
 
       tab === 'bot'
-        ? jsxs('div', {
+        ? isBlobShape(shape) && blobatarSvg
+          ? (() => {
+              const { seedPart, kind } = parseBlobShape(shape, pickerName)
+              const locked = Boolean(seedPart)
+              return jsxs('div', {
+                className: 'grid justify-items-center gap-3',
+                children: [
+                  // Silhouette pins: Auto (name decides) + the six blob kinds.
+                  jsx('div', {
+                    style: {
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+                      gap: '6px',
+                      justifyItems: 'center'
+                    },
+                    children: ['', ...BLOB_KINDS].map(k =>
+                      jsx(
+                        'button',
+                        {
+                          type: 'button',
+                          title: k || 'Auto — the name decides',
+                          className: cn(
+                            'flex items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)',
+                            k === kind && !image && 'ring-1 ring-(--ui-accent)'
+                          ),
+                          style: { width: 44, height: 44 },
+                          onClick: () => {
+                            onImage(null)
+                            onShape(blobShapeString(seedPart, k))
+                          },
+                          children: k
+                            ? jsx(BotFace, { shape: blobShapeString(seedPart, k), color, size: 32, name: pickerName })
+                            : jsx('span', { className: 'text-[0.6rem] text-(--ui-text-tertiary)', children: 'Auto' })
+                        },
+                        k || 'auto'
+                      )
+                    )
+                  }),
+                  jsxs('div', {
+                    className: 'flex items-center gap-1',
+                    children: [
+                      jsxs(Button, {
+                        type: 'button',
+                        variant: 'ghost',
+                        size: 'sm',
+                        onClick: () => {
+                          onImage(null)
+                          onShape(blobShapeString(Math.random().toString(36).slice(2, 10), kind))
+                        },
+                        children: [jsx(Codicon, { name: 'refresh', className: 'mr-1 text-[0.8rem]' }), 'Randomize']
+                      }),
+                      jsxs(Button, {
+                        type: 'button',
+                        variant: 'ghost',
+                        size: 'sm',
+                        title: locked
+                          ? 'Unlock — the face follows the agent\u2019s name again'
+                          : 'Keep this exact face even if the name changes',
+                        onClick: () => onShape(blobShapeString(locked ? '' : pickerName, kind)),
+                        children: [
+                          jsx(Codicon, { name: locked ? 'unlock' : 'lock', className: 'mr-1 text-[0.8rem]' }),
+                          locked ? 'Unlock' : 'Lock face'
+                        ]
+                      })
+                    ]
+                  }),
+                  jsx('div', {
+                    className: 'text-center text-[0.65rem] text-(--ui-text-quaternary)',
+                    children: locked ? 'Face locked — renaming won\u2019t change it.' : 'Face follows the name.'
+                  }),
+                  jsx(Button, {
+                    type: 'button',
+                    variant: 'ghost',
+                    size: 'sm',
+                    className: 'text-(--ui-text-tertiary)',
+                    onClick: () => onShape(defaultShapeFor(pickerName)),
+                    children: 'Classic shapes'
+                  })
+                ]
+              })
+            })()
+          : jsxs('div', {
             className: 'grid justify-items-center gap-3',
             children: [
               jsx('div', {
@@ -2081,11 +2241,12 @@ function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generate
                   gap: '6px',
                   justifyItems: 'center'
                 },
-                children: AVATAR_PICKER_SHAPES.map(s =>
+                children: (blobatarSvg ? ['blobatar', ...AVATAR_PICKER_SHAPES] : AVATAR_PICKER_SHAPES).map(s =>
                   jsx(
                     'button',
                     {
                       type: 'button',
+                      title: s === 'blobatar' ? 'Blob face — drawn from the agent\u2019s name' : undefined,
                       className: cn(
                         'flex items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)',
                         s === shape && !image && 'ring-1 ring-(--ui-accent)'
@@ -5764,7 +5925,9 @@ function CreateAgentDialog({ open, onClose, roster }) {
   const flightRef = useRef(null)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [shape, setShape] = useState('circle')
+  // Default shapes mode: deterministic blob face drawn from the agent's name
+  // (falls back to the legacy shape vocabulary on older SDKs).
+  const [shape, setShape] = useState(blobatarSvg ? 'blobatar' : 'circle')
   const [color, setColor] = useState(AVATAR_COLORS[3])
   const [image, setImage] = useState(null)
   const [advanced, setAdvanced] = useState(false)
@@ -5861,7 +6024,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
     setName('')
     setTitle('')
     setDescription('')
-    setShape('circle')
+    setShape(blobatarSvg ? 'blobatar' : 'circle')
     setColor(AVATAR_COLORS[3])
     setImage(null)
     setAdvanced(false)

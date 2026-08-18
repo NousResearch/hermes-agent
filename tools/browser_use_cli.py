@@ -134,6 +134,47 @@ _URL_RECHECK_TRAILER = (
 ).format(head=_LANDED_URL_MARKER[:16], tail=_LANDED_URL_MARKER[16:])
 
 
+# ---------------------------------------------------------------
+# Trusted-boundary landed-URL observation (P1 review).
+#
+# The appended in-script trailer runs in the SAME namespace as the
+# model's untrusted code, so the model can rebind js/print/str and forge
+# a safe landing marker. The authoritative observation must therefore be
+# produced OUTSIDE that namespace: run a SECOND Browser Use subprocess
+# whose only input is Hermes-authored probe code (no model code), against
+# the same session/CDP. That fresh namespace cannot be rebound, so its
+# reported window.location.href is a trusted attestation of browser state.
+# ---------------------------------------------------------------
+def _trusted_landing_probe_code() -> str:
+    """Hermes-authored probe reading window.location.href in a fresh CLI.
+
+    No caller code is present, so js/print/str are the CLI's own builtins
+    and cannot have been rebound. The marker is produced by trusted code.
+    """
+    head = _LANDED_URL_MARKER[:16]
+    tail = _LANDED_URL_MARKER[16:]
+    return (
+        f"print({head!r} + {tail!r} + str(js('window.location.href')))"
+    )
+
+
+def _trusted_landed_url(cmd, env, popen_extra, timeout) -> Optional[str]:
+    """Run a fresh, trusted CLI probe and return the observed landed URL.
+
+    Returns None if the probe could not run or reported nothing trustworthy
+    (fail-open: no result means no claim, matching the sibling guards).
+    """
+    probe = _trusted_landing_probe_code()
+    try:
+        p = subprocess.run(
+            cmd, input=probe, capture_output=True,
+            text=True, timeout=timeout, env=env, **popen_extra,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return _landed_url(p.stdout)
+
+
 def _with_url_recheck(code: str) -> str:
     """Append the landed-URL probe when doing so cannot break the caller's code.
 
@@ -748,13 +789,16 @@ def browser_exec(
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
     # Post-navigation recheck. The pre-check can only see URL literals in the
-    # source; this sees where the browser actually ended up — a URL built at
-    # runtime, or a redirect from a public page to an internal one. Output is
-    # withheld rather than annotated: stdout is where the page's content
-    # comes back, so returning it would hand over exactly what the guard
-    # exists to stop. No marker means the probe could not run, which fails
+    # source; this observes where the browser actually ended up. Per the P1
+    # review, the observation MUST come from outside the model's namespace:
+    # the in-script trailer can be forged by rebinding js/print/str, so the
+    # authoritative URL is taken from a SECOND, trusted CLI subprocess that
+    # runs only Hermes-authored probe code (no model code, so nothing can be
+    # rebound). Output is withheld rather than annotated: stdout is where the
+    # page's content comes back, so returning it would hand over exactly what
+    # the guard exists to stop. No trusted result means no claim, which fails
     # open, matching _current_page_private_url's documented behavior.
-    landed = _landed_url(proc.stdout)
+    landed = _trusted_landed_url(cmd, env, popen_extra, timeout)
     if landed:
         # Force SSRF protection for browser_exec regardless of backend
         # posture. evaluate_url_safety() gates the private-address block on

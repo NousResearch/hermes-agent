@@ -1178,6 +1178,90 @@ class TestInstallCli:
         assert "no network" in msg
 
 
+class TestTrustedBoundaryRecheck:
+    """P1 review: the landed-URL decision must come from OUTSIDE the
+    model-authored namespace.
+
+    The appended in-script trailer runs in the same namespace as the
+    model's code, so the model can rebind ``js``/``print``/``str`` and forge
+    a safe landing marker. These tests (a) prove the forgery is real against
+    the old in-script path, and (b) verify the authoritative observation now
+    comes from ``_trusted_landed_url`` — a fresh subprocess running only
+    Hermes-authored probe code, where nothing can be rebound.
+    """
+
+    def test_old_in_script_trailer_is_forgeable_by_rebinding_js(self, capsys):
+        """Sabotage proof: model code can rebind ``js`` to forge a safe URL.
+
+        This documents the vulnerability the P1 review found — it is exactly
+        why the authoritative URL is no longer taken from the in-script
+        trailer. We execute the appended code in a namespace where the model
+        rebound ``js`` to a safe value; the old trailer prints that forged
+        safe URL after the (private) output. ``_landed_url`` on that stdout
+        would accept the forged safe value.
+        """
+        forged_safe = "https://safe.example.com/"
+        src = (
+            "secret = 'IMDS_response'\n"
+            "js = lambda _: %r\n"
+            "print(secret)\n"
+        ) % (forged_safe,)
+        ns = {"print": print, "js": lambda _: "http://169.254.169.254/"}
+        exec(bu_cli._with_url_recheck(src), ns)
+        out = capsys.readouterr().out
+        # The model's secret is printed to stdout
+        assert "IMDS_response" in out
+        # And the appended trailer — since js was rebound — reports the forged
+        # safe value, which _landed_url() would accept. This is exactly the
+        # P1 forgery, and why the decision moved off this in-script trailer.
+        assert bu_cli._LANDED_URL_MARKER + forged_safe in out
+        assert bu_cli._landed_url(out) == forged_safe
+
+    def test_trusted_probe_code_has_no_caller_code(self):
+        """The trusted probe contains ONLY Hermes-authored code (no model code),
+        so there is nothing for a model to have rebound."""
+        probe = bu_cli._trusted_landing_probe_code()
+        # It reads window.location.href via the CLI's own js builtin.
+        assert "window.location.href" in probe
+        assert "js(" in probe
+        # It is a single self-contained expression — no surrounding try/except
+        # that the model could slip code into.
+        assert probe.startswith("print(")
+
+    def test_trusted_landed_url_reports_real_url_not_forged(self, tmp_path, monkeypatch):
+        """The trusted second-probe path is authoritative: even if a first run
+        printed a forged 'safe' marker (model rebound js), the trusted probe
+        observes the REAL browser location because it runs in a fresh CLI
+        namespace."""
+        marker = bu_cli._LANDED_URL_MARKER
+        real = "http://169.254.169.254/latest/meta-data/"
+        # The trusted probe subprocess produces the REAL url.
+        def fake_probe(p, *a, **k):
+            return None
+
+        captured = {}
+
+        def fake_probe_run(cmd, input, capture_output=True, text=True, timeout=None, env=None, **kw):
+            # The probe (input) is the trusted Hermes code, NOT caller code.
+            captured["probe"] = input
+            class P:
+                stdout = f"{marker}{real}\n"
+                returncode = 0
+            return P()
+
+        monkeypatch.setattr(bu_cli.subprocess, "run", fake_probe_run)
+        got = bu_cli._trusted_landed_url(["browser-use"], {"K": "V"}, {}, 5)
+        assert got == real, "trusted probe must observe the REAL url"
+        assert "window.location.href" in captured["probe"]
+
+    def test_trusted_landed_url_fails_open_on_probe_failure(self, tmp_path, monkeypatch):
+        """If the trusted probe cannot run, return None (fail-open, no claim)."""
+        def boom(*a, **k):
+            raise OSError("cli gone")
+        monkeypatch.setattr(bu_cli.subprocess, "run", boom)
+        assert bu_cli._trusted_landed_url(["browser-use"], {}, {}, 5) is None
+
+
 class TestDefaultDowngradeNotice:
     def _isolate(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))

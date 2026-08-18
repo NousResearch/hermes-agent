@@ -20,6 +20,30 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
+def _warm_goal_db(goals) -> None:
+    """Open (and cache) the goals SessionDB for this HERMES_HOME off-loop.
+
+    ``_get_session_db()`` refuses to construct SessionDB on an event-loop
+    thread: it kicks a background bootstrap and waits only
+    ``_DB_BOOTSTRAP_LOOP_WAIT_S`` (0.25s) before degrading to None. The tests
+    below call ``mgr.set()`` from inside an async test, so on a loaded CI
+    runner that first write silently dropped and the runner then saw no active
+    goal at all (0 sends). Warming the cache from a plain worker thread takes
+    the off-loop branch, so every in-test call hits the cache.
+    """
+    import threading
+
+    holder: dict = {}
+
+    def _open() -> None:
+        holder["db"] = goals._get_session_db()
+
+    t = threading.Thread(target=_open, name="warm-goal-db")
+    t.start()
+    t.join(30)
+    assert holder.get("db") is not None, "could not open goals SessionDB for test home"
+
+
 @pytest.fixture()
 def hermes_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -30,6 +54,7 @@ def hermes_home(tmp_path, monkeypatch):
     from hermes_cli import goals
 
     goals._DB_CACHE.clear()
+    _warm_goal_db(goals)
     yield home
     goals._DB_CACHE.clear()
 

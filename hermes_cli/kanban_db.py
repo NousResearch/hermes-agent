@@ -13846,17 +13846,30 @@ def _dispatch_once_locked(
     return result
 
 
+# Hard ceiling on council/audit revision loops.  A configured
+# max_revise_loops above this value is ignored so no task can exceed the
+# maximum council revision cycles even after manual state reset or stale
+# marker deletion.  Valid lower configured values remain respected.
+_MAX_REVISE_LOOPS_HARD_CAP = 4
+
+
 def _get_max_revise_loops() -> int:
-    """Return max_revise_loops, preferring council.* then legacy pipeline.*."""
+    """Return max_revise_loops, preferring council.* then legacy pipeline.*.
+
+    Hard-clamped to ``_MAX_REVISE_LOOPS_HARD_CAP`` (4): a configured value
+    above 4 is ignored so no task can exceed the maximum council revision
+    cycles.  Valid lower configured values are respected.
+    """
     try:
         from hermes_cli.config import load_config_readonly
         cfg = load_config_readonly()
         loops = cfg.get("council", {}).get("max_revise_loops")
         if loops is None:
             loops = cfg.get("pipeline", {}).get("max_revise_loops", 4)
-        return int(loops) if loops is not None else 4
+        value = int(loops) if loops is not None else 4
     except Exception:
-        return 4
+        value = 4
+    return min(value, _MAX_REVISE_LOOPS_HARD_CAP)
 
 
 def _get_stage_owner(stage: str) -> str | None:
@@ -14061,10 +14074,52 @@ def _maybe_launch_council(
 
     Returns True if the dispatcher should skip this task this tick (verdict
     not ready yet), False if a verdict exists and the gate should evaluate it.
+
+    Independently enforces the council revision cap before launching: if the
+    task's ``council_revise`` count has already reached the effective cap, the
+    council is NOT relaunched (even after a manual state reset or stale
+    ``council_running`` marker deletion).  The task is atomically blocked at
+    council and a single idempotent ``council_revision_cap_reached`` event is
+    appended.
     """
     artifact_dir = _council_artifact_dir(task_id)
     if os.path.exists(os.path.join(artifact_dir, "council-verdict.md")):
         return False  # verdict ready — let the gate parse it
+
+    # Independent revision-cap guard: a task that has already exhausted its
+    # council revisions must never relaunch, regardless of verdict/marker
+    # state.  This closes the manual-reset / stale-marker bypass.
+    revise_count = _get_council_revise_count(conn, task_id, "council")
+    cap = _get_max_revise_loops()
+    if revise_count >= cap:
+        if not dry_run:
+            with write_txn(conn):
+                # Always restore the canonical blocked state, even when an
+                # operator manually resets the task after the cap event was
+                # first recorded.  Event emission itself remains idempotent.
+                conn.execute(
+                    "UPDATE tasks SET status = ?, pipeline_stage = ? "
+                    "WHERE id = ?",
+                    ("blocked", "council", task_id),
+                )
+                already = conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id = ? "
+                    "AND kind = 'council_revision_cap_reached' LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if not already:
+                    _append_event(
+                        conn, task_id, "council_revision_cap_reached",
+                        {
+                            "count": revise_count,
+                            "cap": cap,
+                            "reason": (
+                                "council revision cap reached; refusing to "
+                                "relaunch council"
+                            ),
+                        },
+                    )
+        return True
 
     if dry_run:
         return True

@@ -180,9 +180,9 @@ class TestMaxReviseLoops:
     def test_prefers_council(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.load_config_readonly",
-            lambda: {"council": {"max_revise_loops": 7}, "pipeline": {"max_revise_loops": 2}},
+            lambda: {"council": {"max_revise_loops": 3}, "pipeline": {"max_revise_loops": 2}},
         )
-        assert _get_max_revise_loops() == 7
+        assert _get_max_revise_loops() == 3
 
     def test_falls_back_to_pipeline(self, monkeypatch):
         monkeypatch.setattr(
@@ -190,6 +190,20 @@ class TestMaxReviseLoops:
             lambda: {"pipeline": {"max_revise_loops": 3}},
         )
         assert _get_max_revise_loops() == 3
+
+    def test_hard_clamp_to_four(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"council": {"max_revise_loops": 99}},
+        )
+        assert _get_max_revise_loops() == 4
+
+    def test_lower_cap_respected(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"council": {"max_revise_loops": 2}},
+        )
+        assert _get_max_revise_loops() == 2
 
 
 class TestCouncilLint:
@@ -298,6 +312,141 @@ class TestSeparateReviseCounters:
             conn.commit()
             assert kb._get_council_revise_count(conn, tid, "council") == 2
             assert kb._get_council_revise_count(conn, tid, "audit") == 1
+
+
+class TestCouncilRevisionCap:
+    """The council revision cap must hold even after manual state reset or
+    stale-marker deletion (regression for the t_cfdf2cbe bypass)."""
+
+    def _seed_council_task(self, revise_count, monkeypatch):
+        from hermes_cli import kanban_db as kb
+        import hermes_cli.council as council_mod
+        # Stub deliberate so any real launch does no network IO.
+        monkeypatch.setattr(council_mod, "deliberate", lambda tid, d: None)
+        _create(express=False)
+        with connect() as conn:
+            tid = conn.execute(
+                "SELECT id FROM tasks ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE tasks SET pipeline_stage='council', status='council', "
+                "pipeline_mode='full' WHERE id=?", (tid,),
+            )
+            for _ in range(revise_count):
+                kb._record_council_revise(conn, tid, "council")
+            conn.commit()
+        return tid
+
+    def _cap_events(self, tid):
+        with connect() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                "AND kind='council_revision_cap_reached'", (tid,),
+            ).fetchone()[0]
+
+    def test_fourth_revise_prevents_relaunch_after_manual_reset(
+        self, kanban_home, monkeypatch,
+    ):
+        from hermes_cli import kanban_db as kb
+        tid = self._seed_council_task(4, monkeypatch)
+        # Simulate a manual reset: clear verdict + running marker, reset status.
+        with connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET status='council', pipeline_stage='council' "
+                "WHERE id=?", (tid,),
+            )
+            conn.execute(
+                "DELETE FROM task_events WHERE task_id=? AND kind='council_running'",
+                (tid,),
+            )
+            conn.commit()
+            # No verdict file exists, so the cap guard is the only thing
+            # standing between the task and a relaunch.
+            assert kb._maybe_launch_council(conn, tid, dry_run=False) is True
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked"
+            assert task.pipeline_stage == "council"
+            assert self._cap_events(tid) == 1
+            # No new council_running marker was written.
+            running = conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                "AND kind='council_running'", (tid,),
+            ).fetchone()[0]
+            assert running == 0
+
+    def test_deleting_council_running_does_not_bypass(
+        self, kanban_home, monkeypatch,
+    ):
+        from hermes_cli import kanban_db as kb
+        tid = self._seed_council_task(4, monkeypatch)
+        with connect() as conn:
+            conn.execute(
+                "DELETE FROM task_events WHERE task_id=? AND kind='council_running'",
+                (tid,),
+            )
+            conn.commit()
+            assert kb._maybe_launch_council(conn, tid, dry_run=False) is True
+            assert kb.get_task(conn, tid).status == "blocked"
+
+    def test_config_99_clamps_to_four(self, kanban_home, monkeypatch):
+        from hermes_cli import kanban_db as kb
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"council": {"max_revise_loops": 99}},
+        )
+        tid = self._seed_council_task(4, monkeypatch)
+        with connect() as conn:
+            assert kb._maybe_launch_council(conn, tid, dry_run=False) is True
+            assert kb.get_task(conn, tid).status == "blocked"
+            ev = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? "
+                "AND kind='council_revision_cap_reached'", (tid,),
+            ).fetchone()
+            assert ev is not None
+            assert json.loads(ev[0])["cap"] == 4
+
+    def test_lower_cap_blocks_at_two(self, kanban_home, monkeypatch):
+        from hermes_cli import kanban_db as kb
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"council": {"max_revise_loops": 2}},
+        )
+        tid = self._seed_council_task(2, monkeypatch)
+        with connect() as conn:
+            assert kb._maybe_launch_council(conn, tid, dry_run=False) is True
+            assert kb.get_task(conn, tid).status == "blocked"
+
+    def test_cap_event_is_idempotent(self, kanban_home, monkeypatch):
+        from hermes_cli import kanban_db as kb
+        tid = self._seed_council_task(4, monkeypatch)
+        with connect() as conn:
+            assert kb._maybe_launch_council(conn, tid, dry_run=False) is True
+            # Simulate another manual reset after the cap event already exists.
+            conn.execute(
+                "UPDATE tasks SET status='council', pipeline_stage='council' "
+                "WHERE id=?", (tid,),
+            )
+            conn.commit()
+            assert kb._maybe_launch_council(conn, tid, dry_run=False) is True
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "blocked"
+            assert kb._maybe_launch_council(conn, tid, dry_run=False) is True
+            assert self._cap_events(tid) == 1
+
+    def test_fewer_than_cap_still_launches(self, kanban_home, monkeypatch):
+        from hermes_cli import kanban_db as kb
+        tid = self._seed_council_task(3, monkeypatch)
+        with connect() as conn:
+            assert kb._maybe_launch_council(conn, tid, dry_run=False) is True
+            task = kb.get_task(conn, tid)
+            assert task.status == "council"  # not blocked
+            running = conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                "AND kind='council_running'", (tid,),
+            ).fetchone()[0]
+            assert running == 1
+            assert self._cap_events(tid) == 0
 
 
 class TestDenjiReport:

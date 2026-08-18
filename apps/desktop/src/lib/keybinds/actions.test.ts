@@ -31,3 +31,24 @@ describe('session.archive keybind action', () => {
     expect(matches).toHaveLength(1)
   })
 })
+
+describe('view.toggleProjects keybind action', () => {
+  it('ships bound to the explorer chord under the view category', () => {
+    const action = keybindAction('view.toggleProjects')
+
+    expect(action?.category).toBe('view')
+    expect(defaultBindings()['view.toggleProjects']).toEqual(['mod+shift+e'])
+  })
+
+  it('has an English label so it renders in the shortcuts panel', () => {
+    expect(en.keybinds.actions['view.toggleProjects']).toBe('Collapse / expand all projects')
+  })
+
+  // A duplicate default reads as a permanent conflict in the keybinds panel and
+  // makes one of the two actions unreachable, so the chord has to be unclaimed.
+  it('does not collide with another action default', () => {
+    const owners = KEYBIND_ACTIONS.filter(action => action.defaults.includes('mod+shift+e'))
+
+    expect(owners.map(action => action.id)).toEqual(['view.toggleProjects'])
+  })
+})

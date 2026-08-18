@@ -44,7 +44,7 @@ import {
   switchToDefaultProfile,
   toggleShowAllProfiles
 } from '@/store/profile'
-import { openFolderAsProject } from '@/store/projects'
+import { openFolderAsProject, toggleAllProjectsCollapsed } from '@/store/projects'
 import { toggleReview } from '@/store/review'
 import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
 import { reopenLastClosedTile } from '@/store/session-states'
@@ -246,6 +246,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.showFiles': showFiles,
+    // ⌘⇧E: fold every sidebar project row shut / open them all back up.
+    'view.toggleProjects': toggleAllProjectsCollapsed,
     'view.showBrowser': openBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
     'view.showTerminal': () => togglePaneVisible('terminal'),

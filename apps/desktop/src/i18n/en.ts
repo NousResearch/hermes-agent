@@ -273,6 +273,7 @@ export const en: Translations = {
       'view.toggleReview': 'Toggle review pane',
       'view.toggleStatusbar': 'Toggle status bar',
       'view.showFiles': 'Show file browser',
+      'view.toggleProjects': 'Collapse / expand all projects',
       'view.showBrowser': 'Open browser',
       'view.toggleHud': 'Toggle HUD mode',
       'hud.snapToPointer': 'Move HUD to pointer (global, while HUD is open)',

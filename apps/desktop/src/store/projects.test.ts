@@ -2,7 +2,12 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
+import {
+  $sidebarAgentsGrouped,
+  $sidebarWorkspaceNodeOpen,
+  setSidebarAgentsGrouped,
+  setSidebarGrouping
+} from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
@@ -30,6 +35,7 @@ import {
   resolveNewSessionCwd,
   scanAndRecordRepos,
   startWorkInRepo,
+  toggleAllProjectsCollapsed,
   tombstoneSessions
 } from './projects'
 
@@ -582,5 +588,52 @@ describe('tombstone pruning', () => {
     await refreshProjectTree()
 
     expect($removedSessionIds.get().has('sess-1')).toBe(false)
+  })
+})
+
+describe('toggleAllProjectsCollapsed', () => {
+  const project = (id: string): SidebarProjectTree => ({
+    id,
+    label: id,
+    path: `/repos/${id}`,
+    repos: [],
+    sessionCount: 0
+  })
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    $sidebarWorkspaceNodeOpen.set({})
+    $projectTree.set([project('p_a'), project('p_b')])
+    setSidebarGrouping('project')
+  })
+
+  it('collapses every project row when any of them is still open', () => {
+    toggleAllProjectsCollapsed()
+
+    expect($sidebarWorkspaceNodeOpen.get()).toMatchObject({ p_a: false, p_b: false })
+  })
+
+  it('expands them all again once every row is collapsed', () => {
+    $sidebarWorkspaceNodeOpen.set({ p_a: false, p_b: false })
+
+    toggleAllProjectsCollapsed()
+
+    expect($sidebarWorkspaceNodeOpen.get()).toMatchObject({ p_a: true, p_b: true })
+  })
+
+  it('leaves lanes nested under a project untouched, so re-opening restores them', () => {
+    $sidebarWorkspaceNodeOpen.set({ 'p_a/lane': false })
+
+    toggleAllProjectsCollapsed()
+
+    expect($sidebarWorkspaceNodeOpen.get()['p_a/lane']).toBe(false)
+  })
+
+  it('does nothing under a grouping that puts no project rows on screen', () => {
+    setSidebarGrouping('date')
+
+    toggleAllProjectsCollapsed()
+
+    expect($sidebarWorkspaceNodeOpen.get()).toEqual({})
   })
 })

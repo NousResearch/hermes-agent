@@ -14,7 +14,12 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
-import { setSidebarAgentsGrouped } from '@/store/layout'
+import {
+  $sidebarGrouping,
+  $sidebarWorkspaceNodeOpen,
+  setSidebarAgentsGrouped,
+  setWorkspaceNodesOpen
+} from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { $activeGatewayProfile, $profileScope, ALL_PROFILES, requestFreshSession } from '@/store/profile'
 import {
@@ -40,6 +45,34 @@ export const $activeProjectId = atom<null | string>(null)
 // source of project membership — the desktop no longer derives it.
 export const $projectTree = atom<SidebarProjectTree[]>([])
 export const $projectTreeLoading = atom(false)
+
+// Project rows default OPEN, so "all collapsed" means every one of them has
+// been explicitly shut.
+export function projectsAllCollapsed(
+  projects: readonly { id: string }[],
+  nodeOpen: Record<string, boolean>
+): boolean {
+  return projects.length > 0 && projects.every(project => nodeOpen[project.id] === false)
+}
+
+// Fold every project row shut, or open them all back up — the sidebar's
+// "Collapse all" / "Expand all", shared by the filter menu and the hotkey.
+// Only the project rows fold, and only while grouping by project puts them on
+// screen; under any other grouping there is nothing to fold, so this is a
+// no-op rather than a write the user can't see. Their lanes underneath keep
+// their own state, so re-opening a project shows it as they left it.
+export function toggleAllProjectsCollapsed(): void {
+  const projects = $projectTree.get()
+
+  if ($sidebarGrouping.get() !== 'project' || projects.length === 0) {
+    return
+  }
+
+  setWorkspaceNodesOpen(
+    projects.map(project => project.id),
+    projectsAllCollapsed(projects, $sidebarWorkspaceNodeOpen.get())
+  )
+}
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.

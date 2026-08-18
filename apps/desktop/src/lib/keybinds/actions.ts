@@ -125,6 +125,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
+  // ⌘⇧E — the explorer mnemonic (VS Code's ⌘⇧E focuses the explorer tree).
+  // Folds every project row in the sidebar shut, or opens them all back up:
+  // the same toggle the filter menu's "Collapse all" / "Expand all" runs, for
+  // a sidebar with more projects than fit on screen.
+  { id: 'view.toggleProjects', category: 'view', defaults: ['mod+shift+e'] },
   // ⌘⇧L — "L" for location, the address-bar chord every browser shares. Plain
   // ⌘L is the terminal's selection shortcut, hence the shift.
   { id: 'view.showBrowser', category: 'view', defaults: ['mod+shift+l'] },

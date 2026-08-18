@@ -1105,43 +1105,40 @@ interface PaneDockHint {
   pos: DropPosition
   /** Center docks: stack BEFORE this pane id (the strip divider's slot). */
   before?: null | string
-  /** One-time re-home token: a pane ALREADY adopted under an older dock hint
-   *  moves onto this hint's center anchor once per token — never when the
-   *  user has placed the pane themselves. See `healDockedPanes`. */
-  heal?: string
+  /** Enforced dock invariant: the pane is re-homed onto this hint's center
+   *  anchor on EVERY boot when it isn't already stacked with the anchor —
+   *  no one-time token, and user placement does not exempt it. Once per
+   *  adoption lifetime (per boot), so an intra-session drag sticks until the
+   *  next boot. See `enforceDockedPanes`. */
+  enforce?: boolean
 }
 
-// One-time dock heals already applied, persisted so a heal runs exactly once
-// per pane per token across boots (and never re-fights a user who re-arranges
-// the healed pane afterward).
-const DOCK_HEAL_KEY = 'hermes.desktop.paneDockHeals.v1'
+// The retired one-time dock-heal ledger (`heal: '<token>'` hints). Its guards
+// (token burned even when the heal was skipped; $userPlacedPanes exempt) left
+// exactly the users who had fought the old stacked layout stuck with it —
+// enforced docks (`enforce: true`) replaced it. Drop the stale key.
+writeKey('hermes.desktop.paneDockHeals.v1', null)
 
-const appliedDockHeals = new Set<string>(readJson<string[]>(DOCK_HEAL_KEY) ?? [])
-
-function markDockHealApplied(token: string) {
-  appliedDockHeals.add(token)
-  writeJson(DOCK_HEAL_KEY, [...appliedDockHeals])
-}
+// Panes already enforced THIS boot: the invariant re-asserts at boot, not
+// against a live user — a mid-session drag out of the anchor strip sticks
+// until the next launch, so there is never a tug-of-war.
+const enforcedDocksThisBoot = new Set<string>()
 
 /**
- * A `panes` contribution whose dock hint carries a `heal` token gets ONE
- * chance to re-home its already-adopted pane onto the hint's anchor —
- * adoption is once per pane lifetime (the persisted tree remembers it), so a
- * contribution whose default dock CHANGED would otherwise never reach
- * existing installs. Guarded hard:
- *
- *  - the token burns exactly once per pane (idempotent across boots), and it
- *    burns even when the heal is skipped, so a user who later drags the pane
- *    back to the old spot is never fought;
- *  - a USER-PLACED pane ($userPlacedPanes) is never touched — their spot wins;
- *  - center re-homes only: a heal exists to consolidate a stray split into
- *    its anchor's tab strip, not to re-run arbitrary splits.
+ * A `panes` contribution whose dock hint carries `enforce: true` is re-homed
+ * onto the hint's center anchor at every boot's first adoption pass when it
+ * isn't already stacked there. Unlike the retired one-time heal, nothing
+ * exempts the pane — not a burned token, not $userPlacedPanes — because the
+ * hint is the owner's standing invariant about where the pane lives
+ * (Bot Mode's Bots pane IS the SESSIONS | BOTS tab strip), not a one-shot
+ * migration. Center re-homes only: the invariant consolidates the pane into
+ * its anchor's tab strip, it never re-runs arbitrary splits.
  *
  * Silent like adoption — the anchor zone keeps its active tab. The center
  * insert pins the zone's header shown, which is the point: the strip is how
- * the user finds the healed tab.
+ * the user finds the tab.
  */
-function healDockedPanes(
+function enforceDockedPanes(
   tree: LayoutNode,
   dataOf: (paneId: string) => { dock?: PaneDockHint; placement?: string } | undefined
 ): LayoutNode {
@@ -1150,21 +1147,15 @@ function healDockedPanes(
   for (const pane of registry.getArea('panes')) {
     const dock = dataOf(pane.id)?.dock
 
-    if (!dock?.heal || dock.pos !== 'center' || !allPaneIds(next).includes(pane.id)) {
+    if (!dock?.enforce || dock.pos !== 'center' || !allPaneIds(next).includes(pane.id)) {
       continue
     }
 
-    const token = `${pane.id}:${dock.heal}`
-
-    if (appliedDockHeals.has(token)) {
+    if (enforcedDocksThisBoot.has(pane.id)) {
       continue
     }
 
-    markDockHealApplied(token)
-
-    if ($userPlacedPanes.get().has(pane.id)) {
-      continue
-    }
+    enforcedDocksThisBoot.add(pane.id)
 
     const from = findGroupOfPane(next, pane.id)
     const anchor = findGroupOfPane(next, dock.pane)
@@ -1205,9 +1196,9 @@ function adoptContributedPanes(): void {
 
   const dismissed = $dismissedPanes.get()
 
-  // One-time dock heals run FIRST: a heal re-homes a pane that is ALREADY in
-  // the tree, so the missing-pane adoption below never sees it.
-  const healed = healDockedPanes(tree, dataOf)
+  // Enforced dock invariants run FIRST: they re-home panes that are ALREADY
+  // in the tree, so the missing-pane adoption below never sees them.
+  const healed = enforceDockedPanes(tree, dataOf)
 
   // `placement: 'floating'` opts OUT of the tree entirely — those panes render
   // as fixed cards above it (renderer/floating-panes.tsx). Adopting one would

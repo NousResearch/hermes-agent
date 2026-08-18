@@ -8366,10 +8366,17 @@ export default {
       // stays shown once the zone has stacked), so the sessions pane can
       // never vanish behind a stripless Bots tab — the lone-pane auto-hide
       // trap this dock used to work around with a 'bottom' split.
-      // heal: one-shot re-home for installs that adopted under the old
-      // 'bottom' split — moves the pane into the sessions strip ONCE, never
-      // touching a user-placed layout (see healDockedPanes in the tree store).
-      data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'center', heal: 'sessions-tab-v1' } },
+      // enforce: standing invariant, not a one-shot migration — the pane
+      // re-homes into the sessions strip at EVERY boot it isn't already
+      // there, whatever tokens or user placement an older install persisted.
+      // The one-time heal ('sessions-tab-v1') burned its token even when its
+      // guards skipped the move, so exactly the users who had fought the old
+      // stacked layout (dragged panes → $userPlacedPanes) stayed stacked
+      // forever. Owner's order: SESSIONS | BOTS is always a tab strip.
+      // An intra-session drag still sticks until the next launch (the
+      // invariant runs at adoption time only — see enforceDockedPanes in the
+      // tree store).
+      data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'center', enforce: true } },
       render: () => jsx(BotsPane, {})
     })
 

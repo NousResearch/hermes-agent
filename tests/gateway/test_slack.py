@@ -1286,6 +1286,17 @@ class TestBangPrefixCommands:
         assert msg_event.text == "/queue  --flag  value  "
         assert msg_event.get_command_args() == "--flag  value  "
 
+    @pytest.mark.asyncio
+    async def test_bare_command_trims_composer_padding(self, adapter):
+        await adapter._handle_slack_message(
+            self._make_event("/restart   ", thread_ts="1111111111.000001")
+        )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/restart"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.source.thread_id == "1111111111.000001"
+
 
     @pytest.mark.asyncio
     async def test_leading_space_slash_command_is_a_command(self, adapter):

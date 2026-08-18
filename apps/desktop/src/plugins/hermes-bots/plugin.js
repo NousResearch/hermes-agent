@@ -7447,9 +7447,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
     const taken = new Set(Object.keys($groupChats.get()))
 
     for (const meta of Object.values($botMeta.get() || {})) {
-      const existing = String(meta?.group || '').trim()
-
-      if (existing) {
+      for (const existing of botGroups(meta)) {
         taken.add(existing)
       }
     }

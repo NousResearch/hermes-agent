@@ -105,6 +105,7 @@ import { type SettingsSearchEntry, settingsSearchTargetQuery } from '../settings
 import { useSettingsSearchCatalog } from '../settings/use-settings-search'
 
 import { usePaletteContributions } from './contrib'
+import { HighlightWatcher } from './highlight-watcher'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 
@@ -1394,9 +1395,10 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const visibleGroups = useMemo(() => rankGroups(unrankedGroups, search), [unrankedGroups, search])
   const placeholder = activePage ? activePage.placeholder : t.commandCenter.searchPlaceholder
 
-  // cmdk reports the highlighted row (arrows or hover) via the root's
-  // onValueChange. Resolve it back to its PaletteItem so preview-capable rows
-  // (the theme pickers) can paint live. Any other highlight clears the preview.
+  // The HighlightWatcher inside <Command> reports the highlighted row (arrows
+  // or hover) from the cmdk store. Resolve it back to its PaletteItem so
+  // preview-capable rows (the theme pickers) can paint live. Any other
+  // highlight clears the preview.
   const itemByValue = useMemo(() => {
     const map = new Map<string, PaletteItem>()
 
@@ -1480,7 +1482,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         }}
       >
         <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
-        <Command className="bg-transparent" loop onValueChange={handleHighlight} shouldFilter={false}>
+        <Command className="bg-transparent" loop shouldFilter={false}>
+          <HighlightWatcher onValue={handleHighlight} />
           {activePage && (
             <button
               className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"

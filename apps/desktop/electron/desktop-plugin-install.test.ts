@@ -55,9 +55,7 @@ describe('desktopPluginFolderName', () => {
   })
 
   it('uses the last meaningful subdir, not a generic desktop folder', () => {
-    expect(desktopPluginFolderName('https://github.com/o/monorepo.git', 'plugins/alerts/desktop')).toBe(
-      'alerts'
-    )
+    expect(desktopPluginFolderName('https://github.com/o/monorepo.git', 'plugins/alerts/desktop')).toBe('alerts')
   })
 })
 

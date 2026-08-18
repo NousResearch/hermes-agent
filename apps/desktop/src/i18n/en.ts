@@ -404,8 +404,7 @@ export const en: Translations = {
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",
         desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
-        insecureWarning:
-          'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
+        insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
         securityHeading: 'Before you install',
         securityIntro:
           'Install only from sources you trust — review the repository below if you want to see what will be added.',

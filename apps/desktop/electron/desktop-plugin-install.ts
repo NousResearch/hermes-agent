@@ -98,9 +98,7 @@ export function resolvePluginGitUrl(identifier: string): ResolvedGitUrl {
     return { gitUrl, subdir }
   }
 
-  throw new Error(
-    "Invalid plugin identifier. Use a Git URL or 'owner/repo' (optionally with a subdirectory)."
-  )
+  throw new Error("Invalid plugin identifier. Use a Git URL or 'owner/repo' (optionally with a subdirectory).")
 }
 
 export function repoNameFromUrl(url: string): string {
@@ -195,8 +193,8 @@ export function findDesktopEntry(pluginRoot: string): { entryFile: string; sourc
 
 export async function detectPluginComponents(pluginRoot: string): Promise<PluginComponentDetection> {
   const hasYaml =
-    pathExistsSync(path.join(pluginRoot, 'plugin.yaml')) ||
-    pathExistsSync(path.join(pluginRoot, 'plugin.yml'))
+    pathExistsSync(path.join(pluginRoot, 'plugin.yaml')) || pathExistsSync(path.join(pluginRoot, 'plugin.yml'))
+
   const hasInit = pathExistsSync(path.join(pluginRoot, '__init__.py'))
   const hasPortable = pathExistsSync(path.join(pluginRoot, 'plugin.json'))
   const agent = (hasYaml && hasInit) || hasPortable
@@ -214,6 +212,7 @@ export async function detectPluginComponents(pluginRoot: string): Promise<Plugin
         const yamlPath = pathExistsSync(path.join(pluginRoot, 'plugin.yaml'))
           ? path.join(pluginRoot, 'plugin.yaml')
           : path.join(pluginRoot, 'plugin.yml')
+
         const text = await fsp.readFile(yamlPath, 'utf8')
         const match = text.match(/^name:\s*['"]?([^'"\n]+)['"]?\s*$/m)
 
@@ -271,6 +270,7 @@ function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: n
     })
 
     let stderr = ''
+
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
       reject(new Error('Git clone timed out after 60 seconds.'))
@@ -326,9 +326,7 @@ async function resolvePluginRoot(cloneRoot: string, subdir: string | null): Prom
 function insecureSchemeWarnings(gitUrl: string): { warnings: string[]; insecure: boolean } {
   if (gitUrl.startsWith('http://') || gitUrl.startsWith('file://')) {
     return {
-      warnings: [
-        'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.'
-      ],
+      warnings: ['This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.'],
       insecure: true
     }
   }
@@ -336,10 +334,7 @@ function insecureSchemeWarnings(gitUrl: string): { warnings: string[]; insecure:
   return { warnings: [], insecure: false }
 }
 
-export async function probePluginRepo(
-  gitBin: string,
-  identifier: string
-): Promise<PluginProbeResult> {
+export async function probePluginRepo(gitBin: string, identifier: string): Promise<PluginProbeResult> {
   try {
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
     const { warnings, insecure } = insecureSchemeWarnings(gitUrl)
@@ -409,9 +404,8 @@ export async function installDesktopPluginFromGit(
       }
 
       const sourceDir =
-        detected.desktopSourceSubdir === '.'
-          ? pluginRoot
-          : path.join(pluginRoot, detected.desktopSourceSubdir)
+        detected.desktopSourceSubdir === '.' ? pluginRoot : path.join(pluginRoot, detected.desktopSourceSubdir)
+
       const pluginName = desktopPluginFolderName(gitUrl, subdir)
       const targetDir = path.join(desktopPluginsRoot, pluginName)
       const targetPlugin = path.join(targetDir, 'plugin.js')

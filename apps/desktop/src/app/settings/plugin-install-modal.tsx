@@ -31,9 +31,7 @@ import {
 import { $activeGatewayProfile, $profileScope } from '@/store/profile'
 import { $connection } from '@/store/session'
 
-type ProbeResult = Awaited<
-  ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>
->
+type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
 type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
 
@@ -148,12 +146,11 @@ export function PluginInstallModal() {
   }, [request, resetState, runProbe])
 
   const profileLabel = activeProfile || profileScope || 'default'
+
   const agentTargetHint =
     connection?.mode === 'remote' ? m.agentTargetRemote(profileLabel) : m.agentTargetLocal(profileLabel)
-  const sourceLinks = useMemo(
-    () => (request ? resolvePluginSourceLinks(request.repo) : null),
-    [request]
-  )
+
+  const sourceLinks = useMemo(() => (request ? resolvePluginSourceLinks(request.repo) : null), [request])
 
   const handleClose = () => {
     if (installing) {
@@ -306,7 +303,11 @@ export function PluginInstallModal() {
               )}
             </div>
 
-            {phase === 'probing' && <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{m.probing}</p>}
+            {phase === 'probing' && (
+              <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                {m.probing}
+              </p>
+            )}
 
             {phase === 'error' && probe?.error && (
               <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-destructive">
@@ -316,7 +317,9 @@ export function PluginInstallModal() {
 
             {phase === 'ready' && probe && (
               <div className="space-y-3">
-                <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-foreground">{m.includesHeading}</div>
+                <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-foreground">
+                  {m.includesHeading}
+                </div>
 
                 {probe.agent && (
                   <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
@@ -353,25 +356,36 @@ export function PluginInstallModal() {
                 )}
 
                 {probe.desktop && !probe.agent && (
-                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{m.desktopOnlyNote}</p>
+                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {m.desktopOnlyNote}
+                  </p>
                 )}
 
                 {(probe.insecure || (probe.warnings?.length ?? 0) > 0) && (
                   <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-foreground">
-                    <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                    <span>{[...(probe.warnings ?? []), probe.insecure ? m.insecureWarning : ''].filter(Boolean).join(' ')}</span>
+                    <AlertTriangle
+                      aria-hidden
+                      className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+                    />
+                    <span>
+                      {[...(probe.warnings ?? []), probe.insecure ? m.insecureWarning : ''].filter(Boolean).join(' ')}
+                    </span>
                   </div>
                 )}
 
                 {probe.agent && (
                   <label className="flex items-center justify-between gap-3">
-                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">{m.enableAgent}</span>
+                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                      {m.enableAgent}
+                    </span>
                     <Switch checked={enableAgent} disabled={busy || !installAgent} onCheckedChange={setEnableAgent} />
                   </label>
                 )}
 
                 <label className="flex items-center justify-between gap-3">
-                  <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">{m.forceReinstall}</span>
+                  <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                    {m.forceReinstall}
+                  </span>
                   <Switch checked={forceReinstall} disabled={busy} onCheckedChange={setForceReinstall} />
                 </label>
               </div>
@@ -389,10 +403,7 @@ export function PluginInstallModal() {
           <Button disabled={busy} onClick={handleClose} variant="outline">
             {t.common.cancel}
           </Button>
-          <Button
-            disabled={busy || phase !== 'ready' || !probe?.ok}
-            onClick={() => void handleInstall()}
-          >
+          <Button disabled={busy || phase !== 'ready' || !probe?.ok} onClick={() => void handleInstall()}>
             {installing ? m.installing : m.install}
           </Button>
         </DialogFooter>

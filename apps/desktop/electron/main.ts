@@ -14659,12 +14659,7 @@ ipcMain.handle('hermes:plugin:installDesktop', async (_event, payload) => {
 
   const desktopPluginsRoot = await localPluginsRoot('desktop-plugins')
 
-  return installDesktopPluginFromGit(
-    resolveGitBinary(),
-    identifier,
-    desktopPluginsRoot,
-    Boolean(payload?.force)
-  )
+  return installDesktopPluginFromGit(resolveGitBinary(), identifier, desktopPluginsRoot, Boolean(payload?.force))
 })
 
 // Rename a file/folder in place. The renderer passes the existing path + a new
@@ -15274,11 +15269,7 @@ function _extractDeepLink(argv) {
     return null
   }
 
-  return (
-    argv.find(
-      a => typeof a === 'string' && DEEPLINK_SCHEMES.some(s => a.startsWith(`${s}://`))
-    ) || null
-  )
+  return argv.find(a => typeof a === 'string' && DEEPLINK_SCHEMES.some(s => a.startsWith(`${s}://`))) || null
 }
 
 function handleDeepLink(url) {

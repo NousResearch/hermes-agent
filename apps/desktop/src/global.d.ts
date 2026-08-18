@@ -359,10 +359,7 @@ declare global {
         callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
       ) => () => void
       signalDeepLinkReady?: () => Promise<{ ok: boolean }>
-      probePluginRepo?: (payload: {
-        identifier?: string
-        repo?: string
-      }) => Promise<{
+      probePluginRepo?: (payload: { identifier?: string; repo?: string }) => Promise<{
         ok: boolean
         agent: boolean
         desktop: boolean

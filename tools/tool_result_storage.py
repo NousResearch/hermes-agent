@@ -8,12 +8,28 @@ Defense against context-window overflow operates at three levels:
 
 2. **Per-result persistence** (maybe_persist_tool_result): After a tool
    returns, if its output exceeds the tool's registered threshold
-   (registry.get_max_result_size), the full output is written INTO THE
-   SANDBOX temp dir (for example /tmp/hermes-results/{tool_use_id}.txt on
-   standard Linux, or $TMPDIR/hermes-results/{tool_use_id}.txt on Termux)
-   via env.execute(). The in-context content is replaced with a preview +
-   file path reference. The model can read_file to access the full output
-   on any backend.
+   (registry.get_max_result_size), the full output is persisted and the
+   in-context content is replaced with a preview + file path reference.
+
+   Where it lands depends on the backend:
+
+   - **Local backend (or no active env):** written host-side to
+     ``$HERMES_HOME/cache/spillover/{tool_use_id}.txt`` — alongside the
+     other Hermes-owned caches (images, audio, documents, ...) instead of
+     littering the OS temp dir. This path needs no sandbox environment,
+     so it also works for sessions that never ran a terminal command
+     (MCP-only, cron, gateway) — previously those hit the inline-truncate
+     fallback because ``get_active_env()`` returned None until the first
+     terminal call created an environment.
+   - **Remote backends (docker/ssh/modal/daytona):** written INTO THE
+     SANDBOX temp dir (for example /tmp/hermes-results/{id}.txt) via
+     env.execute(), because HERMES_HOME does not exist inside the
+     container and read_file resolves in-sandbox there.
+
+   The spillover dir is pruned two ways: the gateway housekeeping loop
+   sweeps it hourly with the other media caches, and a once-per-process
+   best-effort prune runs on the first spill so CLI-only installs (which
+   never run gateway housekeeping) self-clean too.
 
 3. **Per-turn aggregate budget** (enforce_turn_budget): After all tool
    results in a single assistant turn are collected, if the total exceeds
@@ -27,6 +43,8 @@ import logging
 import os
 import re
 import shlex
+import threading
+import time
 import uuid
 
 from tools.budget_config import (
@@ -39,10 +57,102 @@ logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
+SPILLOVER_SUBDIR = "cache/spillover"
+SPILLOVER_MAX_AGE_HOURS = 24
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
+
+_spillover_prune_lock = threading.Lock()
+_spillover_pruned_once = False
+
+
+def get_spillover_dir():
+    """Return $HERMES_HOME/cache/spillover as a Path (not created)."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / SPILLOVER_SUBDIR
+
+
+def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int:
+    """Delete spillover files older than *max_age_hours*.
+
+    Same contract as the ``cleanup_*_cache`` helpers in
+    ``gateway.platforms.base`` — returns the number of files removed —
+    so the gateway housekeeping loop can prune this dir on the same
+    hourly cadence as the media caches.
+    """
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    try:
+        entries = list(get_spillover_dir().iterdir())
+    except OSError:
+        return 0
+    for f in entries:
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _prune_spillover_once() -> None:
+    """Best-effort prune, at most once per process.
+
+    The gateway housekeeping loop prunes hourly, but CLI-only installs
+    never run it — without this, spillover files would accumulate
+    forever on pure-CLI setups.
+    """
+    global _spillover_pruned_once
+    with _spillover_prune_lock:
+        if _spillover_pruned_once:
+            return
+        _spillover_pruned_once = True
+    try:
+        removed = cleanup_spillover_cache()
+        if removed:
+            logger.debug("Pruned %d expired spillover file(s)", removed)
+    except Exception as exc:
+        logger.debug("Spillover prune failed: %s", exc)
+
+
+def _is_host_side_env(env) -> bool:
+    """True when the spill file should be written by this process directly.
+
+    Covers ``env=None`` (no sandbox environment active — e.g. a session
+    that has not run a terminal command yet) and the local backend
+    (where env.execute() runs on this same host anyway). Remote backends
+    (docker/ssh/modal/daytona) return False: their read_file resolves
+    inside the sandbox, so the spill must be written there.
+    """
+    if env is None:
+        return True
+    try:
+        from tools.environments.local import LocalEnvironment
+
+        return isinstance(env, LocalEnvironment)
+    except Exception:
+        return False
+
+
+def _write_to_spillover(content: str, filename: str):
+    """Write content host-side to $HERMES_HOME/cache/spillover.
+
+    Returns the absolute path string on success, None on failure.
+    """
+    try:
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        path = spill_dir / filename
+        path.write_text(content, encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("Spillover write failed for %s: %s", filename, exc)
+        return None
+    _prune_spillover_once()
+    return str(path)
 
 
 def _resolve_storage_dir(env) -> str:
@@ -174,11 +284,24 @@ def maybe_persist_tool_result(
     if len(content) <= effective_threshold:
         return content
 
-    storage_dir = _resolve_storage_dir(env)
-    remote_path = f"{storage_dir}/{_safe_result_filename(tool_use_id)}"
+    filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
-    if env is not None:
+    # Host-side path: no active sandbox env (MCP-only / cron / gateway
+    # sessions that never ran a terminal command) or the local backend.
+    # Write into $HERMES_HOME/cache/spillover with the other Hermes-owned
+    # caches instead of shelling out to /tmp.
+    if _is_host_side_env(env):
+        host_path = _write_to_spillover(content, filename)
+        if host_path is not None:
+            logger.info(
+                "Persisted large tool result: %s (%s, %d chars -> %s)",
+                tool_name, tool_use_id, len(content), host_path,
+            )
+            return _build_persisted_message(preview, has_more, len(content), host_path)
+    elif env is not None:
+        storage_dir = _resolve_storage_dir(env)
+        remote_path = f"{storage_dir}/{filename}"
         try:
             if _write_to_sandbox(content, remote_path, env):
                 logger.info(

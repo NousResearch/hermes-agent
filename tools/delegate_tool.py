@@ -707,14 +707,11 @@ def _build_top_level_description(*, independent_completions=None) -> str:
         max_per_session = 10
     if max_per_session == 0:
         session_budget_clause = (
-            "SESSION BUDGET: unlimited; set delegation.max_children_per_session "
-            "to a positive value to cap total children per parent session.\n\n"
+            "SESSION BUDGET: unlimited; positive config enables the cap.\n\n"
         )
     else:
         session_budget_clause = (
-            f"SESSION BUDGET: up to {max_per_session} children total per parent "
-            "session across all delegate_task calls; set "
-            "delegation.max_children_per_session=0 for unlimited.\n\n"
+            f"SESSION BUDGET: {max_per_session}/parent session; 0=unlimited.\n\n"
         )
     return _DESCRIPTION_HEAD.format(delivery=delivery) + session_budget_clause + restrictions_rule + _DESCRIPTION_TAIL
 

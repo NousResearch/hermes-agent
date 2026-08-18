@@ -24,6 +24,7 @@ import {
 } from '@/store/session'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
+import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
@@ -85,6 +86,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.
   clearArtifactRegistry()
+
+  // Cached transcript tails belong to the PREVIOUS backend's sessions; a
+  // different backend can recycle stored ids, and painting another machine's
+  // conversation under a same-named id is worse than a loader. Wipe them.
+  clearTranscriptTails()
 
   // Narrowed: account/marketplace/onboarding caches are global, not gateway-
   // scoped, so a mode swap must not refetch them.

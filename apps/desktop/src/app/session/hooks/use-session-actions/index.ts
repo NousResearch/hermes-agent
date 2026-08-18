@@ -80,6 +80,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { dropTranscriptTail, loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
@@ -986,6 +987,9 @@ export function useSessionActions({
               setBusy(running)
               setAwaitingResponse(running)
               syncSessionStateToView(cachedRuntimeId, activatedState)
+              // Durable tail refresh — same post-reconcile contract as the
+              // cold path's save below.
+              saveTranscriptTail(storedSessionId, activatedState.messages)
 
               return
             }
@@ -1026,6 +1030,36 @@ export function useSessionActions({
         setMessages([])
       }
 
+      // Instant paint from the durable tail cache: a cold resume (fresh app
+      // launch, reaped/respawned backend) otherwise shows a loader until the
+      // REST prefetch lands — which on a cold multi-profile boot waits behind
+      // a backend spawn. Painting the persisted tail here makes the wake
+      // visually complete at ~0ms (and satisfies the paint-first hydration
+      // wait). The paint is DISPLAY-ONLY: reconciliation below must treat the
+      // view as empty (see cachedTailPaint), because grafting the REST tail
+      // onto a stale cached tail would duplicate or misorder rows — the
+      // authoritative transcript REPLACES the cached paint when it lands.
+      // Same-selected re-resumes skip it — their transcript is already live.
+      let cachedTailPaint: ChatMessage[] | null = null
+
+      if (!resumedSameSelectedSession && $messages.get().length === 0) {
+        const cachedTail = loadTranscriptTail(storedSessionId)
+
+        if (cachedTail && selectedStoredSessionIdRef.current === storedSessionId) {
+          cachedTailPaint = cachedTail
+          setMessages(cachedTail)
+        }
+      }
+
+      // The reconciler's notion of "what was already on screen": a durable
+      // cached paint is provisional, not history — report empty so the
+      // authoritative transcript replaces it wholesale.
+      const viewMessagesForReconcile = (): ChatMessage[] => {
+        const current = $messages.get()
+
+        return cachedTailPaint !== null && current === cachedTailPaint ? [] : current
+      }
+
       // A history load is not a live turn. Do not mark the incoming session
       // busy — running ≠ loading, and a leftover true locked the composer.
       busyRef.current = false
@@ -1055,8 +1089,8 @@ export function useSessionActions({
         const watchWindow = isWatchWindow()
 
         let localSnapshot = resumedSameSelectedSession
-          ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-          : $messages.get()
+          ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+          : viewMessagesForReconcile()
 
         let prefetchApplied = false
         let prefetchedStoredSessionId: string | null = null
@@ -1117,8 +1151,8 @@ export function useSessionActions({
 
         if (prefetchedResult) {
           const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-            : $messages.get()
+            ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+            : viewMessagesForReconcile()
 
           // Tail page + previously backfilled prefix (same-session re-resume).
           const graftedPrefetch = graftRefreshedTailOntoBackfill(
@@ -1132,7 +1166,7 @@ export function useSessionActions({
           prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
         }
 
-        const currentMessages = $messages.get()
+        const currentMessages = viewMessagesForReconcile()
 
         // Keep the local snapshot when resume would only reshuffle runtime
         // projection. When the REST prefetch already hydrated the transcript,
@@ -1237,6 +1271,15 @@ export function useSessionActions({
         // is safer than surfacing the in-flight turn alone). Recovery only
         // ever appends, so this matches the final transcript's emptiness.
         if (sessionShouldHaveTranscript(stored) && preferredMessages.length === 0) {
+          // Roll back a provisional cached-tail paint and drop its entry: the
+          // authoritative sources say this session has no transcript, so the
+          // cache no longer reflects backend truth and must not survive to
+          // mislead the retry (or the next wake).
+          if (cachedTailPaint !== null && $messages.get() === cachedTailPaint) {
+            setMessages([])
+            dropTranscriptTail(storedSessionId)
+          }
+
           setActiveSessionId(null)
           activeSessionIdRef.current = null
           setResumeFailedSessionId(storedSessionId)
@@ -1295,6 +1338,12 @@ export function useSessionActions({
         if (!chatMessageArraysEquivalent($messages.get(), messagesForView)) {
           setMessages(messagesForView)
         }
+
+        // Refresh the durable tail cache with the authoritative transcript so
+        // the NEXT wake of this session paints instantly (fresh launch,
+        // reaped backend). Post-reconcile only — never persist an optimistic
+        // or in-flight-recovered projection ahead of backend truth.
+        saveTranscriptTail(storedSessionId, messagesForView)
       } catch (err) {
         if (!isCurrentResume()) {
           return
@@ -1318,8 +1367,8 @@ export function useSessionActions({
           }
 
           const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-            : $messages.get()
+            ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+            : viewMessagesForReconcile()
 
           // Resume failed, so there is no live projection — the journal is the
           // only carrier of a crashed turn's progress on this path.
@@ -1347,7 +1396,7 @@ export function useSessionActions({
         // instead of toasting an error and hot-looping the bounded retry on a
         // permanently-dead id. (Booting straight into a no-longer-existent
         // last-session id is the common trigger.)
-        if ($messages.get().length === 0 && isSessionGoneError(fallbackError)) {
+        if (viewMessagesForReconcile().length === 0 && isSessionGoneError(fallbackError)) {
           // A 404 is only trustworthy from the backend that OWNS the session.
           // A cross-profile open (Bots pane) races the gateway swap, so both
           // lookups can land on a backend that never heard of the id (#88540).
@@ -1391,9 +1440,12 @@ export function useSessionActions({
           return
         }
 
-        if ($messages.get().length === 0) {
+        if (viewMessagesForReconcile().length === 0) {
           // Arm the self-heal ONLY when the window is still empty: the gateway
           // resume rejected AND the REST fallback failed to paint a transcript.
+          // A durable cached-tail paint counts as EMPTY here — it's provisional
+          // display, not proof of a live transcript, and must not mask the
+          // stranded state from the retry machinery.
           // That is the exact stranded state the loader latches on
           // (messagesEmpty && !activeSessionId), and matches $resumeFailedSessionId's
           // documented contract. If the REST fallback DID paint history, the
@@ -1692,6 +1744,8 @@ export function useSessionActions({
         }
 
         await deleteSession(storedSessionId, removed?.profile)
+        // A deleted session's cached tail must not resurrect on a recycled id.
+        dropTranscriptTail(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll
         // back, and a rolled-back row must keep its watermark/marker.
         forgetSessionUnread(removedIds, removed?.profile)

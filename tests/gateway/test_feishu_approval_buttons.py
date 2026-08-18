@@ -689,6 +689,56 @@ def _make_select_action_data(
     )
 
 
+class TestPickerValueScanShapes:
+    """The recursive scan must find the picker value in every callback shape."""
+
+    PREFIX = "hermes_model_picker:3:0"
+    TARGET = "hermes_model_picker:3:0"
+
+    def test_scan_finds_nested_string_in_action_value_dict(self):
+        # shape: action.value = {"selected_option": {"value": "<prefix...>"}}
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={"selected_option": {"value": self.TARGET}})
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_value_in_key_field(self):
+        # shape: action.value = {"key": "<prefix...>"}
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={"key": self.TARGET})
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_option_value_str(self):
+        # shape: action.option.value = "<prefix...>"
+        adapter = _make_adapter()
+        action = SimpleNamespace(
+            tag="select_static", value={}, option=SimpleNamespace(value=self.TARGET),
+        )
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_option_value_dict(self):
+        # shape: action.option = {"value": "<prefix...>"}
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={}, option={"value": self.TARGET})
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_bare_string_value(self):
+        # shape: action.value = "<prefix...>" directly
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value=self.TARGET)
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_finds_deeply_nested_list_shape(self):
+        # shape: action.value = {"options": [{"value": "<prefix...>"}]}
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={"options": [{"value": self.TARGET}]})
+        assert adapter._find_model_picker_option_value(action, action.value) == self.TARGET
+
+    def test_scan_returns_none_for_unrelated_payload(self):
+        adapter = _make_adapter()
+        action = SimpleNamespace(tag="select_static", value={"key": "some_other_value"})
+        assert adapter._find_model_picker_option_value(action, action.value) is None
+
+
 class TestFeishuModelPicker:
     """Feishu model picker: card payload, state, callback validation."""
 

@@ -2206,6 +2206,17 @@ class FeishuAdapter(BasePlatformAdapter):
                 option_value=mp_option,
                 loop=loop,
             )
+        if str(getattr(action, "tag", "") or "").lower() == "select_static":
+            # Diagnostic: log the raw shape so unmatched select_static
+            # callbacks can be root-caused from gateway.log directly.
+            try:
+                raw_shape = repr(action_value)[:500]
+            except Exception:
+                raw_shape = "<unreprable>"
+            logger.warning(
+                "[Feishu] select_static callback without model picker value; "
+                "raw action_value=%s", raw_shape,
+            )
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
@@ -2278,28 +2289,57 @@ class FeishuAdapter(BasePlatformAdapter):
     def _find_model_picker_option_value(cls, action: Any, action_value: Any) -> Optional[str]:
         """Extract the selected model-picker option value from a card action.
 
-        Feishu's select_static callbacks deliver the chosen option's value in
-        different shapes depending on SDK/callback version:
-        - ``action.option.value`` (string)
-        - ``action.value.key`` (legacy form option callbacks)
-        - ``action.value`` itself when the platform passes the raw string
-        Returns the value string when it carries our prefix, else None.
+        Feishu/lark-opi delivers a select_static choice in different shapes
+        across SDK and card-schema versions (action.option.value as str or
+        dict, action.value.key, nested option objects…). Instead of guessing
+        one shape, walk the whole action payload (bounded depth) and return
+        the first string carrying our prefix.
         """
-        candidates: List[Any] = []
+        found = cls._scan_for_picker_value(action, depth=0)
+        if found:
+            return found
+        found = cls._scan_for_picker_value(action_value, depth=0)
+        if not found:
+            logger.debug(
+                "[Feishu] select_static action without model picker value: %r",
+                action_value,
+            )
+        return found
 
-        option = getattr(action, "option", None)
-        if option is not None:
-            candidates.append(getattr(option, "value", None))
-
-        if isinstance(action_value, dict):
-            candidates.append(action_value.get("key"))
-            candidates.append(action_value.get("value"))
-        elif isinstance(action_value, str):
-            candidates.append(action_value)
-
-        for cand in candidates:
-            if isinstance(cand, str) and cand.startswith(cls._MODEL_PICKER_PREFIX):
-                return cand
+    @classmethod
+    def _scan_for_picker_value(cls, node: Any, depth: int) -> Optional[str]:
+        """Bounded recursive scan for the picker prefix in callback data."""
+        if depth > 6:
+            return None
+        if isinstance(node, str):
+            return node if node.startswith(cls._MODEL_PICKER_PREFIX) else None
+        if isinstance(node, dict):
+            # Common carrier keys first (cheap ordering win), then all keys.
+            for key in ("value", "key", "option_value", "selected_option"):
+                hit = cls._scan_for_picker_value(node.get(key), depth + 1)
+                if hit:
+                    return hit
+            for v in node.values():
+                hit = cls._scan_for_picker_value(v, depth + 1)
+                if hit:
+                    return hit
+            return None
+        if isinstance(node, (list, tuple)):
+            for item in node:
+                hit = cls._scan_for_picker_value(item, depth + 1)
+                if hit:
+                    return hit
+            return None
+        # SDK model objects: walk their slots like SimpleNamespace / dataclass.
+        for attr in ("option", "value", "key", "options"):
+            try:
+                sub = getattr(node, attr, None)
+            except Exception:
+                sub = None
+            if sub is not None and sub is not node:
+                hit = cls._scan_for_picker_value(sub, depth + 1)
+                if hit:
+                    return hit
         return None
 
     def _handle_model_picker_card_action(self, *, event: Any, option_value: str, loop: Any) -> Any:

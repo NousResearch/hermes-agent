@@ -1814,11 +1814,37 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
     return (built_in + mcp_valid) or False
 
 
+def _disabled_agent_toolsets() -> set[str]:
+    """``agent.disabled_toolsets`` from config.yaml, as a set (empty on error).
+
+    Mirrors the subtraction ``_get_platform_tools`` applies last ("runs last
+    so it overrides everything above"). The TUI/desktop resolver folds
+    client-surface toolsets in AFTER the platform resolution, so without the
+    same subtraction here a profile that disables e.g. ``project`` or
+    ``terminal`` keeps seeing those tools in desktop sessions while the CLI
+    honours the disable — the restriction has to hold on every surface
+    (#88857).
+    """
+    try:
+        from agent.skill_utils import parse_config_string_list
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("agent") or {}).get("disabled_toolsets") or []
+        return {
+            str(name).strip()
+            for name in parse_config_string_list(raw)
+            if str(name).strip()
+        }
+    except Exception:
+        return set()
+
+
 def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     """The agent's toolsets for this session (None = all): an explicit HERMES_TUI_TOOLSETS pin; else the
     coding posture (coding_context collapses to coding toolset + enabled MCP servers in a code workspace);
     else the configured CLI toolsets. Client-surface toolsets fold in here — only this surface can answer them."""
     session_platform = platform or _resolve_session_platform()
+    disabled_agent_toolsets = _disabled_agent_toolsets()
     explicit = [item.strip() for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",") if item.strip()]
     fallback_notice = None
     if not explicit:
@@ -1826,7 +1852,10 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             from agent.coding_context import coding_selection
             selection = coding_selection(platform=session_platform)
             if selection is not None:
-                return sorted({*selection, *_gui_surface_toolsets(session_platform)})
+                # Apply the agent.disabled_toolsets subtraction AFTER folding
+                # so a client-surface toolset stays disable-able (#88857).
+                folded = {*selection, *_gui_surface_toolsets(session_platform)}
+                return sorted(folded - disabled_agent_toolsets)
     try:
         from toolsets import validate_toolset
     except Exception:
@@ -1848,7 +1877,13 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
-        return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else None
+        if not enabled:
+            return None
+        # Subtract agent.disabled_toolsets AFTER the fold:
+        # _get_platform_tools already applied it to its own result, but the
+        # fold would otherwise reintroduce a disabled surface toolset (#88857).
+        folded = enabled | _gui_surface_toolsets(session_platform)
+        return sorted(folded - disabled_agent_toolsets)
     except Exception:
         if fallback_notice is not None:
             _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")

@@ -44,6 +44,18 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 |------|-------------|----------------------|
 | `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports three modes: 1. **Single-select multiple choice** — up to 4 choices; the user picks one or types their own answer via a 5th 'Other' option. 2. **Multi-select multiple choice** — `multi_select=true` renders checkboxes and returns a list of selected choices. 3. **Open-ended** — no choices; the user types a free-form response. Choices are ordered best-first, so the first one is labelled `(Recommended)` on every surface and is the default highlight; the label is presentation only and is stripped from the answer the agent reads. On the classic CLI multi-select uses Space-to-toggle checkboxes; on messaging platforms without native checkbox UIs the user replies with comma/space-separated numbers (e.g. "1, 3") or the option text. | — |
 
+### Asking multiple questions at once
+
+The `clarify` tool also accepts a `questions` array (2–5 independent questions, each with its own `choices` and `multi_select`) so the agent can batch several clarification needs into a single prompt instead of asking sequentially. The result is a `responses` array in the same order, with each question's `id` (when supplied) echoed back.
+
+Per-surface behavior:
+
+- **Desktop** shows every question on one card. Picking or typing stages an answer; **Continue** locks the focused question, and locked answers stay editable until the last one — the button becomes **Confirm and continue** when exactly one question remains, and that final lock submits the batch. Skip cancels the whole batch.
+- **TUI and CLI** show a compact status list (`✓` answered / `▸` active / `·` pending) with only the active question's choices expanded. Enter locks the active answer and jumps to the next unanswered question; Tab moves between questions to answer in any order; Esc cancels the batch.
+- **Messaging platforms** (Telegram, Discord, …) fall back to asking the questions one at a time through the existing single-question prompt. If the user stops responding, the remaining questions are not sent.
+
+If the prompt times out part-way, answers the user already locked are kept: the tool result carries them plus `"timed_out": true`, with the unanswered entries left blank, so the agent can distinguish a deliberate skip from an absent user.
+
 ## `code_execution` toolset
 
 | Tool | Description | Requires environment |

@@ -35,7 +35,7 @@ describe('Flatpak release metadata', () => {
 })
 
 describe('Flatpak sandbox permissions', () => {
-  test('keeps the Electron defaults without broad host filesystem access', () => {
+  test('keeps the Electron defaults with host filesystem access for git repos', () => {
     expect(finishArgs).toEqual(
       expect.arrayContaining([
         '--share=ipc',
@@ -43,13 +43,15 @@ describe('Flatpak sandbox permissions', () => {
         '--socket=wayland',
         '--socket=fallback-x11',
         '--socket=pulseaudio',
+        '--socket=session-bus',
         '--device=dri',
-        '--filesystem=home',
+        '--filesystem=host',
         '--talk-name=org.freedesktop.Notifications',
+        '--talk-name=org.freedesktop.portal.Desktop',
+        '--talk-name=org.freedesktop.portal.FileChooser',
       ]),
     )
-    expect(finishArgs).not.toContain('--filesystem=host:ro')
-    expect(finishArgs).not.toContain('--filesystem=host-os:ro')
-    expect(finishArgs).not.toContain('--filesystem=/run/media:ro')
+    expect(finishArgs).not.toContain('--filesystem=home')
+    expect(finishArgs).not.toContain('--filesystem=home:ro')
   })
 })

@@ -743,6 +743,50 @@ class TestFeishuModelPicker:
     """Feishu model picker: card payload, state, callback validation."""
 
     @pytest.mark.asyncio
+    async def test_curated_model_picker_config_wins(self):
+        """platforms.feishu.extra.model_picker replaces the full catalog."""
+        from gateway.config import PlatformConfig
+
+        config = PlatformConfig(enabled=True)
+        config.extra = {
+            "model_picker": {
+                "enabled": True,
+                "models": [
+                    {"label": "GPT-5.6 Terra", "model": "gpt-5.6-terra", "provider": "cc-switch-gpt-5-5"},
+                    {"label": "DeepSeek V4 Pro 0813", "model": "deepseek-v4-pro-0813", "provider": "cc-switch-deepseek-pro"},
+                    {"label": "GLM 5.3", "model": "glm-5.3", "provider": "cc-switch-glm"},
+                ],
+            }
+        }
+        adapter = FeishuAdapter(config)
+        adapter._client = MagicMock()
+
+        providers = [{
+            "slug": "cc-switch-gpt-5-5",
+            "name": "cc-switch gpt",
+            "models": ["gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.6-luna"],
+        }]
+        mock_response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_mp1"))
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock, return_value=mock_response
+        ) as mock_send:
+            result = await adapter.send_model_picker(
+                chat_id="oc_1",
+                providers=providers,
+                current_model="glm-5.3",
+                current_provider="cc-switch-glm",
+                session_key="sk",
+                on_model_selected=AsyncMock(),
+            )
+
+        assert result.success is True
+        card = json.loads(mock_send.call_args[1]["payload"])
+        options = card["elements"][1]["actions"][0]["options"]
+        labels = [o["text"]["content"] for o in options]
+        # Curated three only — no full GPT catalog.
+        assert labels == ["GPT-5.6 Terra", "DeepSeek V4 Pro 0813", "GLM 5.3"]
+
+    @pytest.mark.asyncio
     async def test_send_model_picker_sends_dropdown_and_records_state(self):
         adapter = _make_adapter()
         mock_response = SimpleNamespace(

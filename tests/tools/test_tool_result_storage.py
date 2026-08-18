@@ -196,13 +196,17 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         assert "tc_456.txt" in result
         assert len(result) < len(content)
-        env.execute.assert_called_once()
 
     def test_persists_full_content_as_is(self):
         """Content is persisted verbatim — no JSON extraction."""
         import json
         env = MagicMock()
-        env.execute.return_value = {"output": "", "returncode": 0}
+        # Readability probe fails -> falls back to the in-sandbox write.
+        env.execute.side_effect = [
+            {"output": "", "returncode": 1},
+            {"output": "", "returncode": 0},
+        ]
+        env.get_temp_dir.return_value = ""
         raw = "line1\nline2\n" * 5_000
         content = json.dumps({"output": raw, "exit_code": 0, "error": None})
         result = maybe_persist_tool_result(
@@ -220,7 +224,11 @@ class TestMaybePersistToolResult:
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
-        env.execute.return_value = {"output": "", "returncode": 0}
+        # Readability probe fails -> in-sandbox write is the reference path.
+        env.execute.side_effect = [
+            {"output": "", "returncode": 1},
+            {"output": "", "returncode": 0},
+        ]
         env.get_temp_dir.return_value = ""
         content = "x" * 60_000
         result = maybe_persist_tool_result(
@@ -370,11 +378,12 @@ class TestSpillover:
         assert (get_spillover_dir() / "tc_local_1.txt").exists()
         env.execute.assert_not_called()
 
-    def test_remote_env_still_uses_sandbox_write(self):
-        """Non-local envs keep the in-sandbox write path."""
+    def test_remote_env_probe_success_references_mounted_path(self):
+        """Remote env: host-side write is canonical; when the sandbox can read
+        the mounted/synced spillover path, the reference uses it and no
+        in-sandbox copy is written."""
         env = MagicMock()  # not a LocalEnvironment
-        env.execute.return_value = {"output": "", "returncode": 0}
-        env.get_temp_dir.return_value = "/tmp"
+        env.execute.return_value = {"output": "", "returncode": 0}  # probe OK
         content = "z" * 60_000
         result = maybe_persist_tool_result(
             content=content,
@@ -384,8 +393,34 @@ class TestSpillover:
             threshold=30_000,
         )
         assert PERSISTED_OUTPUT_TAG in result
-        env.execute.assert_called_once()
-        assert not (get_spillover_dir() / "tc_remote_1.txt").exists()
+        # Canonical host copy always exists now.
+        assert (get_spillover_dir() / "tc_remote_1.txt").exists()
+        # Only the readability probe ran — no cat-into-sandbox call.
+        assert env.execute.call_count == 1
+        assert "test -r" in env.execute.call_args[0][0]
+
+    def test_remote_env_probe_failure_falls_back_to_sandbox_write(self):
+        """Persistent containers without the spillover mount still get a
+        readable in-sandbox copy."""
+        env = MagicMock()
+        env.execute.side_effect = [
+            {"output": "", "returncode": 1},  # probe: not readable
+            {"output": "", "returncode": 0},  # cat > sandbox path
+        ]
+        env.get_temp_dir.return_value = "/tmp"
+        content = "z" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_remote_2",
+            env=env,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "/tmp/hermes-results/tc_remote_2.txt" in result
+        assert env.execute.call_count == 2
+        # Host canonical copy exists regardless.
+        assert (get_spillover_dir() / "tc_remote_2.txt").exists()
 
     def test_spillover_write_failure_falls_back_to_inline(self, monkeypatch):
         import tools.tool_result_storage as trs

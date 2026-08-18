@@ -11,20 +11,24 @@ Defense against context-window overflow operates at three levels:
    (registry.get_max_result_size), the full output is persisted and the
    in-context content is replaced with a preview + file path reference.
 
-   Where it lands depends on the backend:
+   The canonical home is ALWAYS host-side:
+   ``$HERMES_HOME/cache/spillover/{tool_use_id}.txt`` — alongside the other
+   Hermes-owned caches (images, audio, documents, ...) instead of littering
+   the OS temp dir. This needs no sandbox environment, so it also works for
+   sessions that never ran a terminal command (MCP-only, cron, gateway) —
+   previously those hit the inline-truncate fallback because
+   ``get_active_env()`` returned None until the first terminal call created
+   an environment.
 
-   - **Local backend (or no active env):** written host-side to
-     ``$HERMES_HOME/cache/spillover/{tool_use_id}.txt`` — alongside the
-     other Hermes-owned caches (images, audio, documents, ...) instead of
-     littering the OS temp dir. This path needs no sandbox environment,
-     so it also works for sessions that never ran a terminal command
-     (MCP-only, cron, gateway) — previously those hit the inline-truncate
-     fallback because ``get_active_env()`` returned None until the first
-     terminal call created an environment.
-   - **Remote backends (docker/ssh/modal/daytona):** written INTO THE
-     SANDBOX temp dir (for example /tmp/hermes-results/{id}.txt) via
-     env.execute(), because HERMES_HOME does not exist inside the
-     container and read_file resolves in-sandbox there.
+   What the model sees depends on the backend:
+
+   - **Local backend (or no active env):** the host path itself.
+   - **Remote backends (docker/ssh/modal/daytona):** ``cache/spillover`` is
+     in the auto-mounted/synced cache-dir list (tools/credential_files.py),
+     so the reference is the translated in-sandbox path (probed for
+     readability first). When the sandbox can't see it (e.g. a persistent
+     container created before spillover joined the mount list), fall back
+     to writing a copy into the sandbox temp dir via env.execute().
 
    The spillover dir is pruned two ways: the gateway housekeeping loop
    sweeps it hourly with the other media caches, and a once-per-process
@@ -153,6 +157,41 @@ def _write_to_spillover(content: str, filename: str):
         return None
     _prune_spillover_once()
     return str(path)
+
+
+def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
+    """Return the path where a remote backend can read *host_path*, or None.
+
+    ``cache/spillover`` is one of the auto-mounted/synced cache dirs
+    (tools/credential_files.py), so on docker it is bind-mounted and on
+    modal/ssh/daytona it is file-synced into the sandbox. Translate the
+    host path with the same helper the image tools use, force a sync for
+    synced backends, then PROBE readability — a persistent docker
+    container created before spillover joined the mount list won't have
+    the bind mount, and must fall back to the in-sandbox write.
+    """
+    try:
+        from tools.credential_files import to_agent_visible_cache_path
+
+        visible = to_agent_visible_cache_path(host_path)
+    except Exception as exc:
+        logger.debug("Spillover path translation failed: %s", exc)
+        return None
+
+    sync_manager = getattr(env, "_sync_manager", None)
+    if sync_manager is not None:
+        try:
+            sync_manager.sync(force=True)
+        except Exception as exc:
+            logger.debug("Spillover sync failed: %s", exc)
+
+    try:
+        result = env.execute(f"test -r {shlex.quote(visible)}", timeout=15)
+        if result.get("returncode", 1) == 0:
+            return visible
+    except Exception as exc:
+        logger.debug("Spillover readability probe failed: %s", exc)
+    return None
 
 
 def _resolve_storage_dir(env) -> str:
@@ -287,12 +326,12 @@ def maybe_persist_tool_result(
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
-    # Host-side path: no active sandbox env (MCP-only / cron / gateway
-    # sessions that never ran a terminal command) or the local backend.
-    # Write into $HERMES_HOME/cache/spillover with the other Hermes-owned
-    # caches instead of shelling out to /tmp.
+    # Always persist host-side first: $HERMES_HOME/cache/spillover is the
+    # single canonical home for spilled results (with the other Hermes-owned
+    # caches, pruned by gateway housekeeping) regardless of backend.
+    host_path = _write_to_spillover(content, filename)
+
     if _is_host_side_env(env):
-        host_path = _write_to_spillover(content, filename)
         if host_path is not None:
             logger.info(
                 "Persisted large tool result: %s (%s, %d chars -> %s)",
@@ -300,6 +339,19 @@ def maybe_persist_tool_result(
             )
             return _build_persisted_message(preview, has_more, len(content), host_path)
     elif env is not None:
+        # Remote backend: the spillover dir is auto-mounted (docker) or
+        # file-synced (modal/ssh/daytona) into the sandbox, so reference the
+        # translated path when the sandbox can actually read it.
+        if host_path is not None:
+            visible = _sandbox_visible_spillover_path(host_path, env)
+            if visible is not None:
+                logger.info(
+                    "Persisted large tool result: %s (%s, %d chars -> %s [host: %s])",
+                    tool_name, tool_use_id, len(content), visible, host_path,
+                )
+                return _build_persisted_message(preview, has_more, len(content), visible)
+        # Fallback: write into the sandbox temp dir (pre-existing containers
+        # without the spillover mount, translation/probe failures).
         storage_dir = _resolve_storage_dir(env)
         remote_path = f"{storage_dir}/{filename}"
         try:

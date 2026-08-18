@@ -194,8 +194,20 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
     const model = await import('@/components/pane-shell/tree/model')
     const { registry } = await import('@/contrib/registry')
 
-    registry.register({ id: 'workspace', area: 'panes', title: 'chat', data: { placement: 'main' }, render: () => null })
-    registry.register({ id: 'sessions', area: 'panes', title: 'sessions', data: { placement: 'left' }, render: () => null })
+    registry.register({
+      id: 'workspace',
+      area: 'panes',
+      title: 'chat',
+      data: { placement: 'main' },
+      render: () => null
+    })
+    registry.register({
+      id: 'sessions',
+      area: 'panes',
+      title: 'sessions',
+      data: { placement: 'left' },
+      render: () => null
+    })
     registry.register({
       id: 'hermes-bots:pane',
       area: 'panes',

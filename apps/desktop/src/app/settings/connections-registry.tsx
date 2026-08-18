@@ -466,6 +466,7 @@ export function ConnectionsRegistrySection() {
           // Display-only: this connection is a second address for a backend
           // already registered under another entry (same install_id).
           const sameBackendPeer = sameBackendPeerLabel(conn, registry.connections)
+
           const baseDescription =
             conn.kind === 'ssh'
               ? `${kindMeta[conn.kind].label} · ${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}`
@@ -516,7 +517,9 @@ export function ConnectionsRegistrySection() {
                   )}
                 </div>
               }
-              description={sameBackendPeer ? `${baseDescription} · ${s.sameBackendHint(sameBackendPeer)}` : baseDescription}
+              description={
+                sameBackendPeer ? `${baseDescription} · ${s.sameBackendHint(sameBackendPeer)}` : baseDescription
+              }
               key={conn.id}
               title={
                 <span className="flex items-center gap-2">

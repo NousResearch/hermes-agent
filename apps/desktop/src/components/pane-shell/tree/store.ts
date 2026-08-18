@@ -1174,6 +1174,7 @@ function enforceDockedPanes(
       if (anchor.headerHidden === true) {
         next = setGroupHeaderHiddenOp(next, anchor.id, false) ?? next
       }
+
       continue
     }
 

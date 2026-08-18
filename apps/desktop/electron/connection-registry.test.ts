@@ -296,15 +296,12 @@ test('roster: two connections with the same install_id collapse to one row per p
   ])
 
   // One row per (install, profile) — no duplicate bots for the same box.
-  assert.deepEqual(
-    roster.map(agent => `${agent.connectionId}/${agent.profile}`).sort(),
-    ['spark/default', 'spark/research']
-  )
+  assert.deepEqual(roster.map(agent => `${agent.connectionId}/${agent.profile}`).sort(), [
+    'spark/default',
+    'spark/research'
+  ])
   // Handle disambiguation runs AFTER the collapse: no more suffixed names.
-  assert.deepEqual(
-    roster.map(agent => agent.handle).sort(),
-    ['default', 'research']
-  )
+  assert.deepEqual(roster.map(agent => agent.handle).sort(), ['default', 'research'])
 })
 
 test('roster: collapse prefers the active (primary) connection', () => {
@@ -351,6 +348,7 @@ test('roster: collapse pick order is local > ssh > remote > cloud, then registra
 
   // Same kind → earliest-registered (enumeration order) wins.
   const twin = { id: 'loop2', kind: 'remote' as const, label: 'Loopback 2', url: 'http://[::1]:8642' }
+
   const sameKind = buildAgentRoster([
     { connection: remote, profiles: ['default'], installId: 'aaa' },
     { connection: twin, profiles: ['default'], installId: 'aaa' }
@@ -409,10 +407,10 @@ test('roster: collapse also folds a third same-box connection from a per-profile
     { connection: override, profiles: ['default', 'cron-bot'], installId: 'aaa' }
   ])
 
-  assert.deepEqual(
-    roster.map(agent => `${agent.profile}:${agent.handle}`).sort(),
-    ['cron-bot:cron-bot', 'default:default']
-  )
+  assert.deepEqual(roster.map(agent => `${agent.profile}:${agent.handle}`).sort(), [
+    'cron-bot:cron-bot',
+    'default:default'
+  ])
 })
 
 // --- updateEligibility ---

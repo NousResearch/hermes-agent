@@ -351,6 +351,7 @@ export function buildAgentRoster(
     string,
     { connection: RegistryConnection; installId?: string; order: number; profile: string }
   >()
+
   let order = 0
 
   for (const { connection, installId, profiles } of enumerations) {

@@ -27,6 +27,9 @@ outputs:
   docker:
     description: Files included in the docker image have changed.
     value: ${{ steps.classify.outputs.docker }}
+  nix:
+    description: Run `nix flake check` (flake inputs, or any product Python change).
+    value: ${{ steps.classify.outputs.nix }}
   site:
     description: Build the Docusaurus docs site.
     value: ${{ steps.classify.outputs.site }}

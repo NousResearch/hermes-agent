@@ -28,6 +28,12 @@ vi.mock('@/store/session', async () => {
     $gatewayState: atom('open'),
     $messages: atom([]),
     $selectedStoredSessionId: atom(null),
+    $sessions: atom([]),
+    rememberedSessionProfile: (
+      _sessions: unknown,
+      _sessionId: null | string,
+      activeProfile: null | string
+    ) => (activeProfile ?? '').trim() || 'default',
     requestSessionResume: vi.fn(),
     setResumeExhaustedSessionId: vi.fn()
   }

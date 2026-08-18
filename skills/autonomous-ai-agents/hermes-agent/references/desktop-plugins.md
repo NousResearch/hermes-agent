@@ -58,7 +58,10 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `awaitingResponse`, `busyBySession`, `cwd`, `gateway` (socket state, not
   turn-busy), `model`, `profile`, `viewport`, plus the tile-aware focused
   session atoms: `focusedSessionId` (runtime id — key for `session.*` RPC),
-  `focusedStoredSessionId` (durable id — navigation / list matching), and
+  `focusedStoredSessionId` (durable id — navigation / list matching),
+  `focusedSessionProfile` (owner profile of the focused chat — prefer over
+  `profile` for per-bot/profile readouts; `profile` is the gateway socket's
+  home, which does not move with tab focus), and
   `focusedUsage` (live streamed `UsageStats` of the focused session, no RPC
   needed). `busy` is true while the focused chat is working after a send
   (thinking and streaming). `awaitingResponse` is true until the first

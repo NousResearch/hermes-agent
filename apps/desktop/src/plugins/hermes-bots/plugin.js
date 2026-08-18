@@ -181,6 +181,16 @@ const $lastJobs = atom([])
  *  (the bot you're actually chatting with) and roster clicks. */
 const $selectedBot = atom('default')
 
+/** Owner profile of the chat the user is LOOKING AT. Newer desktops expose
+ *  `host.state.focusedSessionProfile` (the focused session row's stamped
+ *  owner, gateway profile for drafts); older builds fall back to the gateway
+ *  profile atom — the socket's home — which is the previous behavior. The
+ *  distinction matters because tab/tile focus moves WITHOUT swapping the
+ *  gateway socket: with only the socket atom, opening another bot's chat in
+ *  a tab left the roster highlight (and the Cronjobs tile) on whichever bot
+ *  the socket happened to be homed on. */
+const $focusedBotProfile = host.state.focusedSessionProfile || host.state.profile
+
 /** Optional secondary navigation inside the Bots pane. Primary row clicks still
  * open the bot's canonical chat; this state opens its stored-session browser. */
 const $botSessionsWorkspace = atom(null)
@@ -4640,10 +4650,16 @@ function activeBots(roster, activeProfile, gatewayState, now = Date.now()) {
 
 function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const activeProfile = useValue(host.state.profile)
+  const focusedProfile = useValue($focusedBotProfile)
   const meta = botRosterMeta(bot, useValue($botMeta))
   const groups = botGroups(meta)
   const last = bot.last_session
-  const isActive = !bot.remoteSource && bot.name === activeProfile
+  // Highlight follows the chat on screen (focused session's owner), not the
+  // gateway socket's home — a focused tab doesn't swap the socket, and on the
+  // old keying the wrong bot stayed highlighted while you read another's chat.
+  const isActive = !bot.remoteSource && bot.name === focusedProfile
+  // Turn-busy is a SOCKET fact: only the gateway-home profile can be mid-turn.
+  const isGatewayHome = !bot.remoteSource && bot.name === activeProfile
   const { shape, color, image } = botAppearance(bot.name, meta)
   // Keep user photos/pets. Drop the 160px SVG backfill so the math face can move.
   const photo = Boolean(image && !isBackfilledFacePng(image))
@@ -4652,7 +4668,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   // Work pose only when this bot is actually doing something: the active
   // profile while the gateway is busy, or a bot that wrote within the
   // liveness window. Not every bot whenever the gateway is busy.
-  const botMood = (isActive && gatewayState === 'busy') || activeNow ? 'work' : 'idle'
+  const botMood = (isGatewayHome && gatewayState === 'busy') || activeNow ? 'work' : 'idle'
   // Subscribe on every render. A source switch turns the same keyed row from
   // thin to rich; conditionally calling useValue here breaks React hook order.
   const unreadByName = useValue($botUnread)
@@ -7448,11 +7464,13 @@ function CreateRoutineDialog({ bot, open, onClose }) {
 
 function RoutinesPane() {
   const selected = useValue($selectedBot)
-  const gatewayProfile = useValue(host.state.profile)
-  // The tile maps to the bot you're chatting with: the live gateway profile
-  // is the truth once a chat opens; $selectedBot covers the gap between a
-  // roster click and the profile swap landing.
-  const bot = (gatewayProfile || selected || 'default').trim() || 'default'
+  const focusedProfile = useValue($focusedBotProfile)
+  // The tile maps to the bot you're chatting with: the focused chat's owner
+  // profile is the truth once a chat opens (on older desktops without the
+  // focused-owner atom this is the live gateway profile, the previous
+  // behavior); $selectedBot covers the gap between a roster click and the
+  // focus/profile swap landing.
+  const bot = (focusedProfile || selected || 'default').trim() || 'default'
   const meta = useValue($botMeta)[bot]
   const { shape, color, image } = botAppearance(bot, meta)
   const { data, error, isLoading, refetch } = useRoutines(bot)
@@ -9820,11 +9838,15 @@ export default {
       /* no storage — rooms start empty */
     }
 
-    // Routines follow the chat you're in: track the live gateway profile.
+    // Routines follow the chat you're in: track the focused chat's owner
+    // profile (falls back to the live gateway profile on older desktops —
+    // see $focusedBotProfile). Keying this off the socket's home alone left
+    // the unread-suppression and Routines scope on the wrong bot whenever a
+    // focused tab showed another profile's chat.
     // Capture the unbinds: without them a disable → re-enable cycle stacks a
     // duplicate listener per cycle (same survives-disable class as the face
     // clock before its onDispose hook — these kept firing until app restart).
-    const unbindProfileListener = host.state.profile.listen(profile => {
+    const unbindProfileListener = $focusedBotProfile.listen(profile => {
       if (profile && typeof profile === 'string') {
         $selectedBot.set(profile)
       }

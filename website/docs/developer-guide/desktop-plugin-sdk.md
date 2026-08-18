@@ -434,6 +434,7 @@ host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assis
 host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
 host.state.busyBySession    // ReadableAtom<Record<string, boolean>>  runtime id → mid-turn
 host.state.focusedSessionId // ReadableAtom<string | null>  (runtime id of the FOCUSED session — tile-aware; prefer for session.* RPC)
+host.state.focusedSessionProfile // ReadableAtom<string>  (owner profile of the focused chat — prefer over `profile` for per-bot/profile readouts)
 host.state.focusedStoredSessionId // ReadableAtom<string | null>  (durable id — navigation / session-list matching)
 host.state.focusedUsage     // ReadableAtom<UsageStats | null>  (live streamed usage of the focused session, no RPC needed)
 host.state.cwd              // ReadableAtom<string>

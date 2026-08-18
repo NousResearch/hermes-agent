@@ -60,7 +60,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   const [canvasGone, setCanvasGone] = useState(false)
   const [failed, setFailed] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)
-  const { download, saving } = useImageDownload(src)
+  const { download, saving } = useImageDownload(src, image ? mediaName(image) : undefined)
 
   useEffect(() => setRatio(hintedRatio(aspectRatio)), [aspectRatio])
 

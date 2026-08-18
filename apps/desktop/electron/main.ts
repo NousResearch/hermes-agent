@@ -5323,14 +5323,30 @@ async function resourceBufferFromUrl(rawUrl) {
   })
 }
 
-async function saveImageFromUrl(rawUrl) {
+function safeSuggestedImageName(value, extension) {
+  const base = Array.from(path.basename(String(value || '')).replace(/[<>:"/\\|?*]/g, '_'), char =>
+    char.charCodeAt(0) < 32 ? '_' : char
+  )
+    .join('')
+    .trim()
+
+  if (!base) {
+    return `image${extension}`
+  }
+
+  return path.extname(base) ? base : `${base}${extension}`
+}
+
+async function saveImageFromUrl(rawUrl, suggestedName?: string) {
   const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
   const extension = extensionForMimeType(mimeType) || '.png'
   // Generated-image URLs (fal.media etc.) usually end in an extensionless
   // content hash. Keep the name but always guarantee an extension — without
   // one Windows saves an unopenable "All Files" blob (#image18 report).
-  const baseName = filenameFromUrl(rawUrl, `image${extension}`)
-  const fallbackName = path.extname(baseName) ? baseName : `${baseName}${extension}`
+
+  const fallbackName = suggestedName
+    ? safeSuggestedImageName(suggestedName, extension)
+    : filenameFromUrl(rawUrl, `image${extension}`)
 
   let downloadsDir = ''
 
@@ -13579,7 +13595,9 @@ ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
 
 ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
 
-ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
+ipcMain.handle('hermes:saveImageFromUrl', (_event, payload) =>
+  saveImageFromUrl(String(payload?.url || ''), payload?.suggestedName)
+)
 
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   const data = payload?.data

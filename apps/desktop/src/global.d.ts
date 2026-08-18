@@ -212,7 +212,7 @@ declare global {
         path?: string
         saved: boolean
       }>
-      saveImageFromUrl: (url: string) => Promise<boolean>
+      saveImageFromUrl: (payload: { suggestedName?: string; url: string }) => Promise<boolean>
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string

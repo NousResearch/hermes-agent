@@ -1521,7 +1521,9 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
     save_calls = []
     monkeypatch.setattr(
         "hermes_cli.model_switch._save_discovered_models_to_config",
-        lambda api_url, model_ids, **kwargs: save_calls.append((api_url, model_ids)),
+        lambda api_url, model_ids, **kwargs: save_calls.append(
+            (api_url, model_ids, kwargs)
+        ),
     )
 
     from hermes_cli.model_setup_flows import _model_flow_named_custom
@@ -1532,6 +1534,7 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
             "name": "Dragomes",
             "base_url": "http://example.com/v1",
             "api_mode": "anthropic_messages",
+            "extra_headers": {"X-Tenant": "dragomes"},
             "api_key": "sk-test",
             "key_env": "",
             "model": "MiniMax-M3",
@@ -1545,10 +1548,14 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
         (
             "http://example.com/v1",
             ["discovered-a", "discovered-b", "discovered-c"],
+            {
+                "api_mode": "anthropic_messages",
+                "headers": {"X-Tenant": "dragomes"},
+            },
         )
     ], (
-        "_model_flow_named_custom must persist discovered models "
-        "(base_url, model_ids) after a successful probe"
+        "_model_flow_named_custom must persist each live catalog with its "
+        "base URL, API mode, and endpoint headers"
     )
 
 

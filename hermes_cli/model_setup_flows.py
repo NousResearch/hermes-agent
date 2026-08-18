@@ -1655,7 +1655,12 @@ def _model_flow_named_custom(config, provider_info):
                     _save_discovered_models_to_config,
                 )
 
-                _save_discovered_models_to_config(base_url, live_models)
+                _save_discovered_models_to_config(
+                    base_url,
+                    live_models,
+                    api_mode=api_mode,
+                    headers=extra_headers or None,
+                )
             except Exception:
                 pass
 

@@ -503,13 +503,17 @@ def run_bounded_sync(
         logger.warning(
             "[deadline] %r timed out after %.1fs; worker abandoned", label, timeout_s
         )
+        # Phase 3a (#85125), ordering: mark suspect BEFORE owner cleanup so a
+        # recycle/re-init in on_timeout never gets a stale flag on the healed
+        # replacement. The sync flavor runs the mark inline — the protocol
+        # contract requires mark_suspect to be cheap.
+        if backend is not None:
+            _mark_backend_suspect(backend, label, timeout_s)
         if on_timeout is not None:
             try:
                 on_timeout()
             except Exception:
                 logger.debug("deadline on_timeout callback failed", exc_info=True)
-        # Phase 3a (#85125): flag the abandoned call's backend for recycle.
-        _mark_backend_suspect(backend, label, timeout_s)
         return BoundedResult(
             timed_out=True,
             value=None,
@@ -613,9 +617,9 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
             # pid leads its own group: one syscall covers the whole group.
             # (The == check guards against signalling the caller's own group
             # when pid is not a leader.)
-            os.killpg(
+            os.killpg(  # windows-footgun: ok — POSIX-only branch (win32 returns above)
                 pgid, sig
-            )  # windows-footgun: ok — POSIX-only branch (win32 returns above)
+            )
         else:
             os.kill(pid, sig)
         signalled = True

@@ -8,7 +8,11 @@ change could have broken.
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +25,8 @@ _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 classify = _mod.classify
 ci_review_files = _mod.ci_review_files
+pull_request_changed_files = _mod.pull_request_changed_files
+main = _mod.main
 
 DEFAULT = {
     "python": True,
@@ -300,3 +306,82 @@ def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
         ".github/workflows/ci.yml",
         "apps/desktop/eslint.config.mjs",
     ]
+
+
+def _write_event(tmp_path, number: int | None = 88442) -> Path:
+    payload = {"pull_request": {"number": number}} if number is not None else {}
+    path = tmp_path / "event.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_pull_request_changed_files_skips_non_pr_events(monkeypatch):
+    monkeypatch.setenv("EVENT_NAME", "push")
+    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    assert pull_request_changed_files() == []
+
+
+def test_pull_request_changed_files_skips_without_pr_number(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVENT_NAME", "pull_request")
+    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_event(tmp_path, number=None)))
+    assert pull_request_changed_files() == []
+
+
+def test_pull_request_changed_files_parses_gh_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVENT_NAME", "pull_request")
+    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_event(tmp_path)))
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="scripts/install.sh\ntests/test_install_sh_node_deps_workspaces.py\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+    assert pull_request_changed_files() == [
+        "scripts/install.sh",
+        "tests/test_install_sh_node_deps_workspaces.py",
+    ]
+
+
+def test_pull_request_changed_files_returns_empty_when_gh_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVENT_NAME", "pull_request")
+    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_event(tmp_path)))
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="gh: Not Found")
+
+    monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+    assert pull_request_changed_files() == []
+
+
+def test_main_recovers_pr_files_instead_of_fail_open_ci_review(monkeypatch, capsys):
+    """A fork compare 404 must not demand ci-reviewed for a CLI-only install."""
+    monkeypatch.setattr(
+        _mod,
+        "pull_request_changed_files",
+        lambda: ["scripts/install.sh", "tests/test_install_sh_node_deps_workspaces.py"],
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "ci_review=false" in out
+    assert "python=true" in out
+    assert "python_prod=true" in out
+
+
+def test_main_still_fail_opens_when_recovery_is_empty(monkeypatch, capsys):
+    monkeypatch.setattr(_mod, "pull_request_changed_files", lambda: [])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "ci_review=true" in out

@@ -1,7 +1,26 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    _FORWARD_COMPAT_TEMPLATE_MODELS,
+    get_codex_model_ids,
+)
+
+
+CHATGPT_REJECTED_CODEX_PRO_SLUGS = {
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra-pro",
+    "gpt-5.6-luna-pro",
+}
+
+
+def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs():
+    """OAuth fallback must not offer slugs rejected by ChatGPT Codex."""
+    template_models = {model for model, _fallbacks in _FORWARD_COMPAT_TEMPLATE_MODELS}
+
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(DEFAULT_CODEX_MODELS)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(template_models)
 
 
 

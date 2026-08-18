@@ -6608,6 +6608,42 @@ def validate_requested_model(
             "message": "Model names cannot contain spaces.",
         }
 
+    # OpenRouter presets are account-scoped configurations, so direct
+    # ``@preset/<slug>`` references never appear in the public /v1/models
+    # listing. Combined ``<model>@preset/<slug>`` references are also valid;
+    # validate their base model normally and preserve the preset suffix if a
+    # close match is auto-corrected. OpenRouter validates the preset slug when
+    # the inference request is made.
+    preset_suffix = ""
+    if normalized == "openrouter":
+        marker = "@preset/"
+        if marker in requested:
+            if requested.count(marker) != 1:
+                preset_slug = ""
+                preset_base = requested
+            else:
+                preset_base, preset_slug = requested.split(marker, 1)
+            if re.fullmatch(r"[A-Za-z0-9._~-]+", preset_slug) is None:
+                return {
+                    "accepted": False,
+                    "persist": False,
+                    "recognized": False,
+                    "message": (
+                        "OpenRouter preset slugs must be non-empty URL-safe "
+                        "identifiers using only letters, digits, '.', '_', "
+                        "'~', or '-'."
+                    ),
+                }
+            preset_suffix = f"{marker}{preset_slug}"
+            if not preset_base:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": False,
+                    "message": None,
+                }
+            requested_for_lookup = preset_base
+
     if normalized == "lmstudio":
         from hermes_cli.auth import AuthError
         # Use probe_lmstudio_models so we can distinguish None (unreachable
@@ -7091,15 +7127,18 @@ def validate_requested_model(
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
+                corrected = f"{auto[0]}{preset_suffix}"
                 return {
                     "accepted": True,
                     "persist": True,
                     "recognized": True,
-                    "corrected_model": auto[0],
-                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                    "corrected_model": corrected,
+                    "message": f"Auto-corrected `{requested}` → `{corrected}`",
                 }
 
-            suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
+            suggestions = get_close_matches(
+                requested_for_lookup, api_models, n=3, cutoff=0.5
+            )
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
@@ -7263,12 +7302,15 @@ def validate_requested_model(
         )
         if auto:
             corrected = catalog_lower[auto[0]]
+            corrected_with_suffix = f"{corrected}{preset_suffix}"
             return {
                 "accepted": True,
                 "persist": True,
                 "recognized": True,
-                "corrected_model": corrected,
-                "message": f"Auto-corrected `{requested}` → `{corrected}`",
+                "corrected_model": corrected_with_suffix,
+                "message": (
+                    f"Auto-corrected `{requested}` → `{corrected_with_suffix}`"
+                ),
             }
         suggestions = get_close_matches(
             requested_for_lookup.lower(), catalog_lower_list, n=3, cutoff=0.5

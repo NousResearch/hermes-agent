@@ -502,6 +502,51 @@ test('merge: live active id beats primaryConnectionId for active-source matching
   assert.equal(out.profiles.find(p => p.remoteSource).connectionId, 'local')
 })
 
+// Composition of the two dedup layers (#88828 install_id collapse + #88697
+// boot-descriptor connectionId): when the remote PRIMARY is registered under
+// two addresses, buildAgentRoster collapses the twin to ONE union row that
+// carries the PRIMARY's connectionId (collapse prefers the active/primary
+// connection). The boot descriptor now reports that same id as the live id,
+// so the merge must classify those collapsed rows as active-source
+// annotations — collapse first, then merge, with no re-append and no
+// double-collapse of a genuinely distinct source.
+test('merge: install_id-collapsed twin-address primary composes with the live id (no re-append)', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const local = {
+    profiles: [
+      { name: 'default', last_session: { id: 's-default' } },
+      { name: 'dev', last_session: { id: 's-dev' } }
+    ]
+  }
+  const union = {
+    primaryConnectionId: 'spark-lan',
+    agents: [
+      // Post-#88828 union: the tailscale twin of the primary collapsed into
+      // these rows — one per profile, keyed to the PRIMARY connection id.
+      { connectionId: 'spark-lan', connectionKind: 'remote', connectionLabel: 'Spark', profile: 'default', handle: 'default-spark' },
+      { connectionId: 'spark-lan', connectionKind: 'remote', connectionLabel: 'Spark', profile: 'dev', handle: 'dev' },
+      // A real second backend survives the collapse and stays its own row.
+      { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'default', handle: 'default-this-device' }
+    ]
+  }
+
+  // Live id from the fixed boot descriptor === the collapsed rows' id.
+  const out = merge(local, union, 'spark-lan')
+
+  // 2 annotated primary rows + 1 distinct local row = 3. Pre-fix (live id
+  // null) this was 5: both primary rows re-appended as phantom sources.
+  assert.equal(out.profiles.length, 3)
+  assert.equal(out.profiles.filter(p => p.remoteSource).length, 1)
+
+  const defaultRow = out.profiles.find(p => p.name === 'default' && !p.remoteSource)
+  assert.equal(defaultRow.last_session.id, 's-default')
+  assert.equal(defaultRow.handle, 'default-spark')
+  assert.equal(defaultRow.connectionId, 'spark-lan')
+
+  const localTwin = out.profiles.find(p => p.name === 'default' && p.remoteSource)
+  assert.equal(localTwin.connectionId, 'local')
+})
+
 test('botRosterKey: same name on two sources yields distinct React keys', () => {
   const { __botRosterKey: botRosterKey } = runtime()
 

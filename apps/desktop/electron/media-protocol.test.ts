@@ -122,6 +122,64 @@ describe('createMediaProtocolHandler', () => {
     expect(headers.get('range')).toBe('bytes=0-1023')
   })
 
+  it('proxies plugin media through the scoped backend without placing its token in the URL', async () => {
+    const resolveRemoteConnection = vi.fn(async (_profile?: string, _connectionId?: string) => ({
+      authMode: 'token' as const,
+      baseUrl: 'https://gateway.test/hermes',
+      mode: 'remote' as const,
+      token: 'plugin-secret'
+    }))
+
+    const deps = dependencies({
+      fetchRemote: vi.fn(async () => new Response('remote', { headers: { 'content-type': 'video/mp4' }, status: 206 })),
+      resolveRemoteConnection
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://plugin/studio-rail/outputs/clip/stream?profile=video&connectionId=mac-mini', {
+        Range: 'bytes=0-1023'
+      })
+    )
+
+    expect(response.status).toBe(206)
+    expect(resolveRemoteConnection).toHaveBeenCalledWith('video', 'mac-mini')
+    const [rawUrl, headers] = vi.mocked(deps.fetchRemote).mock.calls[0]
+    const url = new URL(rawUrl)
+    expect(url.pathname).toBe('/hermes/api/plugins/studio-rail/outputs/clip/stream')
+    expect(url.searchParams.has('token')).toBe(false)
+    expect(headers.get('x-hermes-session-token')).toBe('plugin-secret')
+    expect(headers.get('range')).toBe('bytes=0-1023')
+  })
+
+  it('rejects successful plugin responses that are not audio or video', async () => {
+    const deps = dependencies({
+      fetchRemote: vi.fn(async () => new Response('<html>not media</html>', { headers: { 'content-type': 'text/html' } }))
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://plugin/studio-rail/outputs/clip/stream')
+    )
+
+    expect(response.status).toBe(415)
+  })
+
+  it('rejects malformed plugin routes before resolving a backend', async () => {
+    const deps = dependencies()
+    const handler = createMediaProtocolHandler(deps)
+
+    for (const rawUrl of [
+      'hermes-media://plugin/studio-rail/outputs/%2e%2e/stream',
+      'hermes-media://plugin/studio-rail/outputs/%zz/stream',
+      'hermes-media://plugin/studio-rail/outputs/clip/stream?unexpected=value',
+      'hermes-media://plugin/studio-rail/outputs/clip/stream?profile=one&profile=two',
+      'hermes-media://plugin/studio-rail/outputs/clip/stream#fragment'
+    ]) {
+      expect((await handler(request(rawUrl))).status).toBe(404)
+    }
+
+    expect(deps.resolveRemoteConnection).not.toHaveBeenCalled()
+  })
+
   it('preserves explicit HEAD requests through the token-auth remote proxy', async () => {
     const fetchRemote = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 }))
 

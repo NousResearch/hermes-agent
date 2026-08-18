@@ -20,6 +20,60 @@ async function activeConnection(): Promise<HermesConnection> {
   return window.hermesDesktop.getConnection(getApiRequestProfile())
 }
 
+function pluginMediaPathSuffix(path: string): string {
+  if (path.includes('?') || path.includes('#')) {
+    throw new Error(`pluginMediaUrl: query and fragment are not allowed in "${path}"`)
+  }
+
+  const rawPath = path.replace(/^\/+/, '')
+
+  if (!rawPath) {
+    throw new Error('pluginMediaUrl: media path is required')
+  }
+
+  const segments = rawPath.split('/').map(segment => {
+    let decoded: string
+
+    try {
+      decoded = decodeURIComponent(segment)
+    } catch {
+      throw new Error(`pluginMediaUrl: malformed path encoding in "${path}"`)
+    }
+
+    if (!decoded || decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\')) {
+      throw new Error(`pluginMediaUrl: illegal path traversal in "${path}"`)
+    }
+
+    return encodeURIComponent(decoded)
+  })
+
+  return `/${segments.join('/')}`
+}
+
+/** Build a seekable, authenticated media URL for a plugin-owned backend route.
+ *  The custom protocol keeps gateway credentials out of the renderer and maps
+ *  the URL back to `/api/plugins/<pluginId>` in Electron's main process. */
+export function pluginMediaUrl(pluginId: string, path: string): null | string {
+  if (!window.hermesDesktop) {
+    return null
+  }
+
+  const suffix = pluginMediaPathSuffix(path)
+  const url = new URL(`hermes-media://plugin/${pluginId}${suffix}`)
+  const profile = getApiRequestProfile()
+  const connectionId = getApiRequestConnection()
+
+  if (profile) {
+    url.searchParams.set('profile', profile)
+  }
+
+  if (connectionId) {
+    url.searchParams.set('connectionId', connectionId)
+  }
+
+  return url.toString()
+}
+
 /** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
  *  shape, minus the path (which is namespace-derived). */
 export interface PluginRestOptions {

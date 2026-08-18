@@ -1649,7 +1649,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for action=create. For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp. Examples: '30m' (every 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (one-shot). You MUST include this field when action=create."
+                "description": "REQUIRED for action=create. Schedule forms: (1) recurring interval — '30m', '2h', '1d' (EVERY 30 minutes / 2 hours / 1 day, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) cron expression — '0 9 * * *' (daily at 9am); (4) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'. Examples: '30m' (every 30 minutes, recurring), 'in 3m' (once in 3 minutes), 'every 2h' (same as '2h'), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (once at that time). You MUST include this field when action=create."
             },
             "name": {
                 "type": "string",

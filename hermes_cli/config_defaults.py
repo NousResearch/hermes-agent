@@ -3155,6 +3155,12 @@ DEFAULT_CONFIG = {
         # Values below 1 are floored to 1 — the backup just created is
         # always preserved. The quick snapshot always keeps exactly 1.
         "backup_keep": 5,
+        # Per-file size ceiling (MiB) for the *quick* pre-update snapshot.
+        # Default 1024 (1 GiB). Raise when state.db is only a few GiB but
+        # still needs a clean make-before-break path (#66726). Set to 0
+        # for no per-file cap (create_quick_snapshot gets max_file_size=None).
+        # Full zip backups are unaffected.
+        "pre_update_snapshot_max_mb": 1024,
         # What `hermes update` does with uncommitted local changes to the
         # source tree when it runs NON-interactively — i.e. triggered from
         # the desktop/chat app or the gateway, where there's no TTY to answer

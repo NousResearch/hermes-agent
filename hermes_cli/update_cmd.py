@@ -2857,6 +2857,62 @@ _PRE_UPDATE_SNAPSHOT_KEEP = 1
 # of wall time and silently ate 24 GB of disk per update).
 _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
 
+
+def _resolve_pre_update_snapshot_max_file_size():
+    """Resolve per-file size cap (bytes) for the *quick* pre-update snapshot.
+
+    Config key: ``updates.pre_update_snapshot_max_mb`` (MiB).
+
+    - missing / invalid → default 1 GiB
+    - positive int → that many MiB in bytes
+    - ``0`` → sentinel ``0`` meaning "no cap" (caller maps to ``None`` for
+      ``create_quick_snapshot``; integrity checks keep an independent bound)
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Could not load config for pre-update snapshot cap: %s", exc
+        )
+        return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+
+    updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
+    raw = updates_cfg.get("pre_update_snapshot_max_mb", None)
+    if raw is None:
+        return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).warning(
+            "Ignoring invalid updates.pre_update_snapshot_max_mb %r "
+            "— using default 1 GiB cap",
+            raw,
+        )
+        return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+    if value < 0:
+        logging.getLogger(__name__).warning(
+            "Ignoring negative updates.pre_update_snapshot_max_mb %d "
+            "— using default 1 GiB cap",
+            value,
+        )
+        return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+    if value == 0:
+        return 0
+    return value << 20
+
+
+def _quick_snapshot_max_file_size_arg(resolved):
+    """Map resolver output to ``create_quick_snapshot(max_file_size=...)``.
+
+    ``0`` means uncapped → ``None``. Positive byte counts pass through.
+    """
+    if resolved == 0:
+        return None
+    return resolved
+
+
 def _resolve_pre_update_backup_mode(args) -> str:
     """Resolve the pre-update backup mode: ``"off"``, ``"quick"``, or ``"full"``.
 
@@ -2946,10 +3002,11 @@ def _run_pre_update_backup(args) -> Optional[str]:
         # module-level import is shadowed and unbound here. Alias explicitly.
         from hermes_cli.config import get_hermes_home as _get_home
 
+        _snap_cap = _resolve_pre_update_snapshot_max_file_size()
         snapshot_id = create_quick_snapshot(
             label="pre-update",
             keep=_PRE_UPDATE_SNAPSHOT_KEEP,
-            max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            max_file_size=_quick_snapshot_max_file_size_arg(_snap_cap),
         )
 
         # After the snapshot, verify the source state.db is still intact.
@@ -2961,11 +3018,19 @@ def _run_pre_update_backup(args) -> Optional[str]:
         if snapshot_id:
             _src_path = _get_home() / "state.db"
             if _src_path.exists():
+                # Integrity scan bound is independent of the copy cap:
+                # uncapped snapshots (config 0 → max_file_size=None) must not
+                # disable or unbounded-run PRAGMA integrity_check on huge DBs.
+                _integrity_max = (
+                    _snap_cap
+                    if isinstance(_snap_cap, int) and _snap_cap > 0
+                    else _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+                )
                 _integrity = verify_sqlite_integrity(
                     _src_path,
                     check_header=True,
                     run_pragma=True,
-                    max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+                    max_bytes=_integrity_max,
                 )
                 if not _integrity.get("valid"):
                     _msg = _integrity.get("message", "unknown error")

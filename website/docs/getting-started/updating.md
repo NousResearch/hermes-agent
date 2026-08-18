@@ -82,6 +82,23 @@ updates:
 
 `updates.pre_update_backup` is a single knob with three modes: `quick` (default — the lightweight state snapshot described above), `full` (the quick snapshot plus a complete `HERMES_HOME` zip; can add minutes on large homes), and `off` (no pre-update backup at all — `--no-backup` does the same for a single run). Legacy boolean values still work: `true` means `full`, `false` means `off`.
 
+The quick snapshot skips individual files larger than **1 GiB** by default so a multi-tens-of-GB `state.db` cannot stall `hermes update`. Override that ceiling with:
+
+```yaml
+# ~/.hermes/config.yaml
+updates:
+  pre_update_snapshot_max_mb: 4096   # allow up to 4 GiB per file (e.g. large state.db)
+  # pre_update_snapshot_max_mb: 0    # no per-file cap — copy everything in the quick set
+```
+
+- **Default:** `1024` (1 GiB), same as the historical hard-coded skip.
+- **Positive integer:** max file size in mebibytes before a path is skipped.
+- **`0` (or any ≤ 0):** disables the per-file cap so large DBs are included in the quick snapshot.
+- Unset / invalid values fall back to the 1 GiB default.
+
+This only affects the **quick** state snapshot’s per-file size filter. It does not replace other safety paths: full zip backups (`updates.pre_update_backup: full` / `hermes update --backup`) and post-pull syntax auto-rollback remain available independently.
+
+
 :::tip Moving to a new machine instead?
 Update backups protect an in-place update. If you're migrating your whole setup to different hardware, use `hermes backup` + `hermes import` instead — see [Exporting Hermes to another machine](/reference/faq#exporting-hermes-to-another-machine) and [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export).
 :::

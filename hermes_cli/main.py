@@ -4845,6 +4845,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_refresh_windows_gateway_launchers",
         "_reload_updated_runtime_modules",
         "_resolve_pre_update_backup_mode",
+        "_resolve_pre_update_snapshot_max_file_size",
         "_resolve_stash_selector",
         "_restart_phase_failure_is_incomplete",
         "_restore_active_tool_dependencies",
@@ -5755,6 +5756,7 @@ def _clear_bytecode_cache(root: Path) -> int:
 # __getattr__ above (see _LAZY_COMMAND_EXPORTS) so argparse wiring and test
 # monkeypatches on hermes_cli.main.<name> keep resolving unchanged without
 # paying the update_cmd import cost on every CLI invocation.
+
 
 # Stamp file recording the checkout fingerprint the bytecode cache was last
 # validated against. Lives next to the checkout (NOT in HERMES_HOME) because

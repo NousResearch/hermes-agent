@@ -2761,10 +2761,24 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No goal to resume.{_RST}")
             else:
                 _cprint(f"  ▶ Goal resumed: {state.goal}")
-                _cprint(
-                    f"  {_DIM}Send any message (or press Enter on an empty prompt "
-                    f"is a no-op; type 'continue' to kick it off).{_RST}"
-                )
+                # Resume must restart work, not just flip persisted state
+                # (#75362): queue the canonical continuation prompt the same
+                # way /goal <text> queues its kickoff, so the loop takes the
+                # next step without the user sending another message.
+                prompt = mgr.next_continuation_prompt()
+                queued = False
+                if prompt:
+                    try:
+                        self._pending_input.put(prompt)
+                        queued = True
+                    except Exception:
+                        pass
+                if queued:
+                    _cprint(f"  {_DIM}Continuing now — taking the next step.{_RST}")
+                else:
+                    _cprint(
+                        f"  {_DIM}Send any message to kick off the next step.{_RST}"
+                    )
             return
 
         if lower in {"clear", "stop", "done"}:

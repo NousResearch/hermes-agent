@@ -1424,11 +1424,23 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     [clearThemePreview, itemByValue]
   )
 
-  // A preview lives only while its rows show. If the page changes or the
-  // palette retires, give the paint back to the committed appearance.
+  // A preview lives only while its rows show. If the page changes, give the
+  // paint back to the committed appearance.
   useEffect(() => {
     clearThemePreview()
   }, [page, clearThemePreview])
+
+  // Clear at close START, not at unmount. The body stays mounted through the
+  // whole exit animation (see CommandPalette), so an unmount clear would
+  // revert the theme only after the fade. The unmount return is the backstop
+  // for a body that dies without a close (a remount on reopen).
+  const paletteOpen = useStore($commandPaletteOpen)
+
+  useEffect(() => {
+    if (!paletteOpen) {
+      clearThemePreview()
+    }
+  }, [paletteOpen, clearThemePreview])
 
   useEffect(() => clearThemePreview, [clearThemePreview])
 

@@ -1,3 +1,5 @@
+import { pathWithProfileScope, translateSelfProfileQuery } from './connection-config'
+
 const STREAMABLE_MEDIA_EXTENSIONS = [
   '.avi',
   '.flac',
@@ -30,6 +32,9 @@ export interface MediaRemoteConnection {
   authMode?: 'oauth' | 'token'
   baseUrl: string
   mode?: 'local' | 'remote'
+  remoteProfile?: null | string
+  sharedPrimary?: boolean
+  sharedRemote?: boolean
   token?: null | string
 }
 
@@ -189,6 +194,27 @@ export function pluginMediaEndpoint(baseUrl: string, pluginId: string, filePath:
   return url.toString()
 }
 
+function profileScopedMediaEndpoint(endpoint: string, connection: MediaRemoteConnection, profile?: string): string {
+  const url = new URL(endpoint)
+  const requestPath = `${url.pathname}${url.search}`
+
+  const scopedPath =
+    connection.sharedPrimary || connection.sharedRemote
+      ? pathWithProfileScope(requestPath, profile)
+      : translateSelfProfileQuery(requestPath, profile, connection.remoteProfile)
+
+  if (scopedPath === requestPath) {
+    return endpoint
+  }
+
+  const scoped = new URL(scopedPath, url.origin)
+
+  url.pathname = scoped.pathname
+  url.search = scoped.search
+
+  return url.toString()
+}
+
 function validatePluginMediaResponse(target: MediaProtocolTarget, response: Response): Response {
   if (target.mode !== 'plugin' || !response.ok) {
     return response
@@ -252,10 +278,13 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
         return new Response('Remote media backend unavailable', { status: 404 })
       }
 
-      const endpoint =
+      const endpoint = profileScopedMediaEndpoint(
         target.mode === 'plugin'
           ? pluginMediaEndpoint(connection.baseUrl, target.pluginId!, target.filePath)
-          : remoteMediaEndpoint(connection.baseUrl, target.filePath)
+          : remoteMediaEndpoint(connection.baseUrl, target.filePath),
+        connection,
+        target.profile
+      )
 
       if (connection.authMode === 'oauth') {
         const bearer = await dependencies.ensureRemoteBearer(connection.baseUrl)

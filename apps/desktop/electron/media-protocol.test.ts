@@ -100,6 +100,7 @@ describe('createMediaProtocolHandler', () => {
         authMode: 'token' as const,
         baseUrl: 'https://gateway.test/hermes',
         mode: 'remote' as const,
+        sharedPrimary: true,
         token: 's e/cret'
       }))
     })
@@ -117,9 +118,29 @@ describe('createMediaProtocolHandler', () => {
     const url = new URL(rawUrl)
     expect(url.pathname).toBe('/hermes/api/files/stream')
     expect(url.searchParams.get('path')).toBe('/root/outputs/render.mp4')
+    expect(url.searchParams.get('profile')).toBe('reviewer')
     expect(url.searchParams.has('token')).toBe(false)
     expect(headers.get('x-hermes-session-token')).toBe('s e/cret')
     expect(headers.get('range')).toBe('bytes=0-1023')
+  })
+
+  it('does not add a second profile scope to a profile-owned remote backend', async () => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'token' as const,
+        baseUrl: 'https://gateway.test/hermes',
+        mode: 'remote' as const,
+        token: 'secret'
+      }))
+    })
+
+    await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?profile=reviewer')
+    )
+
+    const [rawUrl] = vi.mocked(deps.fetchRemote).mock.calls[0]
+
+    expect(new URL(rawUrl).searchParams.get('profile')).toBeNull()
   })
 
   it('does not let legacy remote media select a registry connection', async () => {
@@ -145,6 +166,7 @@ describe('createMediaProtocolHandler', () => {
       authMode: 'token' as const,
       baseUrl: 'https://gateway.test/hermes',
       mode: 'remote' as const,
+      sharedRemote: true,
       token: 'plugin-secret'
     }))
 
@@ -164,6 +186,7 @@ describe('createMediaProtocolHandler', () => {
     const [rawUrl, headers] = vi.mocked(deps.fetchRemote).mock.calls[0]
     const url = new URL(rawUrl)
     expect(url.pathname).toBe('/hermes/api/plugins/studio-rail/outputs/clip/stream')
+    expect(url.searchParams.get('profile')).toBe('video')
     expect(url.searchParams.has('token')).toBe(false)
     expect(headers.get('x-hermes-session-token')).toBe('plugin-secret')
     expect(headers.get('range')).toBe('bytes=0-1023')

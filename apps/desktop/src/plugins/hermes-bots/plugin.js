@@ -7608,6 +7608,28 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
   })
 }
 
+/** Split a room log into conversations: each USER entry starts one (the same
+ *  boundary the turn engine's delta scoping keys on); a leading run of member
+ *  entries (log trimmed mid-conversation) forms a headless first block.
+ *  Returns [{ head, entries, startIndex }] — head is the user entry or null. */
+function groupChatConversations(log) {
+  const conversations = []
+  let current = null
+
+  for (let i = 0; i < log.length; i++) {
+    const entry = log[i]
+
+    if (entry.from.kind === 'user' || !current) {
+      current = { entries: [], head: entry.from.kind === 'user' ? entry : null, startIndex: i }
+      conversations.push(current)
+    }
+
+    current.entries.push(entry)
+  }
+
+  return conversations
+}
+
 /** Merged room view for one group: shared timeline with per-member
  *  attribution, a composer that drives the round-robin, and a working
  *  indicator while member turns run. Renders identically in the MAIN chat
@@ -7624,6 +7646,12 @@ function GroupChatWorkspace({ group, members, onBack }) {
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
   const [revealedSpeaker, setRevealedSpeaker] = useState(null)
+  // Conversation folding: each USER message starts a conversation (the same
+  // boundary the turn engine's delta scoping uses), and every older
+  // conversation collapses to a one-line summary so a busy room stays
+  // readable — the "threads per conversation" ask without changing the log
+  // model. Keys are the head entry's timestamp; presence = user override.
+  const [expandedThreads, setExpandedThreads] = useState({})
 
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
@@ -7689,17 +7717,8 @@ function GroupChatWorkspace({ group, members, onBack }) {
     )
   }
 
-  return jsxs('div', {
-    className: 'flex h-full flex-col',
-    children: [
-      header,
-      jsx(ScrollArea, {
-        className: 'min-h-0 flex-1',
-        children: jsxs('div', {
-          className: 'grid gap-1.5 px-2.5 pb-2',
-          children: [
-            ...(room.log.length
-              ? room.log.map((entry, index) => {
+  // One log entry, rendered exactly as before conversation folding existed.
+  const renderEntry = (entry, index) => {
                   const isUser = entry.from.kind === 'user'
                   const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
                   // Match this speaker back to its member descriptor so display
@@ -7785,7 +7804,79 @@ function GroupChatWorkspace({ group, members, onBack }) {
                       })
                     ]
                   }, entryKey)
-                })
+  }
+
+  // Conversations: the LAST one always renders in full; older ones collapse
+  // to a one-line summary row (click to expand/collapse). Single-conversation
+  // rooms render exactly as before.
+  const conversations = groupChatConversations(room.log)
+  const logChildren = []
+
+  conversations.forEach((convo, ci) => {
+    const isLast = ci === conversations.length - 1
+    const threadKey = `${convo.head?.at ?? 'head'}:${convo.startIndex}`
+    const expanded = isLast || Boolean(expandedThreads[threadKey])
+
+    if (!expanded) {
+      const replies = convo.entries.length - 1
+      const headText = stripPreviewMarkdown(convo.head?.text || convo.entries[0]?.text || '').slice(0, 80)
+
+      logChildren.push(
+        jsxs('button', {
+          type: 'button',
+          className:
+            'flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover)',
+          title: 'Show this conversation',
+          onClick: () => setExpandedThreads(prev => ({ ...prev, [threadKey]: true })),
+          children: [
+            jsx(Codicon, { name: 'chevron-right', className: 'shrink-0 text-[0.65rem]' }),
+            jsx('span', { className: 'min-w-0 flex-1 truncate', children: headText || 'Earlier conversation' }),
+            jsx('span', {
+              className: 'shrink-0 text-[0.625rem] text-(--ui-text-quaternary)',
+              children: `${replies} ${replies === 1 ? 'reply' : 'replies'} · ${relativeTime(convo.entries[convo.entries.length - 1].at)}`
+            })
+          ]
+        }, `fold:${threadKey}`)
+      )
+
+      return
+    }
+
+    if (!isLast) {
+      // Expanded older conversation: a subtle collapse affordance above it.
+      logChildren.push(
+        jsxs('button', {
+          type: 'button',
+          className:
+            'flex w-full items-center gap-1.5 px-2 pt-1 text-left text-[0.65rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground',
+          title: 'Collapse this conversation',
+          onClick: () =>
+            setExpandedThreads(prev => {
+              const next = { ...prev }
+              delete next[threadKey]
+              return next
+            }),
+          children: [jsx(Codicon, { name: 'chevron-down', className: 'text-[0.6rem]' }), 'Collapse conversation']
+        }, `unfold:${threadKey}`)
+      )
+    }
+
+    for (let i = 0; i < convo.entries.length; i++) {
+      logChildren.push(renderEntry(convo.entries[i], convo.startIndex + i))
+    }
+  })
+
+  return jsxs('div', {
+    className: 'flex h-full flex-col',
+    children: [
+      header,
+      jsx(ScrollArea, {
+        className: 'min-h-0 flex-1',
+        children: jsxs('div', {
+          className: 'grid gap-1.5 px-2.5 pb-2',
+          children: [
+            ...(room.log.length
+              ? logChildren
               : [
                   jsx('div', {
                     className: 'px-2 py-4 text-center text-xs text-(--ui-text-tertiary)',

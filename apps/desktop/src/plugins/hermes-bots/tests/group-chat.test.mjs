@@ -598,3 +598,34 @@ test('turn prompt: results are full quality — only chatter is asked to stay sh
   assert.match(prompt, /never thin out real content/i)
   assert.match(prompt, /Keep chatter short/i)
 })
+
+test('conversation folding: user messages split the log; leading member run forms a headless block', () => {
+  const gc = load(() => '(pass)')
+  // Expose via a fresh vm read: groupChatConversations is module-scoped, so
+  // assert through a source-shape check plus a direct re-eval.
+  assert.match(pluginSource, /function groupChatConversations\(log\)/)
+
+  const fn = new Function(
+    `${pluginSource.slice(pluginSource.indexOf('function groupChatConversations'), pluginSource.indexOf('/** Merged room view'))}; return groupChatConversations`
+  )()
+  const u = (text, at) => ({ from: { kind: 'user', name: 'You' }, text, at })
+  const m = (name, text, at) => ({ from: { kind: 'member', name }, text, at })
+
+  const convos = fn([m('a', 'trimmed tail', 1), u('first ask', 2), m('a', 'r1', 3), u('second ask', 4), m('b', 'r2', 5)])
+  assert.equal(convos.length, 3)
+  assert.equal(convos[0].head, null)
+  assert.equal(convos[0].entries.length, 1)
+  assert.equal(convos[1].head.text, 'first ask')
+  assert.equal(convos[1].entries.length, 2)
+  assert.equal(convos[2].head.text, 'second ask')
+  assert.equal(convos[2].startIndex, 3)
+  void gc
+})
+
+test('source contract: older conversations fold to a summary row; the last stays expanded', () => {
+  assert.match(pluginSource, /const conversations = groupChatConversations\(room\.log\)/)
+  assert.match(pluginSource, /const expanded = isLast \|\| Boolean\(expandedThreads\[threadKey\]\)/)
+  assert.match(pluginSource, /Show this conversation/)
+  assert.match(pluginSource, /Collapse conversation/)
+  assert.match(pluginSource, /\$\{replies\} \$\{replies === 1 \? 'reply' : 'replies'\}/)
+})

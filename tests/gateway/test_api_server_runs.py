@@ -382,6 +382,15 @@ class TestRunEvents:
                 }
                 assert create.call_args.kwargs["enable_clarify"] is True
 
+                for _ in range(40):
+                    polled = adapter._run_statuses[run_id]
+                    if polled.get("status") == "waiting_for_clarification":
+                        break
+                    await asyncio.sleep(0.05)
+                assert polled["status"] == "waiting_for_clarification"
+                assert polled["awaiting_user"] is True
+                assert adapter._session_awaiting_user.get(polled["session_id"]) is True
+
                 response = await cli.post(
                     f"/v1/runs/{run_id}/clarification",
                     json={
@@ -393,6 +402,8 @@ class TestRunEvents:
                 payload = await response.json()
                 assert payload["request_id"] == event["request_id"]
                 assert payload["choice_id"] == "choice-2"
+                assert adapter._run_statuses[run_id]["awaiting_user"] is False
+                assert polled["session_id"] not in adapter._session_awaiting_user
 
                 for _ in range(40):
                     status = adapter._run_statuses[run_id]
@@ -402,6 +413,7 @@ class TestRunEvents:
 
                 assert callback_result["answer"] == "Blue"
                 assert status["status"] == "completed"
+                assert status["awaiting_user"] is False
                 assert run_id not in adapter._run_clarify_sessions
 
     @pytest.mark.asyncio
@@ -959,6 +971,8 @@ class TestStopRun:
                 assert clarify_mod.get_pending_by_id(
                     event["request_id"], session_key=run_id
                 ) is None
+                assert adapter._run_statuses[run_id]["awaiting_user"] is False
+                assert adapter._run_statuses[run_id]["session_id"] not in adapter._session_awaiting_user
 
                 for _ in range(40):
                     if run_id not in adapter._active_run_tasks:

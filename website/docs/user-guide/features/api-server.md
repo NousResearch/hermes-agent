@@ -452,8 +452,11 @@ When `prompt.multi_select` is `true`, answer with one or more server-issued IDs:
 
 For an open question, send
 `{"type": "text", "text": "your answer"}`. Unknown, stale, already answered,
-or cross-run request IDs fail closed. Check `run_clarification_response` and
-`run_clarification_request_binding` in `/v1/capabilities` before showing this UI.
+or cross-run request IDs fail closed. While a clarification is pending,
+`GET /v1/runs/{run_id}` reports `status: waiting_for_clarification` and
+`awaiting_user: true` (cleared on answer, timeout, or `/stop`). Check
+`run_clarification_response` and `run_clarification_request_binding` in
+`/v1/capabilities` before showing this UI.
 
 ## Jobs API (background scheduled work)
 

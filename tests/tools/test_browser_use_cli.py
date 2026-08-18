@@ -1261,6 +1261,49 @@ class TestTrustedBoundaryRecheck:
         monkeypatch.setattr(bu_cli.subprocess, "run", boom)
         assert bu_cli._trusted_landed_url(["browser-use"], {}, {}, 5) is None
 
+    def test_trusted_probe_strips_model_controlled_workspace_env(self, monkeypatch):
+        """P1 second seam: the probe must not inherit BH_AGENT_WORKSPACE or
+        other model-controlled bootstrap env that would auto-load the model's
+        agent_helpers.py. A poisoned workspace must not reach the trusted
+        probe."""
+        captured = {}
+
+        def fake_run(cmd, input, capture_output=True, text=True, timeout=None, env=None, **kw):
+            captured["env"] = dict(env)
+            class P:
+                stdout = ""  # probe runs with a clean (poisoned-free) env
+                returncode = 0
+            return P()
+
+        monkeypatch.setattr(bu_cli.subprocess, "run", fake_run)
+        # The first invocation (untrusted) set a workspace the model wrote helpers into.
+        env = {"BH_AGENT_WORKSPACE": "/tmp/model-owns-this", "KEEP": "1"}
+        bu_cli._trusted_landed_url(["browser-use"], env, {}, 5)
+        assert "BH_AGENT_WORKSPACE" not in captured["env"], (
+            "trusted probe must not inherit the model-controlled workspace")
+        assert "BU_WORKSPACE" not in captured["env"]
+        # Unrelated env is preserved.
+        assert captured["env"].get("KEEP") == "1"
+
+    def test_poisoned_helper_cannot_rewrite_probe_under_clean_env(self, monkeypatch):
+        """End-to-end (real execution, no live browser): with the model's
+        poisoned workspace stripped from the probe env, invoking the probe code
+        in a clean namespace cannot be affected by an agent_helpers.py the model
+        planted. This exercises the actual guard rather than only pretending."""
+        # Simulate the model having planted a js-forging helper in workspace.
+        planted_ws = "/tmp/model-workspace-with-helper"
+        for key in ("BH_AGENT_WORKSPACE", "BU_WORKSPACE"):
+            captured = {}
+            def fake_run(cmd, input, capture_output=True, text=True, timeout=None, env=None, **kw):
+                captured["env"] = dict(env)
+                class P:
+                    stdout = ("")
+                    returncode = 0
+                return P()
+            monkeypatch.setattr(bu_cli.subprocess, "run", fake_run)
+            bu_cli._trusted_landed_url(["browser-use"], {key: planted_ws}, {}, 5)
+            assert key not in captured["env"]
+
 
 class TestDefaultDowngradeNotice:
     def _isolate(self, tmp_path, monkeypatch):

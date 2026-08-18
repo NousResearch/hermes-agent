@@ -110,6 +110,16 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
 # after any page output.
 _LANDED_URL_MARKER = "__HERMES_BROWSER_EXEC_LANDED_URL__:"
 
+# Env keys the model can control via the first (untrusted) invocation and
+# that may trigger harness/workspace bootstrap code auto-loading on a NEW
+# subprocess (ref. the harness's $BH_AGENT_WORKSPACE/agent_helpers.py seam).
+# The trusted probe must not inherit these, or the model could poison its
+# js/print helpers the same way it can the main script.
+_MODEL_CONTROLLED_PROBE_ENV = frozenset({
+    "BH_AGENT_WORKSPACE",
+    "BU_WORKSPACE",
+})
+
 # Matches ONLY the trailer's landing-report line: the marker immediately
 # followed by an absolute http(s) URL. Used to strip exactly that line from
 # output without touching page content that happens to echo the marker.
@@ -161,14 +171,23 @@ def _trusted_landing_probe_code() -> str:
 def _trusted_landed_url(cmd, env, popen_extra, timeout) -> Optional[str]:
     """Run a fresh, trusted CLI probe and return the observed landed URL.
 
-    Returns None if the probe could not run or reported nothing trustworthy
-    (fail-open: no result means no claim, matching the sibling guards).
+    P1 hardening: the probe MUST NOT inherit any model-controlled workspace
+    or bootstrap state. ``BH_AGENT_WORKSPACE`` (and the harness's auto-loaded
+    ``agent_helpers.py`` seam) carry code the model can write in the first
+    invocation — loading it into the probe would let the model poison the
+    ``js``/``print`` helpers again. So this strips those env keys before the
+    probe runs, leaving only the trusted, Hermes-authored probe code with the
+    CLI's own builtins. Returns None if the probe could not run or reported
+    nothing trustworthy (fail-open: no result means no claim).
     """
+    probe_env = dict(env)
+    for key in _MODEL_CONTROLLED_PROBE_ENV:
+        probe_env.pop(key, None)
     probe = _trusted_landing_probe_code()
     try:
         p = subprocess.run(
             cmd, input=probe, capture_output=True,
-            text=True, timeout=timeout, env=env, **popen_extra,
+            text=True, timeout=timeout, env=probe_env, **popen_extra,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -791,13 +810,12 @@ def browser_exec(
     # Post-navigation recheck. The pre-check can only see URL literals in the
     # source; this observes where the browser actually ended up. Per the P1
     # review, the observation MUST come from outside the model's namespace:
-    # the in-script trailer can be forged by rebinding js/print/str, so the
-    # authoritative URL is taken from a SECOND, trusted CLI subprocess that
-    # runs only Hermes-authored probe code (no model code, so nothing can be
-    # rebound). Output is withheld rather than annotated: stdout is where the
-    # page's content comes back, so returning it would hand over exactly what
-    # the guard exists to stop. No trusted result means no claim, which fails
-    # open, matching _current_page_private_url's documented behavior.
+    # the in-script trailer can be forged by rebinding js/print/str, and the
+    # model could poison the workspace agent_helpers.py the probe would
+    # otherwise auto-load, so the authoritative URL is taken from a SECOND,
+    # trusted CLI subprocess that runs only Hermes-authored probe code and
+    # INHERITS NO model-controlled workspace/bootstrap env (so a planted
+    # helper cannot rewrite it). Output is withheld rather than annotated.
     landed = _trusted_landed_url(cmd, env, popen_extra, timeout)
     if landed:
         # Force SSRF protection for browser_exec regardless of backend

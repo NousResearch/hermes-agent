@@ -44,18 +44,6 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search", "web_extract", "read_file", "write_file", "search_files", "patch", "terminal",
 ])
 
-
-def _resolve_sandbox_tools(enabled_tools: Optional[List[str]]) -> frozenset:
-    """Tri-state sandbox capability grant (#84271).
-
-    ``None`` keeps the legacy default (every sandbox tool). An explicit list,
-    including empty, is the exact intersection with ``SANDBOX_ALLOWED_TOOLS``
-    — empty or non-overlapping means deny-all.
-    """
-    if enabled_tools is None:
-        return SANDBOX_ALLOWED_TOOLS
-    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
-
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
@@ -169,9 +157,10 @@ def _missing_hermes_tools_import_hint(m, enabled_tools) -> str:
                 "If that import failed, the generated module may be stale or another "
                 "hermes_tools may be first on sys.path. Check hermes_tools.__file__ "
                 "and retry with reset=true.")
-    available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
+    available = sorted(_sandbox_tools_for(enabled_tools))
+    available_text = ", ".join(available) or "none"
     return (f"'{missing}' is not available inside the execute_code sandbox. "
-            f"Importable tools here: {', '.join(available)}. For anything "
+            f"Importable tools here: {available_text}. For anything "
             "else, use the normal tool call instead of execute_code.")
 
 

@@ -89,6 +89,50 @@ class TestImageCorruptClassification:
         assert result.reason == FailoverReason.image_corrupt
         assert result.retryable is True
 
+    def test_xai_downloaded_response_wording_classifies_as_image_corrupt(self):
+        """xAI's third wire wording for the same corruption class — fires on
+        the URL-image path, where the provider downloads the image itself
+        and rejects the fetched bytes. Exercises the 400-status route
+        (_classify_400)."""
+        err = _FakeApiError(
+            status_code=400,
+            message='{"code":"invalid-argument","error":"code: \'Client '
+                    'specified an invalid argument\', message: \\"Downloaded '
+                    'response does not contain a valid JPG, PNG, WebP, or '
+                    'ICO image.\\""}',
+        )
+        result = classify_api_error(err, provider="xai", model="grok-5")
+        assert result.reason == FailoverReason.image_corrupt
+        assert result.retryable is True
+
+    def test_downloaded_response_wording_message_only_path(self):
+        """Same downloaded-response wording with no status_code must still
+        classify via the message-pattern route (_classify_by_message)."""
+        err = Exception(
+            "Downloaded response does not contain a valid JPG, PNG, WebP, "
+            "or ICO image."
+        )
+        result = classify_api_error(err, provider="xai", model="grok-5")
+        assert result.reason == FailoverReason.image_corrupt
+        assert result.retryable is True
+
+    def test_downloaded_response_non_image_wording_is_not_image_corrupt(self):
+        """Negative guard on the downloaded-response pattern: a 400 whose
+        message shares the "Downloaded response does not contain a valid"
+        head but names a NON-image payload must not be swept into
+        image_corrupt — it stays on the existing unrelated-400 route
+        (format_error). This is why the pattern is the full reported
+        wording rather than a broader fragment of it."""
+        err = _FakeApiError(
+            status_code=400,
+            message="Downloaded response does not contain a valid "
+                    "certificate chain.",
+        )
+        result = classify_api_error(err, provider="xai", model="grok-5")
+        assert result.reason != FailoverReason.image_corrupt
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
     def test_does_not_route_to_shrink_path(self):
         """image_corrupt must be a distinct reason from image_too_large —
         the retry loop only enters the shrink branch on an exact match, so

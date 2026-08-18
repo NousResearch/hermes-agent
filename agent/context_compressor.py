@@ -916,7 +916,9 @@ _LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
     """One-line replacement for a demoted tail tool result."""
-    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
+    # The public tool's query shape receives current_session_id from agent/tool_executor.py. Passing
+    # session_id here would switch the tool to its bounded READ shape and ignore the query.
+    hint = " Recover with session_search(query=...)" if session_id else ""
     return (
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
         f"chars preserved in session history.{hint}]"
@@ -979,7 +981,7 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
         "session history. If you need any detail this summary does not carry "
         "(exact command output, file contents, error text, earlier "
         "reasoning), recover it with: "
-        f"session_search(query='<keywords>', session_id='{session_id}') — "
+        f"session_search(query='<keywords>') — "
         "do not guess at lost specifics when you can look them up."
     )
 

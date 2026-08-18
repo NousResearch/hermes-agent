@@ -235,7 +235,8 @@ class AgentImporter:
     plan without touching disk; every item is recorded as imported/skipped/conflict/error."""
 
     def __init__(self, agent: str, source_root: Path, target_root: Path,
-                 execute: bool = False, overwrite: bool = False) -> None:
+                 execute: bool = False, overwrite: bool = False,
+                 sync_skills: Sequence[str] = ()) -> None:
         if agent not in SUPPORTED_AGENTS:
             raise ValueError(f"Unsupported agent: {agent!r}")
         self.agent = agent
@@ -243,6 +244,9 @@ class AgentImporter:
         self.target_root = Path(target_root)
         self.execute = execute
         self.overwrite = overwrite
+        # Skills a previous import-agent run copied (from the sync manifest): Hermes owns those
+        # destinations, so --sync refreshes them in place; anything else keeps conflict semantics.
+        self.sync_skills = frozenset(sync_skills)
         self.items: List[Dict[str, Any]] = []
         self.stripped_secrets: List[str] = []
 
@@ -495,7 +499,8 @@ class AgentImporter:
             return
         for skill_dir in skill_dirs:
             destination = destination_root / skill_dir.name
-            if destination.exists() and not self.overwrite:
+            may_replace = self.overwrite or skill_dir.name in self.sync_skills
+            if destination.exists() and not may_replace:
                 self.record("skill", skill_dir, destination, "conflict",
                             "Destination skill already exists")
                 continue
@@ -515,6 +520,11 @@ def import_agent_command(args) -> None:
     from hermes_constants import get_hermes_home
     from hermes_cli.setup import (Colors, color, print_header, print_info, print_success,
                                   print_error, prompt_yes_no)
+
+    if getattr(args, "sync", False):
+        from hermes_cli.agent_import_sync import sync_imported_agents
+        sync_imported_agents(args)
+        return
 
     agent, explicit_source, overwrite = args.agent, args.source, args.overwrite
 
@@ -596,6 +606,13 @@ def import_agent_command(args) -> None:
     if report is None:
         return
     print_import_report(report, dry_run=False)
+    from hermes_cli.agent_import_sync import update_sync_manifest
+    try:
+        update_sync_manifest(agent, source_dir.resolve(), hermes_home.resolve(), overwrite, report)
+        print_info("Source registered for sync — re-run 'hermes import-agent --sync' "
+                   "any time to pull in changes.")
+    except OSError as exc:
+        logger.warning("Could not update import sync manifest: %s", exc)
     print()
     print_success("Import complete.")
     print_info("API keys and credentials were NOT imported — run 'hermes setup' "

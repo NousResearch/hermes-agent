@@ -2663,14 +2663,8 @@ class ClawHubSource(SkillSource):
                 summary = item.get("summary") or item.get("description") or ""
                 tags = self._normalize_tags(item.get("tags", []))
                 extra: Dict[str, Any] = {}
-                # The listing API may include owner info (handle) in future;
-                # capture it if present so we can build valid detail URLs.
-                owner = item.get("owner")
-                if isinstance(owner, dict):
-                    handle = owner.get("handle")
-                    if isinstance(handle, str) and handle:
-                        extra["owner"] = handle
-                elif isinstance(owner, str) and owner:
+                owner = self._owner_from_payload(item)
+                if owner:
                     extra["owner"] = owner
                 results.append(SkillMeta(
                     name=display_name,
@@ -2774,14 +2768,7 @@ class ClawHubSource(SkillSource):
                 data = self._coerce_skill_payload(raw)
                 if not isinstance(data, dict):
                     return None
-                owner = data.get("owner")
-                if isinstance(owner, dict):
-                    handle = owner.get("handle")
-                    if isinstance(handle, str) and handle:
-                        return handle
-                if isinstance(owner, str) and owner:
-                    return owner
-                return None
+                return self._owner_from_payload(data)
 
             if resp.status_code == 429:
                 # Rate-limited — honour Retry-After if present, else backoff.

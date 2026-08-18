@@ -18,6 +18,7 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+from gateway.stale_override_notice import StaleOverrideNoticeConfig
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -934,6 +935,12 @@ class GatewayConfig:
 
     # User-defined quick commands (slash commands that bypass the agent loop)
     quick_commands: Dict[str, Any] = field(default_factory=dict)
+
+    # First-message-after-idle notice for explicit session /model and
+    # /reasoning overrides. Disabled by default; channel-scoped when desired.
+    stale_override_notice: StaleOverrideNoticeConfig = field(
+        default_factory=StaleOverrideNoticeConfig
+    )
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -1111,6 +1118,7 @@ class GatewayConfig:
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "stale_override_notice": self.stale_override_notice.to_dict(),
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
@@ -1255,6 +1263,9 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            stale_override_notice=StaleOverrideNoticeConfig.from_dict(
+                data.get("stale_override_notice")
+            ),
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
@@ -1380,6 +1391,22 @@ def load_gateway_config() -> GatewayConfig:
                         "Ignoring invalid quick_commands in config.yaml "
                         "(expected mapping, got %s)",
                         type(qc).__name__,
+                    )
+
+            stale_notice = yaml_cfg.get("stale_override_notice")
+            if (
+                "stale_override_notice" not in yaml_cfg
+                and isinstance(gateway_section, dict)
+            ):
+                stale_notice = gateway_section.get("stale_override_notice")
+            if stale_notice is not None:
+                if isinstance(stale_notice, dict):
+                    gw_data["stale_override_notice"] = stale_notice
+                else:
+                    logger.warning(
+                        "Ignoring invalid stale_override_notice in config.yaml "
+                        "(expected mapping, got %s)",
+                        type(stale_notice).__name__,
                     )
 
             stt_cfg = yaml_cfg.get("stt")

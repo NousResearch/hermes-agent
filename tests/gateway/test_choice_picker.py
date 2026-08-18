@@ -8,6 +8,7 @@ command, so picker and typed arguments can never diverge.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -143,5 +144,98 @@ class TestFastChoicePicker:
         assert runner._service_tier == "priority"
         assert runner._session_service_tier_overrides
         assert not (tmp_path / "config.yaml").exists()
+
+
+class TestTelegramChoicePickerLayout:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("metadata", "expected_row_lengths"),
+        [
+            ({}, [2]),
+            ({"choice_layout": "vertical"}, [1, 1]),
+        ],
+    )
+    async def test_vertical_hint_renders_one_button_per_row(
+        self, metadata, expected_row_lengths, monkeypatch
+    ):
+        from plugins.platforms.telegram import adapter as telegram_adapter
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        class _Markup:
+            def __init__(self, rows):
+                self.inline_keyboard = rows
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _Markup)
+
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        adapter.platform = Platform.TELEGRAM
+        adapter._bot = object()
+        adapter._reply_to_mode = "off"
+        adapter._choice_picker_state = {}
+        adapter.format_message = lambda text: text
+        adapter._reply_to_message_id_for_send = lambda *_args, **_kwargs: None
+        adapter._thread_kwargs_for_send = lambda *_args, **_kwargs: {}
+        adapter._link_preview_kwargs = lambda: {}
+        adapter._send_message_with_thread_fallback = AsyncMock(
+            return_value=SimpleNamespace(message_id=42)
+        )
+
+        result = await adapter.send_choice_picker(
+            chat_id="123",
+            title="Choose",
+            choices=[
+                {"value": "continue", "label": "✅ Continue"},
+                {"value": "defaults", "label": "↩️ Defaults"},
+            ],
+            session_key="session-key",
+            on_choice_selected=AsyncMock(),
+            metadata=metadata,
+        )
+
+        assert result.success is True
+        markup = adapter._send_message_with_thread_fallback.await_args.kwargs[
+            "reply_markup"
+        ]
+        assert [len(row) for row in markup.inline_keyboard] == expected_row_lengths
+
+    @pytest.mark.asyncio
+    async def test_callback_state_is_isolated_per_topic(self):
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        topic_one = AsyncMock(return_value="topic one selected")
+        topic_two = AsyncMock(return_value="topic two selected")
+        adapter._choice_picker_state = {
+            ("123", "10"): {
+                "msg_id": 41,
+                "choices": [{"value": "continue"}],
+                "on_choice_selected": topic_one,
+            },
+            ("123", "20"): {
+                "msg_id": 42,
+                "choices": [{"value": "defaults"}],
+                "on_choice_selected": topic_two,
+            },
+        }
+        adapter._is_callback_user_authorized = lambda *_args, **_kwargs: True
+        adapter.format_message = lambda text: text
+        query = SimpleNamespace(
+            message=SimpleNamespace(
+                message_id=41,
+                message_thread_id=10,
+                chat_id=123,
+                chat=SimpleNamespace(type="supergroup"),
+            ),
+            from_user=SimpleNamespace(id=7, first_name="User"),
+            edit_message_text=AsyncMock(),
+            answer=AsyncMock(),
+        )
+
+        await adapter._handle_choice_picker_callback(query, "cp:0", "123")
+
+        topic_one.assert_awaited_once_with("123", "continue")
+        topic_two.assert_not_awaited()
+        assert ("123", "10") not in adapter._choice_picker_state
+        assert ("123", "20") in adapter._choice_picker_state
 
 

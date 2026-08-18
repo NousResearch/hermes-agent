@@ -882,9 +882,11 @@ class TelegramAdapter(BasePlatformAdapter):
             if self.config.extra.get("base_url")
             else 20 * 1024 * 1024
         )
-        # Interactive model picker state per chat
+        # Interactive picker state. Model picker remains one per chat; generic
+        # choice pickers are scoped per chat + topic so simultaneous forum
+        # threads cannot invalidate one another.
         self._model_picker_state: Dict[str, dict] = {}
-        self._choice_picker_state: Dict[str, dict] = {}
+        self._choice_picker_state: Dict[tuple[str, str], dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -6450,9 +6452,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             if not buttons:
                 return SendResult(success=False, error="No choices")
-            # Two buttons per row keeps labels readable on mobile.
+            # Two buttons per row keeps ordinary pickers compact. Callers with
+            # long, consequential labels can request one action per row.
+            row_size = 1 if (metadata or {}).get("choice_layout") == "vertical" else 2
             keyboard = InlineKeyboardMarkup(
-                [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+                [buttons[i:i + row_size] for i in range(0, len(buttons), row_size)]
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
@@ -6473,7 +6477,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             )
 
-            self._choice_picker_state[str(chat_id)] = {
+            sent_thread_id = getattr(msg, "message_thread_id", thread_id)
+            state_key = (
+                str(chat_id),
+                str(sent_thread_id) if sent_thread_id is not None else "",
+            )
+            self._choice_picker_state[state_key] = {
                 "msg_id": msg.message_id,
                 "choices": choices,
                 "session_key": session_key,
@@ -6488,7 +6497,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self, query, data: str, chat_id: str
     ) -> None:
         """Handle choice picker button taps (cp:<index>)."""
-        state = self._choice_picker_state.get(chat_id)
+        query_message = getattr(query, "message", None)
+        query_thread_id = getattr(query_message, "message_thread_id", None)
+        state_key = (
+            str(chat_id),
+            str(query_thread_id) if query_thread_id is not None else "",
+        )
+        state = self._choice_picker_state.get(state_key)
         if not state:
             await query.answer(text="Picker expired — run the command again.")
             return
@@ -6496,7 +6511,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # Same authorization gate as approval buttons: unauthorized users in a
         # shared group must not flip session/config state via someone else's
         # picker message.
-        query_message = getattr(query, "message", None)
+        # Verify the callback's message id too: after a picker expires and a
+        # newer one replaces the topic slot, an old inline keyboard must not
+        # apply the newer picker's choice/callback.
+        query_message_id = getattr(query_message, "message_id", None)
+        if str(query_message_id or "") != str(state.get("msg_id") or ""):
+            await query.answer(text="Picker expired — use the latest prompt.")
+            return
         query_chat = getattr(query_message, "chat", None)
         if not self._is_callback_user_authorized(
             str(getattr(query.from_user, "id", "")),
@@ -6540,7 +6561,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass
         await query.answer()
-        self._choice_picker_state.pop(chat_id, None)
+        self._choice_picker_state.pop(state_key, None)
 
     _MODEL_PAGE_SIZE = 8
 

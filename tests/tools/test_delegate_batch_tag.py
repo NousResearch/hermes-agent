@@ -18,6 +18,9 @@ from tools.delegate_tool import _build_child_progress_callback, format_batch_tag
 def _fresh_ordinals(monkeypatch):
     # The ordinal table is bound in delegate_tool_progress (format_batch_tag's home).
     monkeypatch.setattr(dt_progress, "_BATCH_ORDINALS", {})
+    # Disable session children cap so batch attribution tests are not blocked
+    # by the session-total budget (tested separately in test_delegate.py).
+    monkeypatch.setattr(dt, "_get_max_children_per_session", lambda: 0)
 
 
 def test_format_batch_tag_assigns_stable_ordinals_per_batch():

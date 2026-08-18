@@ -144,11 +144,7 @@ export function OverlayView({
         {/* Sibling of the card, not a child: the card clips its own overflow
             (rounded corners), and the badge deliberately straddles the top
             border — half above, half below. */}
-        {edgeBadge && (
-          <div className="absolute left-1/2 top-0 z-20 -translate-x-1/2 -translate-y-1/2">
-            {edgeBadge}
-          </div>
-        )}
+        {edgeBadge && <div className="absolute left-1/2 top-0 z-20 -translate-x-1/2 -translate-y-1/2">{edgeBadge}</div>}
       </div>
     </div>
   )

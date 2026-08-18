@@ -32,7 +32,7 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 def _make_source(
     *,
     platform: Platform = Platform.DISCORD,
-    user_id: str = "user1",
+    user_id: str | None = "user1",
     chat_type: str = "dm",
     chat_id: str = "c1",
 ) -> SessionSource:
@@ -47,6 +47,81 @@ def _make_source(
 
 def _make_event(text: str, source: SessionSource) -> MessageEvent:
     return MessageEvent(text=text, source=source, message_id="m1")
+
+
+@pytest.mark.asyncio
+async def test_shared_group_source_authorizes_and_identifies_actual_actor():
+    """A shared routing source must not erase the command sender's identity.
+
+    Telegram observe mode deliberately removes user_id from SessionSource so
+    normal turns and slash commands key to one group transcript. The actor is
+    carried separately on MessageEvent and must still drive the group slash
+    policy and /whoami response.
+    """
+    runner = _make_runner(
+        platform=Platform.TELEGRAM,
+        platform_extra={
+            "group_allow_admin_from": ["111"],
+            "group_user_allowed_commands": [],
+        },
+    )
+    shared_source = _make_source(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_type="group",
+        chat_id="-100",
+    )
+    event = MessageEvent(
+        text="/whoami",
+        source=shared_source,
+        user_id="111",
+        user_name="Alice Example",
+        message_id="m1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result is not None
+    assert "User ID: `111`" in result
+    assert "Tier: **admin**" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/reset", "/approvals off", "/topic off", "/model gpt-x"])
+async def test_missing_actor_denies_stateful_commands_when_policy_is_unconfigured(
+    command,
+):
+    runner = _make_runner(platform=Platform.TELEGRAM)
+    source = _make_source(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_type="group",
+        chat_id="-100",
+    )
+
+    result = await runner._handle_message(_make_event(command, source))
+
+    assert result is not None
+    assert "requires an identifiable user" in result
+
+
+@pytest.mark.asyncio
+async def test_reset_handler_itself_fails_closed_before_hooks_without_actor():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.hooks = SimpleNamespace(emit=AsyncMock())
+    source = _make_source(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_type="group",
+        chat_id="-100",
+    )
+
+    result = await runner._handle_reset_command(_make_event("/reset", source))
+
+    assert "requires an identifiable user" in result
+    runner.hooks.emit.assert_not_awaited()
 
 
 def _make_runner(*, platform_extra: dict | None = None,
@@ -267,6 +342,164 @@ async def test_running_agent_fastpath_allows_admin_command():
     result = await runner._handle_message(_make_event("/restart", src))
     assert result == "restart-handled"
     assert "⛔" not in (result or "")
+
+
+@pytest.mark.asyncio
+async def test_running_agent_fastpath_uses_event_actor_on_shared_source():
+    """Sibling fast-path gate must judge by the MessageEvent actor when the
+    routing source is an anonymized observed-group source — and fail closed
+    when no actor can be rehydrated."""
+    runner = _make_runner(
+        platform=Platform.TELEGRAM,
+        platform_extra={
+            "group_allow_admin_from": ["111"],
+            "group_user_allowed_commands": [],
+        },
+    )
+    shared_source = _make_source(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_type="group",
+        chat_id="-100",
+    )
+    sk = build_session_key(shared_source)
+    runner._running_agents[sk] = MagicMock()
+    runner._running_agents_ts[sk] = 0
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+
+    admin_event = MessageEvent(
+        text="/restart",
+        source=shared_source,
+        user_id="111",
+        user_name="Alice",
+        message_id="m1",
+    )
+    assert await runner._handle_message(admin_event) == "restart-handled"
+
+    anonymous_event = MessageEvent(text="/restart", source=shared_source, message_id="m2")
+    denied = await runner._handle_message(anonymous_event)
+    assert denied is not None
+    assert "requires an identifiable user" in denied
+
+
+@pytest.mark.asyncio
+async def test_quick_command_sink_uses_event_actor_on_shared_source():
+    """The quick-command exec sink (#44727 gate) must authorize by the
+    rehydrated MessageEvent actor on a shared routing source, not see every
+    anonymized group caller as identity-less — while still failing closed
+    without any actor."""
+    runner = _make_runner(
+        platform=Platform.TELEGRAM,
+        platform_extra={
+            "group_allow_admin_from": ["111"],
+            "group_user_allowed_commands": [],
+        },
+    )
+    runner.config.quick_commands = {
+        "limits": {"type": "exec", "command": "printf quick-shared-actor-ok"}
+    }
+    shared_source = _make_source(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_type="group",
+        chat_id="-100",
+    )
+
+    allowed = await runner._handle_message(
+        MessageEvent(
+            text="/limits",
+            source=shared_source,
+            user_id="111",
+            user_name="Alice",
+            message_id="m1",
+        )
+    )
+    assert allowed == "quick-shared-actor-ok"
+
+    denied = await runner._handle_message(
+        MessageEvent(text="/limits", source=shared_source, message_id="m2")
+    )
+    assert denied is not None
+    assert "requires an identifiable user" in denied
+
+
+@pytest.mark.asyncio
+async def test_goal_gate_add_uses_event_actor_on_shared_source():
+    """The shell-backed goal gate must authorize the real observed-group
+    actor while retaining the anonymized source for shared session routing."""
+    runner = _make_runner(
+        platform=Platform.TELEGRAM,
+        platform_extra={"group_allow_admin_from": ["111"]},
+    )
+    manager = MagicMock()
+    manager.add_gate.return_value = SimpleNamespace(
+        command="python -m pytest",
+        max_retries=3,
+        timeout_seconds=300,
+    )
+    runner._get_goal_manager_for_event = AsyncMock(
+        return_value=(manager, SimpleNamespace(session_id="sess-1"))
+    )
+    shared_source = _make_source(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_type="group",
+        chat_id="-100",
+    )
+    event = MessageEvent(
+        text="/goal gate add python -m pytest",
+        source=shared_source,
+        user_id="111",
+        user_name="Alice",
+        message_id="m1",
+    )
+
+    result = await runner._handle_goal_command(event)
+
+    assert "Gate added" in result
+    manager.add_gate.assert_called_once_with("python -m pytest")
+
+
+@pytest.mark.asyncio
+async def test_stop_sibling_authorization_uses_event_actor_on_shared_source():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = object()
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        get_or_create_session=AsyncMock(
+            return_value=SimpleNamespace(session_key="shared-session")
+        )
+    )
+    runner._running_agents = {}
+    runner._sibling_thread_run_keys = MagicMock(return_value=["sibling-session"])
+    runner._is_user_authorized = MagicMock(
+        side_effect=lambda source: source.user_id == "111"
+    )
+    runner._interrupt_and_clear_session = AsyncMock()
+    shared_source = _make_source(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_type="group",
+        chat_id="-100",
+    )
+
+    await runner._handle_stop_command(
+        MessageEvent(
+            text="/stop",
+            source=shared_source,
+            user_id="111",
+            user_name="Alice Example",
+            message_id="m1",
+        )
+    )
+
+    authorized_source = runner._is_user_authorized.call_args.args[0]
+    assert authorized_source.user_id == "111"
+    assert authorized_source.user_name == "Alice Example"
+    assert authorized_source.chat_id == shared_source.chat_id
+    runner._interrupt_and_clear_session.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

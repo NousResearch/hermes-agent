@@ -242,14 +242,16 @@ class TestMcpToolLayer:
         loop = asyncio.new_event_loop()
         try:
             listed = json.loads(loop.run_until_complete(
-                server._tool_manager.call_tool("permissions_list_open", {})))
+                server._tool_manager.call_tool("permissions_list_open", {}, None)))
             assert listed["count"] == 1
             assert listed["approvals"][0]["id"] == APPROVAL_ID
 
             replied = json.loads(loop.run_until_complete(
                 server._tool_manager.call_tool(
                     "permissions_respond",
-                    {"id": APPROVAL_ID, "decision": "allow-always"})))
+                    {"id": APPROVAL_ID, "decision": "allow-always"},
+                    None,
+                )))
             # No gateway is running in this test, so the decision is written
             # but unconfirmed — the mapped native choice must be reported.
             assert replied["decision"] == "always"
@@ -258,7 +260,9 @@ class TestMcpToolLayer:
             invalid = json.loads(loop.run_until_complete(
                 server._tool_manager.call_tool(
                     "permissions_respond",
-                    {"id": APPROVAL_ID, "decision": "approve"})))
+                    {"id": APPROVAL_ID, "decision": "approve"},
+                    None,
+                )))
             assert "error" in invalid
         finally:
             loop.close()

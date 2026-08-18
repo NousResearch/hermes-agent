@@ -11940,8 +11940,17 @@ def _session_latest_descendant(session_id: str, db):
                 SELECT s.id, s.parent_session_id, s.started_at
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
-                WHERE json_extract(COALESCE(s.model_config, '{}'), '$._branched_from') IS NULL
-                  AND json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL
+                -- json_extract raises on non-JSON text, which would abort the
+                -- whole walk on one corrupt legacy row; the CASE gate keeps
+                -- json_extract off such rows. Malformed lineage is unknowable,
+                -- so exclude the row (ELSE 0) — fail toward resuming exactly
+                -- the session the user clicked, never a possible subagent.
+                WHERE CASE
+                        WHEN json_valid(COALESCE(s.model_config, '{}'))
+                        THEN json_extract(COALESCE(s.model_config, '{}'), '$._branched_from') IS NULL
+                         AND json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL
+                        ELSE 0
+                      END
                   AND COALESCE(s.source, '') != 'tool'
             )
             SELECT id, parent_session_id, started_at FROM descendants
@@ -11968,7 +11977,10 @@ def _session_latest_descendant(session_id: str, db):
             try:
                 mc = json.loads(mc)
             except (json.JSONDecodeError, TypeError):
-                mc = None
+                # Malformed lineage is unknowable — exclude, matching the
+                # CTE's json_valid gate (fail toward resuming exactly the
+                # session the user clicked, never a possible subagent).
+                return True
         return isinstance(mc, dict) and (
             "_branched_from" in mc or "_delegate_from" in mc
         )

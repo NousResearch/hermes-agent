@@ -32,10 +32,11 @@ function runPosix(installRoot: string, startedAt?: string) {
     env.HERMES_UPDATE_STARTED_AT = startedAt
   }
 
-  return spawnSync('/bin/bash', [POSIX_SCRIPT, '--install-root', installRoot, '--self-test-marker'], {
-    env,
-    encoding: 'utf8'
-  })
+  return spawnSync(
+    '/bin/bash',
+    [POSIX_SCRIPT, '--daemonized', '--install-root', installRoot, '--self-test-marker'],
+    { env, encoding: 'utf8' }
+  )
 }
 
 function runWindows(installRoot: string, startedAt?: string) {
@@ -82,6 +83,17 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
   assert.ok(
     markerStartedAt(refreshed.home) >= before && markerStartedAt(refreshed.home) <= after,
     'an invalid hand-off timestamp must start a fresh claim'
+  )
+
+  const oversized = sandbox('oversized')
+  const oversizedBefore = Math.floor(Date.now() / 1000)
+  const oversizedResult = run(oversized.installRoot, '99999999999999999999')
+  const oversizedAfter = Math.floor(Date.now() / 1000)
+
+  assert.equal(oversizedResult.status, 0, String(oversizedResult.stderr || oversizedResult.stdout))
+  assert.ok(
+    markerStartedAt(oversized.home) >= oversizedBefore && markerStartedAt(oversized.home) <= oversizedAfter,
+    'an oversized hand-off timestamp must start a fresh claim'
   )
 }
 

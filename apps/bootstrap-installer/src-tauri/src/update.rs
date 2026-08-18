@@ -201,6 +201,8 @@ impl UpdateMarkerGuard {
         let pid = std::process::id();
         if let Some(owner) = live_marker_owner(&path) {
             if owner.pid == pid {
+                // Repeated acquisition in this process is intentionally
+                // re-entrant because the desktop may have pre-written our pid.
                 // The desktop races ahead and pre-writes our pid. Adopt that
                 // claim verbatim: rewriting started_at here lets retries reset
                 // a wedged updater's age before the stale ceiling can clear it.

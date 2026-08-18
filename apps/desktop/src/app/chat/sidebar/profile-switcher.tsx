@@ -78,7 +78,6 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
-import { ConnectionSwitcher } from './connection-switcher'
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
 
@@ -114,11 +113,9 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
-// The active profile pops in its own color — the "where am I" cue. Single-
-// source users see the default home, "+", and Manage. With several sources, a
-// named environment selector sits before a separator; square profile identities
-// follow it. Colored named squares and the default↔all toggle only appear once
-// a second profile exists on the active source.
+// The active profile pops in its own color — the "where am I" cue. Gateway
+// identity lives in the statusbar, so this strip remains entirely available to
+// profiles regardless of how many backends are registered.
 export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
@@ -243,8 +240,6 @@ export function ProfileRail() {
 
   return (
     <div aria-label={p.title} className="flex min-w-0 items-center gap-0.5" data-slot="profile-rail" role="group">
-      <ConnectionSwitcher onConnect={() => navigate(`${SETTINGS_ROUTE}?tab=connections`)} />
-      {multipleConnections && <span aria-hidden="true" className="mx-0.5 h-3.5 w-px bg-(--ui-stroke-tertiary)" />}
       {/* One button toggles default ↔ all: home face when scoped to a profile,
           layers face when showing everything. Pinned left like Manage is right.
           Hidden until a second profile exists. */}
@@ -263,7 +258,7 @@ export function ProfileRail() {
         ))}
 
       {/* Single-profile: the active default's home icon next to the create +. */}
-      {!multipleConnections && !multiProfile && defaultProfile && (
+      {!multiProfile && defaultProfile && (
         <ProfilePill
           active
           glyph="home"

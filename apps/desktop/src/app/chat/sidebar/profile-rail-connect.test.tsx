@@ -59,8 +59,6 @@ vi.mock('@/store/profile', () => ({
 
 vi.mock('@/store/connections', () => ({ $hasMultipleConnections: atom(false) }))
 
-vi.mock('./connection-switcher', () => ({ ConnectionSwitcher: () => null }))
-
 vi.mock('@/store/profile-share', () => ({
   runExportProfileFlow: vi.fn(),
   runImportProfileFlow: vi.fn()
@@ -110,11 +108,11 @@ describe('ProfileRail multi-gateway entry point', () => {
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
   })
 
-  it('does not duplicate the default home when source buttons identify multiple single-profile backends', () => {
+  it('keeps the active profile explicit when gateway identity moves to the statusbar', () => {
     hasMultipleConnections.set(true)
     render(<ProfileRail />)
 
-    expect(screen.queryByRole('button', { name: 'default' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Manage gateways…' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
   })
@@ -139,7 +137,7 @@ describe('ProfileRail multi-gateway entry point', () => {
     expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
   })
 
-  it('stays shrinkable when source and condensed profile controls coexist', () => {
+  it('stays shrinkable with many profiles and multiple gateways', () => {
     hasMultipleConnections.set(true)
     profiles.set([
       { is_default: true, name: 'default' },

@@ -161,6 +161,24 @@ describe('ConnectionSwitcher', () => {
     expect(selectConnection).toHaveBeenCalledTimes(1)
   })
 
+  it('fits the shared statusbar slot without changing its gateway identity', () => {
+    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
+    render(<ConnectionSwitcher compact onConnect={onConnect} />)
+
+    const group = screen.getByRole('group', { name: 'Registered gateways' })
+    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
+
+    expect(group.className).toContain('h-full')
+    expect(group.className).toContain('min-w-20')
+    expect(group.className).toContain('max-w-40')
+    expect(group.className).toContain('shrink')
+    expect(group.className).toContain('overflow-hidden')
+    expect(trigger.className).toContain('text-[0.6875rem]')
+    expect(trigger.className).toContain('min-w-0')
+    expect(trigger.className).toContain('overflow-hidden')
+    expect(trigger.textContent).toContain('This device')
+  })
+
   it('keeps source controls stable while a remote is opening', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
     $pendingConnectionId.set('homelab')

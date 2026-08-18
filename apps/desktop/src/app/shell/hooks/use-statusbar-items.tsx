@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { useMemo } from 'react'
+import { useNavigate } from 'react-router'
 
+import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
@@ -48,7 +50,7 @@ import {
 } from '@/store/updates'
 import type { StatusResponse, UsageStats } from '@/types/hermes'
 
-import { CRON_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
+import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
@@ -92,6 +94,8 @@ export function useStatusbarItems({
   // the takeover store alone stays true behind a stacked sibling tab or a
   // minimized zone, which lit the button for a pane the user couldn't see.
   const terminalShowing = useStore($paneVisible('terminal'))
+  const sessionsShowing = useStore($paneVisible('sessions'))
+  const botsShowing = useStore($paneVisible('hermes-bots:pane'))
   const primaryBusy = useStore($busy)
   // Draft / primary composer atom — used only while the focused surface is the
   // primary (or a draft with no runtime slice yet). A focused TILE keeps its
@@ -401,8 +405,15 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
+        hidden: !sessionsShowing,
+        id: 'gateway-switcher',
+        lockedVisible: true,
+        render: () => <StatusbarGatewaySwitcher />
+      },
+      {
         className: gatewayRestarting ? undefined : gatewayClassName,
         detail: gatewayRestarting ? copy.gatewayRestarting : gatewayDetail,
+        hidden: botsShowing,
         icon: gatewayRestarting ? (
           <GlyphSpinner ariaLabel={copy.gatewayRestarting} className="size-3" />
         ) : inferenceReady ? (
@@ -498,6 +509,7 @@ export function useStatusbarItems({
     ],
     [
       agentsOpen,
+      botsShowing,
       commandCenterOpen,
       copy,
       currentCwd,
@@ -512,6 +524,7 @@ export function useStatusbarItems({
       inferenceStatus?.reason,
       openAgents,
       projectName,
+      sessionsShowing,
       subagentsFailed,
       subagentsRunning,
       toggleCommandCenter
@@ -599,4 +612,10 @@ export function useStatusbarItems({
   )
 
   return { leftStatusbarItems, statusbarItems }
+}
+
+function StatusbarGatewaySwitcher() {
+  const navigate = useNavigate()
+
+  return <ConnectionSwitcher compact onConnect={() => navigate(`${SETTINGS_ROUTE}?tab=connections`)} />
 }

@@ -80,6 +80,66 @@ test('hideOwnedBotSessions sweeps canonical chats AND room member sessions', asy
   assert.ok(calls.every(c => c.method === 'session.set_hidden' && c.params.hidden === true))
 })
 
+test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and only those', async () => {
+  // Ownership-based half of the sweep: CLI-born "Agent Inbox" / extra
+  // "Bot Chat" rows live in bot profiles but are unknown to $botMeta /
+  // $groupChats, so the id-based sweep never reaches them. This sweep lists
+  // each roster bot's own sessions and hides rows by exact plumbing title
+  // ('Bot Chat', 'Agent Inbox', 'Group: …' prefix) — never a user-titled row.
+  const start = source.indexOf('function hideOwnedBotSessions()')
+  const end = source.indexOf('/** Fetch server-side avatars', start)
+  const calls = []
+  const rowsByProfile = {
+    alpha: [
+      { id: 'a-1', title: 'Bot Chat' },
+      { id: 'a-2', title: 'Agent Inbox' },
+      { id: 'a-3', title: 'Group: Core' },
+      { id: 'a-4', title: 'My real conversation' },
+      { id: 'a-5', title: 'Bot Chat notes' } // not an exact title — kept
+    ],
+    remy: [{ id: 'r-1', title: 'Agent Inbox' }]
+  }
+  const context = {
+    host: { request: async () => ({}) },
+    $botMeta: { get: () => ({}) },
+    $groupChats: { get: () => ({}) },
+    $lastRoster: { get: () => [{ name: 'alpha' }, { name: 'remy', remoteSource: true, connectionId: 'mini' }] },
+    PROFILE_SESSION_LIST_LIMIT: 200,
+    requestForBot: async (bot, method, params) => {
+      calls.push({ bot: bot.name, method, params })
+      if (method === 'session.list') {
+        return { sessions: rowsByProfile[params.profile] || [] }
+      }
+      return {}
+    }
+  }
+  const section = source.slice(start, end).concat('\nglobalThis.__h = { hideOwnedBotSessions, sweepBotProfileSessions };\n')
+  vm.runInNewContext(section, context, { filename: 's.js' })
+  await context.__h.sweepBotProfileSessions()
+
+  const lists = calls.filter(c => c.method === 'session.list')
+  assert.deepEqual(lists.map(c => c.params.profile).sort(), ['alpha', 'remy'])
+  // Visible-rows-only listing keeps the sweep idempotent.
+  assert.ok(lists.every(c => !c.params.include_hidden))
+
+  const hidden = calls.filter(c => c.method === 'session.set_hidden')
+  assert.deepEqual(
+    hidden.map(c => c.params.session_id).sort(),
+    ['a-1', 'a-2', 'a-3', 'r-1'],
+    'exact plumbing titles only — user-titled rows in bot profiles stay visible'
+  )
+  assert.ok(hidden.every(c => c.params.hidden === true))
+  // Remote-source bots route through requestForBot with their own bot row.
+  assert.equal(hidden.find(c => c.params.session_id === 'r-1').bot, 'remy')
+})
+
+test('hideOwnedBotSessions chains the ownership sweep and survives its absence of context', async () => {
+  // The load/reconnect entrypoint runs BOTH halves: known ids first, then
+  // the roster-wide title sweep (best-effort — a throwing sweep never
+  // breaks the id half).
+  assert.match(source, /return Promise\.all\(\[known, sweepBotProfileSessions\(\)\.catch\(\(\) => undefined\)\]\)/)
+})
+
 test('the Bots session browser lists with include_hidden', () => {
   // The one session.list consumer that must see the always-hidden rows.
   // (Canonical-chat recovery now goes through profiles.list

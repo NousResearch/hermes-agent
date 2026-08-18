@@ -273,7 +273,8 @@ async function saveBotMeta(name, patch) {
  *  and Bot Chats created before this policy (or while the old pref was off)
  *  left visible rows behind. On every plugin load, sweep every session id we
  *  own — canonical chats from bot meta plus each group room's member
- *  sessions — through the core session.set_hidden RPC. Idempotent (the DB
+ *  sessions — through the core session.set_hidden RPC, then run the
+ *  ownership-based sweep for the rows we DON'T know by id. Idempotent (the DB
  *  setter is a no-op on already-hidden rows) and feature-detected: older
  *  gateways lack session.set_hidden and simply keep the rows visible. */
 function hideOwnedBotSessions() {
@@ -285,10 +286,82 @@ function hideOwnedBotSessions() {
     .filter(sid => Boolean(sid) && sid !== true)
   const ids = [...new Set([...canonical, ...rooms])]
 
-  return Promise.all(
+  const known = Promise.all(
     ids.map(sid =>
       Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden: true })).catch(() => undefined)
     )
+  )
+
+  return Promise.all([known, sweepBotProfileSessions().catch(() => undefined)])
+}
+
+// Titles Bot Mode itself mints for its plumbing sessions. Bot-to-bot CLI
+// handoffs (`hermes -p <bot> chat --in ~ -c "Bot Chat" --create-if-missing`)
+// and mention handoffs create sessions with EXACTLY these titles; the
+// "Group: " prefix is the member-session title ensureGroupChatSession has
+// used since group chats shipped. Exact/prefix matching is deliberate — a
+// user's real conversation inside a bot profile keeps whatever title the
+// user gave it and is never touched.
+const BOT_MODE_SWEEP_TITLES = new Set(['Bot Chat', 'Agent Inbox'])
+
+function isBotModeSweepTitle(title) {
+  const t = String(title || '').trim()
+  return BOT_MODE_SWEEP_TITLES.has(t) || t.startsWith('Group: ')
+}
+
+/** Ownership-based sweep: the id-based sweep above only covers sessions the
+ *  plugin recorded ($botMeta canonical chats, $groupChats member sids), but
+ *  Bot Mode sessions are ALSO minted outside the plugin — bot-to-bot CLI
+ *  handoffs ("Agent Inbox" / extra "Bot Chat" rows born visible in a bot's
+ *  profile) — and those ids the plugin never learns. So: enumerate each
+ *  roster bot's OWN profile sessions (only bot profiles — a non-bot profile
+ *  is never listed, so its sessions are never touched) and hide any VISIBLE
+ *  row whose title is Bot Mode plumbing. session.list without include_hidden
+ *  returns only visible rows, which keeps the sweep naturally idempotent.
+ *  Remote-source bots route to their own connection via requestForBot.
+ *  Feature-detected + fire-and-forget: older gateways without per-profile
+ *  session.list / session.set_hidden simply reject and the sweep no-ops. */
+async function sweepBotProfileSessions() {
+  const cached = $lastRoster.get()
+  let roster = Array.isArray(cached) && cached.length ? cached : null
+
+  if (!roster) {
+    // Plugin load can run before the Bots pane hydrates $lastRoster — fall
+    // back to the active gateway's own profile list (local bots; remote
+    // sources get covered by the next sweep once the roster cache exists).
+    try {
+      const res = await host.request('profiles.list', {})
+      roster = Array.isArray(res?.profiles) ? res.profiles : []
+    } catch {
+      return
+    }
+  }
+
+  await Promise.all(
+    roster.map(async bot => {
+      const name = String(bot?.name || '').trim()
+
+      if (!name) {
+        return
+      }
+
+      try {
+        const res = await requestForBot(bot, 'session.list', { profile: name, limit: PROFILE_SESSION_LIST_LIMIT })
+        const rows = Array.isArray(res?.sessions) ? res.sessions : []
+
+        await Promise.all(
+          rows
+            .filter(row => row && row.id && isBotModeSweepTitle(row.title))
+            .map(row =>
+              Promise.resolve(
+                requestForBot(bot, 'session.set_hidden', { session_id: row.id, hidden: true, profile: name })
+              ).catch(() => undefined)
+            )
+        )
+      } catch {
+        /* older gateway / unreachable source — leave this profile alone */
+      }
+    })
   )
 }
 

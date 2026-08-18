@@ -3939,16 +3939,15 @@ async def get_status(profile: Optional[str] = None):
         status["gateway_mode"] = topology["gateway_mode"]
 
         # Absolute host paths, the gateway PID, the internal gateway health
-        # URL, and per-gateway ports are deployment recon a liveness probe never
-        # needs. ``/api/status`` is in ``PUBLIC_API_PATHS`` so it bypasses
-        # dashboard auth; on a network-exposed (gated) bind that means *any*
-        # unauthenticated caller reaches it, and leaking host metadata there
-        # contradicts the allowlist's own contract ("version, gateway state,
-        # active session count, and the dashboard auth-gate shape. No bodies, no
-        # session content, no secrets"). Surface this detail only on a loopback
-        # / ``--insecure`` bind, where the dashboard is local-only and the
-        # caller is already inside the trust envelope — the same loopback/gated
-        # split ``should_require_auth`` draws.
+        # URL, per-gateway ports, and the loopback session token are deployment
+        # recon / credentials a liveness probe never needs. ``/api/status`` is
+        # in ``PUBLIC_API_PATHS`` so it bypasses dashboard auth; on a
+        # network-exposed (gated) bind that means *any* unauthenticated caller
+        # reaches it. Surface this detail only on a loopback bind, where the
+        # caller is already inside the trust envelope — the same split
+        # ``should_require_auth`` draws. ``session_token`` is how
+        # ``hermes serve --print-session-token`` (Desktop SSH attach) learns
+        # the process-local credential without scraping SPA HTML.
         if not auth_required:
             status.update({
                 "hermes_home": str(get_hermes_home()),
@@ -3957,6 +3956,7 @@ async def get_status(profile: Optional[str] = None):
                 "gateway_pid": gateway_pid,
                 "gateway_health_url": _GATEWAY_HEALTH_URL,
                 "gateways": topology["gateways"],
+                "session_token": _SESSION_TOKEN,
             })
 
         return status

@@ -38,6 +38,9 @@ const READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
 const DEFAULT_READY_TIMEOUT_MS = 45_000
+const DEFAULT_MACHINE_SERVE_PORT = 9119
+const MACHINE_SERVE_LOG = '~/.hermes/logs/desktop-ssh-serve.log'
+
 const READY_POLL_INTERVAL_MS = 750
 // macOS sshd starts non-interactive shells with a 256-FD soft limit even when
 // the hard limit is unlimited. A Desktop backend can legitimately exceed that
@@ -186,6 +189,7 @@ async function locateHermes(ssh, remoteHermesPath) {
 
   // Fallback candidates when the login-shell probe misses: the installer's
   // command locations (scripts/install.sh) — per-user, root/FHS, legacy venv.
+  candidates.push('~/.hermes/bin/hermes')
   candidates.push('~/.local/bin/hermes')
   candidates.push('/usr/local/bin/hermes')
   candidates.push('~/.hermes/hermes-agent/venv/bin/hermes')
@@ -437,24 +441,22 @@ async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
   }
 }
 
-// Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
+// Best-effort: SIGTERM, then SIGKILL. Never fail reconnect — a wedged leftover
+// after sleep must not block a new tunnel. Lockfile is always dropped.
 async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
   if (pidAlive && lock && (await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))) {
-    try {
-      const result = (
-        await ssh.exec(
-          `kill ${Number(lock.pid)} && ` +
-            `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
-            `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
-        )
-      ).trim()
+    const pid = Number(lock.pid)
 
-      void result
-    } catch (cause) {
-      const error: any = new Error('Could not terminate the stale SSH backend.')
-      error.kind = 'transient-transport-error'
-      error.cause = cause
-      throw error
+    try {
+      await ssh.exec(
+        `kill ${pid} 2>/dev/null || true; ` +
+          `i=0; while kill -0 ${pid} 2>/dev/null; do ` +
+          `i=$((i+1)); ` +
+          `if [ "$i" -eq 20 ]; then kill -KILL ${pid} 2>/dev/null || true; fi; ` +
+          `[ "$i" -ge 40 ] && break; sleep 0.1; done`
+      )
+    } catch {
+      void 0
     }
   }
 
@@ -506,6 +508,233 @@ async function remoteSupportsSshOwnership(ssh, hermesPath) {
     .trim()
     .endsWith('YES')
 }
+
+async function remoteSupportsPrintSessionToken(ssh, hermesPath) {
+  const hermes = expandRemotePath(hermesPath)
+
+  try {
+    const out = await ssh.exec(
+      `help="$(${hermes} serve --help 2>&1)"; ` +
+        `printf '%s' "$help" | grep -q print-session-token && echo YES || echo NO`
+    )
+
+    return String(out || '')
+      .trim()
+      .endsWith('YES')
+  } catch {
+    return false
+  }
+}
+
+function classifyPrintTokenError(error) {
+  const text = String(error?.message || error || '').toLowerCase()
+
+  if (text.includes('sign-in') || text.includes('auth_required') || text.includes('gated')) {
+    return 'gated'
+  }
+
+  if (text.includes('publish') || text.includes('update hermes')) {
+    return 'old'
+  }
+
+  if (text.includes('listening') || text.includes('not found') || text.includes('connection refused')) {
+    return 'missing'
+  }
+
+  return 'other'
+}
+
+async function printRemoteSessionToken(ssh, hermesPath, host = '127.0.0.1', port = DEFAULT_MACHINE_SERVE_PORT) {
+  const hermes = expandRemotePath(hermesPath)
+  const out = await ssh.exec(
+    `${hermes} serve --host ${shq(host)} --port ${Number(port)} --print-session-token`
+  )
+  const token = String(out || '')
+    .trim()
+    .split('\n')
+    .pop()
+    .trim()
+
+  if (!token) {
+    const err: any = new Error('Serve did not print a session token.')
+    err.kind = 'old'
+    throw err
+  }
+
+  return token
+}
+
+function buildMachineServeCommand(hermesPath, opts: any = {}) {
+  const hermes = expandRemotePath(hermesPath)
+  const host = opts.host || '127.0.0.1'
+  const port = opts.port || DEFAULT_MACHINE_SERVE_PORT
+  const logPath = expandRemotePath(opts.logPath || MACHINE_SERVE_LOG)
+  const serveCmd =
+    `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
+    `exec ${hermes} serve --host ${shq(host)} --port ${Number(port)}`
+
+  return (
+    `mkdir -p "$(dirname ${logPath})" && ` +
+    `"$(command -v setsid || echo nohup)" sh -c ${shq(`${serveCmd} </dev/null >> ${logPath} 2>&1 & echo $!`)}`
+  )
+}
+
+async function startMachineServe(ssh, hermesPath, opts: any = {}) {
+  const out = await ssh.exec(buildMachineServeCommand(hermesPath, opts))
+  const pid = parseInt(
+    String(out || '')
+      .trim()
+      .split('\n')
+      .pop(),
+    10
+  )
+
+  if (!Number.isInteger(pid) || pid <= 0) {
+    const err: any = new Error('Failed to launch hermes serve on the remote host (no pid returned).')
+    err.kind = 'spawn-failed'
+    throw err
+  }
+
+  return pid
+}
+
+async function waitForPrintSessionToken(
+  ssh,
+  hermesPath,
+  { host = '127.0.0.1', port = DEFAULT_MACHINE_SERVE_PORT, timeoutMs = DEFAULT_READY_TIMEOUT_MS, signal }: any = {}
+) {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    assertNotAborted(signal)
+
+    try {
+      return await printRemoteSessionToken(ssh, hermesPath, host, port)
+    } catch (error) {
+      const kind = error?.kind || classifyPrintTokenError(error)
+
+      if (kind === 'gated') {
+        const err: any = new Error(
+          'The remote serve requires sign-in. Loopback SSH attach only works for a 127.0.0.1 bind.'
+        )
+        err.kind = 'gated'
+        throw err
+      }
+
+      if (kind === 'old') {
+        const err: any = new Error(
+          'The remote serve is running but did not publish a loopback session token. Update Hermes on the remote host.'
+        )
+        err.kind = 'old'
+        throw err
+      }
+    }
+
+    await new Promise(r => setTimeout(r, READY_POLL_INTERVAL_MS))
+  }
+
+  const err: any = new Error(`Timed out waiting for hermes serve --print-session-token (${timeoutMs}ms).`)
+  err.kind = 'ready-timeout'
+  throw err
+}
+
+async function attachMachineServe(deps) {
+  const {
+    ssh,
+    hermesPath,
+    hermesVersion = '',
+    platform,
+    waitForHermes,
+    adoptServedToken,
+    rememberLog = () => {},
+    readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
+    signal,
+    host = '127.0.0.1',
+    port = DEFAULT_MACHINE_SERVE_PORT
+  } = deps
+  const log = typeof deps.log === 'function' ? deps.log : msg => rememberLog(`[ssh-lifecycle] ${msg}`)
+
+  assertNotAborted(signal)
+
+  let token
+  let started = false
+  let pid = 0
+
+  try {
+    token = await printRemoteSessionToken(ssh, hermesPath, host, port)
+    log(`attached to existing serve on ${host}:${port}`)
+  } catch (error) {
+    const kind = error?.kind || classifyPrintTokenError(error)
+
+    if (kind === 'gated' || kind === 'old') {
+      throw error
+    }
+
+    log(`no serve on ${host}:${port}; starting machine-level hermes serve`)
+    pid = await startMachineServe(ssh, hermesPath, { host, port })
+    started = true
+    token = await waitForPrintSessionToken(ssh, hermesPath, {
+      host,
+      port,
+      timeoutMs: readyTimeoutMs,
+      signal
+    })
+    log(`started remote serve pid=${pid} port=${port}`)
+  }
+
+  assertNotAborted(signal)
+  const localPort = await openForward(deps, port)
+
+  try {
+    const baseUrl = `http://127.0.0.1:${localPort}`
+    await waitForHermes(baseUrl, token)
+    assertNotAborted(signal)
+
+    const adopted = await adoptServedToken(baseUrl, token, {
+      childAlive: () => true,
+      label: started ? 'machine serve' : 'existing serve'
+    })
+
+    return {
+      baseUrl,
+      token: adopted || token,
+      tokenFingerprint: fingerprintToken(adopted || token),
+      remotePort: port,
+      localPort,
+      pid,
+      reused: !started,
+      platform,
+      hermesPath,
+      hermesVersion,
+      ownershipId: deps.ownershipId,
+      spawnNonce: '',
+      logPath: MACHINE_SERVE_LOG
+    }
+  } catch (error) {
+    await cancelForwardSafe(deps, localPort, port)
+    throw error
+  }
+}
+
+async function tryAttachMachineServe(deps, hermesPath, platform, hermesVersion) {
+  if (!(await remoteSupportsPrintSessionToken(deps.ssh, hermesPath))) {
+    return null
+  }
+
+  try {
+    return await attachMachineServe({ ...deps, hermesPath, platform, hermesVersion })
+  } catch (error) {
+    if ((error?.kind || classifyPrintTokenError(error)) === 'gated') {
+      throw error
+    }
+
+    deps.rememberLog?.(
+      `[ssh-lifecycle] machine-serve attach failed (${error?.message || error}); falling back to isolated spawn`
+    )
+    return null
+  }
+}
+
 
 async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT_MS, isAlive, signal }: any = {}) {
   const deadline = Date.now() + timeoutMs
@@ -735,6 +964,13 @@ async function connect(deps) {
     log(`remote hermes version: ${hermesVersion}`)
   }
 
+  const attached = await tryAttachMachineServe(deps, hermesPath, platform, hermesVersion)
+
+  if (attached) {
+    return attached
+  }
+
+
   const reuseToken = deps.reuseToken || ''
   const hermesHome = await probeRemoteHermesHome(ssh)
   const lock = await readLockfile(ssh, ownershipId)
@@ -907,9 +1143,13 @@ async function connect(deps) {
 
 export {
   adoptOwnedServedToken,
+  attachMachineServe,
+  buildMachineServeCommand,
   buildSpawnCommand,
   cleanupStale,
+  classifyPrintTokenError,
   connect,
+  DEFAULT_MACHINE_SERVE_PORT,
   DEFAULT_READY_TIMEOUT_MS,
   expandRemotePath,
   fingerprintToken,
@@ -922,6 +1162,7 @@ export {
   openForward,
   ownershipDirectory,
   pidIsOurDashboard,
+  printRemoteSessionToken,
   probeHermesVersion,
   probeRemoteHermesHome,
   probeRemotePlatform,
@@ -930,13 +1171,16 @@ export {
   READY_RE,
   REMOTE_LOCK_DIR,
   remotePidAlive,
+  remoteSupportsPrintSessionToken,
   remoteSupportsSshOwnership,
   removeLockfile,
   scrapeReadyPort,
   shq,
   spawnLogPath,
   spawnRemoteDashboard,
+  startMachineServe,
   SUPPORTED_REMOTE_OS,
+  tryAttachMachineServe,
   validateRemotePath,
   writeLockfile
 }

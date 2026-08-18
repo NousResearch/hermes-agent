@@ -21,7 +21,8 @@ import {
   RefreshCw,
   Terminal
 } from '@/lib/icons'
-import { coerceRemoteUrlScheme } from '@/lib/remote-url'
+import { coerceRemoteUrlScheme, parseSshConnectionUrl } from '@/lib/remote-url'
+
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { notify, notifyError, readableError } from '@/store/notifications'
@@ -1235,7 +1236,26 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
               <Input
                 className={cn('h-8', CONTROL_TEXT)}
                 disabled={state.envOverride}
-                onChange={event => setState(current => ({ ...current, remoteUrl: event.target.value }))}
+                onChange={event => {
+                  const value = event.target.value
+                  const sshTarget = parseSshConnectionUrl(value)
+
+                  if (sshTarget) {
+                    setState(current => ({
+                      ...current,
+                      mode: 'ssh',
+                      sshHost: sshTarget.host,
+                      sshPort: sshTarget.port,
+                      sshRemoteProfile: sshTarget.remoteProfile || current.sshRemoteProfile,
+                      sshUser: sshTarget.user
+                    }))
+
+                    return
+                  }
+
+                  setState(current => ({ ...current, remoteUrl: value }))
+                }}
+
                 placeholder="https://gateway.example.com/hermes"
                 value={state.remoteUrl}
               />

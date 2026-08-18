@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { coerceRemoteUrlScheme } from './remote-url'
+import { coerceRemoteUrlScheme, parseSshConnectionUrl } from './remote-url'
 
 describe('coerceRemoteUrlScheme', () => {
   it('prepends http:// to scheme-less host:port input', () => {
@@ -15,6 +15,7 @@ describe('coerceRemoteUrlScheme', () => {
     expect(coerceRemoteUrlScheme('https://gw.example.com/hermes')).toBe('https://gw.example.com/hermes')
     expect(coerceRemoteUrlScheme('ws://host:9119')).toBe('ws://host:9119')
     expect(coerceRemoteUrlScheme('ftp://host:21')).toBe('ftp://host:21')
+    expect(coerceRemoteUrlScheme('ssh://botnet')).toBe('ssh://botnet')
   })
 
   it('trims and passes through empty input', () => {
@@ -23,3 +24,27 @@ describe('coerceRemoteUrlScheme', () => {
     expect(coerceRemoteUrlScheme('  host:9119  ')).toBe('http://host:9119')
   })
 })
+
+describe('parseSshConnectionUrl', () => {
+  it('parses host, user, non-default port, and profile', () => {
+    expect(parseSshConnectionUrl('ssh://botnet/')).toEqual({
+      host: 'botnet',
+      port: null,
+      remoteProfile: '',
+      user: ''
+    })
+    expect(parseSshConnectionUrl('ssh://alice@box:2222?profile=brawn')).toEqual({
+      host: 'box',
+      port: 2222,
+      remoteProfile: 'brawn',
+      user: 'alice'
+    })
+  })
+
+  it('rejects non-ssh input', () => {
+    expect(parseSshConnectionUrl('https://gateway.example.com')).toBeNull()
+    expect(parseSshConnectionUrl('botnet')).toBeNull()
+    expect(parseSshConnectionUrl('')).toBeNull()
+  })
+})
+

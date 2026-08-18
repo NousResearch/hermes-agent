@@ -75,7 +75,7 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
 # leak that detail to anonymous callers.
 _HOST_DETAIL_FIELDS = frozenset({
     "hermes_home", "config_path", "env_path", "gateway_pid",
-    "gateway_health_url",
+    "gateway_health_url", "session_token",
 })
 
 
@@ -93,5 +93,15 @@ def test_status_withholds_host_detail_in_gated_mode(gated_client):
     # Deployment recon must be withheld from the anonymous public probe.
     leaked = _HOST_DETAIL_FIELDS & set(body.keys())
     assert not leaked, f"/api/status leaked host detail under the gate: {leaked}"
+
+
+def test_status_publishes_session_token_on_loopback(loopback_client):
+    r = loopback_client.get("/api/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["auth_required"] is False
+    assert body["session_token"] == web_server._SESSION_TOKEN
+    assert isinstance(body["session_token"], str) and body["session_token"]
+
 
 

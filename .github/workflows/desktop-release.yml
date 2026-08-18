@@ -1,0 +1,106 @@
+# Build and attach Hermes Desktop installers to a GitHub Release.
+#
+# macOS DMG/zip, Windows NSIS/MSI, and Linux AppImage are produced on the
+# matching runners and uploaded next to the Python release created by
+# `scripts/release.py --publish`.
+#
+# Triggers:
+#   - release published (automatic)
+#   - workflow_dispatch with a tag (rebuild / attach to an existing release)
+name: Desktop Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach installers to (e.g. v1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+            dist: dist:mac
+            artifact: 'apps/desktop/release/Hermes-*.dmg apps/desktop/release/Hermes-*.zip'
+          - os: windows-latest
+            label: Windows
+            dist: dist:win
+            artifact: 'apps/desktop/release/Hermes-*.exe apps/desktop/release/Hermes-*.msi'
+          - os: ubuntu-latest
+            label: Linux AppImage
+            dist: dist:linux:appimage
+            artifact: 'apps/desktop/release/Hermes-*.AppImage'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: grab npm 12
+        run: |
+          npm --version | grep -q '^12\.' || npm i -g npm@12
+        shell: bash
+
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci
+
+      - name: Linux AppImage system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libfuse2
+
+      - name: Build ${{ matrix.label }} installer
+        working-directory: apps/desktop
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: npm run ${{ matrix.dist }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-${{ matrix.label }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(${{ matrix.artifact }})
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No installer files matched ${{ matrix.artifact }}"
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber

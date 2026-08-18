@@ -83,7 +83,10 @@ npm run dist:linux   # AppImage + deb + rpm
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-Installers are built and uploaded to GitHub Releases manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+Installers are built by `.github/workflows/desktop-release.yml` on every GitHub
+Release (macOS DMG/zip, Windows NSIS/MSI, Linux AppImage) and can also be
+uploaded manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+
 
 ### How it works
 
@@ -136,12 +139,12 @@ authentication and discovery differ, not the renderer feature model.
 
 When no usable local runtime or saved remote connection exists, the first-run
 screen offers **Connect to existing Hermes** before starting the local installer.
-Desktop probes the gateway to discover token or OAuth authentication, requires a
-successful HTTP and WebSocket connection test, and saves the connection using
-the same encrypted Desktop configuration used by Settings. A saved remote
-connection bypasses this choice on later launches. The regular Desktop build
-still includes the local-install option; this is a remote operating mode, not a
-separate client-only application.
+Paste an `https://` gateway URL (Desktop probes token or OAuth) or `ssh://host`
+to attach over SSH using your ssh-agent / `~/.ssh/config`. A successful test is
+required before apply. A saved remote or SSH connection bypasses this choice on
+later launches. The regular Desktop build still includes the local-install
+option; this is a remote operating mode, not a separate client-only application.
+
 
 In remote mode the gateway host is the execution boundary: agent tools,
 terminal commands, and file operations run against the remote Hermes host, not

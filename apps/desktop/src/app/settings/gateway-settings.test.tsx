@@ -49,4 +49,28 @@ describe('GatewaySettings', () => {
     expect(screen.queryByText('All profiles')).toBeNull()
     expect(screen.queryByText('Use default gateway')).toBeNull()
   })
+
+  it('switches to SSH mode when an ssh:// URL is pasted into Remote URL', async () => {
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'remote',
+      remoteUrl: 'https://gateway.example.com/hermes'
+    })
+    const { GatewaySettings } = await import('./gateway-settings')
+
+    render(<GatewaySettings />)
+    expect(await screen.findByText('Remote URL')).toBeTruthy()
+
+    fireEvent.change(screen.getByPlaceholderText('https://gateway.example.com/hermes'), {
+      target: { value: 'ssh://alice@botnet:2222?profile=brawn' }
+    })
+
+    expect(screen.queryByText('Remote URL')).toBeNull()
+    expect(screen.getByDisplayValue('botnet')).toBeTruthy()
+    expect(screen.getByDisplayValue('alice')).toBeTruthy()
+    expect(screen.getByDisplayValue('2222')).toBeTruthy()
+
+  })
+
+
 })

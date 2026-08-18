@@ -260,7 +260,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
     render(<DesktopInstallOverlay />)
 
     fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-    fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
+    fireEvent.change(await screen.findByPlaceholderText(/https:\/\/gateway\.example\.com\/hermes/), {
+
       target: { value: 'https://gateway.example.com/hermes' }
     })
 
@@ -301,6 +302,66 @@ describe('DesktopInstallOverlay first-run setup', () => {
     await waitFor(() => expect(screen.queryByText('Gateway URL')).toBeNull())
   })
 
+  it('applies ssh:// URLs as an SSH connection without probing HTTP auth', async () => {
+    const desktop = installDesktopMock(
+      bootstrapState({
+        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
+      })
+    )
+
+    desktop.testConnectionConfig.mockResolvedValue({
+      host: 'alice@botnet',
+      reachable: true,
+      remoteHermesVersion: '0.17.0'
+    })
+    desktop.applyConnectionConfig.mockImplementation(async () => {
+      desktop.emitBootstrapEvent({ type: 'dismissed' })
+
+      return { mode: 'ssh' }
+    })
+
+    render(<DesktopInstallOverlay />)
+
+    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
+    fireEvent.change(await screen.findByPlaceholderText(/https:\/\/gateway\.example\.com\/hermes/), {
+      target: { value: 'ssh://botnet/' }
+    })
+
+    expect(await screen.findByText(/SSH to botnet/)).toBeTruthy()
+    expect(desktop.probeConnectionConfig).not.toHaveBeenCalled()
+
+    const apply = screen.getByText('Apply and reconnect').closest('button') as HTMLButtonElement
+    expect(apply.disabled).toBe(true)
+
+    fireEvent.click(screen.getByText('Test connection'))
+
+    await waitFor(() => {
+      expect(desktop.testConnectionConfig).toHaveBeenCalledWith({
+        mode: 'ssh',
+        sshHost: 'botnet',
+        sshPort: null,
+        sshRemoteProfile: undefined,
+        sshUser: undefined
+      })
+    })
+
+    await screen.findByText('Connected to alice@botnet (0.17.0).')
+    expect(apply.disabled).toBe(false)
+
+    fireEvent.click(screen.getByText('Apply and reconnect'))
+
+    await waitFor(() => {
+      expect(desktop.applyConnectionConfig).toHaveBeenCalledWith({
+        mode: 'ssh',
+        sshHost: 'botnet',
+        sshPort: null,
+        sshRemoteProfile: undefined,
+        sshUser: undefined
+      })
+    })
+  })
+
+
   it('ignores a completed probe after the gateway URL becomes invalid', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
@@ -319,7 +380,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
     render(<DesktopInstallOverlay />)
 
     fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-    const urlInput = await screen.findByPlaceholderText('https://gateway.example.com/hermes')
+    const urlInput = await screen.findByPlaceholderText(/https:\/\/gateway\.example\.com\/hermes/)
+
     fireEvent.change(urlInput, { target: { value: 'https://gateway.example.com/hermes' } })
 
     await act(async () => {
@@ -372,7 +434,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
     render(<DesktopInstallOverlay />)
 
     fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-    fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
+    fireEvent.change(await screen.findByPlaceholderText(/https:\/\/gateway\.example\.com\/hermes/), {
+
       target: { value: 'https://gateway.example.com/hermes' }
     })
 
@@ -423,7 +486,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
     render(<DesktopInstallOverlay />)
 
     fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-    fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
+    fireEvent.change(await screen.findByPlaceholderText(/https:\/\/gateway\.example\.com\/hermes/), {
+
       target: { value: 'https://gateway.example.com/hermes' }
     })
 
@@ -475,7 +539,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
     render(<DesktopInstallOverlay />)
 
     fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-    fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
+    fireEvent.change(await screen.findByPlaceholderText(/https:\/\/gateway\.example\.com\/hermes/), {
+
       target: { value: 'https://gateway.example.com/hermes' }
     })
 
@@ -555,7 +620,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
       return { mode: 'remote' }
     })
 
-    fireEvent.change(screen.getByPlaceholderText('https://gateway.example.com/hermes'), {
+    fireEvent.change(screen.getByPlaceholderText(/https:\/\/gateway\.example\.com\/hermes/), {
+
       target: { value: 'https://gateway.example.com/hermes' }
     })
 

@@ -163,6 +163,15 @@ def build_dashboard_parser(
         default=None,
         help="Identify a Desktop-owned SSH backend process",
     )
+    serve_parser.add_argument(
+        "--print-session-token",
+        dest="print_session_token",
+        action="store_true",
+        help=(
+            "Print the loopback session token of a running serve on --host/--port "
+            "(default 127.0.0.1:9119) and exit. Does not start a server."
+        ),
+    )
     # `headless_backend` marks the lean path: desktop/remote clients speak pure
     # JSON-RPC/WS, so `serve` skips the web UI build AND never serves the SPA
     # (cmd_dashboard exports HERMES_SERVE_HEADLESS=1). `dashboard` leaves it

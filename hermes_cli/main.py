@@ -11046,6 +11046,17 @@ def cmd_dashboard(args):
         remaining = _find_stale_dashboard_pids()
         sys.exit(1 if remaining else 0)
 
+    if getattr(args, "print_session_token", False):
+        if _token_file or getattr(args, "ssh_owner_nonce", None):
+            raise SystemExit(
+                "--print-session-token cannot be used with --ssh-session-token-file or --ssh-owner-nonce"
+            )
+        if not getattr(args, "headless_backend", False):
+            raise SystemExit("--print-session-token is only valid with hermes serve")
+        from hermes_cli.serve_session_token import print_session_token
+
+        sys.exit(print_session_token(getattr(args, "host", None) or "127.0.0.1", getattr(args, "port", None) or 9119))
+
     # `serve` is the headless backend: no UI build, no SPA mount, neutral
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.

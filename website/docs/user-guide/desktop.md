@@ -293,6 +293,7 @@ Everything connection-related lives on one settings page: **Settings → Gateway
 **Settings → Gateways → Connection mode** offers the alternatives to the local gateway:
 
 - **Remote gateway** — enter the URL of a `hermes serve` backend you run yourself and sign in. This is the mode the rest of this section walks through.
+- **Connect via SSH** — paste `ssh://host` (or `user@host` / a `~/.ssh/config` Host alias) and Desktop attaches to the `hermes serve` already running on that machine, or starts one if nothing is listening. Key-based SSH (`ssh-agent` / `IdentityFile`) is required; no token or OAuth. First launch **Connect to existing Hermes** accepts the same `ssh://botnet` URL.
 - **Hermes Cloud** — sign in once to Hermes Cloud and pick from the agents on your account; no URL to paste. The app discovers your agents (with an organization picker if your account spans several orgs), and connecting to one switches the session over automatically. The status bar shows the cloud connection while it's active.
 
 Gateway connections are **machine-level**: the Gateways page manages which gateway backends this desktop can connect to, and profiles are discovered *from* the gateways you connect. Per-profile backend routing continues to work — it lives in the profile rail's connect flow and the session source switcher, not in the settings page.
@@ -465,10 +466,12 @@ Build installers:
 npm run dist:mac     # DMG + zip
 npm run dist:win     # NSIS + MSI
 npm run dist:linux   # AppImage + deb + rpm
+npm run dist:linux:appimage  # AppImage only
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+GitHub Releases attach those installers via `.github/workflows/desktop-release.yml` (macOS, Windows, and Linux AppImage). macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+
 
 ### macOS permissions and local rebuilds (TCC)
 

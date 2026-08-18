@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
@@ -7,7 +8,8 @@ import type { DesktopConnectionProbeResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { AlertCircle, Check, Loader2, LogIn } from '@/lib/icons'
-import { coerceRemoteUrlScheme } from '@/lib/remote-url'
+import { coerceRemoteUrlScheme, parseSshConnectionUrl } from '@/lib/remote-url'
+
 
 type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
@@ -37,7 +39,9 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
   const probeSeq = useRef(0)
   const testSeq = useRef(0)
 
-  const trimmedUrl = coerceRemoteUrlScheme(remoteUrl)
+  const sshTarget = useMemo(() => parseSshConnectionUrl(remoteUrl), [remoteUrl])
+  const trimmedUrl = sshTarget ? '' : coerceRemoteUrlScheme(remoteUrl)
+
 
   const invalidateTest = useCallback(() => {
     testSeq.current += 1
@@ -50,7 +54,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
   useEffect(() => {
     const seq = ++probeSeq.current
 
-    if (!trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {
+    if (sshTarget || !trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {
       setProbeStatus('idle')
       setProbe(null)
       setOauthConnected(false)
@@ -94,7 +98,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
     }, 500)
 
     return () => window.clearTimeout(timer)
-  }, [invalidateTest, trimmedUrl])
+  }, [invalidateTest, sshTarget, trimmedUrl])
 
   const authMode: AuthMode = probeStatus === 'done' && probe?.authMode === 'oauth' ? 'oauth' : 'token'
   const authResolved = probeStatus === 'done' && probe?.authMode !== 'unknown'
@@ -102,16 +106,26 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
   const { isPassword: isPasswordProvider, providerLabel } = authProviderShape
   const canRetryProbe = Boolean(trimmedUrl && probeStatus === 'error')
 
-  const canTest = Boolean(
-    trimmedUrl && (canRetryProbe || (authResolved && (authMode === 'oauth' ? oauthConnected : remoteToken.trim())))
-  )
+  const canTest = sshTarget
+    ? Boolean(sshTarget.host)
+    : Boolean(trimmedUrl && (canRetryProbe || (authResolved && (authMode === 'oauth' ? oauthConnected : remoteToken.trim()))))
 
-  const payload = () => ({
-    mode: 'remote' as const,
-    remoteAuthMode: authMode,
-    remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
-    remoteUrl: trimmedUrl
-  })
+  const payload = () =>
+    sshTarget
+      ? {
+          mode: 'ssh' as const,
+          sshHost: sshTarget.host,
+          sshPort: sshTarget.port,
+          sshRemoteProfile: sshTarget.remoteProfile || undefined,
+          sshUser: sshTarget.user || undefined
+        }
+      : {
+          mode: 'remote' as const,
+          remoteAuthMode: authMode,
+          remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
+          remoteUrl: trimmedUrl
+        }
+
 
   const currentPayloadKey = JSON.stringify(payload())
   const payloadKeyRef = useRef(currentPayloadKey)
@@ -164,7 +178,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
     setLastTestedPayloadKey(null)
 
     try {
-      if (!authResolved) {
+      if (!sshTarget && !authResolved) {
         const result = await window.hermesDesktop.probeConnectionConfig(trimmedUrl)
 
         if (seq !== testSeq.current || testedPayloadKey !== payloadKeyRef.current) {
@@ -184,7 +198,8 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
         return
       }
 
-      setSuccess(copy.testSucceeded(result.baseUrl || trimmedUrl, result.version ?? undefined))
+      const connectedLabel = sshTarget ? result.host || `ssh://${sshTarget.host}` : result.baseUrl || trimmedUrl
+      setSuccess(copy.testSucceeded(connectedLabel, result.remoteHermesVersion ?? result.version ?? undefined))
       setLastTestedPayloadKey(testedPayloadKey)
     } catch (err) {
       if (seq === testSeq.current && testedPayloadKey === payloadKeyRef.current) {
@@ -196,6 +211,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
       }
     }
   }
+
 
   const applyRemote = async () => {
     if (!canApply) {
@@ -256,6 +272,12 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
             </div>
           ) : null}
 
+          {sshTarget ? (
+            <div className="rounded-md border border-(--ui-stroke-tertiary) p-3 text-sm text-muted-foreground">
+              {copy.sshDetected(sshTarget.user ? `${sshTarget.user}@${sshTarget.host}` : sshTarget.host)}
+            </div>
+          ) : null}
+
           {probeStatus === 'error' ? (
             <div className="flex items-start gap-2 text-sm text-destructive">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -263,7 +285,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
             </div>
           ) : null}
 
-          {authResolved && authMode === 'oauth' ? (
+          {!sshTarget && authResolved && authMode === 'oauth' ? (
             <div className="rounded-md border border-(--ui-stroke-tertiary) p-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -287,7 +309,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
             </div>
           ) : null}
 
-          {authResolved && authMode === 'token' ? (
+          {!sshTarget && authResolved && authMode === 'token' ? (
             <label className="grid gap-1.5">
               <span className="text-xs font-medium text-muted-foreground">{copy.tokenTitle}</span>
               <Input
@@ -304,6 +326,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
               <span className="text-xs text-muted-foreground">{copy.tokenDesc}</span>
             </label>
           ) : null}
+
 
           {error ? (
             <div className="flex items-start gap-2 text-sm text-destructive">

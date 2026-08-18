@@ -20,3 +20,63 @@ export function coerceRemoteUrlScheme(rawUrl: string): string {
 
   return `http://${value}`
 }
+
+export interface ParsedSshConnectionUrl {
+  host: string
+  user: string
+  port: number | null
+  remoteProfile: string
+}
+
+/**
+ * Parse `ssh://user@host:port?profile=name` for first-run / Settings paste.
+ * Trailing slashes are ignored. Port 22 is omitted (OpenSSH default).
+ */
+export function parseSshConnectionUrl(rawUrl: string): ParsedSshConnectionUrl | null {
+  const value = String(rawUrl || '').trim()
+
+  if (!/^ssh:\/\//i.test(value)) {
+    return null
+  }
+
+  let parsed: URL
+
+  try {
+    parsed = new URL(value)
+  } catch {
+    return null
+  }
+
+  if (parsed.protocol !== 'ssh:') {
+    return null
+  }
+
+  const host = parsed.hostname.replace(/^\[|]$/g, '').trim()
+
+  if (!host) {
+    return null
+  }
+
+  let port: number | null = null
+
+  if (parsed.port) {
+    const parsedPort = Number(parsed.port)
+
+    if (Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65535 && parsedPort !== 22) {
+      port = parsedPort
+    }
+  }
+
+  let user = ''
+
+  try {
+    user = decodeURIComponent(parsed.username || '').trim()
+  } catch {
+    user = String(parsed.username || '').trim()
+  }
+
+  const remoteProfile = String(parsed.searchParams.get('profile') || '').trim()
+
+  return { host, port, remoteProfile, user }
+}
+

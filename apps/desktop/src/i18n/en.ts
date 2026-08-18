@@ -773,7 +773,9 @@ export const en: Translations = {
       cloudAgentProvisioning: 'Provisioning…',
       cloudStatusLabel: status => `Status: ${status}`,
       remoteUrlTitle: 'Remote URL',
-      remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
+      remoteUrlDesc:
+        'Base URL for the remote dashboard, or paste ssh://host to switch to SSH. Path prefixes like /hermes work.',
+
       probing: 'Checking how this gateway authenticates…',
       probeError: 'Could not reach this gateway yet. Check the URL — the auth method will appear once it responds.',
       signedIn: 'Signed in',
@@ -826,7 +828,8 @@ export const en: Translations = {
       saveFailed: 'Could not save gateway settings',
       sshTitle: 'Connect via SSH',
       sshDesc:
-        'Hermes is launched on the remote over SSH and tunneled to this app — nothing to start or expose yourself. Requires working key-based SSH access to the host.',
+        'Attach to the Hermes serve on that host over SSH (or start one if nothing is listening). Paste ssh://host on first-run. Requires key-based SSH.',
+
       sshTrustHint: 'The first presented host key is trusted and pinned; later changes fail closed.',
       sshHostTitle: 'Host',
       sshHostDesc: 'user@host, or a Host alias from ~/.ssh/config.',
@@ -2489,15 +2492,18 @@ export const en: Translations = {
       'Connect this app to a Hermes gateway you already run, or install Hermes locally on this computer.',
     connectExistingTitle: 'Connect to existing Hermes',
     connectExistingShort: 'Connect existing',
-    connectExistingDesc: 'Use a remote backend with a session token or browser sign-in. No local install will start.',
+    connectExistingDesc: 'HTTPS gateway, or ssh://host to attach over SSH. No local install will start.',
     installLocalTitle: 'Install Hermes locally',
     installLocalDesc: 'Download Hermes, create its Python environment, and run the backend on this computer.',
     localStartUnavailable: 'Local installation could not start. Restart Hermes Desktop and try again.',
     remoteSetupTitle: 'Connect to existing Hermes',
-    remoteSetupDesc: 'Enter your gateway URL. Hermes Desktop will detect whether it needs a token or browser sign-in.',
+    remoteSetupDesc: 'Paste an https:// gateway URL, or ssh://host to attach over SSH.',
     remoteUrlTitle: 'Gateway URL',
-    remoteUrlDesc: 'Use the base URL of the Hermes gateway, including https:// when remote.',
-    remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
+    remoteUrlDesc: 'https:// for an exposed dashboard, or ssh://botnet (user@host, optional :port and ?profile=).',
+    remoteUrlPlaceholder: 'https://gateway.example.com/hermes or ssh://botnet',
+    sshDetected: host =>
+      `SSH to ${host}. Test connection, then Apply — Desktop attaches to the Hermes serve on that machine using your ssh-agent or ~/.ssh/config.`,
+
     probing: 'Detecting gateway authentication...',
     probeError: 'Could not reach that Hermes gateway.',
     identityProvider: 'your identity provider',

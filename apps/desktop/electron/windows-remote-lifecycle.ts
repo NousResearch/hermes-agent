@@ -1,6 +1,8 @@
 import crypto from 'node:crypto'
 
 import { redactSecrets, SSH_ERROR } from './ssh-connection'
+import { tryAttachMachineServe } from './remote-lifecycle'
+
 
 const LOCKFILE_SCHEMA_VERSION = 2
 const PROTOCOL_VERSION = 1
@@ -288,6 +290,20 @@ async function connectWindowsRemote(deps) {
 
   assertCurrent(signal)
   const runtime = await probeWindowsRemote(ssh, remoteHermesPath)
+  rememberLog(`[ssh-lifecycle] remote platform Windows/${runtime.arch}`)
+  rememberLog(`[ssh-lifecycle] located hermes at ${runtime.hermesPath}`)
+
+  const attached = await tryAttachMachineServe(
+    deps,
+    runtime.hermesPath,
+    { os: 'Windows', arch: runtime.arch },
+    ''
+  )
+
+  if (attached) {
+    return attached
+  }
+
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
   if (!inspection.supported) {
@@ -298,8 +314,8 @@ async function connectWindowsRemote(deps) {
 
   runtime.hermesPath = inspection.path
   const hermesVersion = inspection.version || ''
-  rememberLog(`[ssh-lifecycle] remote platform Windows/${runtime.arch}`)
-  rememberLog(`[ssh-lifecycle] located hermes at ${runtime.hermesPath}`)
+
+
 
   const lock = await helper(ssh, runtime, 'read-lock', [ownershipId])
 

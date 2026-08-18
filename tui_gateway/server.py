@@ -3506,6 +3506,7 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> 
         "terminal.read.request",
         "preview.read.request",
         "window.read.request",
+        "pen.tool.request",
         "mcp.setup.request",
     }:
         _emit(
@@ -6218,6 +6219,17 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {},
             timeout=30,
+        ),
+        # pen_canvas tool (desktop GUI): the renderer runs a pen.dev design
+        # operation against the live Canvas tab (or the user's running pen.dev
+        # app) and answers pen.tool.respond with the JSON result. Generous
+        # timeout — execute snippets render real design documents, and a
+        # screenshot rasterizes one.
+        "pen_canvas_callback": lambda action, args: _block(
+            "pen.tool.request",
+            sid,
+            {"action": action, "args": args or {}},
+            timeout=120,
         ),
         # setup_mcp tool (desktop GUI): the renderer shows an inline consent
         # card and walks the user through install/enable/OAuth via the REST

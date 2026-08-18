@@ -1139,6 +1139,15 @@ export interface Translations {
     tokens: (value: number | string) => string
   }
 
+  penLibrary: {
+    title: string
+    searchPlaceholder: string
+    empty: string
+    delete: string
+    confirmDelete: string
+    cancelDelete: string
+  }
+
   commandCenter: {
     close: string
     paletteTitle: string
@@ -1645,6 +1654,9 @@ export interface Translations {
     kindImage: string
     kindFile: string
     kindLink: string
+    kindCanvas: string
+    tabCanvases: string
+    openCanvas: string
     chat: string
     copyUrl: string
     copyPath: string
@@ -1930,6 +1942,20 @@ export interface Translations {
       tip: (skill: string) => string
       done: (skill: string) => string
       doneTip: string
+    }
+    penSuggestions: {
+      reopen: string
+      reopenTip: string
+      untitledCanvas: string
+      newCanvas: string
+      newCanvasTip: string
+      openFile: string
+      openFileTip: string
+      working: string
+      workingTip: string
+      done: string
+      doneTip: string
+      openFailed: string
     }
     githubSuggestions: {
       label: string
@@ -2386,6 +2412,15 @@ export interface Translations {
     terminalCloseOthers: string
     terminalCloseAll: string
     addToChat: string
+  }
+
+  pen: {
+    tab: string
+    loadFailed: string
+    openFailed: string
+    newCanvas: string
+    openCanvasFile: string
+    notInstalled: string
   }
 
   preview: {

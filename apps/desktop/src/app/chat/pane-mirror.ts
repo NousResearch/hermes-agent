@@ -45,6 +45,11 @@ export interface PaneMirror<T> {
    *  DevTools toggles. DATA, not markup: the strip's `PaneStripGlyph` owns the
    *  styling so every glyph on every strip matches. */
   stripTools?: (key: string) => readonly PaneStripTool[]
+  /** Suppress the zone's tab strip while this tile is active (the full-page
+   *  treatment — see tree-group's headerVeto). For surfaces that bring their
+   *  OWN chrome (the pen canvas is the whole editor) where even one hermes
+   *  tab row reads as clutter. Close/drag remain available via ⌘K and verbs. */
+  headerVeto?: boolean
   render: (key: string) => ReactNode
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
@@ -94,6 +99,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
             pos: cfg.dir?.(tile) ?? 'right'
           },
           minWidth: cfg.minWidth,
+          headerVeto: cfg.headerVeto,
           // Every mirrored tile is a full workspace surface docked beside main —
           // and closeable, which is what keeps its tab when it lands in a zone of
           // its own (see lone-header.ts).

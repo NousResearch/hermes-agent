@@ -127,6 +127,37 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
+  // Pen canvas (pen.dev): main hosts the user's installed pen.dev editor in a
+  // chromeless window attached to the app (pen-canvas.ts + main.ts pen block).
+  // The renderer gets status, open/close doors, the agent tool proxy, and a
+  // host-event feed.
+  pen: {
+    status: () => ipcRenderer.invoke('hermes:pen:status'),
+    open: options => ipcRenderer.invoke('hermes:pen:open', options),
+    close: options => ipcRenderer.invoke('hermes:pen:close', options),
+    tool: (name, payload) => ipcRenderer.invoke('hermes:pen:tool', name, payload),
+    // A canvas belongs to a chat session: ask what this session has, and
+    // reopen it. That's what makes a canvas come back after a restart instead
+    // of having to be requested again.
+    session: (sessionId, projectId) => ipcRenderer.invoke('hermes:pen:session', sessionId, projectId),
+    adopt: (sessionId, projectId) => ipcRenderer.invoke('hermes:pen:adopt', sessionId, projectId),
+    restore: (sessionId, projectId) => ipcRenderer.invoke('hermes:pen:restore', sessionId, projectId),
+    // The canvas library (~/.hermes/pens): browse, rename, delete, reveal.
+    library: () => ipcRenderer.invoke('hermes:pen:library'),
+    libraryDelete: target => ipcRenderer.invoke('hermes:pen:library-delete', target),
+    libraryRename: (target, nextName) => ipcRenderer.invoke('hermes:pen:library-rename', target, nextName),
+    reveal: target => ipcRenderer.invoke('hermes:pen:reveal', target),
+    // Pen's own agent (floating chat panel + composer + launcher). Hidden by
+    // default — hermes is the agent for this canvas.
+    setAgentVisible: visible => ipcRenderer.invoke('hermes:pen:agent-visible', visible),
+    agentHidden: () => ipcRenderer.invoke('hermes:pen:agent-hidden'),
+    onEvent: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:pen:event', listener)
+
+      return () => ipcRenderer.removeListener('hermes:pen:event', listener)
+    }
+  },
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),

@@ -99,7 +99,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "read_preview", "read_window_below", "setup_mcp", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "read_terminal", "read_preview", "read_window_below", "setup_mcp", "pen_canvas", "delegate_task"}
 )
 
 
@@ -3232,6 +3232,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(
                 _read_window_below_tool(
                     callback=getattr(agent, "read_window_below_callback", None),
+                ),
+                next_args,
+            )
+    elif function_name == "pen_canvas":
+        def _execute(next_args: dict) -> Any:
+            from tools.pen_canvas_tool import pen_canvas_tool as _pen_canvas_tool
+            return _finish_agent_tool(
+                _pen_canvas_tool(
+                    action=next_args.get("action", ""),
+                    args=next_args.get("args"),
+                    callback=getattr(agent, "pen_canvas_callback", None),
                 ),
                 next_args,
             )

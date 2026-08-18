@@ -789,6 +789,13 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
                 "user's browser rather than opening yours with "
                 "browser_navigate."
             )
+    if "pen_canvas" in names:
+        sentences.append(
+            "When the app underneath is pen.dev, design with pen_canvas — "
+            "every action except 'open' reaches their live pen.dev document "
+            "directly, so skip opening a Canvas tab and never reach for "
+            "screenshots or clicks to edit a design."
+        )
     sentences.append(
         "This is a prior, not a rule: when the request names its own target, "
         "follow the request.]"

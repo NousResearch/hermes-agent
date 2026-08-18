@@ -108,6 +108,8 @@ export type GatewayEventPayload = {
   // in-app terminal pane or the browser/preview pane)
   start?: number
   count?: number
+  // pen.tool.request (pen_canvas tool — agent driving a pen.dev Canvas tab)
+  // reuses `action` (mcp.setup.request) and `args` (tool payloads) above.
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
   // pane.reveal (agent focusing a desktop pane via the focus_pane tool)

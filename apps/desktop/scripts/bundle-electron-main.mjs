@@ -23,6 +23,11 @@ const mainEntry = resolve(root, 'electron/main.ts')
 const mainOut = resolve(distDir, 'electron-main.mjs')
 const preloadEntry = resolve(root, 'electron/preload.ts')
 const preloadOut = resolve(distDir, 'electron-preload.js')
+const penPreloadEntry = resolve(root, 'electron/pen-preload.ts')
+// .cjs, not .js: the package is "type": "module", and an unsandboxed preload
+// loads through Node's module resolver — a .js preload would be parsed as ESM
+// and its CommonJS require() throws before a single line runs.
+const penPreloadOut = resolve(distDir, 'pen-preload.cjs')
 
 const external = ['electron', 'node-pty', 'get-windows', 'fs']
 // Production bundles bake packaged=true so unpackaged `electron .` still
@@ -63,3 +68,18 @@ await build({
   logLevel: 'info',
 })
 console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}`)
+
+// Bundle pen-preload.ts → dist/pen-preload.js (the pen.dev canvas webview's
+// electronAPI bridge — see electron/pen-canvas.ts)
+await build({
+  entryPoints: [penPreloadEntry],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node20',
+  outfile: penPreloadOut,
+  external,
+  define,
+  logLevel: 'info',
+})
+console.log(`bundled ${penPreloadOut}${isDev ? ' (dev)' : ''}`)

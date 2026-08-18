@@ -1441,6 +1441,14 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "result", allow_expired=True)
 
 
+@method("pen.tool.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string of the pen.dev canvas operation's result
+    # (pen_canvas tool). allow_expired=True for the same reason as
+    # terminal.read: a long design render can outlive the tool's bounded wait.
+    return _respond(rid, params, "text", allow_expired=True)
+
+
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
     return _respond(rid, params, "password", allow_expired=True)

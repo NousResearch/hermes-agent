@@ -280,6 +280,7 @@ TOOLSETS = {
             "read_window_below",
             "focus_pane", "react_to_message",
             "setup_mcp",
+            "pen_canvas",
         ],
         "includes": []
     },

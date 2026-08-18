@@ -130,6 +130,47 @@ declare global {
         onShown: (callback: () => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      // Pen canvas (pen.dev): main hosts the user's installed pen.dev editor
+      // in a chromeless window attached to the app. The renderer gets
+      // status, the open/close doors, the agent tool proxy, and a host-event
+      // feed (save-as re-homes, add-to-chat, …).
+      pen?: {
+        status: () => Promise<PenStatus>
+        open: (options?: { name?: string; path?: string; projectId?: string; sessionId?: string; template?: string }) => Promise<PenOpenResult>
+        close: (options?: { keep?: boolean }) => Promise<void>
+        tool: (name: string, payload?: Record<string, unknown>) => Promise<PenToolResult>
+        /** The canvas tied to a chat session, when it can still be reopened. */
+        session: (sessionId: string, projectId?: string) => Promise<null | { closed?: boolean; docId: string; path?: null | string; width?: number }>
+        /** Tie the LIVE canvas to a session after the fact — a draft chat got
+         *  its real id after the canvas was opened. */
+        adopt: (sessionId: string, projectId?: string) => Promise<boolean>
+        restore: (sessionId: string, projectId?: string) => Promise<null | { doc?: PenDocumentInfo; docId?: string; url?: string }>
+        /** The canvas library (~/.hermes/pens). */
+        library: () => Promise<{
+          items: Array<{
+            docId: null | string
+            folder: string
+            modifiedAt: number
+            name: string
+            open: boolean
+            path: string
+            /** Rendered canvas preview PNG beside the .pen, when one exists. */
+            previewPath: null | string
+            /** The chat session this canvas belongs to, when tied. */
+            sessionId: null | string
+            size: number
+          }>
+          root: string
+        }>
+        libraryDelete: (target: string) => Promise<boolean>
+        libraryRename: (target: string, nextName: string) => Promise<null | string>
+        reveal: (target: string) => Promise<void>
+        /** Pen's own agent inside the canvas (chat panel, composer, launcher).
+         *  Hidden by default — hermes is the agent for this canvas. */
+        setAgentVisible: (visible: boolean) => Promise<{ hidden: boolean }>
+        agentHidden: () => Promise<boolean>
+        onEvent: (callback: (payload: { event: string; payload: unknown }) => void) => () => void
+      }
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -937,6 +978,38 @@ export interface DesktopBootProgress {
   retryable?: boolean
   running: boolean
   timestamp: number
+}
+
+// Pen canvas (pen.dev) types — the renderer's view of electron/pen-canvas.ts.
+
+export interface PenDocumentInfo {
+  docId: string
+  fileURI: string
+  displayName: string
+  isTemporary: boolean
+}
+
+export interface PenStatus {
+  available: boolean
+  loggedIn: boolean
+  version: string
+  running: boolean
+  openDocuments: PenDocumentInfo[]
+  /** pen.dev's app icon (data URL), read from the user's installed Pen.app.
+   *  Null until primed / when pen isn't installed — fall back to a glyph. */
+  icon: null | string
+}
+
+export interface PenOpenResult {
+  doc: PenDocumentInfo
+  /** hermes-pen:// URL the pen tile mounts in its <webview>. */
+  url: string
+}
+
+export interface PenToolResult {
+  success: boolean
+  result?: unknown
+  error?: string
 }
 
 // First-launch install ("bootstrap") event types -- emitted by

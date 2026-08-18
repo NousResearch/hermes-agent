@@ -706,3 +706,11 @@ test('source contract: group chat log lines expose CopyButton on the entry body'
   assert.doesNotMatch(src, /readAloud/)
   assert.doesNotMatch(src, /ActionBarPrimitive\.Reload/)
 })
+
+test('source contract: group chat message bodies opt back into selectable text', () => {
+  // styles.css sets user-select: none app-wide and re-enables it only for
+  // [data-selectable-text="true"] surfaces. Without this opt-in on the entry
+  // body, drag-select and Cmd/Ctrl+C are dead in group chat logs.
+  const src = groupChatWorkspaceSource()
+  assert.match(src, /'data-selectable-text':\s*'true'/)
+})

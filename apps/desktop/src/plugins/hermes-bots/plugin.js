@@ -8357,6 +8357,8 @@ function GroupChatWorkspace({ group, members, onBack }) {
                           jsx('div', {
                             className:
                               'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto',
+                            // The app shell sets user-select: none globally; message bodies opt
+                            // back in so drag-select and ⌘C work in group chat logs.
                             'data-selectable-text': 'true',
                             children: Streamdown ? jsx(Streamdown, { children: entry.text }) : entry.text
                           })

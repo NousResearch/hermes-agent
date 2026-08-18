@@ -29,6 +29,9 @@ def validate_platform_toolsets(
        the warning includes that as a suggestion.
     2. The mapping is non-empty but resolves to *zero* valid toolsets, so the
        agent would start with no tools at all.
+    3. A platform is configured with an *empty* toolset list.  Checked
+       per-platform because the global zero-valid-toolsets net in (2) is
+       suppressed as soon as any other platform carries a valid toolset.
 
     ``is_valid_toolset`` is injected (normally :func:`toolsets.validate_toolset`)
     so this function performs no imports or I/O and is testable in isolation.
@@ -48,6 +51,21 @@ def validate_platform_toolsets(
 
     valid_count = 0
     for platform, raw in platform_toolsets.items():
+        # An explicitly-empty list is honoured verbatim by
+        # ``resolve_enabled_toolsets()``: ``[]`` *is* a list, so the
+        # platform-default fallback is skipped and the platform starts with zero
+        # tools.  That is the intended contract for a deliberate opt-out, but it
+        # reads identically to an accidental wipe, and the global ``valid_count``
+        # below cannot catch it — any *other* populated platform pushes the count
+        # above zero and suppresses the safety net.  Report it per-platform so the
+        # zero-tools end state is never silent.
+        if isinstance(raw, list) and not raw:
+            warnings.append(
+                f"platform '{platform}' is configured with an empty toolset "
+                f"list — the agent will have no tools on this platform. "
+                f"Run `hermes tools` to reconfigure."
+            )
+            continue
         names = raw if isinstance(raw, list) else [raw]
         for name in names:
             if not isinstance(name, str) or not name:

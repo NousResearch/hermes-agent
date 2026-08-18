@@ -4140,8 +4140,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 agent._fire_reasoning_delta(reasoning_text)
 
             # Accumulate text content — fire callback only when no tool calls
-            if delta and delta.content:
-                content_parts.append(delta.content)
+            delta_content = getattr(delta, "content", None)
+            if delta_content:
+                content_parts.append(delta_content)
                 if not tool_calls_acc:
                     if pending_text_parts or _provider_stream_text_may_be_sse(delta.content):
                         pending_text_parts.append(delta.content)
@@ -4151,7 +4152,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         _flush_pending_stream_text()
                         continue
                     _fire_first_delta()
-                    agent._fire_stream_delta(delta.content)
+                    agent._fire_stream_delta(delta_content)
                     deltas_were_sent["yes"] = True
                 # Tool calls suppress regular content streaming (avoids
                 # displaying chatty "I'll use the tool..." text alongside
@@ -4166,17 +4167,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # box is already closed (tool boundary flush).
                 elif agent.stream_delta_callback:
                     try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
+                        agent.stream_delta_callback(delta_content)
+                        agent._record_streamed_assistant_text(delta_content)
                     except Exception:
                         pass
 
             # Accumulate tool call deltas — notify display on first name
-            if delta and delta.tool_calls:
+            delta_tool_calls = getattr(delta, "tool_calls", None)
+            if delta_tool_calls:
                 _flush_pending_stream_text()
-                for tc_delta in delta.tool_calls:
-                    raw_idx = tc_delta.index if tc_delta.index is not None else 0
-                    delta_id = tc_delta.id or ""
+                for tc_delta in delta_tool_calls:
+                    raw_index = getattr(tc_delta, "index", None)
+                    raw_idx = raw_index if raw_index is not None else 0
+                    delta_id = getattr(tc_delta, "id", None) or ""
 
                     # Ollama fix: detect a new tool call reusing the same
                     # raw index (different id) and redirect to a fresh slot.
@@ -4195,7 +4198,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
                     if idx not in tool_calls_acc:
                         # Poolside may send integer id instead of string
-                        _tc_id = tc_delta.id
+                        _tc_id = getattr(tc_delta, "id", None)
                         if isinstance(_tc_id, int):
                             _tc_id = str(_tc_id)
                         tool_calls_acc[idx] = {
@@ -4205,14 +4208,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "extra_content": None,
                         }
                     entry = tool_calls_acc[idx]
-                    if tc_delta.id is not None:
-                        _new_id = tc_delta.id
+                    tc_id = getattr(tc_delta, "id", None)
+                    if tc_id is not None:
+                        _new_id = tc_id
                         if isinstance(_new_id, int):
                             _new_id = str(_new_id)
                         if _new_id:
                             entry["id"] = _new_id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
+                    tc_function = getattr(tc_delta, "function", None)
+                    if tc_function:
+                        function_name = getattr(tc_function, "name", None)
+                        if function_name:
                             # Use assignment, not +=.  Function names are
                             # atomic identifiers delivered complete in the
                             # first chunk (OpenAI spec).  Some providers
@@ -4221,9 +4227,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             # produce "read_fileread_file".  Assignment
                             # (matching the OpenAI Node SDK / LiteLLM /
                             # Vercel AI patterns) is immune to this.
-                            entry["function"]["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            entry["function"]["arguments"] += tc_delta.function.arguments
+                            entry["function"]["name"] = function_name
+                        function_arguments = getattr(tc_function, "arguments", None)
+                        if function_arguments:
+                            entry["function"]["arguments"] += function_arguments
                     extra = getattr(tc_delta, "extra_content", None)
                     if extra is None and hasattr(tc_delta, "model_extra"):
                         extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
@@ -4249,8 +4256,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # discarding the attempted action.
                         result["partial_tool_names"].append(name)
 
-            if chunk.choices[0].finish_reason:
-                finish_reason = chunk.choices[0].finish_reason
+            chunk_finish_reason = getattr(chunk.choices[0], "finish_reason", None)
+            if chunk_finish_reason:
+                finish_reason = chunk_finish_reason
 
             # Usage in the final chunk
             if hasattr(chunk, "usage") and chunk.usage:

@@ -818,6 +818,17 @@ export function nextSessionTileForWorkspace(): null | string {
     }
   }
 
+  // Nothing stacked WITH main — but a session tile in another zone can still
+  // shift in. Without this, closing main in a side-by-side layout skipped
+  // promotion entirely and dropped to a fresh "New session" draft, which read
+  // as "closing a pane gave me a new session" (#88924). Promoting the tile
+  // also collapses its zone, so Close is how a multi-pane layout shrinks.
+  for (const tile of tiles) {
+    if (tree && findGroupOfPane(tree, `${TILE_PANE_PREFIX}${tile.storedSessionId}`)) {
+      return tile.storedSessionId
+    }
+  }
+
   return null
 }
 

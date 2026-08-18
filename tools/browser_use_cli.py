@@ -110,6 +110,13 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
 # after any page output.
 _LANDED_URL_MARKER = "__HERMES_BROWSER_EXEC_LANDED_URL__:"
 
+# Matches ONLY the trailer's landing-report line: the marker immediately
+# followed by an absolute http(s) URL. Used to strip exactly that line from
+# output without touching page content that happens to echo the marker.
+_URL_RECHECK_REPORT_RE = re.compile(
+    r"^" + re.escape(_LANDED_URL_MARKER) + r"\s*https?://\S+$"
+)
+
 # Appended to exec code so the *executed* navigation target can be checked,
 # not just the literals the pre-check could see in the source. Mirrors
 # browser_tool's _current_page_private_url, which reads window.location.href
@@ -165,10 +172,17 @@ def _landed_url(stdout: str) -> Optional[str]:
 
 
 def _strip_landed_url_marker(stdout: str) -> str:
-    """Drop marker lines so the probe stays invisible to the model."""
+    """Drop the probe's landing-report line so it stays invisible.
+
+    Only the line that carried the *landed URL* (the trailer's actual
+    output) is removed. A content line that merely happens to contain the
+    marker string is preserved — it is page data, not the probe report,
+    and dropping it would lose legitimate output (Point 3 review).
+    """
     if _LANDED_URL_MARKER not in (stdout or ""):
         return stdout
-    kept = [ln for ln in stdout.splitlines() if _LANDED_URL_MARKER not in ln]
+    kept = [ln for ln in stdout.splitlines()
+            if not (_URL_RECHECK_REPORT_RE.match(ln))]
     stripped = "\n".join(kept)
     return stripped + "\n" if stdout.endswith("\n") and stripped else stripped
 
@@ -621,7 +635,22 @@ def browser_exec(
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     task_id: Optional[str] = None,
 ):
-    """Run Python code through the browser-use CLI, and return its output"""
+    """Run Python code through the browser-use CLI, and return its output
+
+    Security posture (Point 1 review — residual gap, documented):
+    - ``_blocked_url_in_code`` checks URL *literals* in the source up front.
+    - ``_with_url_recheck`` appends a trailer that reports the *final* landed
+      URL (window.location.href) after execution; if that landing is blocked,
+      the whole output is withheld.
+    - This is an END-STATE check, not a per-navigation one. Model-authored
+      code could navigate to an internal/IMDS address, ``print()`` its content
+      (stdout is the exfiltration channel), then navigate back to a public URL
+      before the trailer runs — the final landing looks safe while the data
+      already reached stdout. The guard narrows (catches constructed URLs and
+      redirects that end on a blocked address) but does NOT close this
+      intermediate-hop exfiltration gap. Do not treat it as full SSRF
+      coverage.
+    """
     from tools.registry import tool_error, tool_result
 
     if not code or not code.strip():

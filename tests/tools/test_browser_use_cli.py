@@ -983,6 +983,29 @@ class TestBrowserExecUrlRecheck:
         assert "error" in result
         assert not marker.exists(), "blocked code must never reach the CLI"
 
+    def test_strip_preserves_content_that_echoes_marker(self):
+        """Point 3: only the trailer's landing-report line is stripped.
+
+        Legitimate page content that merely happens to contain the marker
+        string must be preserved — dropping it would lose real output. Only
+        the line where the marker is followed by an absolute http(s) URL (the
+        actual probe report) is removed.
+        """
+        M = bu_cli._LANDED_URL_MARKER
+        # Landing-report line (marker + http URL) -> stripped
+        out_landing = f"page body\n{M}https://example.com/\n"
+        assert M not in bu_cli._strip_landed_url_marker(out_landing)
+        assert "page body" in bu_cli._strip_landed_url_marker(out_landing)
+        # Content line that merely echoes the marker (no URL) -> preserved
+        out_content = f"user content {M}mention\nreal text\n"
+        stripped = bu_cli._strip_landed_url_marker(out_content)
+        assert M in stripped, "content echoing the marker must be preserved"
+        assert "real text" in stripped
+        # Mixed: landing line stripped, content-echo kept
+        out_mixed = f"echo {M} inline\n{M}https://real.example.com\n"
+        sm = bu_cli._strip_landed_url_marker(out_mixed)
+        assert "echo" in sm and "https://real.example.com" not in sm
+
 
 class TestFindCliManagedBin:
     """MANAGED-FIRST: _find_cli probes $HERMES_HOME/bin before PATH and

@@ -16,6 +16,8 @@ untouched, since those are a common and legitimate pattern this guard must
 not break.
 """
 
+import json
+
 from tools.shell_heredoc import detect_unquoted_heredoc_file_write
 from tools.terminal_tool import detect_unquoted_heredoc_file_write as guard
 
@@ -52,6 +54,32 @@ class TestUnquotedFileWriteBlocked:
     def test_env_prefix_before_cat(self):
         cmd = "LC_ALL=C cat > out.txt <<EOF" + NL + "text" + NL + "EOF"
         assert detect_unquoted_heredoc_file_write(cmd) is not None
+
+    def test_redirect_after_heredoc_operator(self):
+        # `cat <<EOF > file` -- the file redirect comes AFTER the heredoc
+        # operator on the opener line, not before it. Must be caught the
+        # same as `cat > file <<EOF`; the danger doesn't depend on order.
+        cmd = "cat <<EOF > file.txt" + NL + "content" + NL + "EOF"
+        assert detect_unquoted_heredoc_file_write(cmd) is not None
+
+
+class TestNonFileRedirectTargetsAllowed:
+    """A `>` that doesn't point at a plain file is not a file-write consumer."""
+
+    def test_fd_duplication_not_a_file(self):
+        # `>&2` duplicates stdout onto fd 2 (stderr) -- not a file target.
+        cmd = "cat >&2 <<EOF" + NL + "content" + NL + "EOF"
+        assert detect_unquoted_heredoc_file_write(cmd) is None
+
+    def test_process_substitution_not_a_file(self):
+        # `>(cmd)` is process substitution -- writes to a pipe feeding a
+        # subprocess, not a plain file.
+        cmd = "cat > >(tee log.txt) <<EOF" + NL + "content" + NL + "EOF"
+        assert detect_unquoted_heredoc_file_write(cmd) is None
+
+    def test_append_fd_duplication_not_a_file(self):
+        cmd = "cat >>&2 <<EOF" + NL + "content" + NL + "EOF"
+        assert detect_unquoted_heredoc_file_write(cmd) is None
 
 
 class TestQuotedFileWriteAllowed:
@@ -100,9 +128,52 @@ class TestNonFileWriteConsumersUntouched:
     def test_cat_reading_not_writing(self):
         assert detect_unquoted_heredoc_file_write("cat file.txt | grep x") is None
 
+    def test_interpreter_with_own_unrelated_output_redirect(self):
+        # `python3 <<EOF > out.log` -- the heredoc feeds python as its
+        # script (safe, same as any other interpreter case); the `>` on
+        # this line redirects PYTHON's own stdout, not the heredoc body.
+        # A file-write redirect being present somewhere on the opener must
+        # not be enough to flag this on its own.
+        cmd = "python3 <<EOF > out.log" + NL + "print(1)" + NL + "EOF"
+        assert detect_unquoted_heredoc_file_write(cmd) is None
+
+    def test_bash_interpreter_with_own_output_redirect(self):
+        cmd = "bash <<EOF > out.log" + NL + "echo hi" + NL + "EOF"
+        assert detect_unquoted_heredoc_file_write(cmd) is None
+
 
 class TestTerminalToolReexport:
     """terminal_tool.py imports and wires this in -- confirm the same function."""
 
     def test_same_function_object(self):
         assert guard is detect_unquoted_heredoc_file_write
+
+
+class TestTerminalToolActuallyBlocks:
+    """Integration-level: terminal_tool() itself hard-blocks before executing.
+
+    The unit tests above only exercise the detector function directly --
+    they protect the detection logic but not the wiring. A future refactor
+    could silently drop or reorder the guard inside terminal_tool() without
+    any of those tests catching it. These call terminal_tool() itself and
+    assert on its actual response, the same JSON contract an agent sees.
+    """
+
+    def test_dangerous_command_is_blocked_with_no_execution(self):
+        from tools.terminal_tool import terminal_tool
+
+        cmd = "cat > page.tsx <<EOF" + NL + "title: " + BT + "${x}" + BT + "," + NL + "EOF"
+        result = json.loads(terminal_tool(command=cmd))
+
+        assert result["status"] == "error"
+        assert result["exit_code"] == -1
+        assert "write_file" in result["error"]
+        assert result["output"] == ""
+
+    def test_safe_quoted_variant_is_not_blocked_by_this_guard(self):
+        # Deliberately NOT calling terminal_tool() here: the quoted variant is
+        # allowed, so a real call would execute the command and write a file
+        # as a test side effect. The guard's own decision is the thing under
+        # test, and the block above already proves terminal_tool() acts on it.
+        cmd = "cat > page.tsx <<'EOF'" + NL + "title: " + BT + "${x}" + BT + "," + NL + "EOF"
+        assert guard(cmd) is None

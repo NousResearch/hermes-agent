@@ -160,15 +160,27 @@ def _find_heredoc_close(
 
 
 # A heredoc whose output redirects to a file: `cat > path`, `cat >> path`,
-# or a bare redirect with no other consumer (`> path <<EOF`). Deliberately
-# narrow — this must not flag heredocs feeding an interpreter that legitimately
-# consumes stdin as input rather than writing it verbatim to disk (python,
-# psql, docker exec -i, ssh).
-_FILE_WRITE_HEREDOC_RE = re.compile(
+# or a bare redirect with no other consumer (`> path <<EOF`). Matched
+# anywhere in the opener, not just at its start, so `cat <<EOF > path`
+# (redirect after the heredoc operator) is caught the same as
+# `cat > path <<EOF`. The lookahead excludes non-file redirect targets that
+# happen to start with `>`: `>&2` (fd duplication -- not a file), `>(cmd)`
+# (process substitution -- writes to a pipe, not a plain file), and `>>`
+# already covered by `{1,2}` so a second literal `>` can't be its own target.
+_FILE_WRITE_HEREDOC_RE = re.compile(r">{1,2}\s*(?![&()>])\S")
+
+# Interpreters whose heredoc body is fed to them as input/script text, not
+# copied verbatim to a file. A `>` elsewhere on the same command line
+# redirects THEIR output, not the heredoc body, and is unrelated to this
+# guard: `python3 <<EOF > out.log` must not be flagged just because a file
+# redirect is present somewhere on the line. Deliberately excludes `cat`:
+# `cat > path <<EOF` is exactly the pattern this guard exists to catch.
+_HEREDOC_INTERPRETER_CONSUMER_RE = re.compile(
     r"^\s*"
     r"(?:[A-Z_][A-Z0-9_]*=\S+\s+)*"
-    r"(?:cat\s+)?"
-    r">{1,2}\s*\S",
+    r"(?:env\s+)?"
+    r"(?:[A-Za-z0-9_./-]+/)?"
+    r"(?:python(?:3(?:\.\d+)*)?|node|osascript|psql|docker|ssh|bash|sh|zsh)(?=\s|$)",
     re.IGNORECASE,
 )
 
@@ -223,7 +235,10 @@ def detect_unquoted_heredoc_file_write(command: str) -> str | None:
 
         opener = command[command_start:command_end]
         masked_opener = _mask_simple_quotes(opener)
-        if _FILE_WRITE_HEREDOC_RE.search(masked_opener):
+        is_interpreter_consumer = bool(
+            _HEREDOC_INTERPRETER_CONSUMER_RE.search(masked_opener)
+        )
+        if not is_interpreter_consumer and _FILE_WRITE_HEREDOC_RE.search(masked_opener):
             for delimiter, _strip_tabs, quoted in specs:
                 if not quoted:
                     return (

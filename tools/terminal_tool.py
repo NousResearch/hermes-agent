@@ -981,6 +981,7 @@ def _plan_execution(
         # An unquoted heredoc writing a file lets bash expand backticks/$()/$VAR in the
         # body before it reaches disk, silently corrupting the content with no error.
         # Refuse it in favour of write_file, which this tool's own description says to use.
+        from tools.shell_heredoc import detect_unquoted_heredoc_file_write
         heredoc_warning = detect_unquoted_heredoc_file_write(command)
         if heredoc_warning:
             raise _Rejected(_error_json(heredoc_warning, status="error"))

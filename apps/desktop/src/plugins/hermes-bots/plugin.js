@@ -206,6 +206,92 @@ const $groupChatWorkspace = atom(null)
 /** Groups whose latest room activity mentions @user — the needs-you badge. */
 const $groupNeedsYou = atom({})
 
+// ── group activity feed ─────────────────────────────────────────────────────
+// Runtime-only, bounded per-room record of turn events that feeds the
+// collapsible Activity view. Never persisted — it is presentation state like
+// running/epoch, and the room transcript (log) stays the only durable record.
+// Every event is tagged with the room epoch it belongs to, so the view shows
+// only the CURRENT run: a newer send bumps the epoch (old-run events drop
+// away), and a rename re-keys the room (the feed starts clean under the new
+// name — stale events under the old key simply have no room to attach to).
+const GROUP_ACTIVITY_LIMIT = 50
+const $groupActivity = atom({})
+
+function recordGroupActivity(group, event) {
+  const room = $groupChats.get()[group]
+
+  if (!room) {
+    return null
+  }
+
+  const current = $groupActivity.get()[group] || { events: [] }
+  const entry = { at: Date.now(), epoch: room.epoch || 0, ...event }
+  const events = [...current.events, entry].slice(-GROUP_ACTIVITY_LIMIT)
+  $groupActivity.set({ ...$groupActivity.get(), [group]: { ...current, events } })
+
+  return entry
+}
+
+/** Events for the room's CURRENT run — superseded runs (epoch moved on)
+ *  are dropped from view instead of describing work that already ended. */
+function currentGroupActivity(group) {
+  const epoch = ($groupChats.get()[group] || {}).epoch || 0
+  return ($groupActivity.get()[group] || {}).events?.filter(event => (event.epoch || 0) === epoch) || []
+}
+
+/** Human label for one activity event, used by the collapsed summary and
+ *  the expanded rows. */
+function groupActivityLabel(event) {
+  const kind = event?.kind
+  const base = GROUP_ACTIVITY_LABELS[kind] || kind || 'did something'
+
+  if (kind === 'cancelled' || kind === 'settled') {
+    return base
+  }
+
+  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot')
+
+  return `${who} ${base}`
+}
+
+const GROUP_ACTIVITY_LABELS = {
+  queued: 'sent a message',
+  working: 'is working…',
+  replied: 'replied',
+  passed: 'passed',
+  'timed-out': 'took too long',
+  failed: 'hit an error',
+  cancelled: 'turn interrupted by a newer message',
+  settled: 'turn settled',
+  delivered: 'delivered a late reply'
+}
+
+const GROUP_ACTIVITY_GLYPHS = {
+  queued: 'comment',
+  working: 'sync',
+  replied: 'check',
+  passed: 'circle-outline',
+  'timed-out': 'clock',
+  failed: 'error',
+  cancelled: 'close',
+  settled: 'check-all',
+  delivered: 'mail-read'
+}
+
+/** Text tone for an activity row: quiet for pass/cancel/settle, accent for
+ *  work and real replies, destructive for failures and timeouts. */
+function groupActivityTone(kind) {
+  if (kind === 'failed' || kind === 'timed-out') {
+    return 'text-destructive'
+  }
+
+  if (kind === 'working' || kind === 'replied' || kind === 'delivered') {
+    return 'text-(--ui-accent,#4f9cf9)'
+  }
+
+  return 'text-(--ui-text-tertiary)'
+}
+
 function handleSessionsGatewayTransition() {
   $sessionsGatewayGeneration.set($sessionsGatewayGeneration.get() + 1)
   $botSelectedSessions.set({})
@@ -4072,6 +4158,8 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
     return null
   }
 
+  recordGroupActivity(group, { kind: 'working', member: member.name, thread })
+
   // Baseline: how many messages exist before our submit.
   let before = 0
 
@@ -4167,10 +4255,19 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
             : Array.isArray(msg.content)
               ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
               : msg?.text || ''
+          const replyText = String(text).trim()
 
-          return String(text).trim()
+          recordGroupActivity(group, {
+            kind: isGroupPassText(replyText) ? 'passed' : 'replied',
+            member: member.name,
+            thread
+          })
+
+          return replyText
         }
       }
+
+      recordGroupActivity(group, { kind: 'passed', member: member.name, thread })
 
       return null
     }
@@ -4184,6 +4281,7 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
   // Timeout — reads as a pass, but remember the baseline + thread
   // (runtime-only) so the finished reply can be posted late into the RIGHT
   // thread instead of vanishing.
+  recordGroupActivity(group, { kind: 'timed-out', member: member.name, thread })
   updateGroupChat(group, r => {
     r.stranded = { ...(r.stranded || {}), [groupMemberKey(member)]: { before, thread } }
     return r
@@ -4249,6 +4347,7 @@ async function harvestStrandedGroupReply(group, member) {
       const reply = String(text).trim()
 
       if (reply && !isGroupPassText(reply)) {
+        recordGroupActivity(group, { kind: 'delivered', member: member.name, thread: strandedThread })
         appendGroupChatEntry(
           group,
           { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
@@ -4283,6 +4382,7 @@ async function runGroupChatRounds(group, members, thread) {
       // late, never lost.
       for (const member of members) {
         if (!isCurrent()) {
+          recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
           return
         }
 
@@ -4309,6 +4409,9 @@ async function runGroupChatRounds(group, members, thread) {
 
       for (const member of responders) {
         if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
+          if (!isCurrent()) {
+            recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
+          }
           return
         }
 
@@ -4350,6 +4453,7 @@ async function runGroupChatRounds(group, members, thread) {
         try {
           reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
         } catch {
+          recordGroupActivity(group, { kind: 'failed', member: member.name, thread })
           reply = null // a failed turn is a pass, never a room error
         }
 
@@ -4382,6 +4486,7 @@ async function runGroupChatRounds(group, members, thread) {
     }
   } finally {
     if (isCurrent()) {
+      recordGroupActivity(group, { kind: 'settled', member: null, thread })
       updateGroupChat(group, r => {
         r.running = false
         r.turn = null
@@ -4416,6 +4521,8 @@ function sendToGroupChat(group, members, text, thread, images) {
     room.running = true
     return room
   })
+
+  recordGroupActivity(group, { kind: 'queued', member: 'You', thread: target })
 
   if (!wasRunning) {
     void runGroupChatRounds(group, members, target).catch(() => {
@@ -8616,6 +8723,12 @@ function GroupChatWorkspace({ group, members, onBack }) {
     void filesToGroupAttachments(files).then(picked => addImages(replyThread, picked))
   }
 
+  // Collapsible Activity view: collapsed by default — opening it is always an
+  // explicit user action, it never steals focus, and it never auto-scrolls.
+  const [activityOpen, setActivityOpen] = useState(false)
+  // Subscribe: activity rows re-render as turn events land.
+  useValue($groupActivity)
+
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
     children: [
@@ -8681,6 +8794,71 @@ function GroupChatWorkspace({ group, members, onBack }) {
       ...b,
       title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
     }))
+
+  // Activity disclosure: quiet, collapsed by default. The collapsed row shows
+  // the latest event; expanding lists the current run's events newest-first.
+  // Events are epoch-tagged, so a superseded run's history drops out of view.
+  const activityEvents = currentGroupActivity(group)
+  const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  const activityPanel = jsxs('div', {
+    className: 'border-b border-(--ui-stroke-secondary)',
+    children: [
+      jsxs('button', {
+        type: 'button',
+        'aria-expanded': activityOpen,
+        'aria-controls': `group-activity:${group}`,
+        title: activityOpen ? 'Hide room activity' : 'Show room activity',
+        className:
+          'flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground',
+        onClick: () => setActivityOpen(prev => !prev),
+        children: [
+          jsx(Codicon, {
+            name: activityOpen ? 'chevron-down' : 'chevron-right',
+            className: 'shrink-0 text-[0.65rem]'
+          }),
+          jsx('span', { className: 'shrink-0 font-medium', children: 'Activity' }),
+          latestActivity
+            ? jsx('span', {
+                className: 'min-w-0 flex-1 truncate',
+                children: `${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`
+              })
+            : null
+        ]
+      }),
+      activityOpen
+        ? jsx('div', {
+            id: `group-activity:${group}`,
+            className: 'grid gap-0.5 px-2.5 pb-1.5',
+            children: activityEvents.length
+              ? [...activityEvents]
+                  .reverse()
+                  .map((event, i) =>
+                    jsxs('div', {
+                      className: 'flex items-center gap-1.5 text-[0.7rem]',
+                      children: [
+                        jsx(Codicon, {
+                          name: GROUP_ACTIVITY_GLYPHS[event.kind] || 'circle-outline',
+                          className: cn('shrink-0 text-[0.65rem]', groupActivityTone(event.kind))
+                        }),
+                        jsx('span', {
+                          className: cn('min-w-0 flex-1 truncate', groupActivityTone(event.kind)),
+                          children: groupActivityLabel(event)
+                        }),
+                        jsx('span', {
+                          className: 'shrink-0 text-[0.625rem] text-(--ui-text-quaternary)',
+                          children: relativeTime(event.at)
+                        })
+                      ]
+                    }, `${event.at}:${i}`)
+                  )
+              : jsx('div', {
+                  className: 'px-0.5 pb-0.5 text-[0.625rem] text-(--ui-text-quaternary)',
+                  children: 'No activity in this turn yet.'
+                })
+          })
+        : null
+    ]
+  })
 
   const submit = () => {
     const text = draft.trim()
@@ -9056,6 +9234,7 @@ function GroupChatWorkspace({ group, members, onBack }) {
           }, 'dropzone')
         : null,
       header,
+      activityPanel,
       jsx(ScrollArea, {
         className: 'min-h-0 flex-1',
         children: jsxs('div', {

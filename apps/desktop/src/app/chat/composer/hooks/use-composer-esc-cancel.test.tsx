@@ -11,7 +11,7 @@ function Harness({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
 
 afterEach(() => {
   cleanup()
-  document.body.innerHTML = ''
+  globalThis.document.body.innerHTML = ''
 })
 
 describe('useComposerEscCancel', () => {
@@ -39,9 +39,9 @@ describe('useComposerEscCancel', () => {
 
     // OverlayView stamps `data-overlay-surface` on its root — the same signal
     // the type-to-focus path uses to stand down while an overlay is open.
-    const overlay = document.createElement('div')
+    const overlay = globalThis.document.createElement('div')
     overlay.setAttribute('data-overlay-surface', '')
-    document.body.appendChild(overlay)
+    globalThis.document.body.appendChild(overlay)
 
     fireEvent.keyDown(window, { key: 'Escape' })
 

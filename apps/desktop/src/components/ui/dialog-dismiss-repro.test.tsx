@@ -39,7 +39,7 @@ describe('REPRO: dismissing an open Select inside a Dialog', () => {
     // setTimeout(0) — flush it first.
     await flushTimers()
 
-    const overlay = document.querySelector('[data-slot="dialog-overlay"]') as HTMLElement
+    const overlay = globalThis.document.querySelector('[data-slot="dialog-overlay"]') as HTMLElement
     expect(overlay).toBeTruthy()
     expect(screen.getByText('Option A')).toBeTruthy()
 
@@ -76,7 +76,7 @@ describe('REPRO: dismissing an open Select inside a Dialog', () => {
 
     await flushTimers()
 
-    const overlay = document.querySelector('[data-slot="dialog-overlay"]') as HTMLElement
+    const overlay = globalThis.document.querySelector('[data-slot="dialog-overlay"]') as HTMLElement
     fireEvent.pointerDown(overlay, { button: 0 })
     fireEvent.pointerUp(overlay, { button: 0 })
     fireEvent.click(overlay, { button: 0 })

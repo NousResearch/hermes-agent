@@ -273,7 +273,7 @@ describe('SkillsView toolset management', () => {
     render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
 
     // The picker is expanded by default — the hub iframe is live on mount.
-    expect(document.querySelector('iframe')).toBeTruthy()
+    expect(globalThis.document.querySelector('iframe')).toBeTruthy()
 
     await act(async () => {
       window.dispatchEvent(
@@ -297,7 +297,7 @@ describe('SkillsView toolset management', () => {
     // eagerly mounted hub is exactly the Capabilities lag bug.
     await renderSkills() // ?tab=toolsets
     await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
-    expect(document.querySelector('iframe')).toBeNull()
+    expect(globalThis.document.querySelector('iframe')).toBeNull()
     cleanup()
 
     // Embedded mode drives tabs through local state (the route hooks are
@@ -313,7 +313,7 @@ describe('SkillsView toolset management', () => {
       )
     })
 
-    const iframe = document.querySelector('iframe')
+    const iframe = globalThis.document.querySelector('iframe')
     expect(iframe).toBeTruthy()
     expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
 
@@ -323,7 +323,7 @@ describe('SkillsView toolset management', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Tools/ }))
     })
-    const kept = document.querySelector('iframe')
+    const kept = globalThis.document.querySelector('iframe')
     expect(kept).toBeTruthy()
     expect(kept!.closest('section')!.classList.contains('hidden')).toBe(true)
   })

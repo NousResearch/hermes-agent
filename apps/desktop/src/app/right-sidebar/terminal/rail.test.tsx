@@ -25,7 +25,7 @@ describe('TerminalRail', () => {
     fireEvent.pointerMove(screen.getByRole('tab', { name: '1. PowerShell' }), { pointerType: 'mouse' })
     await screen.findByRole('tooltip')
 
-    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const content = globalThis.document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
     const label = content?.firstElementChild?.firstElementChild
 
     expect(content).not.toBeNull()

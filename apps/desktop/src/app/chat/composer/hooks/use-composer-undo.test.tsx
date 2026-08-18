@@ -22,13 +22,13 @@ function mountUndo(editorRef: RefObject<HTMLDivElement | null>, onSync: () => st
 }
 
 function makeEditor(text: string) {
-  const editor = document.createElement('div')
+  const editor = globalThis.document.createElement('div')
   editor.contentEditable = 'true'
   // jsdom only focuses a contentEditable div when it's explicitly focusable;
   // the real editor is reachable via the composer's focus bus.
   editor.tabIndex = 0
-  editor.append(document.createTextNode(text))
-  document.body.append(editor)
+  editor.append(globalThis.document.createTextNode(text))
+  globalThis.document.body.append(editor)
 
   const ref = createRef<HTMLDivElement>() as RefObject<HTMLDivElement | null>
   ref.current = editor
@@ -37,7 +37,7 @@ function makeEditor(text: string) {
 }
 
 const caretAtEnd = (editor: HTMLElement) => {
-  const range = document.createRange()
+  const range = globalThis.document.createRange()
   const selection = window.getSelection()!
   range.selectNodeContents(editor)
   range.collapse(false)
@@ -54,7 +54,7 @@ describe('useComposerUndo', () => {
 
     // Bank, then simulate the Range-based paste that Chromium never records.
     api.current!.recordUndoPoint()
-    editor.append(document.createTextNode(' PASTED'))
+    editor.append(globalThis.document.createTextNode(' PASTED'))
     expect(editor.textContent).toBe('before PASTED')
 
     api.current!.undo()
@@ -79,7 +79,7 @@ describe('useComposerUndo', () => {
 
     expect(
       api.current!.withUndoPoint(() => {
-        editor.append(document.createTextNode('!'))
+        editor.append(globalThis.document.createTextNode('!'))
 
         return true
       })
@@ -100,7 +100,7 @@ describe('useComposerUndo', () => {
     const { api, view } = mountUndo(ref, () => editor.textContent || '')
 
     api.current!.recordUndoPoint()
-    editor.append(document.createTextNode(' extra'))
+    editor.append(globalThis.document.createTextNode(' extra'))
 
     // What Electron's Edit menu `{ role: 'undo' }` produces.
     const event = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'historyUndo' })
@@ -122,7 +122,7 @@ describe('useComposerUndo', () => {
     const { api, view } = mountUndo(ref, () => editor.textContent || '')
 
     api.current!.recordUndoPoint()
-    editor.append(document.createTextNode(' changed'))
+    editor.append(globalThis.document.createTextNode(' changed'))
 
     const event = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'historyUndo' })
     other.dispatchEvent(event)
@@ -144,7 +144,7 @@ describe('useComposerUndo', () => {
     const editUndo = mountUndo(editRef, () => edit.textContent || '')
 
     mainUndo.api.current!.recordUndoPoint()
-    main.append(document.createTextNode(' typed'))
+    main.append(globalThis.document.createTextNode(' typed'))
 
     // Undoing in the edit composer must not touch the main composer's text.
     editUndo.api.current!.undo()
@@ -167,7 +167,7 @@ describe('useComposerUndo', () => {
     const { api, view } = mountUndo(ref, () => editor.textContent || '')
 
     api.current!.recordUndoPoint()
-    editor.append(document.createTextNode(' edited'))
+    editor.append(globalThis.document.createTextNode(' edited'))
     api.current!.resetUndoHistory()
 
     expect(api.current!.undo()).toBe(false)

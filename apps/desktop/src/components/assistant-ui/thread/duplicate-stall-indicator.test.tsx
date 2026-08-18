@@ -230,8 +230,8 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
     expect(indicators.length).toBe(1)
     // The surviving row belongs to the placeholder, while the real running
     // bubble's stall row stays silent.
-    expect(document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
-    expect(document.querySelectorAll('[data-slot="aui_stream-stall"]').length).toBe(0)
+    expect(globalThis.document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
+    expect(globalThis.document.querySelectorAll('[data-slot="aui_stream-stall"]').length).toBe(0)
   })
 
   // Outside compaction, the placeholder uses the plain loading label and the
@@ -254,7 +254,7 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
       vi.advanceTimersByTime(5_000)
     })
 
-    expect(document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
-    expect(document.querySelectorAll('[data-slot="aui_stream-stall"]').length).toBe(0)
+    expect(globalThis.document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
+    expect(globalThis.document.querySelectorAll('[data-slot="aui_stream-stall"]').length).toBe(0)
   })
 })

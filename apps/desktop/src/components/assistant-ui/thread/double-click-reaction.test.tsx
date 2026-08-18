@@ -71,22 +71,22 @@ afterEach(() => {
 
 describe('isTapbackDoubleClick', () => {
   it('claims a plain double-click on message body', () => {
-    expect(isTapbackDoubleClick({ detail: 2, target: document.createElement('span') })).toBe(true)
+    expect(isTapbackDoubleClick({ detail: 2, target: globalThis.document.createElement('span') })).toBe(true)
   })
 
   it('ignores a triple-click, so selecting a paragraph does not re-toggle', () => {
-    expect(isTapbackDoubleClick({ detail: 3, target: document.createElement('span') })).toBe(false)
+    expect(isTapbackDoubleClick({ detail: 3, target: globalThis.document.createElement('span') })).toBe(false)
   })
 
   it('leaves double-click alone where it already means something', () => {
-    const code = document.createElement('pre')
-    const inner = document.createElement('code')
+    const code = globalThis.document.createElement('pre')
+    const inner = globalThis.document.createElement('code')
 
     code.append(inner)
 
     expect(isTapbackDoubleClick({ detail: 2, target: inner })).toBe(false)
-    expect(isTapbackDoubleClick({ detail: 2, target: document.createElement('a') })).toBe(false)
-    expect(isTapbackDoubleClick({ detail: 2, target: document.createElement('button') })).toBe(false)
+    expect(isTapbackDoubleClick({ detail: 2, target: globalThis.document.createElement('a') })).toBe(false)
+    expect(isTapbackDoubleClick({ detail: 2, target: globalThis.document.createElement('button') })).toBe(false)
   })
 })
 

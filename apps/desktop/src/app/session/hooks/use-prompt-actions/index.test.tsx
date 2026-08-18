@@ -199,35 +199,35 @@ function Harness({
     }
   })
 
+  const { cancelRun, editMessage, reloadFromMessage, restoreToMessage, redirectPrompt, steerPrompt, submitText } =
+    actions
+
   useEffect(() => {
     onReady({
       activeSessionIdRef,
-      cancelRun: (...args: Parameters<typeof actions.cancelRun>) =>
-        act(async () => actions.cancelRun(...args)) as Promise<void>,
-      editMessage: (...args: Parameters<typeof actions.editMessage>) =>
-        act(async () => actions.editMessage(...args)) as Promise<void>,
-      reloadFromMessage: (...args: Parameters<typeof actions.reloadFromMessage>) =>
-        act(async () => actions.reloadFromMessage(...args)) as Promise<void>,
-      restoreToMessage: (...args: Parameters<typeof actions.restoreToMessage>) =>
-        act(async () => actions.restoreToMessage(...args)) as Promise<void>,
-      redirectPrompt: (...args: Parameters<typeof actions.redirectPrompt>) =>
-        act(async () => actions.redirectPrompt(...args)) as Promise<boolean>,
-      steerPrompt: (...args: Parameters<typeof actions.steerPrompt>) =>
-        act(async () => actions.steerPrompt(...args)) as Promise<boolean>,
-      submitTextRaw: actions.submitText,
-      submitText: (...args: Parameters<typeof actions.submitText>) =>
-        act(async () => actions.submitText(...args)) as Promise<boolean>
+      cancelRun: (...args: Parameters<typeof cancelRun>) => act(async () => cancelRun(...args)) as Promise<void>,
+      editMessage: (...args: Parameters<typeof editMessage>) => act(async () => editMessage(...args)) as Promise<void>,
+      reloadFromMessage: (...args: Parameters<typeof reloadFromMessage>) =>
+        act(async () => reloadFromMessage(...args)) as Promise<void>,
+      restoreToMessage: (...args: Parameters<typeof restoreToMessage>) =>
+        act(async () => restoreToMessage(...args)) as Promise<void>,
+      redirectPrompt: (...args: Parameters<typeof redirectPrompt>) =>
+        act(async () => redirectPrompt(...args)) as Promise<boolean>,
+      steerPrompt: (...args: Parameters<typeof steerPrompt>) =>
+        act(async () => steerPrompt(...args)) as Promise<boolean>,
+      submitTextRaw: submitText,
+      submitText: (...args: Parameters<typeof submitText>) => act(async () => submitText(...args)) as Promise<boolean>
     })
   }, [
-    actions.cancelRun,
-    actions.editMessage,
-    actions.reloadFromMessage,
-    actions.restoreToMessage,
-    actions.redirectPrompt,
-    actions.steerPrompt,
-    actions.submitText,
     activeSessionIdRef,
-    onReady
+    cancelRun,
+    editMessage,
+    onReady,
+    redirectPrompt,
+    reloadFromMessage,
+    restoreToMessage,
+    steerPrompt,
+    submitText
   ])
 
   return null

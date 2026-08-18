@@ -256,6 +256,7 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   // truth for "which profile is the active gateway on" — every eviction /
   // fallback path funnels through applyActive, so the published profile can
   // never linger on a backend that is no longer selected (#89206).
+
   const routeProfile =
     g.activeKey === g.primaryProfile ? g.primaryProfile : (g.secondaries.get(g.activeKey)?.profile ?? g.primaryProfile)
 

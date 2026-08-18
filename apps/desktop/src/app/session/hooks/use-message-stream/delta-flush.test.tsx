@@ -69,7 +69,7 @@ describe('useMessageStream delta flush scheduling', () => {
     vi.spyOn(performance, 'now').mockReturnValue(100)
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
     vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(false)
   })
 
   afterEach(() => {
@@ -322,7 +322,7 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
     vi.spyOn(performance, 'now').mockReturnValue(100)
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
     vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(false)
   })
 
   afterEach(() => {

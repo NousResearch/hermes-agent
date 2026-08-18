@@ -30,7 +30,7 @@ describe('PreviewStatusRow', () => {
     fireEvent.pointerMove(screen.getByText('preview.html'), { pointerType: 'mouse' })
     await screen.findByRole('tooltip')
 
-    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const content = globalThis.document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
     const label = content?.firstElementChild?.firstElementChild
 
     expect(content).not.toBeNull()

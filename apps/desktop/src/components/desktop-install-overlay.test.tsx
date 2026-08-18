@@ -75,7 +75,7 @@ function whenPresent(text: string): Promise<HTMLElement> {
       }
     })
 
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+    observer.observe(globalThis.document.body, { childList: true, subtree: true, characterData: true })
   })
 }
 

@@ -817,6 +817,7 @@ export function TextInput({
   const cbChange = useRef(onChange)
   const cbSubmit = useRef(onSubmit)
   const cbPaste = useRef(onPaste)
+  const commitSelectionRef = useRef<null | ((next: string, nextCur: number) => void)>(null)
   cbChange.current = onChange
   cbSubmit.current = onSubmit
   cbPaste.current = onPaste
@@ -981,7 +982,10 @@ export function TextInput({
             return
           }
 
-          commit(vRef.current.slice(0, current.start) + vRef.current.slice(current.end), current.start)
+          commitSelectionRef.current?.(
+            vRef.current.slice(0, current.start) + vRef.current.slice(current.end),
+            current.start
+          )
         })
       },
       end: selected?.end ?? curRef.current,
@@ -1142,6 +1146,8 @@ export function TextInput({
       }
     }
   }
+
+  commitSelectionRef.current = commit
 
   const swap = (from: typeof undo, to: typeof redo) => {
     const entry = from.current.pop()

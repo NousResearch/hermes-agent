@@ -228,8 +228,11 @@ export function useComposerDraft({
     }
   }, [appendExternalText, inputDisabled, paintDraft, target])
 
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
-    stashSessionDraft(scope, text, attachments)
+  const stashAt = useCallback(
+    (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
+      stashSessionDraft(scope, text, attachments),
+    [attachmentScope.$attachments]
+  )
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     // Diagnostic breadcrumb for #59305-class reports: identifies WHAT kind of
@@ -340,7 +343,7 @@ export function useComposerDraft({
       unsubscribe()
       window.clearTimeout(draftPersistTimerRef.current)
     }
-  }, [composerRuntime, queueEditRef])
+  }, [composerRuntime, queueEditRef, stashAt])
 
   const insertText = (text: string) => {
     const base = draftRef.current
@@ -482,7 +485,7 @@ export function useComposerDraft({
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }
-  }, [syncDraftFromEditor])
+  }, [stashAt, syncDraftFromEditor])
 
   return {
     activeQueueSessionKeyRef,

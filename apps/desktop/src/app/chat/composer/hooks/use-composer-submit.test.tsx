@@ -28,7 +28,7 @@ function renderSubmitHook({
   text = ''
 }: SubmitHarnessOptions = {}) {
   const draftRef = { current: text }
-  const editor = document.createElement('div')
+  const editor = globalThis.document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
   const editorRef = { current: editor }

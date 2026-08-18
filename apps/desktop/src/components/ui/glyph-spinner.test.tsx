@@ -144,24 +144,24 @@ describe('GlyphSpinner', () => {
     const status = screen.getByRole('status', { name: 'Loading' })
     expect(vi.getTimerCount()).toBe(1)
 
-    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    Object.defineProperty(globalThis.document, 'visibilityState', { configurable: true, value: 'hidden' })
 
     try {
-      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      act(() => globalThis.document.dispatchEvent(new Event('visibilitychange')))
       expect(vi.getTimerCount()).toBe(0)
 
       const frozen = status.textContent
       act(() => vi.advanceTimersByTime(800))
       expect(status.textContent).toBe(frozen)
 
-      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
-      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      Object.defineProperty(globalThis.document, 'visibilityState', { configurable: true, value: 'visible' })
+      act(() => globalThis.document.dispatchEvent(new Event('visibilitychange')))
       expect(vi.getTimerCount()).toBe(1)
 
       act(() => vi.advanceTimersByTime(80))
       expect(status.textContent).not.toBe(frozen)
     } finally {
-      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+      Object.defineProperty(globalThis.document, 'visibilityState', { configurable: true, value: 'visible' })
     }
   })
 })

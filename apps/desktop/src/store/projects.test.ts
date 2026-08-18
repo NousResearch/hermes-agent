@@ -224,6 +224,13 @@ describe('projectNameForCwd', () => {
     expect(projectNameForCwd('/repos/website/src/app')).toBe('Website')
   })
 
+  it('can derive from an explicit reactive project-tree snapshot', () => {
+    const projects = [treeNode({ id: 'p_live', label: 'Live project', path: '/repos/live' })]
+
+    expect(projectNameForCwd('/repos/live/src', projects)).toBe('Live project')
+    expect($projectTree.get()).toEqual([])
+  })
+
   it('matches nested repo and worktree paths, not just the project root', () => {
     $projectTree.set([
       treeNode({

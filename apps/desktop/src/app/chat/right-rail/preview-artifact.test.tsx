@@ -51,8 +51,8 @@ describe('ArtifactPreview', () => {
 
     await renderArtifact(artifactId)
 
-    expect(document.querySelector('svg')).not.toBeNull()
-    expect(document.querySelector('svg script')).toBeNull()
+    expect(globalThis.document.querySelector('svg')).not.toBeNull()
+    expect(globalThis.document.querySelector('svg script')).toBeNull()
   })
 
   it('offers only the source view for code, which has nothing to render', async () => {

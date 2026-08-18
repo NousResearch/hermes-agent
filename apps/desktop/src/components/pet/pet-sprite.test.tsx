@@ -38,8 +38,8 @@ let windowStateCallback: ((payload: { isMinimized?: boolean; isVisible?: boolean
 let drawImage: ReturnType<typeof vi.fn>
 
 function render(ui: ReactNode) {
-  container = document.createElement('div')
-  document.body.append(container)
+  container = globalThis.document.createElement('div')
+  globalThis.document.body.append(container)
   root = createRoot(container)
 
   act(() => {
@@ -60,8 +60,11 @@ function cleanup() {
 }
 
 function setVisibility(hidden: boolean) {
-  Object.defineProperty(document, 'hidden', { configurable: true, value: hidden })
-  Object.defineProperty(document, 'visibilityState', { configurable: true, value: hidden ? 'hidden' : 'visible' })
+  Object.defineProperty(globalThis.document, 'hidden', { configurable: true, value: hidden })
+  Object.defineProperty(globalThis.document, 'visibilityState', {
+    configurable: true,
+    value: hidden ? 'hidden' : 'visible'
+  })
 }
 
 function installWindowStateBridge() {
@@ -124,7 +127,7 @@ describe('PetSprite RAF scheduling', () => {
     vi.useFakeTimers()
     setVisibility(false)
     Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1 })
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
     installWindowStateBridge()
     vi.stubGlobal(
       'Image',

@@ -14,8 +14,8 @@ let container: HTMLDivElement | null = null
 let windowStateCallback: ((payload: { isMinimized?: boolean; isVisible?: boolean }) => void) | null = null
 
 function render(ui: ReactNode) {
-  container = document.createElement('div')
-  document.body.append(container)
+  container = globalThis.document.createElement('div')
+  globalThis.document.body.append(container)
   root = createRoot(container)
 
   act(() => {
@@ -36,8 +36,11 @@ function cleanup() {
 }
 
 function setVisibility(hidden: boolean) {
-  Object.defineProperty(document, 'hidden', { configurable: true, value: hidden })
-  Object.defineProperty(document, 'visibilityState', { configurable: true, value: hidden ? 'hidden' : 'visible' })
+  Object.defineProperty(globalThis.document, 'hidden', { configurable: true, value: hidden })
+  Object.defineProperty(globalThis.document, 'visibilityState', {
+    configurable: true,
+    value: hidden ? 'hidden' : 'visible'
+  })
 }
 
 function installWindowStateBridge() {
@@ -90,7 +93,7 @@ describe('usePetRoam RAF scheduling', () => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
     vi.useFakeTimers()
     setVisibility(false)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
     installWindowStateBridge()
     vi.spyOn(Math, 'random').mockReturnValue(0)
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({

@@ -77,7 +77,7 @@ const zoneAt = (index: number) => {
   return (node.type === 'split' ? node.children[index] : node) as never
 }
 
-const tabEl = (paneId: string) => document.querySelector<HTMLElement>(`[data-tree-tab="${paneId}"]`)
+const tabEl = (paneId: string) => globalThis.document.querySelector<HTMLElement>(`[data-tree-tab="${paneId}"]`)
 
 describe('right-clicking a tool panel tab', () => {
   it('offers Close when logs is STACKED with the terminal', async () => {

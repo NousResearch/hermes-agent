@@ -93,11 +93,11 @@ function drainListeners() {
  * tests for the same pattern).
  */
 function plantSurface(id = 'surface') {
-  const root = document.createElement('div')
+  const root = globalThis.document.createElement('div')
 
   root.setAttribute('data-chat-surface', '')
   root.id = id
-  document.body.appendChild(root)
+  globalThis.document.body.appendChild(root)
 
   return root
 }
@@ -111,7 +111,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  document.body.innerHTML = ''
+  globalThis.document.body.innerHTML = ''
   resetStore()
   drainListeners()
   vi.restoreAllMocks()
@@ -383,13 +383,13 @@ describe('find-in-page store', () => {
     // The scoped walker must only wrap matches inside the surface the bar
     // was opened against.
     const foreground = plantSurface('foreground')
-    const hidden = document.createElement('div')
+    const hidden = globalThis.document.createElement('div')
 
     hidden.setAttribute('data-pane-hidden', '')
     hidden.setAttribute('data-chat-surface', '')
     hidden.id = 'background'
     hidden.textContent = 'needle in background chat needle'
-    document.body.appendChild(hidden)
+    globalThis.document.body.appendChild(hidden)
 
     foreground.textContent = 'needle in foreground chat needle'
 
@@ -412,12 +412,12 @@ describe('find-in-page store', () => {
     // opened after the pane flips to chat-B searches chat-B. The previous
     // bar's highlights are already cleared by closeFindBar().
     const surfaceA = plantSurface('a')
-    const surfaceB = document.createElement('div')
+    const surfaceB = globalThis.document.createElement('div')
 
     surfaceB.setAttribute('data-chat-surface', '')
     surfaceB.id = 'b'
     surfaceB.textContent = 'target-b needle'
-    document.body.appendChild(surfaceB)
+    globalThis.document.body.appendChild(surfaceB)
 
     surfaceA.textContent = 'target-a needle'
 
@@ -447,11 +447,11 @@ describe('find-in-page store', () => {
     // while the viewed surface contains the text. The scope must re-resolve
     // to the now-foreground surface.
     const surfaceA = plantSurface('a')
-    const surfaceB = document.createElement('div')
+    const surfaceB = globalThis.document.createElement('div')
 
     surfaceB.setAttribute('data-chat-surface', '')
     surfaceB.id = 'b'
-    document.body.appendChild(surfaceB)
+    globalThis.document.body.appendChild(surfaceB)
 
     surfaceA.textContent = 'needle in A'
     surfaceB.textContent = 'needle in B needle'

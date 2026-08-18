@@ -31,17 +31,17 @@ function folderItem(path: string): Unstable_TriggerItem {
 }
 
 function setup(initialText: string) {
-  const editor = document.createElement('div')
+  const editor = globalThis.document.createElement('div')
   editor.contentEditable = 'true'
   // The real composer marks its editor with this slot; `composerPlainText`
   // keys off it to decide whether a DIV contributes a trailing newline.
   // Without it the harness would silently diverge from production text.
   editor.dataset.slot = RICH_INPUT_SLOT
-  document.body.append(editor)
+  globalThis.document.body.append(editor)
   renderComposerContents(editor, initialText)
 
   // Caret at the end, which is where a typed trigger always leaves it.
-  const range = document.createRange()
+  const range = globalThis.document.createRange()
   range.selectNodeContents(editor)
   range.collapse(false)
   const sel = window.getSelection()

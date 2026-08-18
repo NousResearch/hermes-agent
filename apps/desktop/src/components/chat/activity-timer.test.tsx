@@ -19,7 +19,7 @@ describe('useElapsedSeconds', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
     __resetElapsedTimerRegistryForTests()
   })
 
@@ -77,7 +77,7 @@ describe('useElapsedSeconds', () => {
 
   it('pauses UI ticks without focus and catches up immediately on return', () => {
     render(<Probe active timerKey="tool:background" />)
-    vi.mocked(document.hasFocus).mockReturnValue(false)
+    vi.mocked(globalThis.document.hasFocus).mockReturnValue(false)
     window.dispatchEvent(new Event('blur'))
 
     act(() => {
@@ -85,7 +85,7 @@ describe('useElapsedSeconds', () => {
     })
     expect(screen.getByTestId('elapsed').textContent).toBe('0')
 
-    vi.mocked(document.hasFocus).mockReturnValue(true)
+    vi.mocked(globalThis.document.hasFocus).mockReturnValue(true)
     act(() => window.dispatchEvent(new Event('focus')))
     expect(screen.getByTestId('elapsed').textContent).toBe('5')
   })
@@ -95,7 +95,7 @@ describe('useMeasuredDuration', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
     __resetElapsedTimerRegistryForTests()
   })
 
@@ -175,7 +175,7 @@ describe('useMeasuredDuration', () => {
 
   it('records the real finish time even if the UI clock was paused', () => {
     const probe = render(<DurationProbe active timerKey="reasoning:background" />)
-    vi.mocked(document.hasFocus).mockReturnValue(false)
+    vi.mocked(globalThis.document.hasFocus).mockReturnValue(false)
     window.dispatchEvent(new Event('blur'))
 
     act(() => {

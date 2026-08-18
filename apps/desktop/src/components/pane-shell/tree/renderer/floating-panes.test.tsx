@@ -19,8 +19,8 @@ let container: HTMLDivElement | null = null
 let disposers: (() => void)[] = []
 
 function render(ui: ReactNode) {
-  container = document.createElement('div')
-  document.body.append(container)
+  container = globalThis.document.createElement('div')
+  globalThis.document.body.append(container)
   root = createRoot(container)
 
   act(() => {
@@ -28,7 +28,7 @@ function render(ui: ReactNode) {
   })
 }
 
-const card = () => document.querySelector<HTMLElement>('[data-floating-pane="hud"]')
+const card = () => globalThis.document.querySelector<HTMLElement>('[data-floating-pane="hud"]')
 
 const grab = () => card()!.querySelector('header')!
 
@@ -97,7 +97,7 @@ describe('FloatingPanes (live DOM)', () => {
     expect(el.style.left).toBe('1204px')
     expect(el.style.top).toBe('46px')
     expect(el.style.width).toBe('224px')
-    expect(document.querySelector('[data-testid="hud-body"]')?.textContent).toBe('live')
+    expect(globalThis.document.querySelector('[data-testid="hud-body"]')?.textContent).toBe('live')
   })
 
   it('renders nothing for a non-floating placement', () => {
@@ -184,7 +184,7 @@ describe('FloatingPanes (live DOM)', () => {
       toggle.click()
     })
 
-    expect(document.querySelector('[data-testid="hud-body"]')).toBeNull()
+    expect(globalThis.document.querySelector('[data-testid="hud-body"]')).toBeNull()
     expect(card()!.style.height).toBe('')
     expect(chevron().className).toContain('codicon-chevron-up')
   })
@@ -203,6 +203,6 @@ describe('FloatingPanes (live DOM)', () => {
 
     render(<FloatingPanes />)
 
-    expect(document.querySelectorAll('[data-floating-pane]').length).toBe(2)
+    expect(globalThis.document.querySelectorAll('[data-floating-pane]').length).toBe(2)
   })
 })

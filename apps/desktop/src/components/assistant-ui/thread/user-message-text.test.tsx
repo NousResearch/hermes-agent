@@ -20,14 +20,14 @@ describe('a sent reference renders as the chip the composer showed', () => {
 
     expect(screen.queryByTitle('https://github.com/NousResearch/hermes-agent/pull/74790')).not.toBeNull()
     // The whole reference is one node — no bare `@url:` text left behind.
-    expect(document.body.textContent).not.toContain('@url:')
+    expect(globalThis.document.body.textContent).not.toContain('@url:')
   })
 
   it('chips a backtick-quoted @file: path with spaces', () => {
     render(<UserMessageText text="see @file:`apps/desktop/my notes.md` please" />)
 
     expect(screen.queryByTitle('apps/desktop/my notes.md')).not.toBeNull()
-    expect(document.body.textContent).not.toContain('@file:')
+    expect(globalThis.document.body.textContent).not.toContain('@file:')
   })
 
   it('chips every kind that travels in message text', () => {
@@ -41,7 +41,7 @@ describe('a sent reference renders as the chip the composer showed', () => {
   it('still renders a genuine code span as code', () => {
     render(<UserMessageText text="run `npm test` first" />)
 
-    const code = document.querySelector('[data-slot="aui_user-inline-code"]')
+    const code = globalThis.document.querySelector('[data-slot="aui_user-inline-code"]')
 
     expect(code?.textContent).toBe('npm test')
   })
@@ -49,13 +49,13 @@ describe('a sent reference renders as the chip the composer showed', () => {
   it('renders code and a reference side by side', () => {
     render(<UserMessageText text="run `npm test` on @file:`apps/desktop/a b.ts` now" />)
 
-    expect(document.querySelector('[data-slot="aui_user-inline-code"]')?.textContent).toBe('npm test')
+    expect(globalThis.document.querySelector('[data-slot="aui_user-inline-code"]')?.textContent).toBe('npm test')
     expect(screen.queryByTitle('apps/desktop/a b.ts')).not.toBeNull()
   })
 
   it('leaves a fenced block alone', () => {
     render(<UserMessageText text={'before\n```ts\nconst x = 1\n```\nafter'} />)
 
-    expect(document.querySelector('[data-slot="aui_user-fence"]')?.textContent).toBe('const x = 1\n')
+    expect(globalThis.document.querySelector('[data-slot="aui_user-fence"]')?.textContent).toBe('const x = 1\n')
   })
 })

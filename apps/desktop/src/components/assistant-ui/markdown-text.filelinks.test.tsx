@@ -22,7 +22,7 @@ describe('MarkdownLink filesystem hrefs', () => {
     // that's the view-time door, not a dead <a>.
     await screen.findByText('report.md')
     expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
-    expect(document.querySelector('a[href="/home/user/report.md"]')).toBeNull()
+    expect(globalThis.document.querySelector('a[href="/home/user/report.md"]')).toBeNull()
   })
 
   it('routes file:// and ~/ links the same way', async () => {
@@ -54,6 +54,6 @@ describe('MarkdownLink filesystem hrefs', () => {
     // (they keep Streamdown's pre-existing handling) — neither gains a
     // preview affordance.
     expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
-    expect(document.querySelector('a[href="#section-2"]')).not.toBeNull()
+    expect(globalThis.document.querySelector('a[href="#section-2"]')).not.toBeNull()
   })
 })

@@ -8,8 +8,8 @@ let root: Root | null = null
 let container: HTMLDivElement | null = null
 
 function render(mode: 'bounce' | 'hatch', onDone?: () => void) {
-  container = document.createElement('div')
-  document.body.append(container)
+  container = globalThis.document.createElement('div')
+  globalThis.document.body.append(container)
   root = createRoot(container)
 
   act(() => {

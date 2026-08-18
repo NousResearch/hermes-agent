@@ -246,6 +246,29 @@ describe('retireLocalProfileGateways', () => {
   })
 })
 
+describe('reconnectSecondaryGateways', () => {
+  it('force-redials an open secondary whose transport may be half-open after wake', async () => {
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'default')
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(1)
+    expect(gatewayMocks.instances[0].connectionState).toBe('open')
+
+    reconnectSecondaryGateways({ forceOpenSockets: true })
+
+    await vi.waitFor(() => {
+      expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
+    })
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
+    expect(getConnectionFor).toHaveBeenCalledTimes(2)
+    expect(gatewayMocks.instances[0].connectionState).toBe('open')
+  })
+})
+
 describe('reconnect fail-stop on a removed connection', () => {
   it('evicts the entry instead of retrying when the registry no longer knows the id', async () => {
     const getConnectionFor = vi

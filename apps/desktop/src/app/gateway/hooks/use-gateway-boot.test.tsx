@@ -24,6 +24,7 @@ import { primaryRuntimeConnectionId, useGatewayBoot } from './use-gateway-boot'
 
 type Listener = (ev: unknown) => void
 let connectionApplied: null | (() => void) = null
+let powerResume: null | (() => void) = null
 
 describe('primaryRuntimeConnectionId', () => {
   it('uses the registry identity when the primary connection has one', () => {
@@ -151,7 +152,13 @@ function fakeDesktop() {
         connectionApplied = null
       }
     }),
-    onPowerResume: vi.fn(() => () => undefined),
+    onPowerResume: vi.fn(callback => {
+      powerResume = callback
+
+      return () => {
+        powerResume = null
+      }
+    }),
     revalidateConnection: vi.fn(async () => ({ ok: true, rebuilt: false })),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
@@ -198,6 +205,7 @@ beforeEach(() => {
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
   connectionApplied = null
+  powerResume = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -482,6 +490,32 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     const lastCall = desktop.getConnection.mock.calls.at(-1) ?? []
     expect(lastCall.length === 0 || lastCall[0] == null || lastCall[0] === '').toBe(true)
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(2)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('power resume force-redials a half-open primary socket that still reports OPEN', async () => {
+    const desktop = fakeDesktop()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    const staleSocket = FakeWebSocket.instances[0]
+
+    expect(staleSocket.readyState).toBe(FakeWebSocket.OPEN)
+    expect($gatewayState.get()).toBe('open')
+    expect(powerResume).not.toBeNull()
+
+    // macOS can discard the TCP connection during sleep without updating the
+    // renderer WebSocket object. Leave readyState OPEN and emit only resume.
+    act(() => powerResume?.())
+    await flushAsync()
+    await flushAsync()
+
+    expect(staleSocket.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(desktop.revalidateConnection).toHaveBeenCalledOnce()
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect($gatewayState.get()).toBe('open')
   })

@@ -334,7 +334,7 @@ export function useGatewayBoot({
       }, delay)
     }
 
-    const reconnectNow = async () => {
+    const reconnectNow = async ({ forceOpenSocket = false }: { forceOpenSocket?: boolean } = {}) => {
       if (cancelled || !bootCompleted || $gatewaySwitching.get()) {
         return
       }
@@ -343,7 +343,17 @@ export function useGatewayBoot({
       reconnectAttempt = 0
       reconnectFailingSince = null
       escalated = false
-      reconnectSecondaryGateways()
+      reconnectSecondaryGateways({ forceOpenSockets: forceOpenSocket })
+
+      // Browser WebSocket state can remain OPEN after sleep even though the OS
+      // discarded the underlying TCP connection. Strong recovery signals must
+      // retire that half-open socket before the normal reconnect path can run.
+      if (forceOpenSocket && gatewayOpen()) {
+        gateway.close()
+        // close() publishes `closed`, which schedules the regular backoff.
+        // This path reconnects immediately, so remove that redundant timer.
+        clearReconnectTimer()
+      }
 
       if (!gatewayOpen()) {
         await attemptReconnect()
@@ -583,9 +593,10 @@ export function useGatewayBoot({
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
-    const offPowerResume = desktop.onPowerResume?.(() => void reconnectNow())
+    const forceReconnectNow = () => reconnectNow({ forceOpenSocket: true })
+    const offPowerResume = desktop.onPowerResume?.(() => void forceReconnectNow())
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
-    const offGatewayReconnect = registerGatewayReconnect(reconnectNow)
+    const offGatewayReconnect = registerGatewayReconnect(forceReconnectNow)
 
     // Registry lifecycle: a removed connection's secondaries must close NOW
     // (remote/cloud have no local process whose death would drop the socket —
@@ -599,7 +610,7 @@ export function useGatewayBoot({
       disposeSecondariesForConnection(payload.connectionId, { redial: payload.reason === 'updated' })
     })
 
-    const onOnline = () => void reconnectNow()
+    const onOnline = () => void forceReconnectNow()
 
     const onVisible = () => {
       if (document.visibilityState === 'visible') {

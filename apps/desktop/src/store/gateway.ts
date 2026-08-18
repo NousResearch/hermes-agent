@@ -886,11 +886,20 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
 // activation before reporting the gateway as unavailable.
 const ACTIVE_GATEWAY_OPEN_WAIT_MS = 8_000
 
-// Wake signal (sleep/network/visibility): nudge every live secondary back open.
-export function reconnectSecondaryGateways(): void {
+// Recovery signal: nudge every live secondary back open. Power-resume/network
+// signals can force sockets that still report open to retire before redialing.
+export function reconnectSecondaryGateways({ forceOpenSockets = false }: { forceOpenSockets?: boolean } = {}): void {
   for (const entry of g.secondaries.values()) {
-    if (!entry.wantOpen || isOpen(entry.gateway)) {
+    if (!entry.wantOpen) {
       continue
+    }
+
+    if (isOpen(entry.gateway)) {
+      if (!forceOpenSockets) {
+        continue
+      }
+
+      entry.gateway.close()
     }
 
     entry.reconnectAttempt = 0

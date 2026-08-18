@@ -232,6 +232,29 @@ class TurnExplainersMixin:
         r"(?<![/:\w.`])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.[\w]+",
     )
 
+    # ``MEDIA:<path>`` tags are re-parsed from response text by the gateway
+    # media extractor (``MEDIA_TAG_CLEANUP_RE`` / ``MEDIA_EXTENSIONLESS_TAG_RE``
+    # in gateway/platforms/base.py, both case-insensitive).  In this footer a
+    # tag can only ever be untrusted error text, so the colon is rewritten
+    # into a visible escape no downstream parser recognises — the tag stays
+    # legible as data but can never execute as an attachment directive.
+    _FOOTER_MEDIA_TAG_RE = re.compile(r"MEDIA:", re.IGNORECASE)
+
+    # Delivery-behaviour toggles matched verbatim at the dispatch sites
+    # (gateway dispatch) and stripped by ``extract_media``.  Escaped underscores
+    # break the exact match while Markdown still renders the original text.
+    _FOOTER_MEDIA_DIRECTIVES = ("[[audio_as_voice]]", "[[as_document]]")
+
+    @classmethod
+    def _neutralize_footer_media_directives(cls, text: str) -> str:
+        """Rewrite delivery directives in untrusted footer text into visible, non-executable forms."""
+        if not text:
+            return text
+        text = cls._FOOTER_MEDIA_TAG_RE.sub(lambda m: m.group(0)[:-1] + r"\x3a", text)
+        for directive in cls._FOOTER_MEDIA_DIRECTIVES:
+            text = text.replace(directive, directive.replace("_", r"\_"))
+        return text
+
     @classmethod
     def _neutralize_footer_paths(cls, text: str) -> str:
         """Backtick bare file paths so the gateway's ``extract_local_files`` never auto-attaches them.
@@ -266,8 +289,11 @@ class TurnExplainersMixin:
         remaining = len(failed) - len(shown)
         if remaining > 0:
             lines.append(f"  • … and {remaining} more")
-        # Neutralize paths the preview echoed; the lookbehind prevents double-wrapping the bullet path.
-        return cls._neutralize_footer_paths("\n".join(lines))
+        # Neutralize delivery directives the preview carried, then paths it
+        # echoed; the lookbehind prevents double-wrapping the bullet path.
+        return cls._neutralize_footer_paths(
+            cls._neutralize_footer_media_directives("\n".join(lines))
+        )
 
     @staticmethod
     def _format_turn_completion_explanation(

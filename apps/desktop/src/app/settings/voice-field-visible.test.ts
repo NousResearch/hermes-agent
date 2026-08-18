@@ -41,6 +41,31 @@ describe('voiceFieldVisible', () => {
     expect(voiceFieldVisible('stt.provider', config)).toBe(true)
   })
 
+  it('shows the dictation route always, and its loopback knobs only in local mode', () => {
+    const loopbackKeys = ['voice.dictation.local_stt_port', 'voice.dictation.local_stt_model']
+
+    // Unset config = the backend default, so the loopback knobs stay hidden.
+    expect(voiceFieldVisible('voice.dictation.stt', cfg())).toBe(true)
+
+    for (const key of loopbackKeys) {
+      expect(voiceFieldVisible(key, cfg()), key).toBe(false)
+    }
+
+    const local = cfg({ voice: { dictation: { stt: 'local' } } })
+    expect(voiceFieldVisible('voice.dictation.stt', local)).toBe(true)
+
+    for (const key of loopbackKeys) {
+      expect(voiceFieldVisible(key, local), key).toBe(true)
+    }
+
+    // STT being off is about backend providers; it must not hide the route.
+    const sttOff = cfg({ stt: { enabled: false }, voice: { dictation: { stt: 'local' } } })
+
+    for (const key of loopbackKeys) {
+      expect(voiceFieldVisible(key, sttOff), key).toBe(true)
+    }
+  })
+
   it('tracks a provider switch', () => {
     expect(voiceFieldVisible('tts.openai.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(true)
     expect(voiceFieldVisible('tts.edge.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(false)

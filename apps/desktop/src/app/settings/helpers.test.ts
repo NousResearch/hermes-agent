@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
+import { LOCAL_STT_DEFAULTS } from '@/lib/local-stt'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   clearsEnabledToolsets,
+  configValue,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
@@ -362,6 +364,30 @@ describe('settings helpers', () => {
 
     it('hides declared keys absent from both schema and config', () => {
       expect(sectionFieldEntries({}, {}).get('memory') ?? []).toHaveLength(0)
+    })
+
+    it('still renders desktop-owned keys the backend never declares', () => {
+      // voice.dictation.* is read by the desktop client alone, so it appears in
+      // neither /api/config/schema nor an untouched config.yaml. Without its own
+      // schema rung the rows would be permanently invisible and unreachable.
+      const voiceKeys = (sectionFieldEntries({}, {}).get('voice') ?? []).map(([key]) => key)
+
+      expect(voiceKeys).toContain('voice.dictation.stt')
+      expect(voiceKeys).toContain('voice.dictation.local_stt_port')
+      expect(voiceKeys).toContain('voice.dictation.local_stt_model')
+    })
+  })
+
+  describe('configValue', () => {
+    it('resolves an unset desktop-owned key to the default the client uses', () => {
+      expect(configValue({}, 'voice.dictation.stt')).toBe(LOCAL_STT_DEFAULTS.mode)
+      expect(configValue({}, 'voice.dictation.local_stt_port')).toBe(LOCAL_STT_DEFAULTS.port)
+      expect(configValue({}, 'voice.dictation.local_stt_model')).toBe(LOCAL_STT_DEFAULTS.model)
+    })
+
+    it('never invents a value for backend-owned keys', () => {
+      expect(configValue({}, 'memory.provider')).toBeUndefined()
+      expect(configValue({ voice: { dictation: { stt: 'local' } } }, 'voice.dictation.stt')).toBe('local')
     })
   })
 

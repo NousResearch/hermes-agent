@@ -479,7 +479,12 @@ export const ja = defineLocale({
       voice: {
         recordKey: '音声ショートカット',
         maxRecordingSeconds: '最大録音時間',
-        autoTts: '応答を読み上げる'
+        autoTts: '応答を読み上げる',
+        dictation: {
+          stt: 'ディクテーションの文字起こし',
+          localSttPort: 'ローカル Whisper ポート',
+          localSttModel: 'ローカル Whisper モデル'
+        }
       },
       stt: {
         enabled: '音声認識',
@@ -627,7 +632,13 @@ export const ja = defineLocale({
         enabled: '会話が大きくなったとき、古いコンテキストを要約します。'
       },
       voice: {
-        autoTts: 'アシスタントの応答を自動で読み上げます。'
+        autoTts: 'アシスタントの応答を自動で読み上げます。',
+        dictation: {
+          stt: 'プッシュトゥトークのディクテーションをどこで文字起こしするかです。「local」はこのマシン上の OpenAI 互換 Whisper サーバーを先に試し、利用できないときはバックエンドにフォールバックします。エージェントはリモートのままでも、音声はこのマシンから出ません。',
+          localSttPort: 'ローカル Whisper サーバーのループバックポートです（既定は 8090）。',
+          localSttModel:
+            'ローカルサーバーに送るモデル ID です（既定は whisper-1）。whisper.cpp はこれを無視して読み込み済みのモデルを使いますが、モデル ID でルーティングするサーバーには実在の ID が必要です。'
+        }
       },
       stt: {
         enabled: 'ローカルまたはプロバイダーによる音声文字起こしを有効にします。',

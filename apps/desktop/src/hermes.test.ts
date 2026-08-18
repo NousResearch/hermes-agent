@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $localStt, LOCAL_STT_DEFAULTS } from '@/lib/local-stt'
+
 import {
   AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS,
   AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS,
@@ -528,6 +530,95 @@ describe('Hermes REST helpers', () => {
         path: '/api/model/options?refresh=1&include_unconfigured=1'
       })
     )
+  })
+})
+
+// The dictation ladder: `voice.dictation.stt` picks the first rung, and every
+// local failure has to land on the backend rung without the caller noticing.
+describe('transcribeAudio dictation routing', () => {
+  const DATA_URL = 'data:audio/webm;base64,AAECAw=='
+  let api: ReturnType<typeof vi.fn>
+
+  const backendCalls = () => api.mock.calls.filter(call => call[0].path === '/api/audio/transcribe')
+
+  beforeEach(() => {
+    api = vi.fn().mockResolvedValue({ ok: true, provider: 'openai', transcript: 'from backend' })
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
+  })
+
+  afterEach(() => {
+    $localStt.set(LOCAL_STT_DEFAULTS)
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('leaves the default route untouched: backend only, no loopback probe', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(transcribeAudio(DATA_URL, 'audio/webm')).resolves.toEqual({
+      ok: true,
+      provider: 'openai',
+      transcript: 'from backend'
+    })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(backendCalls()).toHaveLength(1)
+  })
+
+  it('transcribes locally without touching the backend when local is selected', async () => {
+    $localStt.set({ ...LOCAL_STT_DEFAULTS, mode: 'local', port: 8090 })
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ text: 'from whisper' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    )
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(transcribeAudio(DATA_URL, 'audio/webm')).resolves.toEqual({
+      ok: true,
+      provider: 'local',
+      transcript: 'from whisper'
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:8090/v1/audio/transcriptions')
+    expect(backendCalls()).toHaveLength(0)
+  })
+
+  it.each([
+    ['no server is listening', () => Promise.reject(new TypeError('Failed to fetch'))],
+    ['the server errors', () => Promise.resolve(new Response('boom', { status: 500 }))],
+    ['the body has no transcript', () => Promise.resolve(new Response('{}', { status: 200 }))]
+  ])('falls back to the backend when %s — invisibly, with no error raised', async (_case, respond) => {
+    $localStt.set({ ...LOCAL_STT_DEFAULTS, mode: 'local', port: 8090 })
+    vi.stubGlobal('fetch', vi.fn(respond))
+
+    await expect(transcribeAudio(DATA_URL, 'audio/webm')).resolves.toEqual({
+      ok: true,
+      provider: 'openai',
+      transcript: 'from backend'
+    })
+
+    // The fallback is the *unchanged* backend request, profile scope and
+    // payload-derived timeout included — not a degraded second-class call.
+    expect(backendCalls()[0][0]).toEqual({
+      body: { data_url: DATA_URL, mime_type: 'audio/webm' },
+      method: 'POST',
+      path: '/api/audio/transcribe',
+      timeoutMs: AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS
+    })
+  })
+
+  it('surfaces a backend failure as usual once the local rung is exhausted', async () => {
+    $localStt.set({ ...LOCAL_STT_DEFAULTS, mode: 'local', port: 8090 })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    api.mockRejectedValue(new Error('backend down'))
+
+    await expect(transcribeAudio(DATA_URL, 'audio/webm')).rejects.toThrow('backend down')
   })
 })
 

@@ -607,7 +607,12 @@ export const zh: Translations = {
       voice: {
         recordKey: '语音快捷键',
         maxRecordingSeconds: '最长录音时长',
-        autoTts: '朗读回复'
+        autoTts: '朗读回复',
+        dictation: {
+          stt: '听写转录方式',
+          localSttPort: '本地 Whisper 端口',
+          localSttModel: '本地 Whisper 模型'
+        }
       },
       stt: {
         enabled: '语音转文字',
@@ -754,7 +759,13 @@ export const zh: Translations = {
         enabled: '当对话变大时对较早的上下文进行摘要。'
       },
       voice: {
-        autoTts: '自动朗读助手回复。'
+        autoTts: '自动朗读助手回复。',
+        dictation: {
+          stt: '按住说话的听写在哪里转录。选择“local”会先尝试本机上兼容 OpenAI 的 Whisper 服务，不可用时回退到后端——这样即使智能体仍在远程后端运行，你的语音也不会离开本机。',
+          localSttPort: '本地 Whisper 服务的回环端口（默认 8090）。',
+          localSttModel:
+            '发送给本地服务的模型 ID（默认 whisper-1）。whisper.cpp 会忽略它并使用已加载的模型；按模型 ID 路由的服务则需要真实 ID。'
+        }
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',

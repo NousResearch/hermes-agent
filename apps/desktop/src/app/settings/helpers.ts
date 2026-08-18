@@ -1,7 +1,14 @@
 import { asText, normalize } from '@/lib/text'
 import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
-import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
+import {
+  BUILTIN_PERSONALITIES,
+  DESKTOP_FIELD_DEFAULTS,
+  DESKTOP_FIELD_SCHEMA,
+  ENUM_OPTIONS,
+  PROVIDER_GROUPS,
+  SECTIONS
+} from './constants'
 
 // Canonical implementations live in @/lib/text; re-exported here so the many
 // settings/capabilities call sites keep their import path.
@@ -97,6 +104,15 @@ export function getNested(obj: HermesConfigRecord, path: string): unknown {
   return cur
 }
 
+/** Config read for rendering: an absent desktop-owned key resolves to the
+ *  default the client actually uses, so the control shows the truth rather than
+ *  a blank that reads as "off". Backend keys are unaffected. */
+export function configValue(config: HermesConfigRecord, key: string): unknown {
+  const value = getNested(config, key)
+
+  return value === undefined ? DESKTOP_FIELD_DEFAULTS[key] : value
+}
+
 /**
  * True when an edit clears the entire "Enabled Toolsets" list — i.e. the
  * previous config had a non-empty toolsets array and the next one is an
@@ -138,7 +154,10 @@ export function inferFieldSchema(value: unknown): ConfigFieldSchema {
   return { type: 'string' }
 }
 
-// Backend schema omits some declared keys; config presence is the availability signal.
+// Backend schema omits some declared keys; config presence is the availability
+// signal. Desktop-owned keys (DESKTOP_FIELD_SCHEMA) are the exception: the
+// backend never declares them and an untouched config.yaml has no value, so
+// they carry their own schema and always render.
 export function sectionFieldEntries(
   schema: Record<string, ConfigFieldSchema>,
   config: HermesConfigRecord
@@ -148,7 +167,9 @@ export function sectionFieldEntries(
       s.id,
       s.keys.flatMap(k => {
         const value = getNested(config, k)
-        const field = schema[k] ?? (value === undefined ? undefined : inferFieldSchema(value))
+
+        const field =
+          schema[k] ?? DESKTOP_FIELD_SCHEMA[k] ?? (value === undefined ? undefined : inferFieldSchema(value))
 
         return field ? [[k, field] as [string, ConfigFieldSchema]] : []
       })

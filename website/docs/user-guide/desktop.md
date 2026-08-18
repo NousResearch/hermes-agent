@@ -127,6 +127,25 @@ Quick Entry is a small always-available composer summoned by a **global hotkey f
 
 Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md) available elsewhere. On macOS the OS will prompt once for microphone access.
 
+#### On-device dictation
+
+By default the app uploads a dictation clip to the backend and transcribes it there. When that backend is [remote](#connecting-to-a-remote-backend), the clip travels to the remote machine and back before you see any text.
+
+**Settings → Voice → Dictation Transcription** switches this to `local`, which posts the clip to an OpenAI-compatible Whisper server running on this machine instead. Your voice never leaves the laptop, while the agent, memory, and skills stay on the remote backend as before.
+
+Any server exposing `POST /v1/audio/transcriptions` on loopback works — for example:
+
+```bash
+whisper-server -m models/ggml-base.bin --port 8090
+```
+
+Two knobs appear once `local` is selected:
+
+- **Local Whisper Port** — the loopback port to post to (default `8090`).
+- **Local Whisper Model** — the `model` id sent in the upload (default `whisper-1`). whisper.cpp ignores it and uses whatever model it loaded; servers that route by model id (speaches, LocalAI) need a real one.
+
+The backend stays the next rung down: if the local server is missing, slow, or fails, dictation quietly falls back to it, so a stopped sidecar never breaks the microphone. In `config.yaml` these are `voice.dictation.stt`, `voice.dictation.local_stt_port`, and `voice.dictation.local_stt_model`; the language hint comes from the global `stt.language`.
+
 ### HUD mode
 
 **⌘/Ctrl+Shift+H** (or the titlebar button) detaches the chat into a chrome-free, always-on-top floating bar that sits over whatever you are working in. The app window steps aside; the HUD keeps your live conversation and a composer. Where you park it is context — the bar's position tells Hermes which app and screen you're asking about, so "this", "here", and "that page" resolve to what's underneath it.

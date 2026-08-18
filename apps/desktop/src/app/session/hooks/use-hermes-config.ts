@@ -3,6 +3,7 @@ import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
+import { applyLocalSttFromConfig } from '@/lib/local-stt'
 import { normalize } from '@/lib/text'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import {
@@ -112,6 +113,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         setSttEnabled(config.stt?.enabled !== false)
         setDisplayTimestampsFromConfig(config.display?.timestamps)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
+        applyLocalSttFromConfig(config)
         applyAutoSpeakFromConfig(config)
         applyVoiceStopPhraseFromConfig(config)
         applyThinkingSoundFromConfig(config)

@@ -344,12 +344,22 @@ export interface HermesConfig {
   }
   stt?: {
     enabled?: boolean
+    /** Global language hint for every STT provider; '' = auto-detect. */
+    language?: string
   }
   voice?: {
     max_recording_seconds?: number
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown
+    /** Desktop-only dictation routing (see @/lib/local-stt). The backend
+     *  neither reads nor validates this block — it round-trips through
+     *  config.yaml's deep merge untouched. */
+    dictation?: {
+      stt?: string
+      local_stt_port?: number
+      local_stt_model?: string
+    }
   }
 }
 

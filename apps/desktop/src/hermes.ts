@@ -1,6 +1,7 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
 import type { HermesConnection } from '@/global'
+import { $localStt, transcribeWithLocalStt } from '@/lib/local-stt'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
@@ -1924,7 +1925,7 @@ export function getActionStatus(name: string, lines = 200, profile?: null | stri
   })
 }
 
-export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<AudioTranscriptionResponse> {
+function backendTranscribeAudio(dataUrl: string, mimeType?: string): Promise<AudioTranscriptionResponse> {
   return window.hermesDesktop.api<AudioTranscriptionResponse>({
     path: '/api/audio/transcribe',
     method: 'POST',
@@ -1938,6 +1939,31 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
     // default 15s Electron backend timeout.
     timeoutMs: audioTranscribeRequestTimeoutMs(dataUrl)
   })
+}
+
+/**
+ * Dictation transcription, as an ordered ladder. The default
+ * (`voice.dictation.stt: backend`) is the unchanged backend path, called
+ * synchronously so nothing about today's behavior — profile scoping, timeout,
+ * body shape — moves.
+ *
+ * In `local` mode the loopback Whisper server is tried first and any failure
+ * (server absent, non-2xx, junk body, size-derived timeout) falls through to
+ * the backend. The fallback is deliberately invisible: dictation is a foreground
+ * interaction, and a toast about a sidecar the user can't fix mid-recording
+ * would be noise, not information.
+ */
+export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<AudioTranscriptionResponse> {
+  const localStt = $localStt.get()
+
+  if (localStt.mode !== 'local') {
+    return backendTranscribeAudio(dataUrl, mimeType)
+  }
+
+  return transcribeWithLocalStt(dataUrl, mimeType, localStt).then(
+    transcript => ({ ok: true, provider: 'local', transcript }),
+    () => backendTranscribeAudio(dataUrl, mimeType)
+  )
 }
 
 export function speakText(text: string): Promise<AudioSpeakResponse> {

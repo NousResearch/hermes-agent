@@ -33,6 +33,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { ConfigField } from './config-field'
 import {
   clearsEnabledToolsets,
+  configValue,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
@@ -51,6 +52,13 @@ import { QuickEntrySettings } from './quick-entry-settings'
 // crazy" wall of ~30 fields). Top-level keys (tts.provider, stt.enabled,
 // voice.*) always show; STT provider fields hide entirely when STT is off.
 export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
+  // The loopback Whisper knobs are meaningless while dictation goes to the
+  // backend — showing them in the default mode is a pair of controls that do
+  // nothing.
+  if (key === 'voice.dictation.local_stt_port' || key === 'voice.dictation.local_stt_model') {
+    return configValue(config, 'voice.dictation.stt') === 'local'
+  }
+
   const match = /^(tts|stt)\.([^.]+)\./.exec(key)
 
   if (!match) {
@@ -403,14 +411,14 @@ function ConfigSettingsInner({
                 }
                 enumOptions={
                   key === 'tts.elevenlabs.voice_id'
-                    ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                    : enumOptionsFor(key, getNested(config, key), config)
+                    ? enumOptionsFor(key, configValue(config, key), config, elevenLabsVoiceOptions ?? undefined)
+                    : enumOptionsFor(key, configValue(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
                 schemaKey={key}
-                value={getNested(config, key)}
+                value={configValue(config, key)}
               />
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                 <ProviderConfigPanel

@@ -467,7 +467,12 @@ export const zhHant = defineLocale({
       voice: {
         recordKey: '語音快捷鍵',
         maxRecordingSeconds: '最長錄音時間',
-        autoTts: '朗讀回覆'
+        autoTts: '朗讀回覆',
+        dictation: {
+          stt: '聽寫轉錄方式',
+          localSttPort: '本機 Whisper 連接埠',
+          localSttModel: '本機 Whisper 模型'
+        }
       },
       stt: {
         enabled: '語音轉文字',
@@ -614,7 +619,13 @@ export const zhHant = defineLocale({
         enabled: '對話變大時摘要較早的上下文。'
       },
       voice: {
-        autoTts: '自動朗讀助手回覆。'
+        autoTts: '自動朗讀助手回覆。',
+        dictation: {
+          stt: '按住說話的聽寫要在哪裡轉錄。選擇「local」會先嘗試本機上相容 OpenAI 的 Whisper 伺服器，無法使用時回退到後端——這樣即使代理仍在遠端後端執行，你的語音也不會離開本機。',
+          localSttPort: '本機 Whisper 伺服器的回送連接埠（預設 8090）。',
+          localSttModel:
+            '傳送給本機伺服器的模型 ID（預設 whisper-1）。whisper.cpp 會忽略它並使用已載入的模型；依模型 ID 路由的伺服器則需要真實 ID。'
+        }
       },
       stt: {
         enabled: '啟用本機或提供方支援的語音轉寫。',

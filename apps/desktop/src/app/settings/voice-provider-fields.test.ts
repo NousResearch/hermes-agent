@@ -36,6 +36,17 @@ describe('voiceProviderKeys', () => {
     expect(voiceProviderKeys('tts', 'mini')).toEqual([])
     expect(voiceProviderKeys('stt', 'openai')).toEqual(['stt.openai.model'])
   })
+
+  it('never pulls the desktop dictation keys into a provider block', () => {
+    // voice.dictation.* lives in the Voice section but belongs to the desktop
+    // client, not to any STT provider — the Capabilities panel must not render
+    // it under, say, the Groq card.
+    for (const provider of ['local', 'openai', 'groq', 'elevenlabs']) {
+      for (const key of ['voice.dictation.stt', 'voice.dictation.local_stt_port', 'voice.dictation.local_stt_model']) {
+        expect(voiceProviderKeys('stt', provider), `${provider}/${key}`).not.toContain(key)
+      }
+    }
+  })
 })
 
 describe('voice field option coverage', () => {
@@ -64,6 +75,19 @@ describe('voice field option coverage', () => {
     expect(FREE_INPUT_KEYS.has('tts.provider')).toBe(false)
     expect(FREE_INPUT_KEYS.has('tts.neutts.device')).toBe(false)
     expect(FREE_INPUT_KEYS.has('stt.provider')).toBe(false)
+    // The dictation route is a two-value client policy, never free text.
+    expect(FREE_INPUT_KEYS.has('voice.dictation.stt')).toBe(false)
+  })
+
+  it('offers exactly the two dictation routes the client implements', () => {
+    expect(ENUM_OPTIONS['voice.dictation.stt']).toEqual(['backend', 'local'])
+    expect(voiceKeys).toEqual(
+      expect.arrayContaining([
+        'voice.dictation.stt',
+        'voice.dictation.local_stt_port',
+        'voice.dictation.local_stt_model'
+      ])
+    )
   })
 
   it('every free-input voice key that lives in the Voice section has suggestions or is intentionally bare', () => {

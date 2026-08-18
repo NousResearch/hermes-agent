@@ -517,6 +517,9 @@ export const ar = defineLocale({
       'voice.recordKey': 'اختصار الصوت',
       'voice.maxRecordingSeconds': 'أقصى مدة للتسجيل',
       'voice.autoTts': 'قراءة الردود صوتياً',
+      'voice.dictation.stt': 'تفريغ الإملاء',
+      'voice.dictation.localSttPort': 'منفذ Whisper المحلي',
+      'voice.dictation.localSttModel': 'نموذج Whisper المحلي',
       'stt.enabled': 'تحويل الكلام إلى نص',
       'stt.provider': 'مزود تحويل الكلام إلى نص',
       'stt.local.model': 'نموذج التفريغ المحلي',
@@ -592,6 +595,11 @@ export const ar = defineLocale({
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
       'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',
+      'voice.dictation.stt':
+        'أين يُفرَّغ الإملاء بالضغط للتحدث. يجرّب خيار «local» خادم Whisper متوافقاً مع OpenAI على هذا الجهاز أولاً، ويعود إلى الخادم الخلفي عند تعذّره — فيبقى صوتك على جهازك بينما يظل الوكيل يعمل على خادم بعيد.',
+      'voice.dictation.localSttPort': 'منفذ الاسترجاع المحلي لخادم Whisper (الافتراضي 8090).',
+      'voice.dictation.localSttModel':
+        'معرّف النموذج المُرسل إلى الخادم المحلي (الافتراضي whisper-1). يتجاهله whisper.cpp ويستخدم النموذج المُحمَّل، بينما تحتاج الخوادم التي توجّه حسب المعرّف إلى معرّف حقيقي.',
       'tts.xai.voiceId': 'معرف صوت xAI مثل eve أو معرف صوت مخصص.',
       'tts.xai.language': 'رمز لغة النطق، مثل en.',
       'tts.neutts.device': 'جهاز الاستدلال المحلي لـ NeuTTS.',

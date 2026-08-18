@@ -11,8 +11,15 @@ import {
   Sun,
   Wrench
 } from '@/lib/icons'
+import {
+  DICTATION_STT_MODES,
+  LOCAL_STT_DEFAULT_MODEL,
+  LOCAL_STT_DEFAULT_PORT,
+  LOCAL_STT_DEFAULTS
+} from '@/lib/local-stt'
 import { REASONING_EFFORTS } from '@/lib/reasoning-effort'
 import type { ThemeMode } from '@/themes/context'
+import type { ConfigFieldSchema } from '@/types/hermes'
 
 // Single source of truth for built-in personality names lives in
 // lib/personalities (mirrors hermes_cli/personality.py BUILTIN_PERSONALITIES).
@@ -344,7 +351,30 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
   // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
-  'updates.non_interactive_local_changes': ['stash', 'discard']
+  'updates.non_interactive_local_changes': ['stash', 'discard'],
+  // Desktop-only dictation route: the backend endpoint (unchanged default) or a
+  // loopback OpenAI-compatible Whisper server. See @/lib/local-stt.
+  'voice.dictation.stt': [...DICTATION_STT_MODES]
+}
+
+// Config keys the DESKTOP owns end-to-end, so /api/config/schema never declares
+// them and a config.yaml that has never been touched carries no value either.
+// sectionFieldEntries() treats "no schema and no value" as "field doesn't exist"
+// — correct for backend keys an older runtime lacks, fatal for these — so the
+// desktop supplies its own schema rung for them.
+export const DESKTOP_FIELD_SCHEMA: Record<string, ConfigFieldSchema> = {
+  'voice.dictation.stt': { type: 'select' },
+  'voice.dictation.local_stt_port': { type: 'number' },
+  'voice.dictation.local_stt_model': { type: 'string' }
+}
+
+// What an absent key means, so the row paints the effective value instead of an
+// empty control. Derived from LOCAL_STT_DEFAULTS rather than restated, so the
+// settings page and transcribeAudio() can't drift on what "unset" resolves to.
+export const DESKTOP_FIELD_DEFAULTS: Record<string, unknown> = {
+  'voice.dictation.stt': LOCAL_STT_DEFAULTS.mode,
+  'voice.dictation.local_stt_port': LOCAL_STT_DEFAULTS.port,
+  'voice.dictation.local_stt_model': LOCAL_STT_DEFAULTS.model
 }
 
 // Voice/model name fields render as a free-input combobox (Input + datalist)
@@ -435,7 +465,12 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   voice: {
     recordKey: 'Voice Shortcut',
     maxRecordingSeconds: 'Max Recording Length',
-    autoTts: 'Read Responses Aloud'
+    autoTts: 'Read Responses Aloud',
+    dictation: {
+      stt: 'Dictation Transcription',
+      localSttPort: 'Local Whisper Port',
+      localSttModel: 'Local Whisper Model'
+    }
   },
   stt: {
     enabled: 'Speech To Text',
@@ -592,7 +627,12 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     enabled: 'Summarize older context when conversations get large.'
   },
   voice: {
-    autoTts: 'Automatically speak assistant responses.'
+    autoTts: 'Automatically speak assistant responses.',
+    dictation: {
+      stt: 'Where push-to-talk dictation is transcribed. "Local" tries an OpenAI-compatible Whisper server on this machine first and falls back to the backend whenever it is unavailable — so your voice never leaves this machine while a remote backend still runs the agent.',
+      localSttPort: `Loopback port of the local Whisper server (default ${LOCAL_STT_DEFAULT_PORT}).`,
+      localSttModel: `Model id sent to the local server (default ${LOCAL_STT_DEFAULT_MODEL}). whisper.cpp ignores it and uses the loaded model; servers that route by model id need a real one.`
+    }
   },
   tts: {
     xai: {
@@ -698,6 +738,9 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.enabled',
       'stt.echo_transcripts',
       'stt.provider',
+      'voice.dictation.stt',
+      'voice.dictation.local_stt_port',
+      'voice.dictation.local_stt_model',
       'voice.auto_tts',
       'tts.edge.voice',
       'tts.openai.model',

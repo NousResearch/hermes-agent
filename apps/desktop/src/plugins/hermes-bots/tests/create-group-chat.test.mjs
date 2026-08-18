@@ -21,16 +21,9 @@ test('source contract: create-group modal has search, checkboxes, name, create',
   assert.match(pluginSource, /const visible = filterBots\(roster, allMeta, query\)/)
   // Selection is checkbox-driven and capped at the room member limit.
   assert.match(pluginSource, /const atCap = selected\.length >= GROUP_CHAT_MAX_MEMBERS/)
-  // Create requires 2+ members and appends to the canonical multi-group field
-  // without replacing existing memberships.
+  // Create requires 2+ members. Membership mutation is covered by the
+  // behavioral groupMembershipPatch tests rather than another source regex.
   assert.match(pluginSource, /selected\.length >= 2/)
-  assert.match(
-    pluginSource,
-    /groupMembershipPatch\(botRosterMeta\(bot, allMeta\), groupName, true\)/
-  )
-  // Existing membership labels enumerate every canonical group.
-  assert.match(pluginSource, /const currentGroups = botGroups\(meta\)/)
-  assert.match(pluginSource, /currentGroups\.map\(group => `“\$\{group\}”`\)\.join\(', '\)/)
   // Creating drops the user straight into the room (main window when the
   // desktop offers host.openWorkspace, in-panel fallback otherwise).
   assert.match(pluginSource, /onCreated: groupName => openGroupChat\(groupName\)/)

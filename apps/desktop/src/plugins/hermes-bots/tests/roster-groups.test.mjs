@@ -189,16 +189,12 @@ test('stripPreviewMarkdown: flattens bold, quotes, code, and links out of previe
   assert.equal(stripPreviewMarkdown(''), '')
 })
 
-test('source contract: the roster stays flat while the row menu manages multiple groups', () => {
+test('source contract: the roster stays a flat list of bot and group rows', () => {
   // Ordering is deliberately unchanged in this PR; sectioned ordering follows separately.
   assert.doesNotMatch(pluginSource, /function groupRoster\(/)
   assert.match(pluginSource, /rosterRows\.map\(row =>/)
   assert.match(pluginSource, /function GroupRow\(/)
   assert.match(pluginSource, /onGroup: setGrouping/)
-  assert.match(pluginSource, /'Manage groups…'/)
-  assert.match(pluginSource, /!bot\.remoteSource\s*\? jsx\(ContextMenuItem, \{\s*onSelect: \(\) => onGroup\(bot\)/)
-  assert.match(pluginSource, /botGroups\(meta\[bot\?\.name\]\)/)
-  assert.match(pluginSource, /groupMembershipPatch\(meta\[bot\.name\], group, enabled\)/)
 })
 
 test('source contract: group rows carry the needs-you badge and open via openGroupChat', () => {

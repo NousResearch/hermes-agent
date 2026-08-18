@@ -90,7 +90,7 @@ test('ActiveNowStrip renders above the roster, is a live region, and is click-ac
   assert.match(source, /jsx\('button', \{\s*type: 'button',\s*title: `Open \$\{label\}'s chat`/)
   // The key rides as jsx()'s third argument — the ONLY form React treats as
   // a list key; a `key:` prop leaves chips unkeyed (index identity).
-  assert.match(source, /\}, botRosterKey\(bot\)\)\s*\}\)\s*\]\s*\}\)\s*\}\s*\/\*\* Manage a bot's group-chat memberships/s)
+  assert.match(source, /\}, botRosterKey\(bot\)\)\s*\}\)\s*\]\s*\}\)\s*\}\s*\/\*\* Assign a bot to a group/s)
   assert.match(source, /jsx\(BotFace,\s*\{[\s\S]*?mood: 'work'/)
   assert.match(source, /let pinnedChat = botRosterMeta\(bot, allMeta\)\?\.chat/)
   assert.match(source, /await prepareBotSource\(bot, pinnedChat\)/)

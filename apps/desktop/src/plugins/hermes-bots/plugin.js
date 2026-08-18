@@ -7309,9 +7309,9 @@ function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpe
   })
 }
 
-/** Manage a bot's group-chat memberships. Existing groups are independent
- *  toggles; the input creates and joins a new one. The canonical groups array
- *  and legacy scalar projection both ride ui_meta like pin/title. */
+/** Assign a bot to a group-chat membership without replacing its others.
+ *  Existing groups are independent toggles; the input creates and joins a new
+ *  one. Canonical groups + the legacy scalar projection ride ui_meta. */
 function GroupDialog({ bot, onClose }) {
   const meta = useValue($botMeta)
   const [name, setName] = useState('')

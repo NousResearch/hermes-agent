@@ -4290,7 +4290,21 @@ async function runGroupChatRounds(group, members, thread) {
       }
 
       const roomLog = (($groupChats.get()[group] || {}).log || []).filter(e => groupThreadOf(e) === thread)
+      // Exclude members the harvest pass just above confirmed are STILL
+      // running (their stranded marker survived harvest because
+      // state.inflight/running was true). Re-selecting one here would
+      // prompt.submit into their live session — the gateway's default busy
+      // policy redirects or hard-interrupts that turn (tui_gateway's
+      // _handle_busy_submit), killing exactly the long-running work this
+      // stranded/harvest mechanism exists to protect. Skip them; the next
+      // harvest pass picks the reply up once it actually lands. A marker's
+      // mere presence means "still stranded" (harvestStrandedGroupReply
+      // deletes it once the member is confirmed done/dead) — presence, not
+      // value shape, since markers are a bare number pre-thread or
+      // {before, thread} post-thread.
+      const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
       const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round)
+        .filter(member => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member)))
       let spokeThisRound = 0
 
       for (const member of responders) {

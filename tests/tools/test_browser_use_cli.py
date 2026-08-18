@@ -529,8 +529,13 @@ class TestBackendCdpResolution:
         monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
         monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
         monkeypatch.setattr(bt, "_get_session_info", fake_session_info)
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME ws:$BU_CDP_WS"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_py_cli(
+            tmp_path,
+            "import sys, os\nsys.stdin.read()\n"
+            "print('bu:' + os.environ.get('BU_NAME', ''))\n"
+            "print('ws:' + os.environ.get('BU_CDP_WS', ''))\n",
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: list(cli))
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert result["success"] is True
         assert seen == ["bu-named-r7k2"]
@@ -569,8 +574,8 @@ class TestOwnTabPreamble:
 
         monkeypatch.setattr(bu_cli, "_ensure_exec_cdp_endpoint", _resolve)
         # fake CLI echoes stdin back so we can inspect what code was sent
-        cli = _fake_cli(tmp_path, "cat\n")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_py_cli(tmp_path, "import sys\nsys.stdout.write(sys.stdin.read())\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: list(cli))
         return json.loads(bu_cli.browser_exec("print('payload')", session=session))
 
     def test_named_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
@@ -598,8 +603,12 @@ class TestOwnTabPreamble:
             return None
 
         monkeypatch.setattr(bu_cli, "_ensure_exec_cdp_endpoint", _resolve)
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "sentinel:${_HERMES_BU_PRIVATE_BROWSER:-unset}"\n')
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        cli = _fake_py_cli(
+            tmp_path,
+            "import sys, os\nsys.stdin.read()\n"
+            "print('sentinel:' + os.environ.get('_HERMES_BU_PRIVATE_BROWSER', 'unset'))\n",
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: list(cli))
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert "sentinel:unset" in result["output"]
 

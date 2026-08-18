@@ -6862,7 +6862,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="run.cancelled",
                     )
                     return
-                def _clarify_callback(question: str, choices) -> str:
+                def _clarify_callback(
+                    question: str,
+                    choices,
+                    multi_select: bool = False,
+                ) -> str:
                     from tools import clarify_gateway
 
                     safe_question = str(
@@ -6876,12 +6880,16 @@ class APIServerAdapter(BasePlatformAdapter):
                             ]
                             for choice in list(choices)[:4]
                         ]
+                    # multi_select is meaningful only with a choice list —
+                    # same rule as clarify_gateway.register().
+                    allow_multi = bool(multi_select) and bool(safe_choices)
                     request_id = f"clarify_{uuid.uuid4().hex}"
                     clarify_gateway.register(
                         clarify_id=request_id,
                         session_key=clarify_session_key,
                         question=safe_question,
                         choices=safe_choices,
+                        multi_select=allow_multi,
                     )
                     prompt: Dict[str, Any] = {
                         "version": _RUN_CLARIFY_PROMPT_VERSION,
@@ -6893,6 +6901,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             {"id": f"choice-{index}", "label": label}
                             for index, label in enumerate(safe_choices, start=1)
                         ]
+                        prompt["multi_select"] = allow_multi
 
                     def _publish_clarify() -> None:
                         if (
@@ -7424,12 +7433,27 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         response_type = response.get("type")
-        if response_type == "choice":
-            choice_id = response.get("choice_id")
-            choices = pending.get("choices") or []
+        pending_choices = list(pending.get("choices") or [])
+        pending_multi = bool(pending.get("multi_select"))
+
+        def _choice_index(choice_id: Any) -> int:
             match = re.fullmatch(r"choice-([1-4])", str(choice_id or ""))
-            index = int(match.group(1)) - 1 if match else -1
-            if index < 0 or index >= len(choices):
+            if not match:
+                return -1
+            return int(match.group(1)) - 1
+
+        if response_type == "choice":
+            if pending_multi:
+                return web.json_response(
+                    _openai_error(
+                        "Multi-select clarification requires response.type 'choices'",
+                        code="invalid_clarification_response_type",
+                    ),
+                    status=400,
+                )
+            choice_id = response.get("choice_id")
+            index = _choice_index(choice_id)
+            if index < 0 or index >= len(pending_choices):
                 return web.json_response(
                     _openai_error(
                         "Invalid clarification choice_id",
@@ -7437,10 +7461,66 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=400,
                 )
-            answer = str(choices[index])
+            answer = str(pending_choices[index])
             response_summary: Dict[str, Any] = {
                 "type": "choice",
                 "choice_id": choice_id,
+            }
+        elif response_type == "choices":
+            if not pending_multi:
+                return web.json_response(
+                    _openai_error(
+                        "Clarification is not multi-select; use response.type 'choice'",
+                        code="invalid_clarification_response_type",
+                    ),
+                    status=400,
+                )
+            choice_ids = response.get("choice_ids")
+            if not isinstance(choice_ids, list) or not choice_ids:
+                return web.json_response(
+                    _openai_error(
+                        "Multi-select clarification requires a non-empty choice_ids list",
+                        code="invalid_clarification_choice",
+                    ),
+                    status=400,
+                )
+            if len(choice_ids) > len(pending_choices):
+                return web.json_response(
+                    _openai_error(
+                        "Too many clarification choice_ids",
+                        code="invalid_clarification_choice",
+                    ),
+                    status=400,
+                )
+            selected_labels: List[str] = []
+            seen_ids: set[str] = set()
+            for raw_id in choice_ids:
+                choice_id = str(raw_id or "")
+                if choice_id in seen_ids:
+                    return web.json_response(
+                        _openai_error(
+                            "Duplicate clarification choice_id",
+                            code="invalid_clarification_choice",
+                        ),
+                        status=400,
+                    )
+                index = _choice_index(choice_id)
+                if index < 0 or index >= len(pending_choices):
+                    return web.json_response(
+                        _openai_error(
+                            "Invalid clarification choice_id",
+                            code="invalid_clarification_choice",
+                        ),
+                        status=400,
+                    )
+                seen_ids.add(choice_id)
+                selected_labels.append(str(pending_choices[index]))
+            # JSON array string — matches messaging multi-select resolve path
+            # so clarify_tool._parse_multi_select_response decodes a list.
+            answer = json.dumps(selected_labels, ensure_ascii=False)
+            response_summary = {
+                "type": "choices",
+                "choice_ids": [str(cid) for cid in choice_ids],
             }
         elif response_type == "text":
             text_value = response.get("text")
@@ -7465,7 +7545,7 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             return web.json_response(
                 _openai_error(
-                    "Clarification response type must be 'choice' or 'text'",
+                    "Clarification response type must be 'choice', 'choices', or 'text'",
                     code="invalid_clarification_response_type",
                 ),
                 status=400,

@@ -423,7 +423,8 @@ prompt. Choice prompts use server-issued IDs:
     "choices": [
       {"id": "choice-1", "label": "Staging"},
       {"id": "choice-2", "label": "Production"}
-    ]
+    ],
+    "multi_select": false
   }
 }
 ```
@@ -434,6 +435,18 @@ Answer that exact request with a choice ID:
 {
   "request_id": "clarify_0123456789abcdef0123456789abcdef",
   "response": {"type": "choice", "choice_id": "choice-1"}
+}
+```
+
+When `prompt.multi_select` is `true`, answer with one or more server-issued IDs:
+
+```json
+{
+  "request_id": "clarify_0123456789abcdef0123456789abcdef",
+  "response": {
+    "type": "choices",
+    "choice_ids": ["choice-1", "choice-2"]
+  }
 }
 ```
 

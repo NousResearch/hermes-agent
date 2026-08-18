@@ -10,6 +10,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -377,6 +378,7 @@ class TestRunEvents:
                         {"id": "choice-1", "label": "Red"},
                         {"id": "choice-2", "label": "Blue"},
                     ],
+                    "multi_select": False,
                 }
                 assert create.call_args.kwargs["enable_clarify"] is True
 
@@ -401,6 +403,121 @@ class TestRunEvents:
                 assert callback_result["answer"] == "Blue"
                 assert status["status"] == "completed"
                 assert run_id not in adapter._run_clarify_sessions
+
+    @pytest.mark.asyncio
+    async def test_clarification_multi_select_returns_json_array(self, adapter):
+        app = _create_runs_app(adapter)
+        callback_result = {}
+
+        def make_agent(**kwargs):
+            mock_agent = MagicMock()
+
+            def run_conversation(**_run_kwargs):
+                callback_result["answer"] = kwargs["clarify_callback"](
+                    "Pick environments",
+                    ["Staging", "Production", "Canary"],
+                    multi_select=True,
+                )
+                return {"final_response": callback_result["answer"]}
+
+            mock_agent.run_conversation.side_effect = run_conversation
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=make_agent):
+                started = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await started.json())["run_id"]
+                event = await asyncio.wait_for(adapter._run_streams[run_id].get(), timeout=3)
+
+                assert event["event"] == "clarify.request"
+                assert event["prompt"]["multi_select"] is True
+                assert event["prompt"]["type"] == "choice"
+
+                wrong_shape = await cli.post(
+                    f"/v1/runs/{run_id}/clarification",
+                    json={
+                        "request_id": event["request_id"],
+                        "response": {"type": "choice", "choice_id": "choice-1"},
+                    },
+                )
+                assert wrong_shape.status == 400
+
+                response = await cli.post(
+                    f"/v1/runs/{run_id}/clarification",
+                    json={
+                        "request_id": event["request_id"],
+                        "response": {
+                            "type": "choices",
+                            "choice_ids": ["choice-1", "choice-3"],
+                        },
+                    },
+                )
+                assert response.status == 200
+                payload = await response.json()
+                assert payload["type"] == "choices"
+                assert payload["choice_ids"] == ["choice-1", "choice-3"]
+
+                for _ in range(40):
+                    status = adapter._run_statuses[run_id]
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert json.loads(callback_result["answer"]) == ["Staging", "Canary"]
+                assert status["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_clarification_multi_select_rejects_bad_choice_ids(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_multi"
+        request_id = "clarify_" + "d" * 32
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_clarification"}
+        adapter._run_clarify_sessions[run_id] = run_id
+        clarify_mod.register(
+            request_id,
+            run_id,
+            "Pick many?",
+            ["One", "Two", "Three"],
+            multi_select=True,
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            duplicate = await cli.post(
+                f"/v1/runs/{run_id}/clarification",
+                json={
+                    "request_id": request_id,
+                    "response": {
+                        "type": "choices",
+                        "choice_ids": ["choice-1", "choice-1"],
+                    },
+                },
+            )
+            assert duplicate.status == 400
+
+            empty = await cli.post(
+                f"/v1/runs/{run_id}/clarification",
+                json={
+                    "request_id": request_id,
+                    "response": {"type": "choices", "choice_ids": []},
+                },
+            )
+            assert empty.status == 400
+
+            # Single-select shape must not unlock a multi-select pending entry.
+            single = await cli.post(
+                f"/v1/runs/{run_id}/clarification",
+                json={
+                    "request_id": request_id,
+                    "response": {"type": "choice", "choice_id": "choice-2"},
+                },
+            )
+            assert single.status == 400
+            assert clarify_mod.get_pending_by_id(request_id, session_key=run_id) is not None
+
+        clarify_mod.clear_session(run_id)
 
     @pytest.mark.asyncio
     async def test_clarification_is_bound_to_run_and_single_use(self, adapter):

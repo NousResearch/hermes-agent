@@ -46,12 +46,12 @@ class TestYoloMode:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
 
         # Verify the command IS detected as dangerous
-        is_dangerous, _, _ = detect_dangerous_command("rm -rf /tmp/stuff")
+        is_dangerous, _, _ = detect_dangerous_command("rm -rf ~/scratch-area/stuff")
         assert is_dangerous
 
         # In interactive mode without yolo, it would prompt (we can't test
         # the interactive prompt here, but we can verify detection works)
-        result = check_dangerous_command("rm -rf /tmp/stuff", "local",
+        result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local",
                                          approval_callback=lambda *a: "deny")
         assert not result["approved"]
 
@@ -64,7 +64,7 @@ class TestYoloMode:
         # Use a dangerous-but-not-hardline command so we're testing the yolo
         # bypass, not the hardline floor.  `rm -rf /` is now hardline-blocked
         # regardless of yolo — see test_hardline_blocklist.py.
-        result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+        result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
         assert result["approved"]
         assert result["message"] is None
 
@@ -77,7 +77,7 @@ class TestYoloMode:
         # Hardline commands (rm -rf /, mkfs, dd to /dev/sdX) are tested
         # separately in test_hardline_blocklist.py and are NOT in this list.
         dangerous_commands = [
-            "rm -rf /tmp/stuff",
+            "rm -rf ~/scratch-area/stuff",
             "chmod 777 /etc/passwd",
             "bash -lc 'echo pwned'",
             "DROP TABLE users",
@@ -103,7 +103,7 @@ class TestYoloMode:
         monkeypatch.setattr(tools.tirith_security, "check_command_security", fake_check)
 
         # Non-hardline dangerous command — yolo should bypass tirith+dangerous.
-        result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+        result = check_all_command_guards("rm -rf ~/scratch-area/stuff", "local")
         assert result["approved"]
         assert result["message"] is None
         assert called["value"] is False
@@ -123,7 +123,7 @@ class TestYoloMode:
         monkeypatch.setenv("HERMES_SESSION_KEY", "test-session")
 
         result = check_dangerous_command(
-            "rm -rf /tmp/stuff",
+            "rm -rf ~/scratch-area/stuff",
             "local",
             approval_callback=lambda *a: "deny",
         )
@@ -136,7 +136,7 @@ class TestYoloMode:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
         result = check_all_command_guards(
-            "rm -rf /tmp/stuff",
+            "rm -rf ~/scratch-area/stuff",
             "local",
             approval_callback=lambda *a: "deny",
         )
@@ -154,7 +154,7 @@ class TestYoloMode:
         # Dangerous-but-not-hardline — the yolo bypass applies here.
         token_a = set_current_session_key("session-a")
         try:
-            approved = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            approved = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
             assert approved["approved"] is True
         finally:
             reset_current_session_key(token_a)
@@ -162,7 +162,7 @@ class TestYoloMode:
         token_b = set_current_session_key("session-b")
         try:
             blocked = check_dangerous_command(
-                "rm -rf /tmp/stuff",
+                "rm -rf ~/scratch-area/stuff",
                 "local",
                 approval_callback=lambda *a: "deny",
             )
@@ -192,7 +192,7 @@ class TestYoloMode:
 
         token_a = set_current_session_key("session-a")
         try:
-            approved = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            approved = check_all_command_guards("rm -rf ~/scratch-area/stuff", "local")
             assert approved["approved"] is True
         finally:
             reset_current_session_key(token_a)
@@ -200,7 +200,7 @@ class TestYoloMode:
         token_b = set_current_session_key("session-b")
         try:
             blocked = check_all_command_guards(
-                "rm -rf /tmp/stuff",
+                "rm -rf ~/scratch-area/stuff",
                 "local",
                 approval_callback=lambda *a: "deny",
             )

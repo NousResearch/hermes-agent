@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -852,7 +853,76 @@ def check_command_security(command: str) -> dict:
             findings = []
             summary = ""
 
+    # suppress the tirith dotfile_overwrite /
+    # mass_file_deletion findings for the two benign operation shapes that
+    # dominate live false positives (automated-worker audit-log appends and
+    # /tmp scratch cleanup — 10+ incident blocks over five days of live use). Suppression
+    # is shape-bounded and can only ever downgrade warn/block to allow for
+    # APPEND-only log writes and scratch-dir deletion; the single-'>' shell-rc
+    # overwrite shape keeps its finding.
+    if action in ("warn", "block") and findings and _benign_shape_suppressible(command, findings):
+        kept = [f for f in findings if f.get("rule_id") not in
+                ("dotfile_overwrite", "mass_file_deletion")]
+        if kept:
+            findings = kept
+        else:
+            action = "allow"
+            findings = []
+            summary = ""
+
     return {"action": action, "findings": findings, "summary": summary}
+
+
+# benign-shape classifiers for tirith findings.
+#
+# dotfile_overwrite fired on `printf ... >> ~/.hermes/logs/audit.log` because
+# the rule keys on ">> ~/." — a tilde path into a hidden DIRECTORY (.hermes),
+# not a shell dotfile. An append (>>) to a .log file under a logs/ directory
+# cannot overwrite shell configuration. We still keep the finding for
+# single-'>' writes and for appends to actual RC/credential dotfiles
+# (~/.bashrc, ~/.ssh/*, ~/.netrc, ...), which remain exactly as gated as
+# before.
+_RE_APPEND_LOG = re.compile(
+    r">>{1,2}\s*[\"']?(?:~|\$HOME|\$\{HOME\}|/(?:home|Users)/[^/\s\"']+)?"  # >> target
+    r"(?:[^\s\"';&|]*\/)?logs?\/[^\/\s\"';&|]*\.log\b"                       # .../logs/x.log
+)
+# Dotfiles that ARE shell/credential config: appends stay flagged for these.
+_RE_REAL_DOTFILE = re.compile(
+    r"(?:~|\$HOME|\$\{HOME\}|/(?:home|Users)/[^/\s\"']+)/\."
+    r"(?:bashrc|zshrc|profile|bash_profile|zprofile|ssh/|netrc|pgpass|npmrc|pypirc|env\b|gitconfig|profile\b)"
+)
+
+
+def _benign_shape_suppressible(command: str, findings: dict | list) -> bool:
+    """Return True when every finding is a benign-shape suppression candidate."""
+    if not isinstance(findings, list):
+        return False
+    rule_ids = {f.get("rule_id") for f in findings if isinstance(f, dict)}
+    if not rule_ids or not rule_ids <= {"dotfile_overwrite", "mass_file_deletion"}:
+        return False
+    if "dotfile_overwrite" in rule_ids:
+        # Append-only write to a *.log under a logs/ directory: benign.
+        # Any single-'>' overwrite, or an append to a real RC/credential
+        # dotfile, stays flagged.
+        if not _RE_APPEND_LOG.search(command):
+            return False
+        if _RE_REAL_DOTFILE.search(command):
+            return False
+        # a bare '>' anywhere before the append target means a destructive
+        # overwrite is present in the same command — keep the finding.
+        if re.search(r"(?<!>)>(?!>)", command):
+            return False
+    if "mass_file_deletion" in rule_ids:
+        # Deletion burst confined to the OS temp dir: scratch cleanup.
+        # Reuse the approval-layer classifier so the two layers agree; fall
+        # back to a conservative False when it cannot be imported.
+        try:
+            from tools.approval import _is_scratch_cleanup
+            if not _is_scratch_cleanup(command):
+                return False
+        except Exception:
+            return False
+    return True
 
 
 def _is_app_tld_finding(finding: dict) -> bool:

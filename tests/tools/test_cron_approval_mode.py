@@ -116,8 +116,8 @@ class TestCronContextVarDetection:
 
         tokens = set_session_vars(cron_session="1")
         try:
-            dangerous = check_dangerous_command("rm -rf /tmp/stuff", "local")
-            combined = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            dangerous = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
+            combined = check_all_command_guards("rm -rf ~/scratch-area/stuff", "local")
             code = approval_module.check_execute_code_guard("import os", "local")
         finally:
             clear_session_vars(tokens)
@@ -160,7 +160,7 @@ class TestCronDenyMode:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
             assert not result["approved"]
             assert "BLOCKED" in result["message"]
             assert "cron_mode" in result["message"]
@@ -209,7 +209,7 @@ class TestCronDenyMode:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
             assert not result["approved"]
             # Should contain the description of what was flagged
             assert "dangerous" in result["message"].lower() or "delete" in result["message"].lower()
@@ -226,7 +226,7 @@ class TestCronApproveMode:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
             assert result["approved"]
 
 
@@ -246,7 +246,7 @@ class TestCronDenyModeAllGuards:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
-            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            result = check_all_command_guards("rm -rf ~/scratch-area/stuff", "local")
             assert not result["approved"]
             assert "BLOCKED" in result["message"]
 
@@ -271,7 +271,7 @@ class TestCronDenyModeAllGuards:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
-            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            result = check_all_command_guards("rm -rf ~/scratch-area/stuff", "local")
             assert result["approved"]
 
     def test_tirith_content_threat_blocked_in_cron_deny(self, monkeypatch):
@@ -408,7 +408,7 @@ class TestCronModeInteractions:
         ):
             # Use a dangerous-but-not-hardline command — `rm -rf /` is now
             # hardline-blocked regardless of yolo (see test_hardline_blocklist.py).
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
             assert result["approved"]
 
     def test_non_cron_non_interactive_still_auto_approves(self, monkeypatch):
@@ -418,7 +418,7 @@ class TestCronModeInteractions:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
-        result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+        result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
         assert result["approved"]
 
 
@@ -446,7 +446,7 @@ class TestCronWithGatewayOrigin:
         try:
             from unittest.mock import patch as mock_patch
             with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
-                result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+                result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
                 # Cron-mode path: BLOCKED message, NOT pending/approval_required.
                 assert not result["approved"]
                 assert "BLOCKED" in result["message"]
@@ -468,7 +468,7 @@ class TestCronWithGatewayOrigin:
         try:
             from unittest.mock import patch as mock_patch
             with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
-                result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+                result = check_dangerous_command("rm -rf ~/scratch-area/stuff", "local")
                 assert result["approved"]
                 # Should NOT be a gateway-approval response.
                 assert result.get("status") != "approval_required"

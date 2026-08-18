@@ -352,6 +352,7 @@ test('splice: registry rows dedupe by id and extend per-profile totals', () => {
     { id: 'local-1', profile: 'default', last_active: 100 },
     { id: 'dupe', profile: 'work', last_active: 90 }
   ]
+
   const totals: Record<string, number> = { default: 1, work: 1 }
 
   const { added } = spliceRegistrySessionRows(

@@ -22,10 +22,7 @@ import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
-export type {
-  PluginNativeNotificationInput,
-  PluginNotificationAction
-} from '@/store/native-notifications'
+export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */

@@ -12,10 +12,7 @@
  *  - `/my-page?item=x` / `#/my-page?item=x` (hash-router paths)
  */
 
-export type HermesOpenTarget =
-  | string
-  | { href: string }
-  | { path: string; params?: Record<string, string> }
+export type HermesOpenTarget = string | { href: string } | { path: string; params?: Record<string, string> }
 
 const HERMES_PROTOCOL = 'hermes:'
 
@@ -158,11 +155,7 @@ export function resolveHermesOpenPath(target: HermesOpenTarget | null | undefine
  * Build a navigate path from a parsed deep-link payload
  * (`hermes://<kind>/<name>?…` → kind/name/params).
  */
-export function pathFromHermesDeepLink(
-  kind: string,
-  name: string,
-  params: Record<string, string> = {}
-): string | null {
+export function pathFromHermesDeepLink(kind: string, name: string, params: Record<string, string> = {}): string | null {
   if (!kind || !name) {
     return null
   }

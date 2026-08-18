@@ -317,6 +317,7 @@ describe('reconnect fail-stop on a removed connection', () => {
     // "Hermes gateway is not connected" on the Sessions + action. The drive
     // must ride out the in-flight activation and hand back the opened socket.
     let releaseDial: (() => void) | undefined
+
     const dialGate = new Promise<void>(resolve => {
       releaseDial = resolve
     })

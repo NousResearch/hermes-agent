@@ -1103,9 +1103,9 @@ def _relay_request_body(
     body = _jsonable(request)
     if not isinstance(body, dict):
         return {}
-    # ``timeout`` configures the provider SDK client; it is not part of any
-    # supported provider wire protocol. Keep it on the original callback
-    # request, but never expose it to Relay intercepts or routed transports.
+    # ``timeout`` configures the provider SDK client, not a provider wire
+    # protocol. Preserve it for the original callback request, but never pass
+    # it to Relay intercepts or routed transports.
     body.pop("timeout", None)
     # The Responses SDK accepts ``tools=None`` as "no tools", while Relay's
     # typed Responses codec correctly expects either an array or an absent

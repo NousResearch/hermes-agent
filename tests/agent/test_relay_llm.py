@@ -918,6 +918,116 @@ def test_stream_current_streams_iterators_with_predicate(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+def test_stream_current_primes_lazy_completed_response(relay_turn, monkeypatch):
+    """A lazy Relay stream must run once before Hermes decides its shape."""
+    _relay, _turn = relay_turn
+    completed = _completed_response()
+
+    class LazyCompletedStream:
+        final_response = None
+
+        def _prime_completed_response(self):
+            self.final_response = completed
+
+    lazy_stream = LazyCompletedStream()
+    monkeypatch.setattr(relay_llm, "stream", lambda *args, **kwargs: lazy_stream)
+
+    result = relay_llm.stream_current(
+        {"model": "test-model", "messages": [], "stream": True},
+        lambda request: completed,
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+        completed_response_predicate=_choices_predicate,
+    )
+
+    assert result is completed
+
+
+def test_stream_current_unwraps_completed_response_with_real_interceptor(relay_turn):
+    """A real stream interceptor makes Relay lazy; completion still unwraps."""
+    relay, _turn = relay_turn
+    completed = _completed_response()
+
+    async def identity_stream(request, next_call):
+        return await next_call(request)
+
+    relay.intercepts.register_llm_stream_execution(
+        "hermes-test-prime-completed",
+        1,
+        identity_stream,
+    )
+    try:
+        result = relay_llm.stream_current(
+            {"model": "test-model", "messages": [], "stream": True},
+            lambda _request: completed,
+            name="test-provider",
+            model_name="test-model",
+            finalizer=lambda: completed,
+            completed_response_predicate=_choices_predicate,
+        )
+
+        assert result is completed
+    finally:
+        relay.intercepts.deregister_llm_stream_execution(
+            "hermes-test-prime-completed"
+        )
+
+
+def test_stream_current_preserves_real_relay_interceptor_chunks(relay_turn):
+    """Priming a real managed pipeline must retain its transformed first chunk."""
+    relay, _turn = relay_turn
+
+    def rewrite_stream(request, next_call):
+        async def generate():
+            upstream = await next_call(request)
+            async for chunk in upstream:
+                yield {**chunk, "delta": chunk["delta"].upper()}
+
+        return generate()
+
+    relay.intercepts.register_llm_stream_execution(
+        "hermes-test-prime-stream",
+        1,
+        rewrite_stream,
+    )
+    try:
+        result = relay_llm.stream_current(
+            {"model": "test-model", "messages": [], "stream": True},
+            lambda _request: iter([{"delta": "a"}, {"delta": "b"}]),
+            name="test-provider",
+            model_name="test-model",
+            finalizer=lambda: {"content": "AB"},
+            completed_response_predicate=_choices_predicate,
+        )
+
+        assert list(result) == [
+            SimpleNamespace(delta="A"),
+            SimpleNamespace(delta="B"),
+        ]
+        assert result.output_modified is True
+    finally:
+        relay.intercepts.deregister_llm_stream_execution(
+            "hermes-test-prime-stream"
+        )
+
+
+def test_stream_current_surfaces_managed_factory_error_before_return(relay_turn):
+    """Shape detection preserves the unmanaged factory-error boundary."""
+
+    def fail_factory(_request):
+        raise RuntimeError("provider failed before streaming")
+
+    with pytest.raises(RuntimeError, match="provider failed before streaming"):
+        relay_llm.stream_current(
+            {"model": "test-model", "messages": [], "stream": True},
+            fail_factory,
+            name="test-provider",
+            model_name="test-model",
+            finalizer=dict,
+            completed_response_predicate=_choices_predicate,
+        )
+
 
 def _completed_response(content: str = "done") -> SimpleNamespace:
     return SimpleNamespace(
@@ -955,6 +1065,8 @@ def test_stream_managed_traps_direct_completed_response(relay_turn):
         finalizer=lambda: {},
         completed_response_predicate=_choices_predicate,
     )
+    stream._prime_completed_response()
+    assert stream._closed
     assert list(stream) == []
     assert stream.final_response is not None
     assert stream.final_response.choices[0].message.content == "done"

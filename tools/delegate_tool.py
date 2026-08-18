@@ -4749,26 +4749,21 @@ def _build_top_level_description() -> str:
         max_per_session = _DEFAULT_MAX_CHILDREN_PER_SESSION
     if max_per_session == 0:
         session_budget_clause = (
-            "SESSION BUDGET: unlimited; set delegation.max_children_per_session "
-            "to a positive value to cap total children per parent session.\n\n"
+            "SESSION BUDGET: unlimited; positive config enables the cap.\n\n"
         )
     else:
         session_budget_clause = (
-            f"SESSION BUDGET: up to {max_per_session} children total per parent "
-            "session across all delegate_task calls; set "
-            "delegation.max_children_per_session=0 for unlimited.\n\n"
+            f"SESSION BUDGET: {max_per_session}/parent session; 0=unlimited.\n\n"
         )
 
     return (
         "Spawn subagents in isolated contexts; each gets its own conversation, "
-        "terminal session, and toolset, and only its final summary returns to "
-        "you. Provide 'goal' for a single task or 'tasks' for a parallel batch "
-        "(limits and nesting rules are in the parameter descriptions).\n\n"
+        "terminal, and toolset; only its final summary returns to you. Provide "
+        "'goal' for one task or 'tasks' for a parallel batch (limits and nesting "
+        "rules are in the parameter descriptions).\n\n"
         f"{session_budget_clause}"
-        "Runs in the background: dispatch returns immediately with live "
-        "transcript paths, and the completed result (one consolidated message "
-        "for a batch) re-enters the conversation on its own. Do NOT wait or "
-        "poll; continue other work.\n\n"
+        "Runs in the background: dispatch returns live paths; batch results "
+        "re-enter as one consolidated message. Do NOT wait or poll.\n\n"
         "LIVE ORCHESTRATION: while children run, this tool also controls "
         "them — action='list' (live children + ids), action='steer' "
         "(subagent_id + message, redirect without stopping), action='stop' "

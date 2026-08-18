@@ -1822,6 +1822,20 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+def _local_client_meta_additions(agent, cache_scope_id: str | None) -> dict:
+    """Build loopback-only Turbohaul identity for a main/delegated turn."""
+    from agent.local_client_meta import (
+        agent_role_metadata,
+        local_client_meta_extra_body,
+    )
+
+    return local_client_meta_extra_body(
+        base_url=getattr(agent, "base_url", ""),
+        session_id=cache_scope_id or getattr(agent, "session_id", ""),
+        role_metadata=agent_role_metadata(agent),
+    )
+
+
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     if tools_for_api is None:
@@ -1875,6 +1889,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # cheap after the first call. Resolved after the anthropic/bedrock early
     # returns above, which don't use prompt_cache_key.
     _cache_scope_id = _prompt_cache_scope_for_agent(agent)
+    _local_meta_additions = _local_client_meta_additions(agent, _cache_scope_id)
 
     if agent.api_mode == "codex_responses":
         _ct = agent._get_transport()
@@ -2060,6 +2075,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
+            extra_body_additions=_local_meta_additions or None,
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -2108,6 +2124,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
+        extra_body_additions=_local_meta_additions or None,
     )
 
 

@@ -8532,6 +8532,27 @@ def _build_call_kwargs(
     merged_extra = dict(extra_body or {})
     merged_extra.update(profile_body)
     merged_extra.update(profile_reasoning_extra)
+
+    # Turbohaul identity is a loopback-only extension.  Bind auxiliary calls to
+    # the rotation-stable conversation scope and classify them below the main
+    # interactive lane (with dedicated compression/curator precedence).
+    from agent.local_client_meta import local_client_meta_extra_body
+
+    local_identity = local_client_meta_extra_body(
+        base_url=effective_base,
+        session_id=(
+            _runtime_main_value("cache_scope")
+            or _runtime_main_value("session_id")
+        ),
+        task=task or "auxiliary",
+    )
+    if local_identity:
+        local_meta = dict(local_identity["client_meta"])
+        explicit_meta = merged_extra.get("client_meta")
+        if isinstance(explicit_meta, dict):
+            local_meta.update(explicit_meta)
+        merged_extra["client_meta"] = local_meta
+
     if (
         reasoning_config
         and isinstance(reasoning_config, dict)

@@ -4,16 +4,17 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { $hudActive, $hudSession, openHud } from './hud'
+import { $hudActive, $hudSession, openHud, toggleHud } from './hud'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
 
 const open = vi.fn().mockResolvedValue({ ok: true })
+const close = vi.fn().mockResolvedValue({ ok: true })
 
 function installBridge() {
   desktopWindow.hermesDesktop = {
-    hud: { open }
+    hud: { close, open }
   } as unknown as Window['hermesDesktop']
 }
 
@@ -23,6 +24,7 @@ function session(overrides: Partial<SessionInfo>): SessionInfo {
 
 beforeEach(() => {
   open.mockClear()
+  close.mockClear()
   installBridge()
   $hudActive.set(false)
   $hudSession.set(null)
@@ -77,5 +79,58 @@ describe('openHud profile targeting (#82285)', () => {
     openHud('unknown-session')
 
     expect(open).toHaveBeenCalledWith({ sessionId: 'unknown-session', profile: 'work' })
+  })
+})
+
+describe('toggleHud retargeting an open HUD', () => {
+  it('points the open HUD at the conversation the toggle came from', () => {
+    $hudActive.set(true)
+    $hudSession.set('old')
+
+    toggleHud('new')
+
+    // Main owns the retarget (openHudWindow sends `hud:goto`), so reaching it
+    // at all means going back through the open bridge — not closing the window.
+    expect(open).toHaveBeenCalledWith({ sessionId: 'new', profile: 'default' })
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it('carries the target session profile across a retarget', () => {
+    $sessions.set([session({ id: 'new', profile: 'work' })])
+    $hudActive.set(true)
+    $hudSession.set('old')
+
+    toggleHud('new')
+
+    expect(open).toHaveBeenCalledWith({ sessionId: 'new', profile: 'work' })
+  })
+
+  it('dismisses when the HUD is already on that conversation', () => {
+    $hudActive.set(true)
+    $hudSession.set('same')
+
+    toggleHud('same')
+
+    expect(close).toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('dismisses when there is no conversation to retarget onto', () => {
+    $hudActive.set(true)
+    $hudSession.set('old')
+
+    toggleHud(null)
+
+    expect(close).toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('opens on the given conversation when the HUD is down', () => {
+    $hudActive.set(false)
+
+    toggleHud('new')
+
+    expect(open).toHaveBeenCalledWith({ sessionId: 'new', profile: 'default' })
+    expect(close).not.toHaveBeenCalled()
   })
 })

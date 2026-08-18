@@ -12403,7 +12403,19 @@ ipcMain.on('hermes:hud:set-bounds', (event, bounds) => {
 // can hand it back to the app window (see hudSessionId).
 ipcMain.on('hermes:hud:session', (event, sessionId) => {
   if (hudWindow && !hudWindow.isDestroyed() && event.sender === hudWindow.webContents) {
-    hudSessionId = typeof sessionId === 'string' && sessionId ? sessionId : null
+    const next = typeof sessionId === 'string' && sessionId ? sessionId : null
+
+    if (next === hudSessionId) {
+      return
+    }
+
+    hudSessionId = next
+    // Every window decides "switch the HUD to this tab" vs "dismiss it" by
+    // comparing against its own copy of this id, so a conversation switched
+    // from INSIDE the HUD has to reach them too. Without this the app window
+    // keeps the id the HUD was opened on, and the toggle reads a retarget
+    // where the user meant a dismiss.
+    broadcastHudState(true)
   }
 })
 

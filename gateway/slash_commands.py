@@ -4885,9 +4885,9 @@ class GatewaySlashCommandsMixin:
         self._clear_conversation_scope(session_key, reason="resume")
 
         # Evict any cached agent for this session so the next message
-        # rebuilds with the correct session_id end-to-end — mirrors
-        # /branch and /reset. Without this, the cached AIAgent (and its
-        # memory provider, which cached `_session_id` during initialize())
+        # rebuilds with the correct session_id end-to-end — mirrors /branch
+        # and /reset. Without this, the cached AIAgent (and its memory
+        # provider, which cached `_session_id` during initialize())
         # keeps writing into the wrong session's record. See #6672.
         self._evict_cached_agent(session_key)
 
@@ -4911,6 +4911,13 @@ class GatewaySlashCommandsMixin:
         if msg_count == 1:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
+
+    # NOTE: Do NOT collapse the inline switch logic above into
+    # _resume_session_by_id — the cross-origin Matrix ``gate
+    # --cross-room`` branch needs the source-object-aware title substitution
+    # here, and the picker callback always passes a server-side computed
+    # target_id (no Matrix cross-room path). Keeping the two paths
+    # independent avoids accidentally widening the picker's scope.
 
     async def _handle_sessions_command(self, event: MessageEvent) -> str:
         """Handle /sessions — list previous sessions for gateway chats."""
@@ -4962,7 +4969,10 @@ class GatewaySlashCommandsMixin:
             search_query=search_query,
             # Search filters at SQL level, so over-fetch before the visibility
             # cut: origin-invisible matches would otherwise consume the page.
-            limit=50 if search_query else 10,
+            # The picker paginates internally (8 per page + Prev/Next), so the
+            # full origin-scoped list — capped at 50 — needs to make it through
+            # to the adapter. The text fallback below still applies the 10-cap.
+            limit=50,
             exclude_sources=["tool"],
         )
         if not cross_origin:
@@ -4972,6 +4982,58 @@ class GatewaySlashCommandsMixin:
                 row for row in rows
                 if await self._resume_row_visible(source, row, allow_all=False)
             ]
+
+        # Interactive picker: when the adapter supports a Telegram-style
+        # inline-keyboard picker, send one and let the user tap a session to
+        # resume. Falls back to the numbered text list when the adapter does
+        # not implement send_sessions_picker (every other platform today).
+        adapter = (
+            self.adapters.get(source.platform)
+            if hasattr(self, "adapters") and source.platform is not None
+            else None
+        )
+        picker_fn = getattr(adapter, "send_sessions_picker", None) if adapter else None
+        if callable(picker_fn) and source.chat_id and not cross_origin:
+            metadata = None
+            try:
+                metadata = self._thread_metadata_for_source(
+                    source, self._reply_anchor_for_event(event)
+                )
+            except Exception:
+                metadata = None
+
+            async def _on_session_selected(target_id: str) -> str:
+                # IDOR guard: a session id from a picker tap is a routing
+                # handle, not authority. Re-run the same gate the text
+                # `/resume <id>` path uses, so a pick button cannot bypass
+                # cross-origin scoping.
+                if not await self._resume_target_allowed(
+                    source, target_id, allow_override=False
+                ):
+                    return t("gateway.resume.blocked_not_owner", name=target_id)
+                return await self._resume_session_by_id(
+                    source, session_key, target_id
+                )
+
+            try:
+                # Picker paginates internally (8 per page + Prev/Next), so
+                # pass the full origin-scoped rows — no [:10] cap here.
+                # The text fallback below still applies the 10-cap.
+                result = await picker_fn(
+                    chat_id=source.chat_id,
+                    sessions=rows,
+                    current_session_id=current_entry.session_id,
+                    on_session_selected=_on_session_selected,
+                    metadata=metadata,
+                )
+                if result.success:
+                    return None  # Picker rendered; no text reply needed
+            except Exception as e:
+                logger.debug(
+                    "Sessions picker send failed; falling back to text: %s", e
+                )
+
+        # Text fallback: cap at 10 entries (the existing text listing UX).
         rows = rows[:10]
         if search_query:
             title = f"Sessions matching “{search_query}”"
@@ -4982,6 +5044,68 @@ class GatewaySlashCommandsMixin:
             include_source=cross_origin,
             title=title,
         )
+
+    async def _resume_session_by_id(
+        self,
+        source: "SessionSource",
+        session_key: str,
+        target_id: str,
+    ) -> str:
+        """Resume to a specific session by ID. Shared by ``/resume <id>`` and
+        the ``/sessions`` inline-keyboard picker callback.
+
+        Performs the full session-switch cleanup: release any running agent,
+        switch the session entry, clear conversation-scoped per-session state
+        (model/reasoning overrides, /queue, approval state, slash-confirm,
+        ...), evict the cached AIAgent so the next turn rebuilds with the
+        correct session_id, and return a user-facing result string.
+
+        Callers MUST run the IDOR guard (``_resume_target_allowed``) before
+        invoking this helper — the picker callback closure does so, and the
+        text ``/resume`` path does so inline.
+        """
+        # Check if already on that session
+        current_entry = await self.async_session_store.get_or_create_session(source)
+        if current_entry.session_id == target_id:
+            return t("gateway.resume.already_on", name=target_id)
+
+        # Clear any running agent for this session key
+        self._release_running_agent_state(session_key)
+
+        # Switch the session entry to point at the target session
+        new_entry = await self.async_session_store.switch_session(
+            session_key, target_id
+        )
+        if not new_entry:
+            return t("gateway.resume.switch_failed")
+
+        # Conversation boundary: clear ALL conversation-scoped per-session
+        # state and the security boundary state in one funnel call. See
+        # _clear_conversation_scope in gateway/run.py.
+        self._clear_conversation_scope(session_key, reason="resume")
+
+        # Evict any cached agent for this session so the next message
+        # rebuilds with the correct session_id end-to-end — mirrors /branch
+        # and /reset (#6672).
+        self._evict_cached_agent(session_key)
+
+        # Get the title for confirmation
+        title = await self._session_db.get_session_title(target_id) or target_id
+
+        # Count messages for context
+        history = await self.async_session_store.load_transcript(target_id)
+        msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+        msg_part = (
+            f" ({msg_count} message{'s' if msg_count != 1 else ''})"
+            if msg_count
+            else ""
+        )
+
+        if not msg_count:
+            return t("gateway.resume.resumed_no_count", title=title)
+        if msg_count == 1:
+            return t("gateway.resume.resumed_one", title=title, count=msg_count)
+        return t("gateway.resume.resumed_many", title=title, count=msg_count)
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.

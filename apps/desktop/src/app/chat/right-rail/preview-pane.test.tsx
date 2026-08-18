@@ -222,9 +222,7 @@ describe('PreviewPane console state', () => {
     let rendered!: ReturnType<typeof render>
     await act(async () => {
       rendered = render(
-        <PreviewPane
-          target={{ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' }}
-        />
+        <PreviewPane target={{ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' }} />
       )
     })
 

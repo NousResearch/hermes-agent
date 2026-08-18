@@ -319,20 +319,23 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.openDevTools()
   }, [])
 
-  const navigateTo = useCallback((url: string) => {
-    setLoadError(null)
-    // loadURL, not a `src` swap: `src` only reloads when the value CHANGES, so
-    // re-entering the address you're already on would do nothing. A rejected
-    // load is a real navigation failure the user has to see — `did-fail-load`
-    // doesn't fire for every rejection (a bad scheme rejects outright).
-    void Promise.resolve(webviewRef.current?.loadURL?.(url)).catch((error: unknown) => {
-      setLoadError({
-        description: error instanceof Error ? error.message : copy.unreachableDescription,
-        url
+  const navigateTo = useCallback(
+    (url: string) => {
+      setLoadError(null)
+      // loadURL, not a `src` swap: `src` only reloads when the value CHANGES, so
+      // re-entering the address you're already on would do nothing. A rejected
+      // load is a real navigation failure the user has to see — `did-fail-load`
+      // doesn't fire for every rejection (a bad scheme rejects outright).
+      void Promise.resolve(webviewRef.current?.loadURL?.(url)).catch((error: unknown) => {
+        setLoadError({
+          description: error instanceof Error ? error.message : copy.unreachableDescription,
+          url
+        })
+        setLoading(false)
       })
-      setLoading(false)
-    })
-  }, [copy.unreachableDescription])
+    },
+    [copy.unreachableDescription]
+  )
 
   const goBack = useCallback(() => {
     const webview = webviewRef.current

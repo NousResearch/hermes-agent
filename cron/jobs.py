@@ -2714,6 +2714,38 @@ def _write_wedged_oneshot_diagnostic(job: Dict[str, Any]) -> None:
         )
 
 
+def _write_missed_oneshot_diagnostic(job: Dict[str, Any], next_run: str) -> None:
+    """Leave an operator-visible trace when a never-ran one-shot is retired
+    because its persisted run time fell outside the grace window.
+
+    The record is removed because the scheduler will never fire it (see the
+    grace gate in ``_get_due_jobs_locked``); without a diagnostic the job
+    would just vanish. Best-effort: a diagnostic failure never blocks the
+    removal itself.
+    """
+    try:
+        text = (
+            "# Cron job removed before firing (run time outside grace window)\n\n"
+            f"- job id: {job.get('id')}\n"
+            f"- name: {job.get('name')}\n"
+            f"- scheduled run time: {next_run}\n"
+            f"- grace window: {ONESHOT_GRACE_SECONDS}s\n"
+            f"- removed at: {_hermes_now().isoformat()}\n\n"
+            "This one-shot's run time is more than the grace window in the "
+            "past (scheduler down past the window, host asleep, or jobs.json "
+            "edited), which is outside the 'will never fire' contract "
+            "enforced at create/update/resume time. The job was removed "
+            "without running; recreate it (or use the Run button) to "
+            "schedule it again.\n"
+        )
+        save_job_output(job.get("id", ""), text)
+    except Exception as e:
+        logger.debug(
+            "Failed to write missed-oneshot diagnostic for job %r: %s",
+            job.get("id"), e,
+        )
+
+
 def claim_dispatch(job_id: str) -> bool:
     """Atomically claim a finite one-shot job dispatch BEFORE execution.
 
@@ -3534,6 +3566,30 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 break
                         record_catch_up_occurrence()
                         # Fall through to due.append(job) — execute once now
+
+                # One-shot grace gate: a one-shot whose persisted run time is
+                # beyond the grace window must never fire. create_job /
+                # update_job / resume_job all reject such schedules ("will
+                # never fire") and _recoverable_oneshot_run_at never recovers
+                # them — only the due-scan acted differently and dispatched a
+                # wall-clock one-shot hours late (gateway down past the
+                # window, host asleep, hand-edited jobs.json).
+                if kind == "once" and (now - next_run_dt).total_seconds() > ONESHOT_GRACE_SECONDS:
+                    if not (job.get("run_claim") or job.get("fire_claim")):
+                        # Nothing was ever dispatched — retire the record with
+                        # a diagnostic so it stops being scanned and the miss
+                        # is operator-visible (retire-not-silently-delete).
+                        _write_missed_oneshot_diagnostic(job, next_run)
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                raw_jobs.remove(rj)
+                                intentionally_removed.add(str(job["id"]))
+                                needs_save = True
+                                break
+                    # A (possibly stale) claim may mean a run is still in
+                    # flight in another process — skip this scan but keep the
+                    # record so its mark_job_run can still land.
+                    continue
 
                 # One-shot dispatch-limit guard (issue #38758): a finite one-shot
                 # claimed via claim_dispatch() but whose tick died before

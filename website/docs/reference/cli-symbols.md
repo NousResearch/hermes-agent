@@ -38,7 +38,7 @@ The single line at the bottom of the TUI. Segments appear only when relevant and
 |--------|---------|
 | `⠋⠙⠹…` (braille patterns) | Busy spinner. Thinking and tool phases use different braille animation sets. |
 | `⚕ 🌀 🤔 ✨ 🍵 🔮` | Frames of the `emoji` busy-indicator style (`/indicator emoji`). The default style rotates kaomoji faces instead. |
-| <code>&#124; / - \</code> | Frames of the `ascii` busy-indicator style. |
+| <code>&#124; / - &#92;</code> | Frames of the `ascii` busy-indicator style. |
 | `⏱` | Per-prompt elapsed time while the turn runs, e.g. `⏱ 12s/3m 45s` (turn time / session time). |
 | `⏲` | The same timer, frozen after the turn completes. |
 | `cmp N` | The session has been auto-compressed N times. |

@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import { $findInPage } from '@/store/find-in-page'
 
 import { ConnectionSwitcher } from './connection-switcher'
 
@@ -104,6 +105,7 @@ afterEach(() => {
     visible: true
   })
   $pendingConnectionId.set(null)
+  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
 })
 
 describe('ConnectionSwitcher', () => {
@@ -248,9 +250,11 @@ describe('ConnectionSwitcher', () => {
     fireEvent.keyDown(search, { key: 'ArrowDown' })
     expect(globalThis.document.activeElement).toBe(result)
 
+    $findInPage.set({ active: true, query: '', matchOrdinal: 0, matchCount: 0 })
     result.focus()
     fireEvent.keyDown(result, { key: 'f', metaKey: true })
     expect(globalThis.document.activeElement).toBe(search)
+    expect($findInPage.get().active).toBe(false)
 
     fireEvent.keyDown(search, { key: 'Escape' })
     expect(screen.queryByPlaceholderText('Search gateways…')).toBeNull()

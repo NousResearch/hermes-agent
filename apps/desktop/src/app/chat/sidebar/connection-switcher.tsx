@@ -34,6 +34,7 @@ import {
   refreshConnectionsRegistry,
   selectConnection
 } from '@/store/connections'
+import { closeFindBar } from '@/store/find-in-page'
 import { notifyError } from '@/store/notifications'
 
 export function ConnectionSwitcher({ onConnect }: { onConnect: () => void }) {
@@ -160,6 +161,10 @@ export function ConnectionSwitcher({ onConnect }: { onConnect: () => void }) {
             if (searchable && (event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'f') {
               event.preventDefault()
               event.stopPropagation()
+              // The app-level keybind sees the chord at window capture before
+              // this portal and may open Find in page. This menu owns the chord
+              // while it is open, so close that surface before focusing here.
+              closeFindBar()
               searchInputRef.current?.focus()
               searchInputRef.current?.select()
             }

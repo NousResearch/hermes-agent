@@ -93,7 +93,7 @@ function load(turnScript) {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, $groupChats, $groupNeedsYou, $groupChatWorkspace, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, openGroupChat, closeGroupChatMainTab, $groupChats, $groupNeedsYou, $groupChatWorkspace, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -101,7 +101,7 @@ function load(turnScript) {
     storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
     register: () => undefined
   })
-  return { ...context.__gc, calls, sessions, storageWrites }
+  return { ...context.__gc, calls, host: context.host, sessions, storageWrites }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }, { name: 'ops', title: 'The Ops' }]
@@ -342,6 +342,39 @@ test('source contract: workspace + main-window door + prompt rules are wired', (
   assert.match(pluginSource, /\$groupChatWorkspace\.set\(group\)/)
   assert.match(pluginSource, /reply with exactly "\(pass\)"/i)
   assert.match(pluginSource, /\[Group chat: "\$\{groupName\}"\]/)
+})
+
+test('group selection follows main-window open and close', () => {
+  const gc = load(() => '(pass)')
+  let onClose
+
+  gc.host.openWorkspace = (_id, options) => {
+    onClose = options.onClose
+    return () => onClose()
+  }
+
+  gc.openGroupChat('Core')
+  assert.equal(gc.$groupChatWorkspace.get(), 'Core')
+
+  onClose()
+  assert.equal(gc.$groupChatWorkspace.get(), null)
+})
+
+test('closing an older selected group does not clear the newer selection', () => {
+  const gc = load(() => '(pass)')
+
+  gc.host.openWorkspace = () => () => undefined
+  gc.openGroupChat('Core')
+  gc.openGroupChat('Ops')
+  gc.closeGroupChatMainTab('Core')
+
+  assert.equal(gc.$groupChatWorkspace.get(), 'Ops')
+})
+
+test('source contract: active group styling suppresses bot styling', () => {
+  assert.match(pluginSource, /const isActive = !activeGroup && !bot\.remoteSource && bot\.name === focusedProfile/)
+  assert.match(pluginSource, /active && 'bg-\(--ui-row-active-background\)'/)
+  assert.match(pluginSource, /active: groupChatName === row\.name/)
 })
 
 test('disband: removes only this membership, room log, workspace, and needs-you state', async () => {

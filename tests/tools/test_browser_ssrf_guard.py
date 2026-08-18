@@ -124,8 +124,10 @@ class TestGuardJsSourceInvariants:
 class FakeCdpServer:
     """WebSocket CDP server that records commands and accepts pushed events."""
 
-    def __init__(self, targets=("t1",)):
+    def __init__(self, targets=("t1",), target_types=None, delay_get_targets=0.0):
         self.targets = list(targets)
+        self.target_types = dict(target_types or {})  # targetId -> type (default page)
+        self.delay_get_targets = delay_get_targets
         self.commands = []          # (method, params, session_id)
         self.sessions = {}          # targetId -> sessionId
         self.failed = []            # requestIds passed to Fetch.failRequest
@@ -157,10 +159,12 @@ class FakeCdpServer:
                 session_id = msg.get("sessionId")
                 self.commands.append((method, params, session_id))
                 if method == "Target.getTargets":
+                    if self.delay_get_targets:
+                        await asyncio.sleep(self.delay_get_targets)
                     result = {
                         "targetInfos": [
-                            {"type": "page", "targetId": t, "title": "",
-                             "url": "about:blank"}
+                            {"type": self.target_types.get(t, "page"), "targetId": t,
+                             "title": "", "url": "about:blank"}
                             for t in self.targets
                         ]
                     }
@@ -596,3 +600,193 @@ class TestBrowserExecGuardIntegration:
         p = _sp.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=30)
         assert p.returncode == 0, p.stderr
         assert "JS-OK" in p.stdout
+
+
+# ── Defect 3: every auto-attached target type is armed (Region C) ─────────
+
+class TestArmEveryTargetType:
+    def test_existing_worker_target_armed_and_private_request_failed(self):
+        """A dedicated-worker session gets Fetch+Network gates, no page JS."""
+        server = FakeCdpServer(
+            targets=("tw",), target_types={"tw": "worker"}
+        ).start()
+        try:
+            async def script(guard):
+                server.push("Fetch.requestPaused",
+                            {"requestId": "rw",
+                             "request": {"url": "http://169.254.169.254/latest/meta-data/"}},
+                            session_id="s-tw")
+                await asyncio.sleep(0.4)
+
+            _drive_guard(server, script)
+        finally:
+            server.stop()
+        sid = server.sessions.get("tw")
+        assert sid == "s-tw"
+        # The worker session is armed with the authoritative gates…
+        assert any(m == "Fetch.enable" and s == sid for m, _, s in server.commands)
+        assert any(m == "Network.enable" and s == sid for m, _, s in server.commands)
+        assert any(m == "Runtime.enable" and s == sid for m, _, s in server.commands)
+        # …but the page-JS Layer 1 interceptor is skipped (no DOM).
+        assert not any(m == "Page.enable" and s == sid for m, _, s in server.commands)
+        # A worker fetch to the metadata address is blocked at the boundary.
+        assert "rw" in server.failed
+
+    def test_oopif_iframe_auto_attach_armed_before_resume_and_blocked(self):
+        """OOPIF iframe: arm session BEFORE runIfWaitingForDebugger; block."""
+        server = FakeCdpServer(targets=("t1",)).start()
+        try:
+            async def script(guard):
+                server.push("Target.attachedToTarget",
+                            {"sessionId": "s-iframe", "waitingForDebugger": True,
+                             "targetInfo": {"type": "iframe", "targetId": "t-iframe",
+                                            "url": "about:blank"}},
+                            session_id=None)
+                await asyncio.sleep(0.3)
+                server.push("Fetch.requestPaused",
+                            {"requestId": "rif",
+                             "request": {"url": "http://10.0.0.5/secret"}},
+                            session_id="s-iframe")
+                await asyncio.sleep(0.4)
+
+            _drive_guard(server, script)
+        finally:
+            server.stop()
+        idx_fetch = next(i for i, (m, _, s) in enumerate(server.commands)
+                         if m == "Fetch.enable" and s == "s-iframe")
+        idx_resume = next(i for i, (m, _, s) in enumerate(server.commands)
+                          if m == "Runtime.runIfWaitingForDebugger" and s == "s-iframe")
+        assert idx_fetch < idx_resume
+        assert "rif" in server.failed
+
+    def test_worker_auto_attach_armed_before_resume(self):
+        """A paused worker is resumed only after its session is armed."""
+        server = FakeCdpServer(targets=("t1",)).start()
+        try:
+            async def script(guard):
+                server.push("Target.attachedToTarget",
+                            {"sessionId": "s-worker", "waitingForDebugger": True,
+                             "targetInfo": {"type": "worker", "targetId": "t-worker",
+                                            "url": "worker.js"}},
+                            session_id=None)
+                await asyncio.sleep(0.3)
+                server.push("Fetch.requestPaused",
+                            {"requestId": "rwk",
+                             "request": {"url": "http://192.168.1.9/x"}},
+                            session_id="s-worker")
+                await asyncio.sleep(0.4)
+
+            _drive_guard(server, script)
+        finally:
+            server.stop()
+        idx_fetch = next(i for i, (m, _, s) in enumerate(server.commands)
+                         if m == "Fetch.enable" and s == "s-worker")
+        idx_resume = next(i for i, (m, _, s) in enumerate(server.commands)
+                          if m == "Runtime.runIfWaitingForDebugger" and s == "s-worker")
+        assert idx_fetch < idx_resume
+        assert "rwk" in server.failed
+
+
+# ── Defect 2: READY/ARMED emitted only after arm() completes ──────────────
+
+class TestGuardMainReadyOrdering:
+    def _report_listener(self):
+        """Local report-channel listener; returns (port, lines, accepted_at)."""
+        lsock = socket.socket()
+        lsock.bind(("127.0.0.1", 0))
+        lsock.listen(1)
+        port = lsock.getsockname()[1]
+        lines = []
+        accepted_at = []
+        ready_at = []
+
+        def _accept():
+            conn, _ = lsock.accept()
+            accepted_at.append(time.monotonic())
+            buf = b""
+            conn.settimeout(5)
+            try:
+                while True:
+                    data = conn.recv(4096)
+                    if not data:
+                        break
+                    buf += data
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        text = line.decode("utf-8", "replace").strip()
+                        lines.append(text)
+                        if text.startswith("__HERMES_SSRF_GUARD_READY__"):
+                            ready_at.append(time.monotonic())
+            except Exception:
+                pass
+            conn.close()
+
+        t = threading.Thread(target=_accept, daemon=True)
+        t.start()
+        return lsock, port, lines, accepted_at, ready_at, t
+
+    def test_ready_emitted_only_after_arm_completes(self):
+        """READY must follow arm() (here delayed 0.5s), never precede it."""
+        server = FakeCdpServer(targets=("t1",), delay_get_targets=0.5).start()
+        lsock, port, lines, accepted_at, ready_at, t = self._report_listener()
+        try:
+            async def _drive():
+                task = asyncio.create_task(ssrf._guard_main(server.ws_url, port, "tok"))
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and not lines:
+                    await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            asyncio.run(_drive())
+        finally:
+            server.stop()
+        t.join(timeout=5)
+        lsock.close()
+        # The single report line is the post-arm READY carrying the token.
+        assert lines == ["__HERMES_SSRF_GUARD_READY__:tok"], lines
+        # It arrived well after the report connection was accepted — i.e.
+        # after arming, not at connect time.
+        assert accepted_at, "report connection was never accepted"
+        assert ready_at, "READY never arrived"
+        assert ready_at[0] - accepted_at[0] >= 0.3, (
+            "READY arrived before arm() could have completed"
+        )
+
+    def test_arm_failure_emits_arm_failed_and_exits_nonzero(self):
+        """A guard that cannot arm reports ARM_FAILED and exits 1."""
+        lsock, port, lines, _acc, _rdy, t = self._report_listener()
+        try:
+            rc = asyncio.run(ssrf._guard_main("ws://127.0.0.1:1/dead", port, "tok"))
+        finally:
+            t.join(timeout=5)
+            lsock.close()
+        assert rc == 1
+        assert lines == ["__HERMES_SSRF_GUARD_ARM_FAILED__"], lines
+
+
+class TestSpawnSsrfGuard:
+    """Parent-side ``_spawn_ssrf_guard`` arm handshake (defect 2)."""
+
+    def test_spawn_withholds_on_arm_failure(self, monkeypatch, tmp_path):
+        """Guard that cannot arm (dead CDP) → None (fail closed, no CLI spawn)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        guard = bug._spawn_ssrf_guard("ws://127.0.0.1:1/dead", "tok")
+        assert guard is None
+
+    def test_spawn_returns_guard_only_after_armed(self, monkeypatch, tmp_path):
+        """READY follows arm(): spawn returns the guard dict only once armed."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        server = FakeCdpServer(targets=("t1",), delay_get_targets=0.3).start()
+        guard = None
+        try:
+            guard = bug._spawn_ssrf_guard(server.ws_url, "tok")
+            assert guard is not None
+            assert guard["markers"] == ["__HERMES_SSRF_GUARD_READY__:tok"]
+        finally:
+            if guard is not None:
+                bug._teardown_ssrf_guard(guard)
+            server.stop()

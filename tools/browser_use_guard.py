@@ -249,7 +249,11 @@ def _spawn_ssrf_guard(endpoint: str, token: str, popen_extra: Optional[dict] = N
         target=_accept_and_read, name="ssrf-guard-report", daemon=True
     ).start()
 
-    # Wait for the ready/arm signal (bounded).
+    # Wait for the arm signal (bounded). The guard emits the READY marker
+    # ONLY after arm() has completed on every current target (defect-2 fix),
+    # so a missing READY within the window — or an arm-failure/block marker —
+    # is an arm failure, never a pass.
+    ready_seen = False
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
         if proc.poll() is not None:
@@ -257,11 +261,23 @@ def _spawn_ssrf_guard(endpoint: str, token: str, popen_extra: Optional[dict] = N
             break
         if arm_failed.is_set() or blocked.is_set():
             break
-        if markers and any("__HERMES_SSRF_GUARD_READY__" in m for m in markers):
+        if f"__HERMES_SSRF_GUARD_READY__:{token}" in markers:
+            ready_seen = True
             break
         time.sleep(0.1)
 
-    if arm_failed.is_set() or proc.poll() is not None:
+    if arm_failed.is_set() or proc.poll() is not None or not ready_seen:
+        # Fail closed: a not-yet-armed (or dead) guard must not let the CLI
+        # spawn. Kill the guard process so it cannot linger unarmed.
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+        except OSError:
+            pass
         return None
     return {
         "proc": proc,
@@ -903,15 +919,26 @@ def _guard_endstate_verdict(ctx: dict, landed: Optional[str], run: dict) -> dict
             "note": "m",
         }
     if armed_marker == "full":
-        if browser_live:
+        # Rows 5/7: the 'full' marker is model-writable CLI stdout
+        # (advisory). It can release output ONLY when the host-side monitor
+        # verifies the claim — armed AND exec-window activity observed (its
+        # own traffic or the trusted landing probe) — AND a trusted landing
+        # exists (P). Without a trusted landing (row 7: P=None + M='full' +
+        # browser observed), a forged stdout marker cannot flip a withhold
+        # into a return.
+        monitor_verified = (
+            monitor is not None
+            and monitor.armed()
+            and monitor.saw_activity(exec_started)
+        )
+        if landed and monitor_verified:
             return {"verdict": "return", "reason": "", "note": "full"}
-        # A "full" claim with no host-side observation is an unverified
-        # (possibly forged) claim — withhold.
         return {
             "verdict": "withhold",
             "reason": (
                 "browser_exec guard reported a full armed state, but no "
-                "browser activity was observed; output withheld"
+                "trusted landing was verified against the host-side "
+                "monitor; output withheld"
             ),
             "note": "m",
         }

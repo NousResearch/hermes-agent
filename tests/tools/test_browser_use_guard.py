@@ -156,6 +156,45 @@ class TestEndstateVerdictTruthTable:
         )
         assert v["verdict"] == "return"
 
+    def test_row7_full_marker_browser_observed_no_landing_withholds(self):
+        """Defect-1 regression: P=None + M='full' + browser observed → WITHHOLD.
+
+        A forged ``__HERMES_BROWSER_EXEC_ARMED__:full`` stdout marker plus a
+        killed browser (trusted probe → None) must NOT release output.
+        """
+        monitor = _StubMonitor(saw_activity=True)  # browser observed
+        v = _guard_endstate_verdict(
+            _ctx(monitor), None,
+            _run(markers={"armed": "full", "announce": "ws://127.0.0.1:9222/x"}),
+        )
+        assert v["verdict"] == "withhold"
+        assert "trusted landing" in v["reason"]
+
+    def test_full_marker_without_monitor_verified_activity_withholds(self):
+        """Defect-5 regression: a forged 'full' marker cannot flip a withhold.
+
+        Even with a safe trusted landing, the monitor must be armed AND have
+        observed exec-window activity — a model-writable stdout marker alone
+        never releases output.
+        """
+        monitor = _StubMonitor(saw_activity=False)  # monitor never verified
+        v = _guard_endstate_verdict(
+            _ctx(monitor), "https://example.com/",
+            _run(markers={"armed": "full", "announce": "ws://127.0.0.1:9222/x"}),
+        )
+        assert v["verdict"] == "withhold"
+        assert v["note"] == "m"
+
+    def test_full_marker_requires_trusted_landing_and_monitor_verified(self):
+        """Happy path needs all three: landed + monitor armed + activity."""
+        monitor = _StubMonitor(saw_activity=True)
+        v = _guard_endstate_verdict(
+            _ctx(monitor), "https://example.com/",
+            _run(markers={"armed": "full", "announce": "ws://127.0.0.1:9222/x"}),
+        )
+        assert v["verdict"] == "return"
+        assert v["note"] == "full"
+
     def test_row6_no_session_consistent_returns(self):
         monitor = _StubMonitor(saw_activity=False)
         ctx = _ctx(monitor)

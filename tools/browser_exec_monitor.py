@@ -53,6 +53,16 @@ _EVENT_LOADING_FAILED = "Network.loadingFailed"
 _EVENT_TARGET_CREATED = "Target.targetCreated"
 _EVENT_TARGET_ATTACHED = "Target.attachedToTarget"
 
+# Target types the monitor arms (per-session Network.enable). Every
+# auto-attached target — page, OOPIF iframe, dedicated/shared/service
+# worker — can make network requests, so every one of them must be
+# observed: a worker fetch to 169.254.169.254 is unobserved (and therefore
+# unblocked) if its session is never Network.enable'd.
+_MONITOR_ARMED_TARGET_TYPES = frozenset({
+    "page", "iframe", "worker", "service_worker", "shared_worker",
+    "background_page", "webview",
+})
+
 # Policy tags produced by exec_url_violation.
 POLICY_METADATA = "metadata"
 POLICY_PRIVATE = "private"
@@ -450,11 +460,15 @@ class NetworkExecMonitor:
             self._pending_calls.pop(call_id, None)
 
     async def _attach_initial_pages(self) -> None:
-        """Attach flattened to every existing ``type==page`` target and enable Network."""
+        """Attach flattened to every existing target and enable Network.
+
+        Every target type is armed (page, OOPIF iframe, worker family) — a
+        worker or iframe request to a metadata address must be observed too.
+        """
         resp = await self._cdp("Target.getTargets")
         targets = resp.get("result", {}).get("targetInfos", [])
         for target in targets:
-            if target.get("type") != "page":
+            if target.get("type") not in _MONITOR_ARMED_TARGET_TYPES:
                 continue
             try:
                 await self._attach_page_target(target.get("targetId"))
@@ -616,12 +630,13 @@ class NetworkExecMonitor:
 
     async def _on_target_attached(self, params: Dict[str, Any]) -> None:
         target_info = params.get("targetInfo") or {}
-        if target_info.get("type") != "page":
+        if target_info.get("type") not in _MONITOR_ARMED_TARGET_TYPES:
             return
         self._record_event()
         with self._state_lock:
             self._new_target_times.append(time.monotonic())
-        # The new session id travels in the event; attach + Network.enable it.
+        # The new session id travels in the event; attach + Network.enable it
+        # (any type: page, OOPIF iframe, worker family).
         session_id = params.get("sessionId")
         target_id = target_info.get("targetId")
         if session_id and target_id:
@@ -640,7 +655,7 @@ class NetworkExecMonitor:
 
     async def _on_target_created(self, params: Dict[str, Any]) -> None:
         target_info = params.get("targetInfo") or {}
-        if target_info.get("type") != "page":
+        if target_info.get("type") not in _MONITOR_ARMED_TARGET_TYPES:
             return
         self._record_event()
         with self._state_lock:

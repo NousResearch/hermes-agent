@@ -65,6 +65,23 @@ _GUARD_SHAPE_RE = re.compile(
 )
 
 
+# Target types the Fetch guard arms. Worker-family targets (dedicated /
+# service / shared workers) cannot carry the page-JS Layer 1 interceptor
+# (no DOM) but still get the authoritative Fetch + Network + remote-IP
+# gates: a worker fetch to 169.254.169.254 is just as much SSRF as a page
+# fetch, and OOPIF iframes are separate CDP sessions that must be armed too.
+_GUARD_ARMED_TARGET_TYPES = frozenset({
+    "page", "iframe", "worker", "service_worker", "shared_worker",
+    "background_page", "webview",
+})
+
+# Target types that have a DOM and therefore get the Layer 1 page-JS
+# interceptor injected (worker sessions would reject Page.* anyway).
+_GUARD_JS_TARGET_TYPES = frozenset({
+    "page", "iframe", "webview", "background_page",
+})
+
+
 def _hostname_of(url: str) -> str:
     try:
         parsed = urlsplit(url or "")
@@ -336,6 +353,7 @@ class BrowserSsrfGuard:
         self._remote_ips: Dict[str, str] = {}
         self._verdict_cache: Dict[str, tuple[float, bool]] = {}
         self._sessions_armed: set[str] = set()
+        self._reader: Optional[asyncio.Task] = None
 
     # ── Report ────────────────────────────────────────────────────────────
 
@@ -392,11 +410,14 @@ class BrowserSsrfGuard:
     # ── Arming ────────────────────────────────────────────────────────────
 
     async def arm(self) -> None:
-        """Connect, arm every page target, and auto-attach for new targets.
+        """Connect, arm every current target, and auto-attach for new targets.
 
-        New/OOPIF targets are paused (``waitForDebuggerOnStart: true``) and
-        resumed only AFTER the session is fully armed (Region C witness C3
-        fix). Raises on any arm failure — the caller fails the exec closed.
+        Completes once every current target is armed (new/OOPIF/worker
+        targets are paused via ``waitForDebuggerOnStart`` and resumed only
+        AFTER the session is fully armed — witness C3). The reader loop keeps
+        running in the background for the guard's lifetime; ``teardown()``
+        stops it. Raises on any arm failure — the caller fails the exec
+        closed.
         """
         import websockets
 
@@ -404,68 +425,89 @@ class BrowserSsrfGuard:
             websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024),
             timeout=15.0,
         )
-        reader = asyncio.create_task(self._read_loop())
+        reader = asyncio.create_task(self._read_loop(), name="ssrf-guard-reader")
+        self._reader = reader
         try:
             resp = await self._cdp("Target.getTargets")
             targets = resp.get("result", {}).get("targetInfos", [])
             for target in targets:
-                if target.get("type") == "page":
-                    await self._arm_existing_target(target.get("targetId"))
+                if target.get("type") in _GUARD_ARMED_TARGET_TYPES:
+                    await self._arm_existing_target(
+                        target.get("targetId"), target.get("type")
+                    )
             await self._cdp(
                 "Target.setAutoAttach",
                 {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True},
             )
-            await reader
-        finally:
+        except BaseException:
             if not reader.done():
                 reader.cancel()
                 try:
                     await reader
-                except Exception:
+                except (asyncio.CancelledError, Exception):
                     pass
+            self._reader = None
+            raise
 
-    async def _arm_existing_target(self, target_id: Optional[str]) -> None:
+    async def _arm_existing_target(
+        self, target_id: Optional[str], target_type: Optional[str] = None
+    ) -> None:
         if not target_id:
             return
         attach = await self._cdp("Target.attachToTarget", {"targetId": target_id, "flatten": True})
         session_id = attach.get("result", {}).get("sessionId")
         if session_id:
-            await self.arm_session(session_id)
+            await self.arm_session(session_id, target_type)
 
     async def _on_target_attached(self, params: Dict[str, Any], root_session: Optional[str]) -> None:
         target_info = params.get("targetInfo") or {}
         session_id = params.get("sessionId")
         waiting = bool(params.get("waitingForDebugger"))
-        if target_info.get("type") == "page" and session_id:
-            await self.arm_session(session_id)
+        if target_info.get("type") in _GUARD_ARMED_TARGET_TYPES and session_id:
+            # Arm FIRST, then resume — the target stays paused until the
+            # guard is fully installed on it (any type: page, OOPIF iframe,
+            # worker family).
+            await self.arm_session(session_id, target_info.get("type"))
             if waiting:
-                # Arm FIRST, then resume — the target's JS stays paused until
-                # the guard is fully installed on it.
                 try:
                     await self._cdp("Runtime.runIfWaitingForDebugger", session_id=session_id)
                 except Exception:
                     pass
 
-    async def arm_session(self, session_id: str) -> None:
-        """Install Layer 1 + Layer 2 on one page session."""
-        await self._cdp("Page.enable", session_id=session_id)
-        await self._cdp("Runtime.enable", session_id=session_id)
+    async def arm_session(
+        self, session_id: str, target_type: Optional[str] = None
+    ) -> None:
+        """Install Layer 1 + Layer 2 on one session (any auto-attached type).
+
+        Worker-family sessions (worker/service_worker/shared_worker) get the
+        authoritative Fetch + Network + remote-IP gates (Layer 2); the
+        page-JS Layer 1 interceptor only applies to DOM-having targets.
+        """
         try:
-            await self._cdp(
-                "Page.addScriptToEvaluateOnNewDocument",
-                {"source": _SSRF_GUARD_JS, "runImmediately": True},
-                session_id=session_id, timeout=5.0,
-            )
+            await self._cdp("Runtime.enable", session_id=session_id)
         except Exception:
             pass
-        try:
-            await self._cdp(
-                "Runtime.evaluate",
-                {"expression": _SSRF_GUARD_JS, "returnByValue": True},
-                session_id=session_id, timeout=3.0,
-            )
-        except Exception:
-            pass
+        if target_type is None or target_type in _GUARD_JS_TARGET_TYPES:
+            try:
+                await self._cdp("Page.enable", session_id=session_id)
+            except Exception:
+                pass
+            try:
+                await self._cdp(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    {"source": _SSRF_GUARD_JS, "runImmediately": True},
+                    session_id=session_id, timeout=5.0,
+                )
+            except Exception:
+                pass
+            try:
+                await self._cdp(
+                    "Runtime.evaluate",
+                    {"expression": _SSRF_GUARD_JS, "returnByValue": True},
+                    session_id=session_id, timeout=3.0,
+                )
+            except Exception:
+                pass
         await self._cdp(
             "Fetch.enable",
             {
@@ -568,6 +610,13 @@ class BrowserSsrfGuard:
         return verdict
 
     async def teardown(self) -> None:
+        if self._reader is not None and not self._reader.done():
+            self._reader.cancel()
+            try:
+                await self._reader
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._reader = None
         if self._ws is not None:
             try:
                 await self._ws.close()
@@ -580,9 +629,6 @@ async def _guard_main(cdp_url: str, report_port: Optional[int], report_token: st
     report_sock: Optional[socket.socket] = None
     if report_port:
         report_sock = socket.create_connection(("127.0.0.1", report_port), timeout=10)
-        report_sock.sendall(
-            f"__HERMES_SSRF_GUARD_READY__:{report_token}\n".encode("utf-8")
-        )
     guard = BrowserSsrfGuard(cdp_url, report_sock or None)
     try:
         await asyncio.wait_for(guard.arm(), timeout=30.0)
@@ -593,6 +639,19 @@ async def _guard_main(cdp_url: str, report_port: Optional[int], report_token: st
             except Exception:
                 pass
         return 1
+    # Emit the ARMED/READY marker ONLY after arm() completed on every
+    # current target. The parent treats a missing READY as an arm failure,
+    # so emitting it before arming would let the exec start with no Fetch
+    # interception / no browser-side remote-IP gate (defect-2 fix).
+    if report_sock is not None:
+        try:
+            report_sock.sendall(
+                f"__HERMES_SSRF_GUARD_READY__:{report_token}\n".encode("utf-8")
+            )
+        except Exception:
+            # Report channel gone — nobody is listening; stop the guard.
+            await guard.teardown()
+            return 1
     try:
         while True:
             await asyncio.sleep(3600)

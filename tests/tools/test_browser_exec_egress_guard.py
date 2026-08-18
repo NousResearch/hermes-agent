@@ -439,3 +439,65 @@ class TestEgressProxyPin:
             raise AssertionError("blocked target must not be reachable through the proxy")
         except urllib.error.HTTPError as e:
             assert e.code == 403
+
+    def test_proxy_pin_failure_fails_closed(self, tmp_path, monkeypatch):
+        """Defect-6 regression: armed + proxy unpinnable → raise (fail-closed)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        import tools.browser_exec_egress_guard as egress
+
+        # Force a fresh pin attempt that cannot start the proxy.
+        monkeypatch.setattr(egress, "_PROXY_INSTANCE", None)
+        monkeypatch.setattr(egress._EgressFilterProxy, "start", lambda self: None)
+        env = {}
+        with pytest.raises(RuntimeError):
+            egress._pin_egress_proxy(env)
+        # The full install path propagates the failure (caller withholds).
+        with pytest.raises(RuntimeError):
+            egress._install_egress_guard(env)
+
+
+# ── Defect 4: captured C primitives hidden after install() ────────────────
+
+class TestCapturedPrimitiveHygiene:
+    def test_captured_primitives_hidden_after_install(self, guard_env):
+        """Defect-4 regression: no raw primitive is a module attribute.
+
+        After ``install()`` the interposer module must not expose
+        ``_C_CONNECT`` / ``_C_GETADDR`` / ``_C_SENDTO`` / ``_C_SENDMSG`` (or
+        the other captured callables), so ``import browser_exec_egress_guard
+        as g; g._C_CONNECT(...)`` is not a one-line bypass — while the guard
+        itself keeps working.
+        """
+        _, env = guard_env
+        body = (
+            "import browser_exec_egress_guard as g, socket\n"
+            "hidden = []\n"
+            "for name in ('_C_CONNECT', '_C_CONNECT_EX', '_C_GETADDR',\n"
+            "             '_C_SENDTO', '_C_SENDMSG', '_C_CREATE', '_C_INIT', '_C_TYPE'):\n"
+            "    if not hasattr(g, name):\n"
+            "        hidden.append(name)\n"
+            "print('HIDDEN', sorted(hidden))\n"
+            "print('SOCK', socket.socket.__name__)\n"
+            "try:\n"
+            "    socket.create_connection(('169.254.169.254', 80), timeout=2)\n"
+            "    print('NOT-BLOCKED')\n"
+            "except OSError as e:\n"
+            "    print('BLOCKED', 'egress guard blocked' in str(e))\n"
+            "try:\n"
+            "    g._C_CONNECT\n"
+            "    print('PRIMITIVE-EXPOSED')\n"
+            "except AttributeError:\n"
+            "    print('PRIMITIVE-HIDDEN')\n"
+        )
+        rc, out, err = run_child(body, env)
+        assert rc == 0, err
+        import ast
+
+        hidden_line = next(ln for ln in out.splitlines() if ln.startswith("HIDDEN "))
+        expected = ["_C_CONNECT", "_C_CONNECT_EX", "_C_CREATE", "_C_GETADDR",
+                    "_C_INIT", "_C_SENDMSG", "_C_SENDTO", "_C_TYPE"]
+        assert sorted(expected) == sorted(ast.literal_eval(hidden_line.split("HIDDEN ")[1]))
+        assert "SOCK _GuardedSocket" in out
+        assert "BLOCKED True" in out
+        assert "PRIMITIVE-HIDDEN" in out
+        assert f"__HERMES_EGRESS_GUARD__:installed:{NONCE}" in err

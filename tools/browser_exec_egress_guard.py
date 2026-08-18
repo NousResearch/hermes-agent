@@ -439,6 +439,10 @@ class _EgressFilterProxy:
 def _pin_egress_proxy(env: dict) -> None:
     """Point HTTP(S)/ALL proxy vars at the filtering proxy (Region B §2.6.5).
 
+    Fail-closed: when the egress guard is armed and the filtering proxy
+    cannot be started, raise — the caller withholds before the CLI spawns
+    (proxy-honoring spawned tools would otherwise be unfiltered).
+
     ``NO_PROXY=127.0.0.1,localhost,::1`` keeps loopback CDP/daemon traffic
     off the proxy so local-browser flows keep working.
     """
@@ -446,11 +450,14 @@ def _pin_egress_proxy(env: dict) -> None:
     with _PROXY_LOCK:
         if _PROXY_INSTANCE is None:
             port = _EgressFilterProxy().start()
+            if port is None:
+                raise RuntimeError(
+                    "browser_exec egress guard could not start its filtering "
+                    "proxy; proxy-honoring spawned tools would be unfiltered "
+                    "(fail-closed)"
+                )
             _PROXY_INSTANCE = ("127.0.0.1", port)
         host, port = _PROXY_INSTANCE
-    if port is None:
-        logger.warning("egress proxy unavailable — proxy-honoring tools are unfiltered")
-        return
     proxy_url = f"http://{host}:{port}"
     for var in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
                 "ALL_PROXY", "all_proxy"):

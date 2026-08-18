@@ -1,4 +1,3 @@
-# ci-cache-nudge 20260817
 name: CI
 
 # Orchestrator workflow. Runs ``detect-changes`` once, then conditionally

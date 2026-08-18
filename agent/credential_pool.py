@@ -1457,8 +1457,45 @@ class CredentialPool:
                     or synced.refresh_token != entry.refresh_token
                 ):
                     return synced
+                if self.provider == "anthropic" and synced.source == "claude_code":
+                    # claude_code entries are NOT profile-owned: the refresh
+                    # token lives in a single shared ~/.claude/.credentials.json
+                    # (or macOS Keychain) that every Hermes profile's pool
+                    # reads from. The profile-scoped lock above only protects
+                    # THIS profile's auth.json, so two different profiles (or
+                    # a fleet worker + a CLI session) racing to refresh the
+                    # same shared token would still both POST it. Take the
+                    # dedicated shared-file lock (inner, per the ordering
+                    # invariant documented on ``_auth_store_lock``) so the
+                    # whole sync -> POST -> write-back sequence for this
+                    # source is atomic across profiles too, not just within
+                    # one. This does not (and cannot) protect against the
+                    # official `claude` CLI itself rotating the token
+                    # out-of-band — that race is handled by the existing
+                    # sync-and-retry-once fallback in ``_refresh_entry_impl``.
+                    with self._claude_code_credentials_lock():
+                        synced = self._sync_anthropic_entry_from_credentials_file(synced)
+                        if synced.refresh_token != entry.refresh_token:
+                            return synced
+                        return self._refresh_entry_impl(synced, force=force)
                 return self._refresh_entry_impl(synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
+
+    def _claude_code_credentials_lock(self):
+        """Cross-process lock over the shared claude_code credentials file.
+
+        Distinct from the per-profile ``_auth_store_lock()`` above: this one
+        is keyed to ``claude_code_credentials_path()`` itself, so it
+        serializes every profile (and every Hermes process) that might
+        refresh a ``claude_code``-sourced Anthropic entry, not just callers
+        sharing one profile's ``auth.json``.
+        """
+        from agent.anthropic_adapter import claude_code_credentials_path
+
+        return _auth_store_lock(
+            timeout_seconds=self._single_use_refresh_lock_timeout(),
+            target_path=claude_code_credentials_path(),
+        )
 
     def _single_use_refresh_lock_timeout(self) -> float:
         """Lock timeout for single-use-refresh-token providers.

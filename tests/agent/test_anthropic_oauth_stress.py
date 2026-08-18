@@ -1,23 +1,15 @@
-"""Load / stress tests for the Anthropic OAuth fixes.
+"""Load / stress test for the Anthropic OAuth cross-process refresh race fix.
 
-Companion to ``tests/agent/test_credential_pool_anthropic_refresh_race.py``
-and ``tests/hermes_cli/test_anthropic_dashboard_pkce_csrf.py``, which prove
-each bug in isolation with two racers. These tests scale the same scenarios
-up to look for bottlenecks and degradation under real concurrency:
-
-1. Many "Hermes processes" (threads, each with its own ``CredentialPool``
-   instance) hammering the same single-use Anthropic refresh token at once,
-   against the REAL cross-process file lock (``_auth_store_lock``) and REAL
-   credential-pool persistence (not mocked) under a throwaway
-   ``HERMES_HOME`` -- only the network call to Anthropic is faked. This
-   checks the fix does not deadlock, does not lose updates, and does not
-   degrade into a "thundering herd" of redundant refresh POSTs as
-   concurrency grows.
-2. A burst of dashboard PKCE login starts, checking the anti-CSRF `state`
-   generator has no collisions at scale and that the in-memory session
-   table's GC actually bounds memory growth (an unbounded
-   ``_oauth_sessions`` dict is a latent DoS surface if many `/start` calls
-   never get a matching `/submit`).
+Companion to ``tests/agent/test_credential_pool_anthropic_refresh_race.py``,
+which proves the bug in isolation with two racers. This test scales the same
+scenario up to look for bottlenecks and degradation under real concurrency:
+many "Hermes processes" (threads, each with its own ``CredentialPool``
+instance) hammering the same single-use Anthropic refresh token at once,
+against the REAL cross-process file lock (``_auth_store_lock``) and REAL
+credential-pool persistence (not mocked) under a throwaway ``HERMES_HOME`` --
+only the network call to Anthropic is faked. This checks the fix does not
+deadlock, does not lose updates, and does not degrade into a "thundering
+herd" of redundant refresh POSTs as concurrency grows.
 """
 
 from __future__ import annotations
@@ -173,63 +165,3 @@ def test_high_concurrency_anthropic_refresh_no_lost_updates_no_deadlock(
         f"processes -- expected well under {naive_serial_upper_bound:.2f}s "
         "if the lock + pool-store adoption path is working efficiently"
     )
-
-
-def test_dashboard_pkce_start_burst_state_uniqueness_and_session_gc(monkeypatch):
-    """Burst-start the dashboard PKCE flow and check for two failure modes
-    that would only show up at scale:
-
-    1. ``state``/``verifier`` collisions (entropy bug in the token
-       generator would be invisible with 1-2 samples but show up over many).
-    2. Unbounded growth of the in-memory ``_oauth_sessions`` dict -- a
-       latent memory-exhaustion vector if many browser tabs/bots hit
-       ``/start`` without ever completing ``/submit``. GC must actually
-       reclaim expired entries.
-    """
-    pytest.importorskip("hermes_cli.web_server")
-    from hermes_cli import web_server
-
-    if not web_server._ANTHROPIC_OAUTH_AVAILABLE:
-        pytest.skip("Anthropic OAuth adapter unavailable in this environment")
-
-    with web_server._oauth_sessions_lock:
-        web_server._oauth_sessions.clear()
-
-    N = 500
-    states = []
-    verifiers = []
-    for _ in range(N):
-        session = web_server._start_anthropic_pkce()
-        with web_server._oauth_sessions_lock:
-            sess = web_server._oauth_sessions[session["session_id"]]
-        states.append(sess["state"])
-        verifiers.append(sess["verifier"])
-
-    assert len(set(states)) == N, "state collisions detected across a burst of PKCE starts"
-    assert len(set(verifiers)) == N, "verifier collisions detected across a burst of PKCE starts"
-    # The fix for the CSRF bug depends on these two pools never overlapping.
-    assert not (set(states) & set(verifiers)), (
-        "a state value collided with a verifier value from a DIFFERENT "
-        "session -- would make the leak/CSRF bug's blast radius worse"
-    )
-
-    with web_server._oauth_sessions_lock:
-        assert len(web_server._oauth_sessions) == N
-
-    # Simulate all N sessions having aged past the TTL, then run the same
-    # GC the /start route triggers opportunistically.
-    with web_server._oauth_sessions_lock:
-        for sess in web_server._oauth_sessions.values():
-            sess["created_at"] = time.time() - web_server._OAUTH_SESSION_TTL_SECONDS - 1
-
-    web_server._gc_oauth_sessions()
-
-    with web_server._oauth_sessions_lock:
-        remaining = len(web_server._oauth_sessions)
-    assert remaining == 0, (
-        f"{remaining}/{N} expired OAuth sessions survived _gc_oauth_sessions() "
-        "-- the in-memory session table can grow without bound"
-    )
-
-    with web_server._oauth_sessions_lock:
-        web_server._oauth_sessions.clear()

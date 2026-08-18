@@ -18975,7 +18975,11 @@ def start_server(
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.
-                print(f"  Hermes backend listening on {host}:{actual_port}")
+                # flush: on a piped stdout (Desktop spawn) this line is
+                # block-buffered and can surface MINUTES after the flushed
+                # READY sentinel above, which reads as a slow boot in
+                # support bundles when the backend was actually up.
+                print(f"  Hermes backend listening on {host}:{actual_port}", flush=True)
             else:
                 print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)

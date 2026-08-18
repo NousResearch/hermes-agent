@@ -109,6 +109,27 @@ class StreamDeliveryMixin:
         # reverse (streamed longer) is NOT matched — it could suppress a needed resend.
         return bool(visible_content and streamed) and visible_content.startswith(streamed)
 
+    def _interim_content_fully_streamed(self, content: str) -> bool:
+        """Exact-equality variant for the gateway interim-message decision.
+
+        ``_interim_content_was_streamed`` keeps its prefix semantics for the conversation-loop
+        "previewed" marks (the streamed prefix IS on the user's screen there). The gateway interim
+        path is different: a True verdict makes ``_interim_assistant_cb`` call
+        ``on_segment_break()``, which finalizes the streaming bubble as-is — anything after the
+        streamed prefix is never delivered. On Telegram the stream is routinely truncated at the
+        text→tool_calls boundary, so the prefix match marked a truncated bubble complete and the
+        tail was lost (#88954). Only an exact match may skip the full-text resend; a partial prefix
+        falls through to ``on_commentary`` and re-delivers the complete text (benign duplicate,
+        never lost text).
+        """
+        visible_content = self._normalize_interim_visible_text(self._strip_think_blocks(content or ""))
+        if not visible_content:
+            return False
+        streamed = self._normalize_interim_visible_text(
+            self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
+        )
+        return bool(streamed) and streamed == visible_content
+
     def _extract_codex_interim_visible_parts(self, assistant_msg: Dict[str, Any]) -> List[str]:
         """Visible Codex commentary (``phase=commentary`` items), one string per message item.
 
@@ -199,7 +220,7 @@ class StreamDeliveryMixin:
         visible = "\n\n".join(undelivered_parts).strip() if commentary_parts else self._interim_assistant_visible_text(assistant_msg)
         if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
             return
-        already_streamed = self._interim_content_was_streamed(visible)
+        already_streamed = self._interim_content_fully_streamed(visible)
         self._enqueue_stream_hook("on_interim_message", text=visible, already_streamed=already_streamed)
         self._deliver_interim(visible, already_streamed=already_streamed, record=undelivered_parts or [visible])
 

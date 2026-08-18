@@ -1160,8 +1160,20 @@ function enforceDockedPanes(
     const from = findGroupOfPane(next, pane.id)
     const anchor = findGroupOfPane(next, dock.pane)
 
-    // Already stacked with its anchor, or the anchor isn't in the tree.
-    if (!from || !anchor || from.id === anchor.id) {
+    if (!from || !anchor) {
+      continue
+    }
+
+    if (from.id === anchor.id) {
+      // Already stacked with its anchor — but an enforced tab must be
+      // REACHABLE, not just co-located. Community regression (Aug 2026):
+      // persisted trees where the enforced pane was center-stacked with the
+      // strip hidden and itself active left the ANCHOR invisible with no
+      // strip to switch back ("my ui only shows bots now... cant find the
+      // sessions"). An enforced zone always shows its strip.
+      if (anchor.headerHidden === true) {
+        next = setGroupHeaderHiddenOp(next, anchor.id, false) ?? next
+      }
       continue
     }
 

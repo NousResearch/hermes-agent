@@ -165,4 +165,52 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
 
     expect(group.panes).toEqual(['sessions', 'hermes-bots:pane'])
   })
+
+  it('forces the tab strip visible when already co-located but hidden with bots active (community "only Bots shows" regression)', async () => {
+    // The Aug 2026 field reports: sessions+bots already share one group, the
+    // strip is hidden (headerHidden), and bots holds the active tab — the
+    // sessions pane exists but is unreachable. The re-home path never runs
+    // (nothing to move), so the enforce must repair reachability directly.
+    const hiddenStackedTree = {
+      type: 'split',
+      id: 'root',
+      orientation: 'row',
+      weights: [1, 3],
+      children: [
+        {
+          type: 'group',
+          id: 'g-left',
+          panes: ['sessions', 'hermes-bots:pane'],
+          active: 'hermes-bots:pane',
+          headerHidden: true
+        },
+        { type: 'group', id: 'g-main', panes: ['workspace'], active: 'workspace' }
+      ]
+    }
+
+    window.localStorage.setItem(TREE_KEY, JSON.stringify(hiddenStackedTree))
+
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+
+    registry.register({ id: 'workspace', area: 'panes', title: 'chat', data: { placement: 'main' }, render: () => null })
+    registry.register({ id: 'sessions', area: 'panes', title: 'sessions', data: { placement: 'left' }, render: () => null })
+    registry.register({
+      id: 'hermes-bots:pane',
+      area: 'panes',
+      title: 'Bots',
+      data: { placement: 'left', dock: { pane: 'sessions', pos: 'center', enforce: true } },
+      render: () => null
+    })
+
+    tree.watchContributedPanes()
+
+    const group = model.findGroupOfPane(tree.$layoutTree.get()!, 'hermes-bots:pane')!
+
+    // Both panes stay put — but the strip is forced visible so SESSIONS is
+    // reachable again. The active tab is NOT stolen mid-boot.
+    expect(group.panes).toEqual(['sessions', 'hermes-bots:pane'])
+    expect(group.headerHidden).not.toBe(true)
+  })
 })

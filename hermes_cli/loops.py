@@ -415,12 +415,9 @@ def save_loop(session_id: str, state: LoopState) -> None:
         return
     db = _get_session_db()
     if db is None:
-        logger.warning(
-            "LoopManager: loop for %s not persisted — session DB "
-            "unavailable (bootstrap window exceeded, in-memory state "
-            "still active)",
-            session_id,
-        )
+        from hermes_cli.goals import _warn_dropped_write
+
+        _warn_dropped_write("LoopManager", "loop", session_id)
         return
     try:
         db.set_meta(_meta_key(session_id), state.to_json())

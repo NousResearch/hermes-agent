@@ -811,6 +811,22 @@ def _get_session_db() -> Optional[Any]:
     return db
 
 
+def _warn_dropped_write(manager: str, kind: str, session_id: str) -> None:
+    """Log a dropped state write at WARNING.
+
+    The reply already told the user that the state was set. A silent
+    drop makes that reply a lie. One shared message keeps the goal,
+    loop, and heartbeat logs greppable as one bug class.
+    """
+    logger.warning(
+        "%s: %s for %s not persisted — session DB unavailable "
+        "(bootstrap window exceeded, in-memory state still active)",
+        manager,
+        kind,
+        session_id,
+    )
+
+
 def load_goal(session_id: str) -> Optional[GoalState]:
     """Load the goal for a session, or None if none exists."""
     if not session_id:
@@ -838,12 +854,7 @@ def save_goal(session_id: str, state: GoalState) -> None:
         return
     db = _get_session_db()
     if db is None:
-        logger.warning(
-            "GoalManager: goal for %s not persisted — session DB "
-            "unavailable (bootstrap window exceeded, in-memory state "
-            "still active)",
-            session_id,
-        )
+        _warn_dropped_write("GoalManager", "goal", session_id)
         return
     try:
         db.set_meta(_meta_key(session_id), state.to_json())

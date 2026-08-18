@@ -20998,7 +20998,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return 20
 
-    async def _warm_goals_session_db(self, ctx: str) -> None:
+    async def _warm_goals_session_db(self, label: str) -> None:
         """Warm the goals SessionDB cache off-loop (best-effort).
 
         A cold cache runs the state.db init on the loop thread behind the
@@ -21013,7 +21013,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             await self._run_in_executor_with_context(_warm_goals_db)
         except Exception as exc:
-            logger.warning("%s: session DB warm-up failed: %s", ctx, exc)
+            logger.warning("%s: session DB warm-up failed: %s", label, exc)
 
     async def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return a GoalManager bound to the session for this gateway event.

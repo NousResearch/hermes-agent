@@ -1,3 +1,4 @@
+import { colorize } from '@hermes/ink'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -184,8 +185,16 @@ describe('colorizeEcho', () => {
   // skin repaints the background to the opposite polarity (dark skin on a
   // light terminal ⇒ black-on-black).
 
-  it('wraps the write in truecolor fg + reset for a hex theme color', () => {
-    expect(colorizeEcho('x', '#ff2d95')).toBe('\x1b[38;2;255;45;149mx\x1b[39m')
+  it('matches Ink exactly, never a hand-rolled truecolor escape', () => {
+    // The bypass and the Ink render paint the same cells, so they must agree
+    // byte-for-byte at whatever depth the terminal supports. Hand-rolling
+    // `38;2;r;g;b` shipped an escape a 256-color terminal (Apple Terminal)
+    // cannot parse: the accent fell back to the default fg and read GRAY.
+    // Asserted as an equality rather than a literal because chalk resolves
+    // its depth at import time — under vitest that's level 0 (no color).
+    for (const tone of ['#ff2d95', '#e77fa3', 'ansi256(211)']) {
+      expect(colorizeEcho('x', tone)).toBe(colorize('x', tone, 'foreground'))
+    }
   })
 
   it('passes through untouched without a color (unthemed keeps terminal default)', () => {
@@ -193,7 +202,7 @@ describe('colorizeEcho', () => {
     expect(colorizeEcho('x', undefined)).toBe('x')
   })
 
-  it('passes through on a non-hex color (never emit a garbage SGR)', () => {
+  it('passes through on a non-color value (never emit a garbage SGR)', () => {
     expect(colorizeEcho('x', 'red')).toBe('x')
     expect(colorizeEcho('x', '#fff')).toBe('x')
   })

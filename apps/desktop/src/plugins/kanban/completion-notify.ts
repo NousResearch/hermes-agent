@@ -95,12 +95,14 @@ async function ensureBaseline(slug: string): Promise<void> {
   if (seenEventIdByBoard.has(slug) || baselinePending.has(slug)) {
     return
   }
+
   baselinePending.add(slug)
 
   try {
     const board = (await rest!<{ latest_event_id?: unknown }>(`/board?board=${encodeURIComponent(slug)}`)) as {
       latest_event_id?: unknown
     }
+
     seenEventIdByBoard.set(slug, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
   } catch {
     // Fail-closed: unknown baseline → notifications stay suppressed.
@@ -150,6 +152,7 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
       : artifacts.length > 1
         ? t('notify.artifacts', artifacts.length)
         : ''
+
   const detail = [taskId, artifactText].filter(Boolean).join(' · ')
   const title = t(spec.titleKey)
   const message = body || taskId || title
@@ -178,12 +181,14 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
   if (!events?.length || slug === '' || !rest) {
     return false
   }
+
   await ensureBaseline(slug)
   const seen = seenEventIdByBoard.get(slug)
 
   if (seen === undefined) {
     return false
   } // fail-closed
+
   let fired = false
   let cursor = seen
 
@@ -191,6 +196,7 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
     if (typeof ev.id !== 'number' || ev.id <= cursor) {
       continue
     }
+
     cursor = ev.id
     seenEventIdByBoard.set(slug, cursor)
     const spec = TERMINAL_NOTIFY.get(ev.kind ?? '')

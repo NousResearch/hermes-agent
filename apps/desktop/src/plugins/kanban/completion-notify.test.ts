@@ -42,6 +42,7 @@ type NotifyInput = {
   detail?: string
   action?: { label: string; onClick: () => void }
 }
+
 const lastNotify = (): NotifyInput =>
   hostMock.notify.mock.calls[hostMock.notify.mock.calls.length - 1][0] as NotifyInput
 
@@ -489,6 +490,7 @@ describe('native OS door', () => {
         throw new Error('no shell')
       })
     }
+
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never, undefined, os)
 

@@ -375,6 +375,11 @@ def _browser_cdp_via_supervisor(
                 "CDP call via supervisor failed: loop unavailable",
                 cdp_docs=CDP_DOCS_URL,
             )
+        # The inner _cdp call enforces `timeout` itself; the +2 margin only
+        # covers loop-dispatch overhead so the inner, more specific CDP
+        # timeout error surfaces instead of a generic future timeout. Both
+        # routing paths receive the same clamped safe_timeout from the tool
+        # entrypoint, so their latency contracts stay symmetric.
         result_msg = fut.result(timeout=timeout + 2)
     except Exception as exc:
         return tool_error(
@@ -457,6 +462,11 @@ def _browser_cdp_target_via_supervisor(
                 "CDP call via supervisor failed: loop unavailable",
                 cdp_docs=CDP_DOCS_URL,
             )
+        # The inner _cdp call enforces `timeout` itself; the +2 margin only
+        # covers loop-dispatch overhead so the inner, more specific CDP
+        # timeout error surfaces instead of a generic future timeout. Both
+        # routing paths receive the same clamped safe_timeout from the tool
+        # entrypoint, so their latency contracts stay symmetric.
         result_msg = fut.result(timeout=timeout + 2)
     except Exception as exc:
         return tool_error(

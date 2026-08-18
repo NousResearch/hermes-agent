@@ -464,6 +464,10 @@ class CDPSupervisor:
         if not target_id:
             return None
         with self._state_lock:
+            # Partial attach: _page_target_id is known but _page_session_id
+            # is not yet (mid-attach/reconnect). Falling through to None is
+            # deliberate — the caller's stateless fallback handles the call
+            # rather than racing the half-attached session.
             if target_id == self._page_target_id and self._page_session_id:
                 return self._page_session_id
             frame = self._frames.get(target_id)

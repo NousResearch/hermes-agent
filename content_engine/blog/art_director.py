@@ -563,13 +563,16 @@ def build_art_brief(
 
             def default_llm(system: str, user: str) -> Optional[str]:
                 for cfg in _llm_configs(longform=True):
-                    # max_tokens must be generous: reasoning models (gemini-2.5-flash)
-                    # burn budget on hidden thinking tokens, and a tight cap returns a
-                    # truncated JSON fence with no closing brace, which _extract_json
-                    # then rejects (verified 2026-08-06: 4000 -> 209-char truncated
-                    # body; 8192 -> complete brief).
-                    body = _call_llm(system, user, cfg, timeout=180, max_tokens=8192)
-                    if body:
+                    # The creative contract now asks for multiple fully grounded
+                    # scenes. Reasoning providers need enough room for their
+                    # private deliberation plus the complete nested JSON payload.
+                    body = _call_llm(system, user, cfg, timeout=180, max_tokens=16384)
+                    # A transport success is not enough: providers often return
+                    # prose or near-JSON that cannot drive the image pipeline.
+                    # Continue to the next provider unless this exact response
+                    # is both parseable and contract-valid for this article.
+                    parsed = _extract_json(body or "")
+                    if parsed and _validate(parsed, headings, draft=draft, recent_styles=recent_styles):
                         return body
                 return None
 

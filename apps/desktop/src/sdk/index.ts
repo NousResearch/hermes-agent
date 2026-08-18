@@ -46,6 +46,7 @@ import {
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $gatewaySwapTarget,
   $profiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
@@ -62,7 +63,10 @@ import {
   $currentCwd,
   $currentModel,
   $gatewayState,
-  $selectedStoredSessionId
+  $messages,
+  $selectedStoredSessionId,
+  requestSessionResume,
+  setResumeExhaustedSessionId
 } from '@/store/session'
 import {
   $focusedRuntimeId,
@@ -193,6 +197,88 @@ const $activeConnectionId = computed($connection, connection => {
   // while this window was actually local.
   return connection.mode === 'local' ? 'local' : null
 })
+
+const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
+let openSessionGeneration = 0
+
+interface PluginOpenSessionOptions {
+  awaitHydration?: boolean
+  expectHistory?: boolean
+  hydrationTimeoutMs?: number
+  intent?: OpenSessionIntent
+  keepAllProfilesScope?: boolean
+  profile?: null | string
+}
+
+function waitForFocusedSessionHydration({
+  expectHistory,
+  generation,
+  profile,
+  storedSessionId,
+  timeoutMs
+}: {
+  expectHistory: boolean
+  generation: number
+  profile: string
+  storedSessionId: string
+  timeoutMs: number
+}): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const unbinds: Array<() => void> = []
+    let timer: number | undefined
+
+    const finish = (error?: Error) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+      }
+
+      for (const unbind of unbinds) {
+        unbind()
+      }
+
+      if (error) {
+        reject(error)
+      } else {
+        resolve()
+      }
+    }
+
+    const check = () => {
+      if (generation !== openSessionGeneration) {
+        finish(new Error('Session open was superseded by a newer selection.'))
+
+        return
+      }
+
+      const profileMatches = normalizeProfileKey($activeGatewayProfile.get()) === profile
+      const sessionMatches = $selectedStoredSessionId.get() === storedSessionId
+      const runtimeReady = Boolean($activeSessionId.get())
+      const historyReady = !expectHistory || Boolean($messages.get().length)
+
+      if (profileMatches && sessionMatches && runtimeReady && historyReady) {
+        finish()
+      }
+    }
+
+    unbinds.push($activeGatewayProfile.listen(check))
+    unbinds.push($selectedStoredSessionId.listen(check))
+    unbinds.push($activeSessionId.listen(check))
+    unbinds.push($messages.listen(check))
+
+    timer = window.setTimeout(() => {
+      finish(new Error(`Timed out loading ${profile}'s session history.`))
+    }, timeoutMs)
+
+    check()
+  })
+}
 
 export const host = {
   state: {
@@ -375,9 +461,12 @@ export const host = {
 
   openSession: async (
     storedSessionId: string,
-    options: { intent?: OpenSessionIntent; keepAllProfilesScope?: boolean; profile?: null | string } = {}
+    options: PluginOpenSessionOptions = {}
   ): Promise<void> => {
+    const generation = ++openSessionGeneration
     const profile = (options.profile ?? '').trim()
+    const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
+    const expectHistory = options.expectHistory ?? false
 
     if (profile && profile !== $activeGatewayProfile.get()) {
       await ensureGatewayProfile(profile)
@@ -387,19 +476,72 @@ export const host = {
       }
     }
 
-    openSession(
-      storedSessionId,
-      (to: string, opts?: { replace?: boolean }) => {
-        const target = to.startsWith('#') ? to : `#${to}`
+    if (generation !== openSessionGeneration) {
+      throw new Error('Session open was superseded by a newer selection.')
+    }
 
-        if (opts?.replace) {
-          window.location.replace(target)
-        } else {
-          window.location.hash = target
-        }
-      },
-      options.intent ?? 'in-place'
-    )
+    if (options.awaitHydration) {
+      // Keep the target-specific overlay visible through transcript hydration,
+      // not merely through the gateway/profile activation that precedes it.
+      $gatewaySwapTarget.set(targetProfile)
+    }
+
+    const mainMessages = $messages.get()
+
+    const needsExplicitResume =
+      options.awaitHydration &&
+      $selectedStoredSessionId.get() === storedSessionId &&
+      (!$activeSessionId.get() || (expectHistory && !mainMessages.length))
+
+    try {
+      openSession(
+        storedSessionId,
+        (to: string, opts?: { replace?: boolean }) => {
+          const target = to.startsWith('#') ? to : `#${to}`
+
+          if (opts?.replace) {
+            window.location.replace(target)
+          } else {
+            window.location.hash = target
+          }
+        },
+        options.intent ?? 'in-place'
+      )
+
+      if (needsExplicitResume) {
+        // Re-selecting a routed Bot Chat normally focuses the existing main
+        // surface without changing the URL. If that surface lost its runtime or
+        // transcript, the route effect otherwise gets no signal to re-resume it.
+        requestSessionResume(storedSessionId)
+      }
+
+      if (options.awaitHydration) {
+        await waitForFocusedSessionHydration({
+          expectHistory,
+          generation,
+          profile: targetProfile,
+          storedSessionId,
+          timeoutMs: Math.max(1, options.hydrationTimeoutMs ?? DEFAULT_SESSION_HYDRATION_TIMEOUT_MS)
+        })
+      }
+    } catch (error) {
+      if (
+        options.awaitHydration &&
+        generation === openSessionGeneration &&
+        error instanceof Error &&
+        error.message.startsWith('Timed out loading ')
+      ) {
+        // Reuse the core stranded-session surface: it renders the explicit
+        // error and Retry button, and the normal resume path clears the latch.
+        setResumeExhaustedSessionId(storedSessionId)
+      }
+
+      throw error
+    } finally {
+      if (options.awaitHydration && generation === openSessionGeneration) {
+        $gatewaySwapTarget.set(null)
+      }
+    }
   },
 
   /** Open (or re-front) a plugin-rendered MAIN-AREA workspace tile — the same

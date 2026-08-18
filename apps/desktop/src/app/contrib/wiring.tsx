@@ -59,6 +59,7 @@ import {
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessionResumeRequest,
   $sessions,
   sessionMatchesStoredId,
   sessionPinId,
@@ -206,6 +207,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
+  const sessionResumeRequest = useStore($sessionResumeRequest)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
   const sessions = useStore($sessions)
@@ -685,6 +687,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
+    sessionResumeRequest,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,

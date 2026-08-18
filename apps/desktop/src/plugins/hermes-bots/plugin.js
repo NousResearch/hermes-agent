@@ -2903,6 +2903,26 @@ function showsHandle(name, meta, bot) {
 // In-flight creations, keyed by bot name — double-clicking a row must not
 // mint two canonical chats.
 const canonicalCreations = new Map()
+let botOpenGeneration = 0
+
+async function openStoredBotChat(name, storedId, summary) {
+  if (!storedId || typeof host.openSession !== 'function') {
+    throw new Error('This Hermes Desktop version cannot open stored sessions')
+  }
+
+  const hasAuthoritativeCount =
+    typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
+  const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
+
+  await host.openSession(storedId, {
+    profile: name,
+    intent: 'main',
+    awaitHydration: true,
+    expectHistory
+  })
+
+  return storedId
+}
 
 /** Create the bot's ONE forever chat: a real session opened with a kickoff
  *  message (the gateway prunes zero-message sessions, so the chat is born
@@ -2938,7 +2958,7 @@ function createCanonicalChat(name) {
 
     if (sid && typeof host.openSession === 'function') {
       try {
-        await host.openSession(sid, { profile: name })
+        await host.openSession(sid, { profile: name, intent: 'main' })
         opened = true
       } catch {
         // The stored row may not exist until the kickoff persists it. Retry
@@ -2953,7 +2973,7 @@ function createCanonicalChat(name) {
         await host.request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
 
         if (!opened && sid && typeof host.openSession === 'function') {
-          await host.openSession(sid, { profile: name })
+          await host.openSession(sid, { profile: name, intent: 'main' })
         }
       } catch {
         // The chat already exists. Keep the pin so the next click
@@ -2987,13 +3007,9 @@ async function openBotCanonicalChat(name, pinned, history) {
     // Grandfather: adopt the conversation the row already previews.
     const adoptId = history?.id
     if (adoptId && typeof host.openSession === 'function') {
-      try {
-        await host.openSession(adoptId, { profile: name })
-        saveBotMeta(name, { chat: adoptId })
-        return adoptId
-      } catch {
-        // Adoption raced a vanishing session — fall through to creation.
-      }
+      await openStoredBotChat(name, adoptId, history)
+      saveBotMeta(name, { chat: adoptId })
+      return adoptId
     }
     return createCanonicalChat(name)
   }
@@ -3019,27 +3035,22 @@ async function openBotCanonicalChat(name, pinned, history) {
 
   if (lookupFailed) {
     // Transient gateway state (or an older backend): the pin is innocent
-    // until proven guilty — try it as-is, and only a rejected open clears.
-    try {
-      await host.openSession(pinned, { profile: name })
-      return pinned
-    } catch {
-      saveBotMeta(name, { chat: null })
-      return createCanonicalChat(name)
-    }
+    // until proven guilty — try it as-is. A rejected open is still ambiguous:
+    // it can be the same reconnect/hydration outage that broke this lookup, so
+    // preserve the forever-chat pin and surface Retry instead of forking it.
+    return openStoredBotChat(name, pinned, history)
   }
 
   if (preferred) {
     try {
-      await host.openSession(preferred.resolved_id || preferred.id, { profile: name })
+      await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred)
       return pinned
     } catch (error) {
       // The precise lookup JUST confirmed this session exists, so a failed
       // open is transient (reconnect, backend restart). Clearing the pin or
       // minting a replacement here would fork the bot's forever-chat on
       // every hiccup — report and keep everything as it is.
-      host.notifyError?.(error, `Could not open ${name}'s chat — try again`)
-      return pinned
+      throw error
     }
   }
 
@@ -3047,13 +3058,9 @@ async function openBotCanonicalChat(name, pinned, history) {
   // recovery): re-anchor on the previewed session when there is one.
   const recoveryId = history?.id
   if (recoveryId && typeof host.openSession === 'function') {
-    try {
-      await host.openSession(recoveryId, { profile: name })
-      saveBotMeta(name, { chat: recoveryId })
-      return recoveryId
-    } catch {
-      // Fall through to a fresh chat.
-    }
+    await openStoredBotChat(name, recoveryId, history)
+    saveBotMeta(name, { chat: recoveryId })
+    return recoveryId
   }
   saveBotMeta(name, { chat: null })
   return createCanonicalChat(name)
@@ -4358,6 +4365,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   }
 
   const open = async () => {
+    const generation = ++botOpenGeneration
     haptic('tap')
     $selectedBot.set(bot.name)
 
@@ -4389,14 +4397,26 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
       return
     }
 
-    try {
-      const id = await openBotCanonicalChat(bot.name, pinnedChat, bot.last_session)
+    if (generation !== botOpenGeneration) {
+      return
+    }
 
-      if (id) {
+    try {
+      const id = await openBotCanonicalChat(bot.name, pinnedChat, previewSession)
+
+      if (generation === botOpenGeneration && id) {
         return
       }
-    } catch {
-      // Fall through to the older-gateway draft below.
+    } catch (error) {
+      if (generation === botOpenGeneration) {
+        host.notifyError?.(error, `Could not open ${displayName(bot, meta)}'s chat — try again`)
+      }
+
+      return
+    }
+
+    if (generation !== botOpenGeneration) {
+      return
     }
 
     if (typeof host.newChat === 'function') {
@@ -8896,6 +8916,7 @@ function BotsPane() {
         gatewayState,
         metaByName: allMeta,
         onOpen: bot => {
+          const generation = ++botOpenGeneration
           haptic('tap')
           $selectedBot.set(bot.name)
 
@@ -8926,14 +8947,30 @@ function BotsPane() {
               return
             }
 
-            try {
-              const id = await openBotCanonicalChat(bot.name, pinnedChat, bot.last_session)
+            if (generation !== botOpenGeneration) {
+              return
+            }
 
-              if (id) {
+            try {
+              const id = await openBotCanonicalChat(
+                bot.name,
+                pinnedChat,
+                bot.preferred_session || bot.last_session
+              )
+
+              if (generation === botOpenGeneration && id) {
                 return
               }
-            } catch {
-              // Fall through to the older-gateway draft below.
+            } catch (error) {
+              if (generation === botOpenGeneration) {
+                host.notifyError?.(error, `Could not open ${displayName(bot)}'s chat — try again`)
+              }
+
+              return
+            }
+
+            if (generation !== botOpenGeneration) {
+              return
             }
 
             if (typeof host.newChat === 'function') {

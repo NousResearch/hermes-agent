@@ -265,6 +265,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True, desktop="terminal"),
 
     # Info
+    CommandDef("l", "Quick command menu — interactive card on Feishu, alias of /commands elsewhere", "Info",
+               gateway_only=True, busy_policy="dispatch", aliases=("list",), execute="gateway_l"),
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]", busy_policy="dispatch",
                execute="gateway_commands"),

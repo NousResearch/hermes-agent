@@ -1766,8 +1766,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 if key in seen:
                     continue
                 seen.add(key)
-                short = mid.split("/")[-1] if "/" in mid else mid
-                model_entries.append((f"{name} · {short}", mid, slug))
+                # Show the FULL model id (including any "cc/" or "ais-prod/"
+                # prefix) so aliased models are visually distinguishable
+                # instead of collapsed to their last path segment.
+                model_entries.append((f"{name} · {mid}", mid, slug))
 
         if not model_entries:
             return SendResult(success=False, error="No models available")
@@ -1835,6 +1837,118 @@ class FeishuAdapter(BasePlatformAdapter):
                 {"tag": "markdown", "content": f"正在切换到 `{model_id}`…"},
             ],
         }
+
+    # Allowlisted quick-menu actions (hermes_list_action) → slash commands.
+    # Server-side mapping only: the button payload carries the action NAME,
+    # never raw command text, so a tampered value cannot run anything else.
+    _LIST_MENU_ACTIONS: tuple = (
+        ("model", "🤖 切换模型"),
+        ("status", "📊 会话状态"),
+        ("sessions", "📝 历史会话"),
+        ("reasoning", "🧠 推理强度"),
+        ("fast", "⚡ 快速模式"),
+        ("title", "📌 当前会话"),
+        ("compact", "🧹 压缩上下文"),
+        ("commands", "📖 全部命令"),
+    )
+
+    async def send_command_list(
+        self,
+        chat_id: str,
+        session_key: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send the /l quick-command menu card (Feishu)."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        # One action element per button pair → clean two-column layout.
+        rows = [
+            {"tag": "action", "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "type": "default",
+                    "value": {"hermes_list_action": action},
+                }
+                for action, label in self._LIST_MENU_ACTIONS[i:i + 2]
+            ]}
+            for i in range(0, len(self._LIST_MENU_ACTIONS), 2)
+        ]
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "⚡ 快捷命令", "tag": "plain_text"},
+                "template": "indigo",
+            },
+            "elements": [
+                {"tag": "markdown", "content": "点击按钮执行对应命令："},
+                *rows,
+            ],
+        }
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "send_command_list failed")
+        except Exception as exc:
+            logger.warning("[Feishu] send_command_list failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def _handle_list_card_action(self, data: Any) -> None:
+        """Dispatch a quick-menu button click as an allowlisted slash command."""
+        event = getattr(data, "event", None)
+        action = getattr(event, "action", None)
+        action_value = getattr(action, "value", {}) or {}
+        list_action = action_value.get("hermes_list_action") if isinstance(action_value, dict) else None
+
+        allowed = {name for name, _label in self._LIST_MENU_ACTIONS}
+        if not list_action or list_action not in allowed:
+            logger.warning("[Feishu] Rejected non-allowlisted list card action: %r", list_action)
+            return
+
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        if not chat_id or not open_id:
+            logger.debug("[Feishu] List card action missing chat_id or operator, dropping")
+            return
+
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        if not self._allow_group_message(sender_id, chat_id, is_bot=False):
+            logger.warning("[Feishu] Unauthorized list card click by %s", open_id or "<unknown>")
+            return
+
+        sender_profile = await self._resolve_sender_profile(sender_id)
+        chat_info = await self.get_chat_info(chat_id)
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
+            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
+            user_id=sender_profile["user_id"],
+            user_name=sender_profile["user_name"],
+            thread_id=None,
+            user_id_alt=sender_profile["user_id_alt"],
+        )
+        # No Feishu reply anchor: card callback tokens/UUIDs are not valid
+        # open_message_id values (99992354). A fresh UUID keeps dedup keys unique
+        # while the anchor suppression in base.py prevents it being used to reply.
+        synthetic_event = MessageEvent(
+            text=f"/{list_action}",
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=event,
+            message_id=str(uuid.uuid4()),
+            channel_prompt=self._resolve_channel_prompt(chat_id),
+            timestamp=datetime.now(),
+        )
+        logger.info("[Feishu] List card action dispatched: %s from %s in %s", list_action, open_id, chat_id)
+        await self._handle_message_with_guards(synthetic_event)
 
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
@@ -2217,6 +2331,16 @@ class FeishuAdapter(BasePlatformAdapter):
                 "[Feishu] select_static callback without model picker value; "
                 "raw action_value=%s", raw_shape,
             )
+
+        list_action = (
+            action_value.get("hermes_list_action")
+            if isinstance(action_value, dict) else None
+        )
+        if list_action:
+            self._submit_on_loop(loop, self._handle_list_card_action(data))
+            if P2CardActionTriggerResponse is None:
+                return None
+            return P2CardActionTriggerResponse()
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()

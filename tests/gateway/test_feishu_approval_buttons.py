@@ -760,6 +760,11 @@ class TestFeishuModelPicker:
                 "name": "cc-switch gpt",
                 "models": [{"model": "gpt-5.6-terra"}],
             },
+            {
+                "slug": "cc-switch-deepseek-pro",
+                "name": "cc-switch deepseek",
+                "models": ["cc/deepseek-v4-pro"],
+            },
         ]
 
         with patch.object(
@@ -784,9 +789,18 @@ class TestFeishuModelPicker:
         select = card["elements"][1]["actions"][0]
         assert select["tag"] == "select_static"
         options = select["options"]
-        assert len(options) == 3  # 2 glm + 1 gpt
+        assert len(options) == 4  # 2 glm + 1 gpt + 1 cc/-prefixed deepseek
         # Option values must be opaque refs (prefix:picker_id:index), never raw model ids
         assert options[0]["value"].startswith("hermes_model_picker:1:")
+        # Labels must show the FULL model id — "cc/"-prefixed aliases stay
+        # distinguishable instead of collapsing to their last path segment.
+        labels = [o["text"]["content"] for o in options]
+        assert labels == [
+            "cc-switch glm · glm-5.3",
+            "cc-switch glm · glm-5.2",
+            "cc-switch gpt · gpt-5.6-terra",
+            "cc-switch deepseek · cc/deepseek-v4-pro",
+        ]
 
         # State records server-side model entries for callback resolution
         assert len(adapter._model_picker_state) == 1
@@ -794,10 +808,11 @@ class TestFeishuModelPicker:
         assert state["chat_id"] == "oc_12345"
         assert state["session_key"] == "sess-mp"
         assert [e[1] for e in state["model_entries"]] == [
-            "glm-5.3", "glm-5.2", "gpt-5.6-terra",
+            "glm-5.3", "glm-5.2", "gpt-5.6-terra", "cc/deepseek-v4-pro",
         ]
         assert [e[2] for e in state["model_entries"]] == [
             "cc-switch-glm", "cc-switch-glm", "cc-switch-gpt-5-5",
+            "cc-switch-deepseek-pro",
         ]
 
     @pytest.mark.asyncio

@@ -24,6 +24,9 @@ outputs:
   docker_meta:
     description: Docker setup and meta files have changed.
     value: ${{ steps.classify.outputs.docker_meta }}
+  docker:
+    description: Files included in the docker image have changed.
+    value: ${{ steps.classify.outputs.docker }}
   site:
     description: Build the Docusaurus docs site.
     value: ${{ steps.classify.outputs.site }}

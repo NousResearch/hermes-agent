@@ -25,6 +25,7 @@ DEFAULT = {
     "python": True,
     "python_prod": True,
     "frontend": True,
+    "docker": True,
     "docker_meta": True,
     "site": True,
     "scan": True,

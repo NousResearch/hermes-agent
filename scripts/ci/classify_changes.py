@@ -14,6 +14,7 @@ Lanes:
   test suite. A tests-only PR keeps ``python`` (pytest must run) while
   skipping those product jobs.
 * ``docker_meta`` — Dockerfiles etc.
+* ``docker`` — any product change + docker meta
 * ``frontend``    — TS typecheck matrix + desktop build.
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
@@ -127,16 +128,24 @@ def ci_review_files(files: list[str]) -> list[str]:
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
+    python = any(not _py_irrelevant(f) for f in files)
+    python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
+    frontend = any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files)
+    deps = any(f == "pyproject.toml" for f in files)
+    npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
+    docker_meta = any(f.startswith(_DOCKER_META) for f in files)
+    
     ret = {
-        "python": any(not _py_irrelevant(f) for f in files),
-        "python_prod": any(not _py_irrelevant(f) and not _py_test_only(f) for f in files),
-        "docker_meta":  any(f.startswith(_DOCKER_META) for f in files),
-        "frontend": any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files),
+        "python": python,
+        "python_prod": python_prod,
+        "docker": docker_meta or python_prod or frontend,
+        "docker_meta": docker_meta,
+        "frontend": frontend,
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),
-        "deps": any(f == "pyproject.toml" for f in files),
+        "deps": deps,
         "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
-        "npm_lock": any(f.split("/")[-1] == "package-lock.json" for f in files),
+        "npm_lock": npm_lock,
         "installer": any(_is_installer(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
@@ -144,6 +153,7 @@ def classify(files: list[str]) -> dict[str, bool]:
     if not files or any(f.startswith(".github/") for f in files):
         ret["python"] = True
         ret["python_prod"] = True
+        ret["docker"] = True
         ret["docker_meta"] = True
         ret["frontend"] = True
         ret["site"] = True

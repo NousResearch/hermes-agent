@@ -2284,6 +2284,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
+        summary_instructions: str = "",
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2291,6 +2292,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # Per-model context_length overrides live in custom_providers; without them deferred
         # resolution falls back to the hardcoded family catalog (#83324).
         self.custom_providers = custom_providers or None
+        # Optional summarizer outcome instructions (compression.summary_instructions).
+        # Empty / whitespace / non-string = unset (structured compact template).
+        self.summary_instructions = summary_instructions
         # Per-model overrides (longest substring match wins); floor applied on top.
         self.model_thresholds = model_thresholds or {}
         # Raw config value, before override/floor; fallback when switching to a model with no override.
@@ -3273,6 +3277,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 f"token cap and the summary is incomplete {where}"
             )
         return content
+    def _effective_summary_instructions(self) -> str:
+        """Return configured summarizer guidance, or "" when unset.
+
+        Empty string, whitespace-only, None, and non-string values all mean
+        unset so the default Be CONCRETE sentence stays in place. The value
+        is returned verbatim (no interpolation) when set.
+        """
+        raw = getattr(self, "summary_instructions", "")
+        if not isinstance(raw, str) or not raw.strip():
+            return ""
+        return raw
 
     def _generate_summary(
         self, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str] = None,
@@ -3404,11 +3419,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
         return ""
 
-    @classmethod
-    def _summary_template_sections(cls, _section: Dict[str, str], summary_budget: int, _session_log_section: str) -> str:
+        def _summary_template_sections(self, _section: Dict[str, str], summary_budget: int, _session_log_section: str) -> str:
         """The ``## ...`` section template shared by the fresh and iterative-update prompts."""
-        _temporal_anchoring_rule = cls._temporal_anchoring_rule()
-        return f"""{HISTORICAL_TASK_HEADING}
+        _temporal_anchoring_rule = self._temporal_anchoring_rule()
+        _template_sections = f"""{HISTORICAL_TASK_HEADING}
 {_section["historical_task"]}
 
 ## Goal
@@ -3460,9 +3474,24 @@ repeat each one verbatim here — copy the exact text, do NOT paraphrase, summar
 or describe them. These markers tell the agent which skills must be reloaded before
 use. If none appear, omit this section entirely.]
 
-Target ~{summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if _session_log_section else 0)} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
+Target ~{summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if _session_log_section else 0)} tokens. """
+        _custom_instructions = self._effective_summary_instructions()
+        _concrete_sentence = (
+            _custom_instructions
+            if _custom_instructions
+            else (
+                "Be CONCRETE — include file paths, command outputs, error messages, "
+                "line numbers, and specific values. Avoid vague descriptions like "
+                '"made some changes" — say exactly what changed.'
+            )
+        )
+        return (
+            _template_sections
+            + _concrete_sentence
+            + f"""
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
+        )
 
     def _on_summary_failure(
         self, e: Exception, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str], memory_context: str,

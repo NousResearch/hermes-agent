@@ -7679,6 +7679,151 @@ function assignLegacyThreads(log) {
  *  window (host.openWorkspace tile) and in the bots panel (older-desktop
  *  fallback); `onBack` is where the Back button routes — the main tile's
  *  closer, or clearing the in-panel workspace atom. */
+/** The active @-token at the caret: text from the nearest '@' (that begins a
+ *  word) up to the caret, or null when the caret isn't inside a mention. */
+function mentionTokenAt(text, caret) {
+  const upto = String(text || '').slice(0, caret)
+  const match = /(^|\s)@([a-z0-9._-]*)$/i.exec(upto)
+
+  if (!match) {
+    return null
+  }
+
+  return { query: match[2].toLowerCase(), start: caret - match[2].length - 1 }
+}
+
+/** Mention-aware composer input for group rooms. The core composer's
+ *  @-completion area doesn't mount inside workspace tiles (#89049), so this
+ *  wraps the plain SDK Input with a member-scoped popover: @everyone/@all
+ *  quick picks plus each seated member's handle. Insertion produces exactly
+ *  the strings parseGroupChatMentions resolves. Keyboard: Up/Down navigate,
+ *  Enter/Tab insert (Enter falls through to submit when the popover is
+ *  closed), Escape dismisses. */
+function GroupMentionInput({ members, onChange, value, ...inputProps }) {
+  const allMeta = useValue($botMeta)
+  const inputRef = useRef(null)
+  const [token, setToken] = useState(null)
+  const [selected, setSelected] = useState(0)
+
+  const options = []
+
+  if (token) {
+    for (const pick of ['everyone', 'all']) {
+      if (pick.startsWith(token.query)) {
+        options.push({ handle: pick, meta: 'Every bot in the room' })
+      }
+    }
+
+    for (const member of members) {
+      const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+
+      if (!handle || (token.query && !handle.toLowerCase().startsWith(token.query))) {
+        continue
+      }
+
+      options.push({
+        handle,
+        meta: displayName(member, botRosterMeta(member, allMeta))
+      })
+    }
+  }
+
+  const open = Boolean(token) && options.length > 0
+  const active = open ? Math.min(selected, options.length - 1) : 0
+
+  const refreshToken = target => {
+    setToken(mentionTokenAt(target.value, target.selectionStart ?? target.value.length))
+    setSelected(0)
+  }
+
+  const insert = handle => {
+    if (!token) {
+      return
+    }
+
+    const caret = inputRef.current?.selectionStart ?? value.length
+    const next = `${value.slice(0, token.start)}@${handle} ${value.slice(caret)}`
+    onChange(next)
+    setToken(null)
+
+    // Restore focus with the caret after the inserted mention.
+    const pos = token.start + handle.length + 2
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+
+      if (el) {
+        el.focus()
+        try {
+          el.setSelectionRange(pos, pos)
+        } catch {
+          /* input type without selection support */
+        }
+      }
+    })
+  }
+
+  return jsxs('div', {
+    className: 'relative min-w-0 flex-1',
+    children: [
+      open
+        ? jsx('div', {
+            className:
+              'absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary,#111) py-1 shadow-lg',
+            children: options.map((option, index) =>
+              jsxs('button', {
+                type: 'button',
+                className: cn(
+                  'flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs',
+                  index === active ? 'bg-(--ui-control-hover-background) text-foreground' : 'text-(--ui-text-secondary)'
+                ),
+                // preventDefault on mousedown so the input keeps focus.
+                onMouseDown: event => {
+                  event.preventDefault()
+                  insert(option.handle)
+                },
+                onMouseEnter: () => setSelected(index),
+                children: [
+                  jsx('span', { className: 'font-medium', children: `@${option.handle}` }),
+                  jsx('span', { className: 'truncate text-[0.65rem] text-(--ui-text-quaternary)', children: option.meta })
+                ]
+              }, option.handle)
+            )
+          })
+        : null,
+      jsx(Input, {
+        ...inputProps,
+        ref: inputRef,
+        value,
+        onChange: event => {
+          onChange(event.target.value)
+          refreshToken(event.target)
+        },
+        onClick: event => refreshToken(event.target),
+        onKeyDown: event => {
+          if (!open) {
+            return
+          }
+
+          if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            setSelected((active + 1) % options.length)
+          } else if (event.key === 'ArrowUp') {
+            event.preventDefault()
+            setSelected((active - 1 + options.length) % options.length)
+          } else if (event.key === 'Enter' || event.key === 'Tab') {
+            event.preventDefault()
+            insert(options[active].handle)
+          } else if (event.key === 'Escape') {
+            event.preventDefault()
+            setToken(null)
+          }
+        },
+        onBlur: () => setToken(null)
+      })
+    ]
+  })
+}
+
 function GroupChatWorkspace({ group, members, onBack }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
@@ -7959,12 +8104,13 @@ function GroupChatWorkspace({ group, members, onBack }) {
               submitReply(id)
             },
             children: [
-              jsx(Input, {
+              jsx(GroupMentionInput, {
                 'aria-label': 'Reply in thread',
                 autoFocus: true,
                 placeholder: 'Reply in thread…',
+                members,
                 value: replyDrafts[id] || '',
-                onChange: event => setReplyDrafts(prev => ({ ...prev, [id]: event.target.value }))
+                onChange: text => setReplyDrafts(prev => ({ ...prev, [id]: text }))
               }),
               jsx(Button, { type: 'submit', size: 'sm', disabled: !(replyDrafts[id] || '').trim(), children: 'Reply' })
             ]
@@ -8023,11 +8169,12 @@ function GroupChatWorkspace({ group, members, onBack }) {
             submit()
           },
           children: [
-            jsx(Input, {
+            jsx(GroupMentionInput, {
               'aria-label': `Message ${group}`,
               placeholder: `New thread in ${group}… (@name to direct, @everyone for all)`,
+              members,
               value: draft,
-              onChange: event => setDraft(event.target.value)
+              onChange: setDraft
             }),
             jsx(Button, { type: 'submit', size: 'sm', disabled: !draft.trim(), children: 'New Thread' })
           ]

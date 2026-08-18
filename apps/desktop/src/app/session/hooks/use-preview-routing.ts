@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
   $previewTabs,
   beginPreviewServerRestart,
@@ -81,12 +82,22 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
           $sessionTiles.get().some(tile => tile.runtimeId === sid)
 
         if (target && (!event.session_id || onScreen(event.session_id))) {
-          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(resolved => {
-            if (resolved) {
+          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
+            async resolved => {
+              if (!resolved) {
+                return
+              }
+
               const trimmedLabel = typeof label === 'string' ? label.trim() : ''
-              openPreview(trimmedLabel ? { ...resolved, label: trimmedLabel } : resolved, 'tool-result')
+              // The agent's loopback is the GATEWAY's loopback. Give the pane a
+              // URL this machine can load, keeping the original as the label so
+              // the user still sees the address the agent named.
+              const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
+              const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
+
+              openPreview(trimmedLabel ? { ...reached, label: trimmedLabel } : reached, 'tool-result')
             }
-          })
+          )
         }
 
         return

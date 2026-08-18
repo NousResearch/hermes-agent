@@ -9,6 +9,7 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
+import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -350,17 +351,25 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const navigateTo = useCallback(
     (url: string) => {
       setLoadError(null)
-      // loadURL, not a `src` swap: `src` only reloads when the value CHANGES, so
-      // re-entering the address you're already on would do nothing. A rejected
-      // load is a real navigation failure the user has to see — `did-fail-load`
-      // doesn't fire for every rejection (a bad scheme rejects outright).
-      void Promise.resolve(webviewRef.current?.loadURL?.(url)).catch((error: unknown) => {
-        setLoadError({
-          description: error instanceof Error ? error.message : copy.unreachableDescription,
-          url
+      // Typed addresses get the same loopback reach as agent-opened ones — on a
+      // remote gateway `localhost:5173` is usually the dev server the user is
+      // there to look at, not something on their own laptop.
+      void reachablePreviewUrl(url)
+        .then(reached =>
+          // loadURL, not a `src` swap: `src` only reloads when the value CHANGES,
+          // so re-entering the address you're already on would do nothing. A
+          // rejected load is a real navigation failure the user has to see —
+          // `did-fail-load` doesn't fire for every rejection (a bad scheme
+          // rejects outright).
+          webviewRef.current?.loadURL?.(reached)
+        )
+        .catch((error: unknown) => {
+          setLoadError({
+            description: error instanceof Error ? error.message : copy.unreachableDescription,
+            url
+          })
+          setLoading(false)
         })
-        setLoading(false)
-      })
     },
     [copy.unreachableDescription]
   )

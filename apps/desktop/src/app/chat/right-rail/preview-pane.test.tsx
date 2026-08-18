@@ -185,7 +185,9 @@ describe('PreviewPane console state', () => {
     fireEvent.keyDown(address, { key: 'Enter' })
 
     // loadURL, not a `src` swap — re-entering the current address must reload.
-    expect(loadURL).toHaveBeenCalledWith('http://localhost:4000/app')
+    // Awaited: navigation first asks main whether the address needs a loopback
+    // forward, so the load lands a microtask later.
+    await waitFor(() => expect(loadURL).toHaveBeenCalledWith('http://localhost:4000/app'))
     expect(webview.getAttribute('src')).toBe('http://localhost:5174')
   })
 

@@ -9944,7 +9944,8 @@ export default {
         title: 'Cronjobs',
         data: {
           placement: 'main',
-          dock: { pane: 'workspace', pos: 'right' },
+          // Repair persisted layouts that stranded Cronjobs in the Bots tab strip.
+          dock: { pane: 'workspace', pos: 'right', enforce: true },
           width: '250px'
         },
         render: () => jsx(RoutinesPane, {})

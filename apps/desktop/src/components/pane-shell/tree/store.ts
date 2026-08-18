@@ -1202,8 +1202,8 @@ interface PaneDockHint {
   pos: DropPosition
   /** Center docks: stack BEFORE this pane id (the strip divider's slot). */
   before?: null | string
-  /** Enforced dock invariant: the pane is re-homed onto this hint's center
-   *  anchor on EVERY boot when it isn't already stacked with the anchor —
+  /** Enforced dock invariant: the pane is re-homed onto this hint's anchor
+   *  on EVERY boot when it isn't already in the declared relationship —
    *  no one-time token, and user placement does not exempt it. Once per
    *  adoption lifetime (per boot), so an intra-session drag sticks until the
    *  next boot. See `enforceDockedPanes`. */
@@ -1223,13 +1223,13 @@ const enforcedDocksThisBoot = new Set<string>()
 
 /**
  * A `panes` contribution whose dock hint carries `enforce: true` is re-homed
- * onto the hint's center anchor at every boot's first adoption pass when it
- * isn't already stacked there. Unlike the retired one-time heal, nothing
+ * onto the hint's anchor at every boot's first adoption pass when it isn't
+ * already docked there. Unlike the retired one-time heal, nothing
  * exempts the pane — not a burned token, not $userPlacedPanes — because the
  * hint is the owner's standing invariant about where the pane lives
  * (Bot Mode's Bots pane IS the SESSIONS | BOTS tab strip), not a one-shot
- * migration. Center re-homes only: the invariant consolidates the pane into
- * its anchor's tab strip, it never re-runs arbitrary splits.
+ * migration. Center hints consolidate panes into their anchor's tab strip;
+ * edge hints restore the declared split beside their anchor.
  *
  * Silent like adoption — the anchor zone keeps its active tab. The center
  * insert pins the zone's header shown, which is the point: the strip is how
@@ -1244,7 +1244,7 @@ function enforceDockedPanes(
   for (const pane of registry.getArea('panes')) {
     const dock = dataOf(pane.id)?.dock
 
-    if (!dock?.enforce || dock.pos !== 'center' || !allPaneIds(next).includes(pane.id)) {
+    if (!dock?.enforce || !allPaneIds(next).includes(pane.id)) {
       continue
     }
 
@@ -1261,7 +1261,7 @@ function enforceDockedPanes(
       continue
     }
 
-    if (from.id === anchor.id) {
+    if (dock.pos === 'center' && from.id === anchor.id) {
       // Already stacked with its anchor — but an enforced tab must be
       // REACHABLE, not just co-located. Community regression (Aug 2026):
       // persisted trees where the enforced pane was center-stacked with the
@@ -1270,6 +1270,20 @@ function enforceDockedPanes(
       // sessions"). An enforced zone always shows its strip.
       if (anchor.headerHidden === true) {
         next = setGroupHeaderHiddenOp(next, anchor.id, false) ?? next
+      }
+
+      continue
+    }
+
+    if (dock.pos !== 'center') {
+      const moved = movePaneOp(next, pane.id, {
+        groupId: anchor.id,
+        pos: dock.pos,
+        before: dock.before
+      })
+
+      if (moved !== next) {
+        next = moved
       }
 
       continue

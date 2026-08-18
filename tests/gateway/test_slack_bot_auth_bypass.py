@@ -23,6 +23,7 @@ from gateway.session import Platform, SessionSource
 def _isolate_slack_env(monkeypatch):
     for var in (
         "SLACK_ALLOW_BOTS",
+        "SLACK_ALLOWED_BOTS",
         "SLACK_ALLOWED_USERS",
         "SLACK_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
@@ -77,6 +78,16 @@ def test_identified_slack_bot_still_requires_sender_authorization(
 
     assert runner._is_user_authorized(_make_slack_bot_source("U_TRUSTED_BOT")) is True
     assert runner._is_user_authorized(_make_slack_bot_source("U_OTHER_BOT")) is False
+
+
+@pytest.mark.parametrize("allow_bots", ["mentions", "all"])
+def test_identified_slack_bot_can_use_exact_bot_id_acl(monkeypatch, allow_bots):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", allow_bots)
+    monkeypatch.setenv("SLACK_ALLOWED_BOTS", "B_TRUSTED")
+
+    assert runner._is_user_authorized(_make_slack_bot_source("B_TRUSTED")) is True
+    assert runner._is_user_authorized(_make_slack_bot_source("B_OTHER")) is False
 
 
 def test_slack_human_unaffected_by_bot_bypass(monkeypatch):

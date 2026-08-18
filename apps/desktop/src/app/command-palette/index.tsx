@@ -62,6 +62,7 @@ import { $repoWorktrees } from '@/store/coding-status'
 import {
   $commandPaletteOpen,
   $commandPalettePage,
+  $commandPaletteSeed,
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
@@ -99,9 +100,9 @@ import {
   SKILLS_ROUTE,
   STARMAP_ROUTE
 } from '../routes'
-import { FIELD_LABELS, SECTIONS } from '../settings/constants'
-import { fieldCopyForSchemaKey } from '../settings/field-copy'
-import { prettyName } from '../settings/helpers'
+import { SECTIONS } from '../settings/constants'
+import { type SettingsSearchEntry, settingsSearchTargetQuery } from '../settings/settings-search'
+import { useSettingsSearchCatalog } from '../settings/use-settings-search'
 
 import { usePaletteContributions } from './contrib'
 import { MarketplaceThemePage } from './marketplace-theme-page'
@@ -542,6 +543,7 @@ export function CommandPalette() {
 function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const { t } = useI18n()
   const pendingPage = useStore($commandPalettePage)
+  const pendingSeed = useStore($commandPaletteSeed)
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
   const projectTree = useStore($projectTree)
@@ -550,6 +552,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // The Update row names the same install the statusbar names — same target
   // selection, same resolver. Reduced to the label string: an in-flight apply
@@ -658,6 +661,24 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     }
   }, [pendingPage])
 
+  // Landing on a page (deep-link open onto Settings, drilling into a submenu,
+  // stepping back out) must leave the filter typeable immediately — the whole
+  // point of the pill/⌘K hand-off is "just start typing". Radix only
+  // autofocuses on mount; a page swap re-renders the same input, and the
+  // back-button click moves focus to the button.
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [page])
+
+  // Type-to-search hand-off: the keystroke that opened the palette (typing on
+  // the Settings page) prefills the filter so the first character isn't lost.
+  useEffect(() => {
+    if (pendingSeed !== null) {
+      setSearch(pendingSeed)
+      $commandPaletteSeed.set(null)
+    }
+  }, [pendingSeed])
+
   const go = useCallback((path: string) => () => navigateToWorkspacePage(navigate, path), [navigate])
 
   // Sessions: plain select = open beside what's already loaded (focus existing
@@ -681,14 +702,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const settingsSectionLabel = useCallback(
     (section: (typeof SECTIONS)[number]) => t.settings.sections[section.id] ?? section.label,
     [t.settings.sections]
-  )
-
-  const configFieldLabel = useCallback(
-    (key: string) =>
-      fieldCopyForSchemaKey(t.settings.fieldLabels, key) ??
-      fieldCopyForSchemaKey(FIELD_LABELS, key) ??
-      prettyName(key.split('.').pop() ?? key),
-    [t.settings.fieldLabels]
   )
 
   // Running a keepOpen row (a toggle) changes state the rows themselves report,
@@ -988,6 +1001,26 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
   // navigation entries on an empty palette.
+  //
+  // Settings results are the DEEP catalog (schema-driven config fields,
+  // appearance controls, stored credentials — the same entries the Settings
+  // page serves), not a hardcoded key list: ⌘K is the de-facto settings
+  // search everywhere, so root and the settings page must agree. The body
+  // mounts per open, so the catalog queries fire on open and stay warm.
+  const settingsCatalog = useSettingsSearchCatalog(true)
+
+  const settingsEntryItem = useCallback(
+    (entry: SettingsSearchEntry): PaletteItem => ({
+      detail: entry.context,
+      icon: entry.icon,
+      id: `sp-${entry.id}`,
+      keywords: [entry.context, entry.description ?? '', ...entry.keywords],
+      label: entry.label,
+      run: go(`${SETTINGS_ROUTE}?${settingsSearchTargetQuery(entry.target)}`)
+    }),
+    [go]
+  )
+
   const searchGroups = useMemo<PaletteGroup[]>(() => {
     if (!search.trim()) {
       return []
@@ -1117,17 +1150,27 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       })
     }
 
-    const fieldItems = SECTIONS.flatMap(section =>
-      section.keys.map(key => ({
-        icon: section.icon,
-        id: `field-${key}`,
-        keywords: ['settings', key, section.label, settingsSectionLabel(section)],
-        label: `${settingsSectionLabel(section)}: ${configFieldLabel(key)}`,
-        run: go(`${SETTINGS_ROUTE}?tab=config:${section.id}&field=${encodeURIComponent(key)}`)
-      }))
+    const fieldItems = [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(
+      settingsEntryItem
     )
 
-    result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
+    if (fieldItems.length > 0) {
+      result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
+    }
+
+    if (settingsCatalog.pluginEntries.length > 0) {
+      result.push({
+        heading: t.settings.nav.plugins,
+        items: settingsCatalog.pluginEntries.map(settingsEntryItem)
+      })
+    }
+
+    if (settingsCatalog.credentialEntries.length > 0) {
+      result.push({
+        heading: t.settings.nav.apiKeys,
+        items: settingsCatalog.credentialEntries.map(settingsEntryItem)
+      })
+    }
 
     if (mcpServers.length > 0) {
       result.push({
@@ -1165,7 +1208,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   }, [
     archivedSessions,
     availableThemes,
-    configFieldLabel,
     go,
     goSession,
     mcpServers,
@@ -1175,7 +1217,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     sessions,
     setMode,
     setTheme,
-    settingsSectionLabel,
+    settingsCatalog,
+    settingsEntryItem,
     t,
     themeName
   ])
@@ -1188,6 +1231,60 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     () => [...baseGroups, ...searchGroups, ...branchGroup],
     [baseGroups, branchGroup, searchGroups]
   )
+
+  // Settings-scoped page (⌘K on the Settings overlay, or its search pill):
+  // the same catalog as root, minus everything that isn't settings. Pages
+  // always list; the granular entries surface on type, same contract as the
+  // root.
+  const settingsPageGroups = useMemo<PaletteGroup[]>(() => {
+    const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
+    const cc = t.commandCenter
+
+    const result: PaletteGroup[] = [
+      {
+        heading: cc.settings,
+        items: [
+          ...SECTIONS.map(section => ({
+            icon: section.icon,
+            id: `sp-config-${section.id}`,
+            keywords: ['settings', section.label, settingsSectionLabel(section)],
+            label: settingsSectionLabel(section),
+            run: go(settingsTab(`config:${section.id}`))
+          })),
+          ...NON_CONFIG_SETTINGS.map(entry => ({
+            icon: entry.icon,
+            id: `sp-${entry.tab}`,
+            keywords: ['settings', ...(entry.keywords ?? [])],
+            label: t.settings.nav[entry.labelKey],
+            run: go(settingsTab(entry.tab))
+          }))
+        ]
+      }
+    ]
+
+    if (search.trim()) {
+      result.push({
+        heading: cc.settingsFields,
+        items: [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
+      })
+
+      if (settingsCatalog.pluginEntries.length > 0) {
+        result.push({
+          heading: t.settings.nav.plugins,
+          items: settingsCatalog.pluginEntries.map(settingsEntryItem)
+        })
+      }
+
+      if (settingsCatalog.credentialEntries.length > 0) {
+        result.push({
+          heading: t.settings.nav.apiKeys,
+          items: settingsCatalog.credentialEntries.map(settingsEntryItem)
+        })
+      }
+    }
+
+    return result
+  }, [go, search, settingsCatalog, settingsEntryItem, settingsSectionLabel, t])
 
   // Nested palette pages (VS Code-style submenus). Reusable: add an entry here
   // and point a root item at it via `to`.
@@ -1261,9 +1358,16 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         title: t.commandCenter.installTheme.pageTitle,
         placeholder: t.commandCenter.installTheme.placeholder,
         groups: []
+      },
+      // Settings-scoped search (⌘K while the Settings overlay is up, or the
+      // search pill beside its close button).
+      settings: {
+        title: t.commandCenter.nav.settings.title,
+        placeholder: t.settings.search.placeholder,
+        groups: settingsPageGroups
       }
     }),
-    [availableThemes, mode, resolvedMode, setMode, setTheme, t, themeName]
+    [availableThemes, mode, resolvedMode, setMode, setTheme, settingsPageGroups, t, themeName]
   )
 
   const activePage = page ? subPages[page] : null
@@ -1357,6 +1461,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             }}
             onValueChange={setSearch}
             placeholder={placeholder}
+            ref={inputRef}
             right={page === 'pets' ? <PetInlineToggle /> : undefined}
             value={search}
           />

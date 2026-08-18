@@ -46,7 +46,9 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 import { MODE_OPTIONS } from './constants'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
+import { APPEARANCE_SETTING_IDS } from './settings-search'
 import { TerminalFontSetting } from './terminal-font-setting'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
   // Preview in the *current* mode: the dark palette in Dark, and the light
@@ -91,6 +93,8 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
 // presets highlights nothing, and the row description keeps showing the
 // exact current percent.
 const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
+const APPEARANCE_SEARCH_TARGETS = new Set<string>(Object.values(APPEARANCE_SETTING_IDS))
+const appearanceSettingElementId = (id: string) => `setting-field-${id}`
 
 type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
 
@@ -316,6 +320,12 @@ export function AppearanceSettings() {
 
   const [query, setQuery] = useState('')
 
+  useDeepLinkHighlight({
+    elementId: appearanceSettingElementId,
+    param: 'setting',
+    ready: id => APPEARANCE_SEARCH_TARGETS.has(id)
+  })
+
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
   // backend) for anything not already installed.
@@ -374,6 +384,7 @@ export function AppearanceSettings() {
           <ListRow
             action={<LanguageSwitcher />}
             description={isSavingLocale ? t.language.saving : t.language.description}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.language)}
             title={t.language.label}
           />
 
@@ -461,6 +472,7 @@ export function AppearanceSettings() {
               </>
             }
             description={a.themeDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.theme)}
             title={
               <div className="flex items-center justify-between gap-3">
                 <span>{a.themeTitle}</span>
@@ -489,6 +501,7 @@ export function AppearanceSettings() {
               />
             }
             description={a.uiScaleDesc(zoomPercent)}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.uiScale)}
             title={a.uiScaleTitle}
           />
 
@@ -594,6 +607,7 @@ export function AppearanceSettings() {
               ) : undefined
             }
             description={translucency.mode === 'glass' ? a.translucencyGlassDesc : a.translucencyDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.translucency)}
             title={a.translucencyTitle}
           />
 
@@ -612,6 +626,7 @@ export function AppearanceSettings() {
               />
             }
             description={a.backdropDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.backdrop)}
             title={a.backdropTitle}
           />
 
@@ -652,6 +667,7 @@ export function AppearanceSettings() {
               />
             }
             description={a.toolViewDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.toolView)}
             title={a.toolViewTitle}
           />
 
@@ -699,6 +715,7 @@ export function AppearanceSettings() {
               </div>
             }
             description={a.embedsDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.embeds)}
             title={a.embedsTitle}
           />
         </div>

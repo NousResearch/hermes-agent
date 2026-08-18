@@ -1,5 +1,7 @@
 # Relatório de Investigação — Bugs no fluxo OAuth da Anthropic (hermes-agent)
 
+> **Atualização (review do PR #87891):** o fluxo de login OAuth do **dashboard web** (`_start_anthropic_pkce` / `_submit_anthropic_pkce` / `_save_anthropic_oauth_creds` em `hermes_cli/web_server.py`) foi **removido por completo**, em vez de mantido com os patches dos bugs 1, 2 e 4 descritos abaixo. Um endpoint HTTP não-supervisionado emitindo tokens de assinatura Claude Pro/Max fora do cliente oficial da Anthropic esbarra nas políticas de uso da Anthropic para credenciais OAuth. O catálogo de providers do dashboard agora marca `anthropic` como `flow: "external"`, apontando para `hermes auth add anthropic` (fluxo PKCE via terminal, fora do escopo desta mudança). Os testes `tests/hermes_cli/test_anthropic_dashboard_pkce_csrf.py` e `tests/hermes_cli/test_web_server_oauth_write.py` foram removidos por testarem exclusivamente código agora inexistente. Bugs 3 e 5 (race condition no refresh cross-processo e o `PermissionError` no lock do Windows) seguem corrigidos como descrito abaixo — afetam o fluxo de login `claude_code`/CLI, que permanece.
+
 **Data:** 2026-08-16
 **Branch:** `fix/update-orphan-history-guard-87694`
 **Escopo investigado:** `agent/anthropic_adapter.py`, `agent/credential_pool.py`, `hermes_cli/auth.py`, `hermes_cli/auth_commands.py`, `hermes_cli/web_server.py`

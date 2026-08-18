@@ -566,6 +566,12 @@ DEFAULT_CONFIG = {
         "micro_compact_every_n_turns": 1,
         # Once the rolling summary exceeds this many tokens, the next pass re-summarizes it.
         "micro_compact_defrag_threshold_tokens": 2000,
+        "summary_instructions": "",   # when set, replaces the batch summarizer's
+                                      # "Be CONCRETE ..." sentence and is appended
+                                      # after the NEVER/[REDACTED] block on
+                                      # micro-compact. Empty / whitespace / non-string
+                                      # = current Hermes text. Inserted verbatim
+                                      # (no interpolation).
         # Gateway session-hygiene force-compress threshold, by message count.
         "hygiene_hard_message_limit": 5000,
         # Max seconds the gateway waits for pre-agent hygiene compression WITHOUT forward progress.

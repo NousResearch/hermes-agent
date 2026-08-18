@@ -780,6 +780,10 @@ credential-free seekable URL, and resolves to `null` outside a Desktop renderer.
 The backend route must return successful `audio/*` or `video/*` content; use a
 normal `ctx.rest` request for JSON or image data.
 
+Like the rest of the local runtime-plugin SDK, this is a convenience namespace
+scope, not an authorization boundary between local plugins: disk plugins run
+with full renderer authority. See [Security model](#security-model).
+
 `ctx.socket` auto-reconnects with backoff until disposed. **It resolves to a no-op
 on OAuth remotes** (single-use WS tickets are core-managed) — treat the socket as
 an accelerator over polling, never a replacement. Every consumer needs a polling

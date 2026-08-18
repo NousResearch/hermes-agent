@@ -26,9 +26,11 @@ import queue
 import random
 import re
 import sqlite3
+import struct
 import sys
 import threading
 import time
+import uuid
 import weakref
 from collections import deque
 from contextlib import contextmanager
@@ -2128,6 +2130,7 @@ PERSISTENCE_ERROR_CAUSES = (
     "compression_closed",
     "turn_lease",
     "corrupt",
+    "replaced",
     "disk",
     "unknown",
 )
@@ -2173,6 +2176,9 @@ def classify_persistence_error(exc_or_str) -> str:
       (``database disk image is malformed`` / SQLITE_NOTADB).  Distinct from
       ``"disk"``: freeing space cannot help, the user needs the repair path
       (``hermes doctor`` / automatic schema surgery).
+    * ``"replaced"`` — the ``state.db`` path no longer names the file this
+      process opened (out-of-band ``cp``/``mv``/restore). In-file FTS repair
+      cannot help; writes to the live handle must stop.
     * ``"disk"``    — disk full / read-only / permission-shaped failures
       (delegates the disk-full patterns to :func:`is_disk_full_error` so the
       two classifiers can never drift apart — e.g. ENOSPC).
@@ -2191,6 +2197,8 @@ def classify_persistence_error(exc_or_str) -> str:
         return "compression_closed"
     if isinstance(exc_or_str, CompressionSessionBusyError):
         return "compression"
+    if isinstance(exc_or_str, StateDbReplacedError):
+        return "replaced"
     text = str(exc_or_str).lower()
     if "turn lease" in text:
         return "turn_lease"
@@ -2198,6 +2206,8 @@ def classify_persistence_error(exc_or_str) -> str:
         return "compression_closed"
     if "being compressed" in text or "compression lease" in text:
         return "compression"
+    if "was replaced underneath" in text:
+        return "replaced"
     # Structural corruption BEFORE the lock and disk buckets: "database disk
     # image is malformed" contains "disk" (and some wrapped corruption
     # strings mention "locked" recovery attempts), so later buckets would
@@ -4171,6 +4181,82 @@ class SessionTurnLeaseLostError(RuntimeError):
     """
 
 
+class StateDbReplacedError(RuntimeError):
+    """The state.db path no longer names the file this SessionDB opened.
+
+    Raised when an out-of-band ``cp``/``mv``/restore replaces the database
+    under a live gateway. In-place FTS repair and fail-open trigger
+    dropping cannot fix a generation mismatch; they amplify it.
+    """
+
+
+# SQLite header: 4-byte big-endian application_id at offset 68. Distinct from
+# inode: ``cp`` onto the same path keeps st_ino and truncates+rewrites.
+_STATE_DB_APPLICATION_ID_OFFSET = 68
+_STATE_DB_GENERATION_KEY = "db_file_generation"
+_STATE_DB_REPLACED_MSG = (
+    "FATAL: state.db was replaced underneath the gateway; refusing further "
+    "writes to this file. Divert transcripts to sessions/<id>.jsonl (and the "
+    "gateway pending_messages spool) and restore or reopen after operator "
+    "intervention."
+)
+
+
+def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
+    """Append pending messages as JSON lines under HERMES_HOME/sessions.
+
+    Used when state.db is replaced under a live process so the current
+    turn is not only in RAM. Returns the jsonl path, or None when there
+    is nothing to write.
+    """
+    sid = str(session_id or "").strip()
+    if not sid or not messages:
+        return None
+    sessions_dir = get_hermes_home() / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    path = sessions_dir / f"{sid}.jsonl"
+    with path.open("a", encoding="utf-8") as handle:
+        for msg in messages:
+            if isinstance(msg, dict):
+                handle.write(json.dumps(msg, ensure_ascii=False, default=str) + "\n")
+            elif msg is not None:
+                handle.write(json.dumps({"content": str(msg)}, ensure_ascii=False) + "\n")
+    return path
+
+
+def _read_sqlite_application_id(db_path: Path) -> "Optional[int]":
+    """Read application_id from the SQLite header without opening a connection."""
+    try:
+        with db_path.open("rb") as handle:
+            header = handle.read(_STATE_DB_APPLICATION_ID_OFFSET + 4)
+    except OSError:
+        return None
+    if len(header) < _STATE_DB_APPLICATION_ID_OFFSET + 4:
+        return None
+    if header[:16] != b"SQLite format 3\x00":
+        return None
+    return int(
+        struct.unpack(
+            ">I",
+            header[_STATE_DB_APPLICATION_ID_OFFSET:_STATE_DB_APPLICATION_ID_OFFSET + 4],
+        )[0]
+    )
+
+
+def _stat_db_file_identity(path: Path) -> "Optional[tuple]":
+    """Return ``(st_dev, st_ino)`` for *path*, or None when identity is unavailable."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    # Windows volumes (and some network FS) report st_ino=0; a (0, 0)
+    # identity would false-positive every check. Skip the inode half of
+    # the guard there; generation stamp still applies.
+    if not st.st_dev or not st.st_ino:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def _connect_tracked_db(path, tracking_path=None, **kwargs):
     """``sqlite3.connect`` that registers the open fd for lock-safety.
 
@@ -4884,6 +4970,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._read_open_failed_at = 0.0
         self._wal_active = False
         self._write_count = 0
+        # File identity of the state.db this instance opened. Compared on
+        # every write (and before FTS fail-open / reopen-after-close) so an
+        # out-of-band replace cannot limp through in-place surgery.
+        # Inode catches mv/new-file; application_id catches cp onto the
+        # same path (same inode, truncate+rewrite).
+        self._db_file_identity: Optional[tuple] = None
+        self._db_file_application_id: int = 0
+        self._db_file_generation_token: str = ""
+        self._db_replaced = False
         # One-shot guard for the usermerge-floor config write on the
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
@@ -4958,6 +5053,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     except Exception:
                         pass
                     raise
+                self._record_db_file_identity()
                 initialization_complete = True
                 return
 
@@ -5115,6 +5211,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # racing session lifecycle and the surprise disk/latency cost on
             # an unattended open. (An interrupted optimize resumes when the
             # user re-runs the command.)
+            self._ensure_db_file_generation()
+            self._record_db_file_identity()
             initialization_complete = True
         except Exception as exc:
             # Capture the cause so /resume and friends can surface WHY the
@@ -5391,6 +5489,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"SessionDB for {self.db_path} was closed (read-only handle); "
                 f"cannot serve a {context} after close()"
             )
+        # A reopen resolves the PATH again — if the file at that path is no
+        # longer the one this instance originally opened (out-of-band
+        # restore/cp/mv), reconnecting would write into the new generation
+        # through stale WAL/shm assumptions (#89332). Refuse instead.
+        if self._db_replaced or self._db_file_was_replaced():
+            self._halt_db_replaced()
         logger.warning(
             "state.db connection for %s was closed while a %s was still in "
             "flight — reopening (teardown/worker race, #94736)",
@@ -5728,6 +5832,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return "no more rows available" in str(exc).lower()
 
         while True:
+            self._raise_if_db_replaced()
             try:
                 with self._lock:
                     if self._conn is None:
@@ -5793,6 +5898,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.DatabaseError as exc:
                 if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
+                # An out-of-band replace of state.db (restore/cp/mv under a
+                # live process) surfaces as this same corruption error class.
+                # In-file repair on a NEW file generation amplifies the
+                # damage (#89332) — halt writes on this handle instead.
+                if (
+                    "not a database" in str(exc).lower()
+                    or is_malformed_db_error(exc)
+                    or self._is_fts_write_corruption_error(exc)
+                ):
+                    self._raise_if_db_replaced()
                 # Corrupt FTS shadow tables make every write raise the
                 # malformed/corrupt error class through the FTS sync triggers
                 # while the canonical messages table is intact. Never run a
@@ -5813,6 +5928,88 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
                 raise
+
+    def _ensure_db_file_generation(self) -> None:
+        """Mint a once-per-file generation stamp (state_meta + application_id).
+
+        First opener wins via INSERT OR IGNORE. application_id is written
+        only when still 0 so racers converge on the same header value.
+        PASSIVE checkpoint only — never TRUNCATE (#45383).
+        """
+        if self.read_only or self._conn is None:
+            return
+        token = uuid.uuid4().hex
+        try:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
+                (_STATE_DB_GENERATION_KEY, token),
+            )
+            row = self._conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (_STATE_DB_GENERATION_KEY,),
+            ).fetchone()
+            if row and row[0]:
+                token = str(row[0])
+            self._db_file_generation_token = token
+            current = 0
+            pragma_row = self._conn.execute("PRAGMA application_id").fetchone()
+            if pragma_row:
+                current = int(pragma_row[0] or 0)
+            if current == 0:
+                app_id = int(token[:8], 16) & 0x7FFFFFFF
+                if app_id == 0:
+                    app_id = 1
+                self._conn.execute(f"PRAGMA application_id={app_id}")
+                current = app_id
+            self._db_file_application_id = current
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.Error:
+                pass
+        except sqlite3.Error as exc:
+            logger.debug("state.db generation stamp skipped: %s", exc)
+
+    def _record_db_file_identity(self) -> None:
+        """Snapshot inode plus the on-disk generation header when present."""
+        self._db_file_identity = _stat_db_file_identity(self.db_path)
+        disk_id = _read_sqlite_application_id(self.db_path)
+        if disk_id:
+            self._db_file_application_id = disk_id
+        elif self._conn is not None and not self._db_file_application_id:
+            try:
+                pragma_row = self._conn.execute("PRAGMA application_id").fetchone()
+                if pragma_row and pragma_row[0]:
+                    self._db_file_application_id = int(pragma_row[0])
+            except sqlite3.Error:
+                pass
+
+    def _db_file_was_replaced(self) -> bool:
+        """True when the path no longer names the file this instance opened."""
+        recorded = self._db_file_identity
+        if recorded is not None:
+            current = _stat_db_file_identity(self.db_path)
+            if current is None or current != recorded:
+                return True
+        recorded_app = int(self._db_file_application_id or 0)
+        if recorded_app:
+            disk_app = _read_sqlite_application_id(self.db_path)
+            # Header 0 means the WAL has not been checkpointed yet — not a
+            # replace. A copied Hermes DB that minted its own id is nonzero.
+            if disk_app and disk_app != recorded_app:
+                return True
+        return False
+
+    def _halt_db_replaced(self) -> None:
+        """Stop writes and raise; do not run in-file repair on a new generation."""
+        self._db_replaced = True
+        logger.error(_STATE_DB_REPLACED_MSG)
+        raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
+
+    def _raise_if_db_replaced(self) -> None:
+        if self._db_replaced:
+            raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
+        if self._db_file_was_replaced():
+            self._halt_db_replaced()
 
     def _sleep_before_write_retry(
         self, deadline: float, patience_s: float
@@ -6035,6 +6232,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
             return False
+        if self._db_replaced or self._db_file_was_replaced():
+            self._halt_db_replaced()
 
         try:
             with self._lock:

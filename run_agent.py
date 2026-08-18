@@ -2550,10 +2550,24 @@ class AIAgent:
             # ("storage was busy, send it again") from disk-full/read-only.
             from hermes_state import (
                 CompressionSessionClosedError,
+                StateDbReplacedError,
                 classify_persistence_error,
+                divert_session_transcript_jsonl,
             )
 
             self._last_persistence_error_cause = classify_persistence_error(e)
+            if isinstance(e, StateDbReplacedError):
+                try:
+                    divert_session_transcript_jsonl(
+                        getattr(self, "session_id", "") or "",
+                        _batch_rows,
+                    )
+                except Exception:
+                    logger.warning(
+                        "JSONL divert failed after state.db replace for %s",
+                        getattr(self, "session_id", None),
+                        exc_info=True,
+                    )
             if isinstance(e, CompressionSessionClosedError):
                 # Compression race: another path rotated this session while
                 # this turn was still writing against it. The store resolves
@@ -4128,6 +4142,17 @@ class AIAgent:
                     "(another Hermes process was writing to the state "
                     "database). Your message should already be saved — "
                     "please send it again in a moment."
+                )
+            if cause == "replaced":
+                return (
+                    prefix
+                    + "the turn was stopped because the state database file "
+                    "was replaced underneath this process. Do not run "
+                    "`hermes doctor --fix` or in-place FTS repair — stop "
+                    "the process, restore the intended state.db, then "
+                    "restart. Unwritten messages were diverted to "
+                    "sessions/<session_id>.jsonl and, on the gateway, "
+                    "pending_messages/pending-*.json."
                 )
             if cause == "corrupt":
                 return (

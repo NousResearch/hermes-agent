@@ -3756,7 +3756,43 @@ class SessionStore:
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
-                from hermes_state import CompressionSessionClosedError
+                from hermes_state import CompressionSessionClosedError, StateDbReplacedError
+
+                if isinstance(exc, StateDbReplacedError):
+                    logger.error(
+                        "Session DB was replaced underneath the gateway for %s; "
+                        "stopping SQLite writes and diverting pending "
+                        "transcripts to the on-disk fallback: %s",
+                        session_id, exc,
+                    )
+                    with self._transcript_retry_lock:
+                        remaining = list(self._dirty_transcripts.get(queue_session_id, []))
+                        self._dirty_transcripts.pop(queue_session_id, None)
+                        self._transcript_append_failures.pop(session_id, None)
+                    for dropped in remaining:
+                        try:
+                            from gateway.shutdown_flush import (
+                                spool_dropped_transcript_message,
+                            )
+                            spool_dropped_transcript_message(session_id, dropped)
+                        except Exception:
+                            logger.warning(
+                                "pending fallback failed for replaced "
+                                "state.db transcript on %s",
+                                session_id,
+                                exc_info=True,
+                            )
+                    try:
+                        from hermes_state import divert_session_transcript_jsonl
+                        divert_session_transcript_jsonl(session_id, remaining)
+                    except Exception:
+                        logger.warning(
+                            "JSONL divert failed for replaced state.db "
+                            "transcript on %s",
+                            session_id,
+                            exc_info=True,
+                        )
+                    return
 
                 if isinstance(exc, CompressionSessionClosedError):
                     # Resolve the full continuation chain via the canonical

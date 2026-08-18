@@ -866,10 +866,7 @@ export const en: Translations = {
     keys: {
       loading: 'Loading API keys and credentials...',
       failedLoad: 'API keys failed to load',
-      empty: 'Nothing configured in this category yet.',
-      searchTools: 'Search tools…',
-      searchSettings: 'Search settings…',
-      noMatch: 'No entries match your search.'
+      empty: 'Nothing configured in this category yet.'
     },
     search: {
       placeholder: 'Search all settings…',

@@ -852,10 +852,7 @@ export const ja = defineLocale({
     keys: {
       loading: 'API キーと認証情報を読み込み中...',
       failedLoad: 'API キーの読み込みに失敗しました',
-      empty: 'このカテゴリーにはまだ設定がありません。',
-      searchTools: 'ツールを検索...',
-      searchSettings: '設定を検索...',
-      noMatch: '検索に一致する項目はありません。'
+      empty: 'このカテゴリーにはまだ設定がありません。'
     },
     search: {
       placeholder: 'すべての設定を検索...',

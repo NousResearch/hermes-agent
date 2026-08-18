@@ -1064,10 +1064,7 @@ export const zh: Translations = {
     keys: {
       loading: '正在加载 API 密钥和凭据...',
       failedLoad: 'API 密钥加载失败',
-      empty: '此类别暂时没有配置项。',
-      searchTools: '搜索工具...',
-      searchSettings: '搜索设置...',
-      noMatch: '没有与搜索匹配的条目。'
+      empty: '此类别暂时没有配置项。'
     },
     search: {
       placeholder: '搜索所有设置...',

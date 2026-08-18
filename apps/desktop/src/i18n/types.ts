@@ -737,9 +737,6 @@ export interface Translations {
       loading: string
       failedLoad: string
       empty: string
-      searchTools: string
-      searchSettings: string
-      noMatch: string
     }
     search: {
       placeholder: string

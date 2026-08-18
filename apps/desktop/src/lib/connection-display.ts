@@ -56,3 +56,27 @@ export function connectionMatchesQuery(
 
   return needles.every(needle => normalizedHaystack.includes(needle))
 }
+
+/** Human-readable, non-secret endpoint for on-demand gateway details. */
+export function connectionEndpoint(connection: DesktopRegistryConnection): null | string {
+  if (connection.kind === 'ssh') {
+    const host = connection.host?.trim()
+
+    if (!host) {
+      return null
+    }
+
+    const authority = `${connection.user?.trim() ? `${connection.user.trim()}@` : ''}${host}`
+
+    return connection.port == null ? authority : `${authority}:${connection.port}`
+  }
+
+  return connection.url?.trim() || null
+}
+
+/** Full gateway identity for a hover tip without keeping technical routing in chrome. */
+export function connectionTooltip(connection: DesktopRegistryConnection): string {
+  const endpoint = connectionEndpoint(connection)
+
+  return endpoint ? `${connection.label}\n${endpoint}` : connection.label
+}

@@ -45,7 +45,7 @@ vi.mock('@/i18n', () => ({
       profiles: {
         switchConnectionFailed: (name: string) => `Could not connect to ${name}`,
         switchToConnection: (name: string) => `Switch to ${name}`,
-        connectGateway: 'Connect another Hermes gateway…'
+        connectGateway: 'Manage gateways…'
       },
       settings: {
         connections: {
@@ -154,7 +154,7 @@ describe('ConnectionSwitcher', () => {
     expect(selectConnection).toHaveBeenCalledWith('homelab')
 
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Connect another Hermes gateway…' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Manage gateways…' }))
     expect(onConnect).toHaveBeenCalledTimes(1)
     expect(selectConnection).toHaveBeenCalledTimes(1)
   })
@@ -229,7 +229,7 @@ describe('ConnectionSwitcher', () => {
     })
 
     const search = screen.getByPlaceholderText('Search gateways…')
-    expect(screen.getByRole('menuitem', { name: 'Connect another Hermes gateway…' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Manage gateways…' })).toBeTruthy()
     expect(screen.getAllByRole('menuitemradio').map(item => item.textContent)).toEqual([
       'This device',
       'Alpha',
@@ -282,7 +282,7 @@ describe('ConnectionSwitcher', () => {
     fireEvent.change(screen.getByPlaceholderText('Search gateways…'), { target: { value: 'missing' } })
 
     expect(screen.getByText('No gateways match your search.')).toBeTruthy()
-    expect(screen.getByRole('menuitem', { name: 'Connect another Hermes gateway…' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Manage gateways…' })).toBeTruthy()
     expect(globalThis.document.querySelector('[data-slot="dropdown-menu-radio-group"]')?.className).toContain('h-48')
   })
 

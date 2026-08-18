@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopRegistryConnection } from '@/global'
 
-import { connectionMatchesQuery, sortConnectionsForDisplay } from './connection-display'
+import {
+  connectionEndpoint,
+  connectionMatchesQuery,
+  connectionTooltip,
+  sortConnectionsForDisplay
+} from './connection-display'
 
 const connection = (
   id: string,
@@ -50,5 +55,28 @@ describe('connection display helpers', () => {
     expect(connectionMatchesQuery(gateway, 'editorial production')).toBe(true)
     expect(connectionMatchesQuery(gateway, 'distant', ['Passerelle distante'])).toBe(true)
     expect(connectionMatchesQuery(gateway, 'homelab')).toBe(false)
+  })
+
+  it('keeps technical endpoints available on demand without exposing secrets', () => {
+    const remote = {
+      ...connection('work', 'Work gateway'),
+      tokenPreview: 'sec...ret',
+      tokenSet: true,
+      url: 'https://work.example.test:9443'
+    }
+    const ssh = {
+      ...connection('studio', 'Studio over SSH', 'ssh'),
+      host: 'studio.example.test',
+      keyPath: '/secret/key',
+      port: 2222,
+      user: 'hermes'
+    }
+
+    expect(connectionEndpoint(remote)).toBe('https://work.example.test:9443')
+    expect(connectionTooltip(remote)).toBe('Work gateway\nhttps://work.example.test:9443')
+    expect(connectionTooltip(remote)).not.toContain('sec...ret')
+    expect(connectionEndpoint(ssh)).toBe('hermes@studio.example.test:2222')
+    expect(connectionTooltip(ssh)).not.toContain('/secret/key')
+    expect(connectionTooltip(connection('local', 'This device', 'local'))).toBe('This device')
   })
 })

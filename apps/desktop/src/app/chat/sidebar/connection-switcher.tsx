@@ -19,6 +19,7 @@ import { useI18n } from '@/i18n'
 import {
   CONNECTION_SEARCH_THRESHOLD,
   connectionMatchesQuery,
+  connectionTooltip,
   sortConnectionsForDisplay
 } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
@@ -194,10 +195,6 @@ export function ConnectionSwitcher({ onConnect }: { onConnect: () => void }) {
               <DropdownMenuSeparator className="m-0" />
             </>
           )}
-          <DropdownMenuItem className={searchable ? dropdownMenuRow : undefined} onSelect={onConnect}>
-            <ConnectGatewayLabel label={t.profiles.connectGateway} />
-          </DropdownMenuItem>
-          <DropdownMenuSeparator className={searchable ? 'm-0' : undefined} />
           <DropdownMenuRadioGroup
             className={
               searchable
@@ -227,6 +224,10 @@ export function ConnectionSwitcher({ onConnect }: { onConnect: () => void }) {
               ))
             )}
           </DropdownMenuRadioGroup>
+          <DropdownMenuSeparator className={searchable ? 'm-0' : undefined} />
+          <DropdownMenuItem className={searchable ? dropdownMenuRow : undefined} onSelect={onConnect}>
+            <ManageGatewaysLabel label={t.profiles.connectGateway} />
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -270,10 +271,10 @@ function ConnectionSwitcherTrigger({
   )
 }
 
-function ConnectGatewayLabel({ label }: { label: string }) {
+function ManageGatewaysLabel({ label }: { label: string }) {
   return (
     <span className="flex min-w-0 items-center gap-1.5 text-(--ui-text-secondary)">
-      <Codicon aria-hidden="true" name="plug" size="0.875rem" />
+      <Codicon aria-hidden="true" name="settings-gear" size="0.875rem" />
       <span className="truncate">{label}</span>
     </span>
   )
@@ -303,7 +304,7 @@ function ConnectionGlyph({ connection }: { connection: DesktopRegistryConnection
 
 function ConnectionLabel({ connection }: { connection: DesktopRegistryConnection }) {
   return (
-    <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" title={connection.label}>
+    <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" title={connectionTooltip(connection)}>
       <ConnectionGlyph connection={connection} />
       <span className="truncate">{connection.label}</span>
     </span>

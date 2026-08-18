@@ -21,7 +21,7 @@ vi.mock('@/i18n', () => ({
       common: { cancel: 'Cancel' },
       profiles: {
         allProfiles: 'All profiles',
-        connectGateway: 'Connect another Hermes gateway…',
+        connectGateway: 'Manage gateways…',
         failedLoadSoul: 'Failed to load SOUL.md',
         failedSaveSoul: 'Failed to save SOUL.md',
         importProfile: 'Import profile…',
@@ -95,7 +95,7 @@ describe('ProfileRail multi-gateway entry point', () => {
   it('deep-links to the unified Settings → Gateways page from the rail', () => {
     render(<ProfileRail />)
 
-    const pill = screen.getByRole('button', { name: 'Connect another Hermes gateway…' })
+    const pill = screen.getByRole('button', { name: 'Manage gateways…' })
     fireEvent.click(pill)
 
     expect(navigate).toHaveBeenCalledWith('/settings?tab=gateway')
@@ -106,7 +106,7 @@ describe('ProfileRail multi-gateway entry point', () => {
 
     // The whole point is first-run discoverability: the pill must not be
     // gated behind multiProfile the way the default↔all toggle is.
-    expect(screen.getByRole('button', { name: 'Connect another Hermes gateway…' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Manage gateways…' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
   })
 
@@ -115,7 +115,7 @@ describe('ProfileRail multi-gateway entry point', () => {
     render(<ProfileRail />)
 
     expect(screen.queryByRole('button', { name: 'default' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Connect another Hermes gateway…' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Manage gateways…' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
   })
 

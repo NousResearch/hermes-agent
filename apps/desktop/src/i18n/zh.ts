@@ -1959,7 +1959,7 @@ export const zh: Translations = {
     switchToConnection: name => `切换到 ${name}`,
     switchConnectionFailed: name => `无法连接到 ${name}`,
     manageProfiles: '管理配置档案…',
-    connectGateway: '连接另一个 Hermes 网关…',
+    connectGateway: '管理网关…',
     actions: '操作',
     color: '颜色…',
     colorFor: '颜色',

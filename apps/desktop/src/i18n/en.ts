@@ -1772,7 +1772,7 @@ export const en: Translations = {
     switchToConnection: name => `Switch to ${name}`,
     switchConnectionFailed: name => `Could not connect to ${name}`,
     manageProfiles: 'Manage profiles…',
-    connectGateway: 'Connect another Hermes gateway…',
+    connectGateway: 'Manage gateways…',
     actions: 'Actions',
     color: 'Color…',
     colorFor: 'Color',

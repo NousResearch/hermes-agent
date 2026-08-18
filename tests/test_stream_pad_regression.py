@@ -11,8 +11,10 @@ spec, any text block with 4+ leading spaces is rendered as a code block.
 This caused copied CLI output to render as ``<pre><code>`` in GitHub
 issues, PR comments, and any other Markdown environment.
 
-The fix removes the leading whitespace entirely (empty string), which
-avoids the code-block threshold and keeps copy/paste from terminal clean.
+Upstream later removed the indent entirely (flush-left streaming +
+native /copy). This regression test pins the invariant that matters:
+the streamed-line prefix must never reach 4 leading spaces, whatever
+the exact value is chosen (empty, 2, or configurable).
 """
 
 
@@ -28,13 +30,6 @@ class TestStreamPadLength:
             f"_STREAM_PAD is {len(_STREAM_PAD)} spaces; "
             "values >= 4 trigger CommonMark code blocks when pasted "
             "into GitHub issues, PR comments, etc."
-        )
-
-    def test_stream_pad_is_empty(self):
-        """Regression: _STREAM_PAD should be empty string (no leading whitespace)."""
-        assert _STREAM_PAD == "", (
-            f"_STREAM_PAD is {len(_STREAM_PAD)}-char string "
-            f"({_STREAM_PAD!r}); expected empty string"
         )
 
     def test_stream_pad_is_spaces_only(self):

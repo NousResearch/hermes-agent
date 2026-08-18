@@ -9887,7 +9887,7 @@ export default {
       // sessions pane collapses alone without this flag. The zone then keeps
       // a stranded BOTS tab on screen. The narrow edge overlay mirrors the
       // zone's tab strip, so the pane stays reachable while collapsed.
-      data: { placement: 'left', width: '260px', collapsible: true, dock: { pane: 'sessions', pos: 'center', enforce: true } },
+      data: { placement: 'left', width: '260px', collapsible: true, showCloseButton: false, dock: { pane: 'sessions', pos: 'center', enforce: true } },
       render: () => jsx(BotsPane, {})
     })
 

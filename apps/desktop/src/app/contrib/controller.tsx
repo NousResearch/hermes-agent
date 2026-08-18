@@ -154,6 +154,7 @@ registry.registerMany([
       collapsible: true,
       dock: { pane: 'workspace', pos: 'left' },
       revealAliases: ['chat-sidebar'],
+      showCloseButton: false,
       width: `${SIDEBAR_DEFAULT_WIDTH}px`,
       minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
       maxWidth: `${SIDEBAR_MAX_WIDTH}px`

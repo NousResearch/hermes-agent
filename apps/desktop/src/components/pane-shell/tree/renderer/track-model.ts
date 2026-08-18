@@ -65,6 +65,8 @@ interface PaneChrome extends PaneSizing {
   /** No Close in the tab menu — the one surface the app can't lose (the
    *  main workspace). Session tiles share `placement: 'main'` but close. */
   uncloseable?: boolean
+  /** Hide the hover ✕ while retaining explicit close behavior for this pane. */
+  showCloseButton?: boolean
   /** Wrap this pane's TAB (e.g. in a domain context menu — a session tile's
    *  pin/branch/rename/archive/delete). The wrapper must render `tab` as its
    *  interactive child; the zone's own strip menu still owns non-tab space. */

@@ -125,6 +125,68 @@ describe('statusbar item visibility', () => {
   })
 })
 
+describe('reset to defaults', () => {
+  it('puts a customized bar back to the shipped show/hide set', async () => {
+    $statusbarHiddenIds.set(['gateway-health'])
+
+    const statusbar = bar([item('cron', 'Cron'), item('gateway-health', 'Gateway')])
+
+    expect(screen.queryByText('Gateway')).toBeNull()
+    expect(within(statusbar).getByText('Cron')).toBeTruthy()
+
+    openContextMenu(statusbar)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /reset to defaults/i }))
+
+    expect($statusbarHiddenIds.get()).toEqual([...STATUSBAR_HIDDEN_BY_DEFAULT])
+    expect(within(statusbar).getByText('Gateway')).toBeTruthy()
+    // Scoped to the bar: the menu stays open after a reset, so an unscoped query
+    // matches its still-listed 'Cron' checkbox row rather than a bar item.
+    expect(within(statusbar).queryByText('Cron')).toBeNull()
+  })
+
+  it('disables the row when the layout is already default', async () => {
+    const statusbar = bar([item('cron', 'Cron'), item('gateway-health', 'Gateway')])
+
+    openContextMenu(statusbar)
+
+    const row = await screen.findByRole('menuitem', { name: /reset to defaults/i })
+    expect(row.getAttribute('data-disabled')).not.toBeNull()
+  })
+
+  it('enables the row as soon as one item differs, in either direction', async () => {
+    const statusbar = bar([item('cron', 'Cron'), item('gateway-health', 'Gateway')])
+
+    // Showing a default-hidden item counts…
+    $statusbarHiddenIds.set(STATUSBAR_HIDDEN_BY_DEFAULT.filter(id => id !== 'cron'))
+    openContextMenu(statusbar)
+    expect(
+      (await screen.findByRole('menuitem', { name: /reset to defaults/i })).getAttribute('data-disabled')
+    ).toBeNull()
+
+    // …and so does hiding a default-shown one.
+    $statusbarHiddenIds.set([...STATUSBAR_HIDDEN_BY_DEFAULT, 'gateway-health'])
+    expect(
+      (await screen.findByRole('menuitem', { name: /reset to defaults/i })).getAttribute('data-disabled')
+    ).toBeNull()
+  })
+
+  it('leaves whole-bar visibility alone — reset is about items, not the bar', async () => {
+    // Set to the NON-default so a reset that wrongly restored bar visibility too
+    // would flip this back to true and fail. StatusbarControls doesn't read the
+    // atom (the controller gates the mount), so the menu is still reachable here.
+    $statusbarVisible.set(false)
+    $statusbarHiddenIds.set([])
+
+    const statusbar = bar([item('gateway-health', 'Gateway')])
+
+    openContextMenu(statusbar)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /reset to defaults/i }))
+
+    expect($statusbarHiddenIds.get()).toEqual([...STATUSBAR_HIDDEN_BY_DEFAULT])
+    expect($statusbarVisible.get()).toBe(false)
+  })
+})
+
 describe('whole-bar visibility', () => {
   it('hides the bar from the context menu, leaving the keybind as the way back', async () => {
     const statusbar = bar([item('gateway-health', 'Gateway')])

@@ -11,12 +11,15 @@ The tool registers when **either** xAI credential path is available:
   i.e. ``hermes auth add xai-oauth`` has been run and the stored refresh
   token still works.
 
-Credential preference at call time matches
-:func:`tools.xai_http.resolve_xai_http_credentials`: SuperGrok OAuth first,
-direct OAuth resolver second, ``XAI_API_KEY`` last. That helper also
-auto-refreshes the OAuth access token when it's within the refresh skew
-window, so a ``True`` from :func:`check_x_search_requirements` means the
-bearer is fetchable AND non-empty.
+Credential preference at call time uses
+:func:`tools.xai_http.resolve_xai_http_credentials` with
+``prefer_api_key=True``: an explicit ``XAI_API_KEY`` wins when configured
+(x_search is API-metered; the subscription OAuth bearer answers
+``/v1/responses`` in a degraded no-citation mode — #88040), with SuperGrok
+OAuth as the fallback. That helper also auto-refreshes the OAuth access
+token when it's within the refresh skew window, so a ``True`` from
+:func:`check_x_search_requirements` means the bearer is fetchable AND
+non-empty.
 
 Defensive output
 ----------------
@@ -128,8 +131,16 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
     gate makes that case unreachable in normal operation, but the runtime
     check exists so a credential that expires between registration and
     invocation produces a clean tool error instead of a 401.
+
+    x_search is API-index access: when a subscription OAuth credential is
+    configured alongside a paid ``XAI_API_KEY``, the OAuth path authorizes
+    but answers ``/v1/responses`` in a degraded Grok explanatory mode with
+    no citations, while the API key returns real posts (#88040). Pass
+    ``prefer_api_key=True`` so the shared resolver checks the explicit API
+    key first — same root cause as the TTS fix for #87045 (#87081) —
+    keeping OAuth as the fallback when no API key is configured.
     """
-    creds = resolve_xai_http_credentials()
+    creds = resolve_xai_http_credentials(prefer_api_key=True)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise RuntimeError(

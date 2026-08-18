@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-13T18:19:29Z",
+  "updated_at": "2026-08-17T19:11:38Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -93,6 +93,10 @@
           "description": ""
         },
         {
+          "id": "deepseek/deepseek-v4-pro-0813",
+          "description": "dated snapshot of v4-pro"
+        },
+        {
           "id": "deepseek/deepseek-v4-flash",
           "description": ""
         },
@@ -135,6 +139,10 @@
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.2",
           "description": ""
         },
         {
@@ -230,6 +238,9 @@
         },
         {
           "id": "deepseek/deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro-0813"
         },
         {
           "id": "deepseek/deepseek-v4-flash"

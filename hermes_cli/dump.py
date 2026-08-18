@@ -383,6 +383,7 @@ def run_dump(args):
         ("AI_GATEWAY_API_KEY", "ai_gateway"),
         ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
         ("OPENCODE_GO_API_KEY", "opencode_go"),
+        ("COMMANDCODE_API_KEY", "commandcode"),
         ("KILOCODE_API_KEY", "kilocode"),
         ("FIRECRAWL_API_KEY", "firecrawl"),
         ("TAVILY_API_KEY", "tavily"),

@@ -203,8 +203,15 @@ export interface ClientSessionState {
   /** Epoch ms the current turn started, or null when idle. Per-session so a
    *  background turn's elapsed timer keeps counting while another session is
    *  focused, and switching sessions doesn't zero a still-running turn's clock.
+   *  Seeded optimistically at submit (before the backend accepts), so it is a
+   *  CLOCK, not proof the turn is live — gate on turnLive for that.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
+  /** The backend has confirmed this turn is running (message.start, a
+   *  running=true session.info edge, or resuming onto an in-flight turn).
+   *  False while a submit is only optimistically armed — the discriminator the
+   *  no-payload settle gate needs now that turnStartedAt is seeded at send. */
+  turnLive: boolean
   /** Cumulative token usage, updated per completed turn. Per-session twin of
    *  the primary-only $currentUsage — the statusbar reads it for a focused
    *  tile's context count. Null until the first turn reports. */

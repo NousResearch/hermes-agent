@@ -1427,6 +1427,36 @@ class WeixinAdapter(BasePlatformAdapter):
                 await asyncio.sleep(BACKOFF_DELAY_SECONDS if consecutive_failures >= MAX_CONSECUTIVE_FAILURES else RETRY_DELAY_SECONDS)
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     consecutive_failures = 0
+                    # Recycle the poll session after a full failure streak.
+                    # Failed connection attempts through a local HTTP proxy
+                    # (e.g. Clash on 127.0.0.1:7890) can strand sockets that
+                    # never return to the connector's keepalive pool, so the
+                    # tight keepalive_timeout never reaps them. On macOS the
+                    # default 256-fd soft limit turns that drip into
+                    # `[Errno 24] Too many open files` and a gateway crash
+                    # (#79889). Closing the session tears down its connector
+                    # and every socket it holds; a fresh session starts the
+                    # next attempt from zero fds.
+                    await self._recycle_poll_session()
+
+    async def _recycle_poll_session(self) -> None:
+        """Replace ``_poll_session`` with a fresh one, closing the old.
+
+        Swap-then-close so concurrent ``_process_message`` tasks that grab
+        ``self._poll_session`` never observe a closed session; in-flight
+        requests on the old session finish or fail independently.
+        """
+        if not self._running or aiohttp is None:
+            return
+        old = self._poll_session
+        self._poll_session = aiohttp.ClientSession(
+            trust_env=True, connector=_make_ssl_connector()
+        )
+        if old is not None and not old.closed:
+            try:
+                await old.close()
+            except Exception as exc:
+                logger.debug("[%s] old poll session close failed: %s", self.name, exc)
 
     async def _process_message_safe(self, message: Dict[str, Any]) -> None:
         try:

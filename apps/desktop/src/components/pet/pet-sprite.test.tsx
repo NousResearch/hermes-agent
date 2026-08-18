@@ -35,6 +35,7 @@ const INFO = {
 let root: Root | null = null
 let container: HTMLDivElement | null = null
 let windowStateCallback: ((payload: { isMinimized?: boolean; isVisible?: boolean }) => void) | null = null
+let drawImage: ReturnType<typeof vi.fn>
 
 function render(ui: ReactNode) {
   container = document.createElement('div')
@@ -122,6 +123,7 @@ describe('PetSprite RAF scheduling', () => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
     vi.useFakeTimers()
     setVisibility(false)
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1 })
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     installWindowStateBridge()
     vi.stubGlobal(
@@ -132,9 +134,10 @@ describe('PetSprite RAF scheduling', () => {
         src = ''
       } as unknown as typeof Image
     )
+    drawImage = vi.fn()
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
       clearRect: vi.fn(),
-      drawImage: vi.fn(),
+      drawImage,
       imageSmoothingEnabled: false
     } as unknown as CanvasRenderingContext2D)
   })
@@ -168,6 +171,27 @@ describe('PetSprite RAF scheduling', () => {
     })
 
     expect(raf.request).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses a DPR-sized backing store while preserving the CSS footprint', () => {
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 })
+    const raf = installRaf()
+
+    render(<PetSprite info={INFO} />)
+
+    const canvas = container?.querySelector('canvas')
+
+    expect(canvas).not.toBeNull()
+    expect(canvas?.width).toBe(32)
+    expect(canvas?.height).toBe(32)
+    expect(canvas?.style.width).toBe('16px')
+    expect(canvas?.style.height).toBe('16px')
+
+    act(() => {
+      raf.runNext(0)
+    })
+
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 16, 16, 0, 0, 32, 32)
   })
 
   it('cancels pending RAF work while the Electron window is paused and resumes when visible', () => {
@@ -222,7 +246,29 @@ describe('PetSprite RAF scheduling', () => {
     render(<PetSprite info={INFO} pauseWhenUnfocused={false} />)
 
     act(() => window.dispatchEvent(new Event('blur')))
-
     expect(raf.pending()).toBe(1)
+  })
+
+  it('draws sprite frames with bicubic smoothing for illustration art', () => {
+    const raf = installRaf()
+
+    const ctxMock = {
+      clearRect: vi.fn(),
+      drawImage: vi.fn(),
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: 'low'
+    } as unknown as CanvasRenderingContext2D
+
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctxMock)
+
+    render(<PetSprite info={INFO} />)
+    act(() => raf.runNext(0))
+
+    // Petdex sheets are illustration frames, not pixel art — nearest-neighbour
+    // (the old default) makes zoomed pets look blocky. The renderer must opt
+    // into bicubic smoothing before the first draw.
+    expect(ctxMock.imageSmoothingEnabled).toBe(true)
+    expect(ctxMock.imageSmoothingQuality).toBe('high')
+    expect(ctxMock.drawImage).toHaveBeenCalledTimes(1)
   })
 })

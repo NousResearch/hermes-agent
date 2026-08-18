@@ -1,22 +1,23 @@
 /**
- * The desktop's own MCP suggestion directory — deliberately NOT the
- * Nous-approved install catalog (`optional-mcps/`).
+ * COMPATIBILITY RUNG — superseded by the MCP catalog's `suggest` metadata.
  *
- * The catalog is a trust boundary: presence there means a reviewed, pinned
- * manifest, and it only grows via PR. This directory is a different thing —
- * a renderer-local map of well-known OFFICIAL remote MCP endpoints (vendor
- * docs linked per entry) used for two purposes:
+ * The Nous-approved install catalog (`optional-mcps/<name>/manifest.yaml`)
+ * is now the single source of truth for suggestible servers: each hosted
+ * remote entry declares its own `suggest.keywords` / `suggest.hosts`, served
+ * through `GET /api/mcp/catalog`. The suggestion provider and the inline
+ * setup card read the catalog first.
  *
- *   1. keyword → suggestion pills over the composer ("you typed jira…"),
- *   2. giving the inline setup card a config to write via the ordinary
- *      `POST /api/mcp/servers` endpoint — the exact same path as pasting the
- *      vendor's snippet into the Capabilities editor by hand.
+ * This static list remains ONLY for older backends whose catalog responses
+ * carry no `suggest` field (the provider falls back to it when the catalog
+ * yields zero suggestible entries). Do not add new vendors here — add a
+ * manifest under `optional-mcps/` instead. Remove this file at the next
+ * backend contract bump.
  *
- * Nothing here changes base Hermes behavior: no backend code reads this file,
- * entries are URL-only remotes (no local process is ever spawned from a
- * suggestion), and every install still lands in config.yaml through the
- * existing validated endpoint. If an entry ALSO exists in the install catalog
- * (e.g. linear, figma), the setup card prefers the catalog path.
+ * GitHub is intentionally absent (here AND in the catalog): its hosted MCP
+ * requires each MCP host to provide its own OAuth app (generic Dynamic
+ * Client Registration 404s at /register), and the bundled github/* skills
+ * via the gh CLI are the more capable integration. The composer's github
+ * suggestion provider offers the `github-auth` skill instead.
  */
 export interface McpDirectoryEntry {
   /** Server name as it will appear in mcp_servers config. */
@@ -75,15 +76,10 @@ export const MCP_DIRECTORY: McpDirectoryEntry[] = [
     name: 'datadog',
     url: 'https://mcp.datadoghq.com/api/unstable/mcp-server/mcp'
   },
-  {
-    description: 'Repos, issues, and pull requests via GitHub’s hosted MCP.',
-    docs: 'https://docs.github.com/en/copilot/customizing-copilot/using-model-context-protocol/using-the-github-mcp-server',
-    // No hosts on purpose: github.com links are everywhere in a coding chat
-    // (commits, PRs under review, pasted diffs) and would fire constantly.
-    keywords: ['github'],
-    name: 'github',
-    url: 'https://api.githubcopilot.com/mcp/'
-  },
+  // GitHub's hosted MCP is intentionally absent. Directory entries are wired
+  // through generic Dynamic Client Registration, but GitHub requires each MCP
+  // host to provide its own OAuth app (or use a PAT). Advertising it here makes
+  // both the composer pill and setup_mcp fail at /register with HTTP 404.
   {
     description: 'Pages and databases from your Notion workspace.',
     docs: 'https://developers.notion.com/docs/mcp',
@@ -99,6 +95,93 @@ export const MCP_DIRECTORY: McpDirectoryEntry[] = [
     keywords: ['stripe'],
     name: 'stripe',
     url: 'https://mcp.stripe.com'
+  },
+  {
+    description: 'Deployments, logs, and projects via Vercel’s hosted MCP.',
+    docs: 'https://vercel.com/docs/mcp',
+    // No `vercel.app` on purpose (same rule as GitHub): pasted deploy-preview
+    // links are about the site being previewed, not about managing Vercel.
+    hosts: ['vercel.com'],
+    keywords: ['vercel'],
+    name: 'vercel',
+    url: 'https://mcp.vercel.com'
+  },
+  {
+    description: 'Database, auth, and storage from your Supabase projects.',
+    docs: 'https://supabase.com/docs/guides/ai-tools/mcp',
+    hosts: ['supabase.com', 'supabase.co'],
+    keywords: ['supabase'],
+    name: 'supabase',
+    url: 'https://mcp.supabase.com/mcp'
+  },
+  {
+    description: 'Sites, deploys, and env vars via Netlify’s hosted MCP.',
+    docs: 'https://docs.netlify.com/build/build-with-ai/agent-setup-guides/agent-setup-overview/',
+    // No `netlify.app` for the same deploy-preview reason as vercel.app.
+    hosts: ['netlify.com'],
+    keywords: ['netlify'],
+    name: 'netlify',
+    url: 'https://netlify-mcp.netlify.app/mcp'
+  },
+  {
+    description: 'Models, datasets, Spaces, and papers from the Hugging Face Hub.',
+    docs: 'https://huggingface.co/docs/hub/agents-mcp',
+    hosts: ['huggingface.co', 'hf.co'],
+    keywords: ['hugging face', 'huggingface'],
+    // Underscored so prettyName renders "Hugging Face", not "Huggingface".
+    name: 'hugging_face',
+    url: 'https://huggingface.co/mcp'
+  },
+  {
+    description: 'Tasks, projects, and goals from your Asana workspace.',
+    docs: 'https://developers.asana.com/docs/using-asanas-mcp-server',
+    hosts: ['asana.com'],
+    keywords: ['asana'],
+    name: 'asana',
+    url: 'https://mcp.asana.com/sse'
+  },
+  {
+    description: 'Conversations, tickets, and customer data from Intercom.',
+    docs: 'https://developers.intercom.com/docs/guides/mcp',
+    hosts: ['intercom.com', 'intercom.io'],
+    keywords: ['intercom'],
+    name: 'intercom',
+    url: 'https://mcp.intercom.com/mcp'
+  },
+  {
+    description: 'Bases, tables, and records from your Airtable workspace.',
+    docs: 'https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server',
+    hosts: ['airtable.com'],
+    keywords: ['airtable'],
+    name: 'airtable',
+    url: 'https://mcp.airtable.com/mcp'
+  },
+  {
+    description: 'Sites, CMS collections, and pages via Webflow’s hosted MCP.',
+    docs: 'https://developers.webflow.com/mcp/reference/getting-started',
+    // No `webflow.io` — that's published staging sites, not Webflow intent.
+    hosts: ['webflow.com'],
+    keywords: ['webflow'],
+    name: 'webflow',
+    url: 'https://mcp.webflow.com/mcp'
+  },
+  {
+    description: 'Payments, invoices, and subscriptions via PayPal’s hosted MCP.',
+    docs: 'https://developer.paypal.com/tools/mcp-server/',
+    hosts: ['developer.paypal.com'],
+    keywords: ['paypal'],
+    name: 'paypal',
+    url: 'https://mcp.paypal.com/sse'
+  },
+  {
+    description: 'Catalog, orders, and payments via Square’s hosted MCP.',
+    docs: 'https://developer.squareup.com/docs/mcp',
+    hosts: ['squareup.com'],
+    // "square" the English word is everywhere ("square brackets", "square
+    // corners") — only the unambiguous brand form triggers.
+    keywords: ['squareup'],
+    name: 'square',
+    url: 'https://mcp.squareup.com/sse'
   }
 ]
 

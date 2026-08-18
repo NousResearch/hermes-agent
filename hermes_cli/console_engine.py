@@ -1254,7 +1254,10 @@ def _apply_confirmed_defaults(args: argparse.Namespace) -> None:
             setattr(args, attr, True)
     if getattr(args, "_console_command", None) == "import":
         setattr(args, "force", True)
-    if getattr(args, "checkpoints_command", None) in {"clear", "clear-legacy"}:
+    # Every checkpoints subcommand the console registers as mutating gates its
+    # own confirmation on --force, so all three belong here. `prune` reaches
+    # _confirm() for its orphan preview, and the console never redirects stdin.
+    if getattr(args, "checkpoints_command", None) in {"prune", "clear", "clear-legacy"}:
         setattr(args, "force", True)
     if getattr(args, "plugins_action", None) == "install":
         if not getattr(args, "enable", False) and not getattr(args, "no_enable", False):

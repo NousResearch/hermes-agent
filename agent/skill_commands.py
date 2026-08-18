@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
+_skill_commands_home: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -206,6 +207,22 @@ def _resolve_skill_commands_platform() -> Optional[str]:
     except Exception:
         resolved_platform = os.getenv("HERMES_PLATFORM")
     return resolved_platform or None
+
+
+def _resolve_skill_commands_home() -> str:
+    """Return the effective Hermes home the skill scan should be scoped to.
+
+    A gateway session can switch between profiles that each carry their own
+    ``skills.external_dirs`` (via ``set_hermes_home_override``), but the
+    module-level scan only tracked ``_resolve_skill_commands_platform()``.
+    Switching profiles without a platform change left the previous profile's
+    skill list cached, so ``get_skill_commands()`` reported a cache miss for
+    skills that only exist under the new profile (#88023).
+    """
+    from hermes_constants import get_hermes_home
+
+    return str(get_hermes_home())
+
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -405,24 +422,37 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands, _skill_commands_platform
+    global _skill_commands, _skill_commands_platform, _skill_commands_home
     _skill_commands_platform = _resolve_skill_commands_platform()
+    _skill_commands_home = _resolve_skill_commands_home()
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
-        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from agent.skill_utils import (
+            get_external_skills_dirs,
+            get_project_skills_dirs,
+            iter_project_skill_files,
+            iter_skill_index_files,
+        )
         from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
-        dirs_to_scan = []
+        # Scan project dirs first (highest precedence), then local, then external.
+        # Project dirs iterate through the quarantine chokepoint.
+        project_dirs = list(get_project_skills_dirs())
+        dirs_to_scan = list(project_dirs)
         if SKILLS_DIR.exists():
             dirs_to_scan.append(SKILLS_DIR)
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:
-            for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            _iter = (
+                iter_project_skill_files(scan_dir)
+                if scan_dir in project_dirs
+                else iter_skill_index_files(scan_dir, "SKILL.md")
+            )
+            for skill_md in _iter:
                 if any(part in {'.git', '.github', '.hub', '.archive'} for part in skill_md.parts):
                     continue
                 try:
@@ -500,11 +530,14 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
 
     Rescans when the active platform scope changes (e.g. a gateway
     process serving Telegram and Discord concurrently) so each platform
-    sees its own ``skills.platform_disabled`` view (#14536).
+    sees its own ``skills.platform_disabled`` view (#14536), and when the
+    active profile's Hermes home changes (e.g. Desktop switching profiles
+    mid-session) so each profile sees its own ``skills.external_dirs`` (#88023).
     """
     if (
         not _skill_commands
         or _skill_commands_platform != _resolve_skill_commands_platform()
+        or _skill_commands_home != _resolve_skill_commands_home()
     ):
         scan_skill_commands()
     return _skill_commands

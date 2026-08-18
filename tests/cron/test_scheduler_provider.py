@@ -129,6 +129,39 @@ def test_abc_growth_stays_additive():
     )
 
 
+def test_force_fire_capability_detects_legacy_override():
+    from cron.scheduler_provider import CronScheduler
+
+    class Current(CronScheduler):
+        @property
+        def name(self):
+            return "current"
+
+        def start(self, stop_event, **kw):
+            pass
+
+    class Legacy(Current):
+        def fire_due(  # type: ignore[invalid-method-override]
+            self, job_id, *, adapters=None, loop=None
+        ):
+            return True
+
+    class PositionalOnly(Current):
+        def fire_due(  # type: ignore[invalid-method-override]
+            self, job_id, force=False, /
+        ):
+            return True
+
+    class KeywordSink(Current):
+        def fire_due(self, job_id, **kwargs):
+            return True
+
+    assert Current().supports_force_fire is True
+    assert Legacy().supports_force_fire is False
+    assert PositionalOnly().supports_force_fire is False
+    assert KeywordSink().supports_force_fire is True
+
+
 def test_inprocess_provider_ticks_and_stops():
     """The built-in provider drives cron.scheduler.tick(sync=False) on a loop
     and exits promptly when stop_event is set — same contract as the raw
@@ -214,6 +247,98 @@ def test_resolve_defaults_to_builtin(monkeypatch):
     assert prov.name == "builtin"
 
 
+def test_resolve_no_cron_section_falls_back_to_builtin(monkeypatch):
+    """Config with no cron section at all → built-in (cfg_get returns default)."""
+    import hermes_cli.config as cfg
+    from cron import scheduler_provider as sp
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {})
+    prov = sp.resolve_cron_scheduler()
+    assert prov.name == "builtin"
+
+
+def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
+    """A named provider that doesn't exist → built-in (cron never dies)."""
+    import hermes_cli.config as cfg
+    from cron import scheduler_provider as sp
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "nope-not-real"}})
+    prov = sp.resolve_cron_scheduler()
+    assert prov.name == "builtin"
+
+
+def test_resolve_unavailable_provider_falls_back(monkeypatch):
+    """A provider that loads but reports is_available()==False → built-in."""
+    import hermes_cli.config as cfg
+    import plugins.cron_providers as pc
+    from cron import scheduler_provider as sp
+    from cron.scheduler_provider import CronScheduler
+
+    class Unavailable(CronScheduler):
+        @property
+        def name(self):
+            return "unavailable"
+
+        def is_available(self):
+            return False
+
+        def start(self, stop_event, **kw):
+            pass
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "unavailable"}})
+    monkeypatch.setattr(pc, "load_cron_scheduler", lambda n: Unavailable())
+    prov = sp.resolve_cron_scheduler()
+    assert prov.name == "builtin"
+
+
+def test_resolve_available_provider_is_used(monkeypatch):
+    """A provider that loads and is available is returned (not the fallback)."""
+    import hermes_cli.config as cfg
+    import plugins.cron_providers as pc
+    from cron import scheduler_provider as sp
+    from cron.scheduler_provider import CronScheduler
+
+    class Fake(CronScheduler):
+        @property
+        def name(self):
+            return "fake"
+
+        def is_available(self):
+            return True
+
+        def start(self, stop_event, **kw):
+            pass
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "fake"}})
+    monkeypatch.setattr(pc, "load_cron_scheduler", lambda n: Fake())
+    prov = sp.resolve_cron_scheduler()
+    assert prov.name == "fake"
+
+
+def test_external_provider_falls_back_to_builtin_under_multiplex():
+    from cron.scheduler_provider import (
+        CronScheduler,
+        InProcessCronScheduler,
+        scheduler_for_profile_mode,
+    )
+
+    class External(CronScheduler):
+        @property
+        def name(self):
+            return "external"
+
+        def start(self, stop_event, **kwargs):
+            return None
+
+    external = External()
+
+    assert scheduler_for_profile_mode(external, multiplex_profiles=False) is external
+    assert isinstance(
+        scheduler_for_profile_mode(external, multiplex_profiles=True),
+        InProcessCronScheduler,
+    )
+
+
 # ── Phase 4B: additive hooks (on_jobs_changed / fire_due / reconcile) ────────
 
 
@@ -238,19 +363,120 @@ def test_builtin_inherits_hook_defaults():
 
 
 def test_fire_due_default_claims_then_runs(monkeypatch):
-    """The default fire_due claims via the store CAS, fetches the job, and runs
-    it through the shared run_one_job body."""
+    """The default fire_due runs the exact owner-bearing CAS snapshot."""
     import cron.jobs as jobs
     import cron.scheduler as sched
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
-    monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
-    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+    claims = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: claims.append((jid, kw))
+        or {"id": jid, "name": "t", "fire_claim": {"by": "exact-owner"}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda job, **kw: ran.append((job["id"], job["fire_claim"]["by"])) or True,
+    )
 
     assert InProcessCronScheduler().fire_due("j1") is True
-    assert ran == ["j1"]
+    assert claims == [("j1", {"return_job": True})]
+    assert ran == [("j1", "exact-owner")]
+
+
+def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    events = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kwargs: events.append("claim")
+        or {"id": jid, "fire_claim": {"by": "owner"}},
+    )
+    monkeypatch.setattr(
+        executions,
+        "create_execution",
+        lambda jid, source: events.append("ledger") or {"id": "exec-1"},
+    )
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda job, **kwargs: events.append(("run", job["execution_id"])) or True,
+    )
+
+    provider = InProcessCronScheduler()
+    claimed = provider.claim_fire("j1")
+
+    assert events == ["ledger", "claim"]
+    assert claimed is not None
+    assert claimed["execution_id"] == "exec-1"
+    assert provider.fire_claimed(claimed) is True
+    assert events == ["ledger", "claim", ("run", "exec-1")]
+
+
+def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    claims = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: claims.append((jid, kw))
+        or {"id": jid, "name": "t", "fire_claim": {"by": "manual-owner"}},
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: True)
+
+    assert InProcessCronScheduler().fire_due("j1", force=True) is True
+    assert claims == [("j1", {"force": True, "return_job": True})]
+
+
+def test_fire_due_lost_claim_does_not_run(monkeypatch):
+    """If the CAS claim is lost (another machine/retry won), fire_due returns
+    False and never runs the job."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    ran = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: False,
+        raising=False,
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+
+    assert InProcessCronScheduler().fire_due("j1") is False
+    assert ran == []
+
+
+def test_fire_due_missing_job_does_not_run(monkeypatch):
+    """If the job vanished before atomic claim, fire_due does not run it."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    ran = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: False,
+        raising=False,
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+
+    assert InProcessCronScheduler().fire_due("gone") is False
+    assert ran == []
 
 
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──

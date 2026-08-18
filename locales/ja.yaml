@@ -279,6 +279,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "{cwd} のチェックポイントが見つかりません"
     invalid_number:        "無効なチェックポイント番号です。1-{max} を使用してください。"
     restored:              "✅ チェックポイント {hash} に復元しました: {reason}\nロールバック前のスナップショットが自動的に保存されました。"
+    kept_user_edits:       "↷ 手動編集は保持されました: {files}\nそれらも復元するには /rollback <N> --all を使用してください。"
     restore_failed:        "❌ {error}"
 
   diff:

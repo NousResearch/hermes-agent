@@ -343,7 +343,12 @@ def _run_agent(
     if isinstance(model_cfg, str):
         cfg_model = model_cfg
     else:
-        cfg_model = model_cfg.get("default") or model_cfg.get("model") or ""
+        _raw = model_cfg.get("default") or model_cfg.get("model") or ""
+        if isinstance(_raw, dict):
+            from hermes_cli.config import split_model_config_default
+            cfg_model, _ = split_model_config_default(_raw)
+        else:
+            cfg_model = str(_raw or "")
 
     env_model = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
     effective_model = (model or "").strip() or env_model or cfg_model

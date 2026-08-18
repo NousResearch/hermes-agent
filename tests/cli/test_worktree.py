@@ -1182,3 +1182,161 @@ class TestPruneParallelEquivalence:
         cli._prune_stale_worktrees(str(git_repo))
         assert not wt.exists(), "serial fallback must still reap the merged tree"
 
+
+
+class TestShallowCloneDeepening:
+    """Shallow installer clones (`git clone --depth 1`) break the unpushed
+    guard: the shallow boundary disconnects an older worktree HEAD from
+    origin/*, so `git log HEAD --not --remotes` misreports already-public
+    commits as unpushed and every aged worktree is preserved forever
+    (real incident: 21 of 25 hermes-* trees stuck on a default install).
+
+    These build a REAL shallow clone over file:// and verify the pruner
+    deepens it and reaps the false-positive tree.
+    """
+
+    @staticmethod
+    def _run(cmd, cwd):
+        return subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True,
+        )
+
+    @classmethod
+    def _upstream(cls, tmp_path):
+        """Upstream repo with one commit (A). Returns its path."""
+        up = tmp_path / "upstream"
+        up.mkdir()
+        cls._run(["git", "init", "-b", "main"], up)
+        cls._run(["git", "config", "user.email", "test@test.com"], up)
+        cls._run(["git", "config", "user.name", "Test"], up)
+        (up / "README.md").write_text("# upstream\n")
+        cls._run(["git", "add", "."], up)
+        cls._run(["git", "commit", "-m", "A"], up)
+        return up
+
+    @classmethod
+    def _advance_upstream(cls, up, name):
+        (up / f"{name}.txt").write_text(f"{name}\n")
+        cls._run(["git", "add", "."], up)
+        cls._run(["git", "commit", "-m", name], up)
+
+    @classmethod
+    def _shallow_clone(cls, tmp_path, up):
+        clone = tmp_path / "shallow-clone"
+        subprocess.run(
+            ["git", "clone", "--depth", "1", f"file://{up}", str(clone)],
+            capture_output=True, text=True,
+        )
+        cls._run(["git", "config", "user.email", "test@test.com"], clone)
+        cls._run(["git", "config", "user.name", "Test"], clone)
+        return clone
+
+    @staticmethod
+    def _age(path, hours=100):
+        import time
+        t = time.time() - (hours * 3600)
+        os.utime(path, (t, t))
+
+    def _stuck_worktree(self, tmp_path):
+        """Build the incident shape: shallow clone at A, worktree at A,
+        upstream advances to B, shallow fetch moves origin/main to B.
+        Worktree HEAD (A) is now disconnected from origin/main (B)."""
+        import cli
+
+        up = self._upstream(tmp_path)
+        clone = self._shallow_clone(tmp_path, up)
+        assert cli._repo_is_shallow(str(clone)), "fixture must start shallow"
+
+        wt = clone / ".worktrees" / "hermes-shallowstuck"
+        (clone / ".worktrees").mkdir()
+        self._run(
+            ["git", "worktree", "add", str(wt), "-b", "hermes/hermes-shallowstuck", "HEAD"],
+            clone,
+        )
+
+        self._advance_upstream(up, "B")
+        # Same shape as the updater: shallow fetch of the new tip only.
+        self._run(["git", "fetch", "--depth", "1", "origin", "main"], clone)
+        self._run(
+            ["git", "update-ref", "refs/remotes/origin/main", "FETCH_HEAD"], clone,
+        )
+        self._age(wt)
+        return up, clone, wt
+
+    def test_shallow_disconnect_reproduces_false_unpushed(self, tmp_path):
+        """Sanity: without deepening, the primitive misreports unpushed."""
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        assert cli._worktree_has_unpushed_commits(str(wt)), (
+            "expected the shallow disconnect to look like unpushed commits — "
+            "if this stops reproducing, the fixture no longer exercises the bug"
+        )
+
+    def test_repo_is_shallow_detection(self, tmp_path, git_repo):
+        import cli
+
+        up = self._upstream(tmp_path)
+        clone = self._shallow_clone(tmp_path, up)
+        assert cli._repo_is_shallow(str(clone)) is True
+        assert cli._repo_is_shallow(str(git_repo)) is False
+        assert cli._repo_is_shallow(str(tmp_path / "nonexistent")) is False
+
+    def test_deepen_connects_history_and_clears_false_unpushed(self, tmp_path):
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        assert cli._worktree_has_unpushed_commits(str(wt))
+
+        assert cli._deepen_shallow_repo(str(clone)) is True
+        assert not cli._repo_is_shallow(str(clone))
+        assert not cli._worktree_has_unpushed_commits(str(wt)), (
+            "after deepening, the worktree's HEAD is an ancestor of "
+            "origin/main and must no longer count as unpushed"
+        )
+
+    def test_pruner_deepens_and_reaps_stuck_worktree(self, tmp_path):
+        """E2E: the startup pruner itself unshallows and reaps the tree."""
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        cli._prune_stale_worktrees(str(clone))
+        assert not cli._repo_is_shallow(str(clone)), "pruner should deepen"
+        assert not wt.exists(), (
+            "deepened history proves the tree is merged/public — reap it"
+        )
+
+    def test_deepen_offline_fails_soft_and_preserves(self, tmp_path):
+        """Unreachable remote: deepen fails, verdicts stay conservative."""
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        # Point origin somewhere that does not exist.
+        self._run(
+            ["git", "remote", "set-url", "origin", f"file://{tmp_path}/gone"],
+            clone,
+        )
+        assert cli._deepen_shallow_repo(str(clone), timeout=30) is False
+        cli._prune_stale_worktrees(str(clone))
+        assert wt.exists(), (
+            "offline deepen failure must fall back to preserving the tree"
+        )
+
+    def test_deepen_noop_on_full_clone(self, git_repo):
+        import cli
+        assert cli._deepen_shallow_repo(str(git_repo)) is True
+
+    def test_real_unpushed_work_survives_deepening(self, tmp_path):
+        """Deepening must not turn genuinely unpushed commits reapable."""
+        import cli
+
+        _, clone, wt = self._stuck_worktree(tmp_path)
+        (wt / "real-work.txt").write_text("novel\n")
+        self._run(["git", "add", "real-work.txt"], wt)
+        self._run(["git", "commit", "-m", "real unpushed work"], wt)
+        self._age(wt)
+
+        cli._prune_stale_worktrees(str(clone))
+        assert wt.exists(), (
+            "genuinely unpushed commit must survive even after deepening"
+        )

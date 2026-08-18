@@ -4,7 +4,7 @@ Prompt-only / resource-only MCP servers do not implement the ``tools/*``
 request family. Per the MCP spec, ``InitializeResult.capabilities.tools``
 is non-None iff the server supports it. Before the capability gate, Hermes
 always called ``tools/list`` during discovery, which raised
-``McpError(-32601 Method not found)`` against such servers, so a prompt-only
+``MCPError(-32601 Method not found)`` against such servers, so a prompt-only
 server could never stay connected. Discovery/refresh remain capability-gated.
 
 The keepalive probe uses ``ping`` (MCP base-protocol liveness) for every
@@ -186,10 +186,15 @@ class TestKeepaliveInterval:
 
 
 def _mcp_error(code, message="boom"):
-    """Build a real McpError carrying a JSON-RPC error code."""
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
-    return McpError(ErrorData(code=code, message=message))
+    """Build a real MCPError carrying a JSON-RPC error code.
+
+    mcp 2.0 renamed ``McpError`` to ``MCPError`` and replaced its
+    ``ErrorData`` positional with flat ``code`` / ``message`` arguments. The
+    ``.error.code`` attribute ``_is_method_not_found_error`` inspects survives
+    unchanged, which is the point of the structural check.
+    """
+    from mcp.shared.exceptions import MCPError
+    return MCPError(code=code, message=message)
 
 
 class TestMethodNotFoundDetection:

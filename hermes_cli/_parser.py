@@ -407,6 +407,17 @@ def build_top_level_parser():
         help="Resume a session by name, or the most recent if no name given",
     )
     chat_parser.add_argument(
+        "--create-if-missing",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "With -c/--continue <name>: if no session matches the name, "
+            "create a new session with that title and proceed (instead of "
+            "failing with a not-found error). Programmatic callers that "
+            "want 'send to this named thread, making it if needed'."
+        ),
+    )
+    chat_parser.add_argument(
         "--worktree",
         "-w",
         action="store_true",

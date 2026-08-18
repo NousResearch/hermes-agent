@@ -1437,6 +1437,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_dbs: Dict[str, Any] = {}
+        self._session_db_cache_lock = threading.Lock()
+        self._session_db_cache_closed = False
         # Last-known-good resolved model per session (keyed by gateway_session_key
         # ONLY — never session_id, which rotates/is ephemeral for one-off API
         # server requests; "*" is the process-wide fallback), mirroring
@@ -2182,15 +2185,29 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_state import SessionDB
 
         key = str(home)
-        cache = getattr(self, "_session_dbs", None)
-        if cache is None:
-            cache = {}
-            self._session_dbs = cache
-        db = cache.get(key)
-        if db is None:
-            db = SessionDB(db_path=home / "state.db")
-            cache[key] = db
-        return db
+        with self._session_db_cache_lock:
+            if self._session_db_cache_closed:
+                return None
+            db = self._session_dbs.get(key)
+            if db is None:
+                db = SessionDB(db_path=home / "state.db")
+                self._session_dbs[key] = db
+            return db
+
+    def _close_cached_session_dbs(self) -> None:
+        """Close SessionDB handles owned by this adapter's profile cache."""
+        with self._session_db_cache_lock:
+            self._session_db_cache_closed = True
+            cached = list(self._session_dbs.values())
+            self._session_dbs.clear()
+        shared_db = getattr(self, "_session_db", None)
+        for db in cached:
+            if db is shared_db:
+                continue
+            try:
+                db.close()
+            except Exception:
+                logger.debug("Failed to close API-server SessionDB", exc_info=True)
 
     def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.
@@ -2232,15 +2249,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
             home = get_hermes_home()
             key = str(home)
-            cache = getattr(self, "_session_dbs", None)
-            if cache is not None and cache.get(key) is not None:
-                return cache[key]
+            with self._session_db_cache_lock:
+                cached = self._session_dbs.get(key)
+            if cached is not None:
+                return cached
             if self._session_db_lock is None:
                 self._session_db_lock = asyncio.Lock()
             async with self._session_db_lock:
-                cache = getattr(self, "_session_dbs", None)
-                if cache is not None and cache.get(key) is not None:
-                    return cache[key]
+                with self._session_db_cache_lock:
+                    cached = self._session_dbs.get(key)
+                if cached is not None:
+                    return cached
                 return await asyncio.to_thread(self._open_and_cache_session_db, home)
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
@@ -2301,6 +2320,21 @@ class APIServerAdapter(BasePlatformAdapter):
             return None
         return self._model_routes.get(model_alias)
 
+    def _stored_session_model(self, session: Any) -> Optional[str]:
+        """The model persisted on a session row, minus the virtual alias.
+
+        The advertised virtual model (usually ``hermes-agent``) means "use
+        the gateway default". Session creation persists it when the client
+        sent no model, and replaying it upstream as a raw provider model id
+        400s ("hermes-agent is not a valid model ID") — the same filter
+        ``_request_agent_overrides`` applies to per-request bodies. One
+        resolver for both session-chat sites (sync + stream).
+        """
+        stored = session.get("model") if isinstance(session, dict) else None
+        if not stored or stored == self._model_name:
+            return None
+        return stored
+
     @staticmethod
     def _clean_runtime_id(value: Any, *, max_len: int = 200) -> str:
         if value is None:
@@ -2351,8 +2385,19 @@ class APIServerAdapter(BasePlatformAdapter):
         model = split_model or raw_model
         alias_route = self._resolve_route(raw_model) or self._resolve_route(model)
         route = dict(alias_route) if isinstance(alias_route, dict) else None
+        # The virtual model alias (self._model_name, e.g. "hermes-agent") is
+        # not a real provider model id — it's the id /v1/models advertises
+        # for "use the gateway default". A client that echoes it back
+        # (explicitly or via a generic model picker) means "no real request",
+        # same as omitting model entirely. Null it out here, upstream of
+        # both the route-building below and every caller's "requested"
+        # dict, so it never gets persisted as a session's model or
+        # misread later as a raw session_model override (#session-model-
+        # alias-leak — see _handle_create_session).
+        if model == self._model_name:
+            model = None
         route_source = "model_routes" if route else "global"
-        if not route and model and model != self._model_name:
+        if not route and model:
             route = {"model": model}
             if provider:
                 route["provider"] = provider
@@ -2858,7 +2903,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if not model:
             _recovered = (self._last_resolved_model.get(_resolved_key)
                           or self._last_resolved_model.get("*"))
-            if _recovered:
+            if _recovered and _recovered != self._model_name:
                 logger.warning(
                     "Empty model resolved for session=%s — recovering "
                     "last-known-good model %s (config read likely returned "
@@ -2867,9 +2912,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 model = _recovered
         elif model:
-            if _resolved_key:
-                self._last_resolved_model[_resolved_key] = model
-            self._last_resolved_model["*"] = model
+            if model != self._model_name:
+                if _resolved_key:
+                    self._last_resolved_model[_resolved_key] = model
+                self._last_resolved_model["*"] = model
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -3289,11 +3335,11 @@ class APIServerAdapter(BasePlatformAdapter):
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived",
+            "_lineage_root_id", "pinned", "archived", "hidden",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # SQLite stores these as 0/1; clients reconcile against a real boolean.
-        for flag in ("pinned", "archived"):
+        for flag in ("pinned", "archived", "hidden"):
             if flag in payload:
                 payload[flag] = bool(payload[flag])
         # Avoid exposing full system prompts/model_config through the client API;
@@ -3406,7 +3452,6 @@ class APIServerAdapter(BasePlatformAdapter):
         if len(session_id) > self._MAX_SESSION_HEADER_LEN:
             return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
 
-        model = body.get("model") or self._model_name
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
@@ -3416,7 +3461,18 @@ class APIServerAdapter(BasePlatformAdapter):
         if lock_error is not None:
             return lock_error
         requested = runtime_request.get("requested") or {}
-        model_name = self._clean_runtime_id(requested.get("model")) or (str(model) if model else None)
+        # requested["model"] is already normalized by
+        # _session_runtime_request_from_body: provider-prefixed values
+        # (e.g. "provider::hermes-agent") are split, and the virtual model
+        # alias (self._model_name, e.g. "hermes-agent") is nulled out
+        # there — a bare "hermes-agent" is not a model_routes alias, so a
+        # later chat on this session would otherwise fall into the raw
+        # session_model precedence branch in _handle_session_chat and get
+        # sent to the provider literally, failing with "invalid model
+        # identifier" (#session-model-alias-leak). Re-deriving straight
+        # from the raw body here would bypass that normalization and
+        # reintroduce the leak for the provider-prefixed case.
+        model_name = self._clean_runtime_id(requested.get("model")) or None
         model_config = None
         if requested.get("model") or requested.get("provider"):
             model_config = {
@@ -3515,16 +3571,19 @@ class APIServerAdapter(BasePlatformAdapter):
         # sidebar owns (the "keep" flag exempts a chat from the auto-archive
         # sweep). Rejecting them here was silently 400ing every pin the desktop
         # made, so pins only ever lived in that one app's localStorage.
-        allowed = {"title", "end_reason", "pinned", "archived"}
+        # `unread` is the read-state watermark toggle (same desktop owner).
+        allowed = {"title", "end_reason", "pinned", "archived", "hidden", "unread"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
 
-        for flag in ("pinned", "archived"):
+        for flag in ("pinned", "archived", "hidden", "unread"):
             if flag in body and not isinstance(body[flag], bool):
                 return web.json_response(_openai_error(f"'{flag}' must be a boolean", code="invalid_session_field"), status=400)
 
         db = await self._ensure_session_db_async()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
         if "title" in body:
             try:
                 await asyncio.to_thread(db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
@@ -3534,6 +3593,10 @@ class APIServerAdapter(BasePlatformAdapter):
             await asyncio.to_thread(db.set_session_pinned, session_id, body["pinned"])
         if "archived" in body:
             await asyncio.to_thread(db.set_session_archived, session_id, body["archived"])
+        if "hidden" in body:
+            await asyncio.to_thread(db.set_session_hidden, session_id, body["hidden"])
+        if "unread" in body:
+            await asyncio.to_thread(db.set_session_read, session_id, read=not body["unread"])
         if body.get("end_reason"):
             await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
         session = await asyncio.to_thread(db.get_session, session_id) or session
@@ -3714,7 +3777,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
         else:
-            stored_model = session.get("model") if isinstance(session, dict) else None
+            stored_model = self._stored_session_model(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
@@ -3824,7 +3887,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
         else:
-            stored_model = session.get("model") if isinstance(session, dict) else None
+            stored_model = self._stored_session_model(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
@@ -5918,7 +5981,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
 
-            from cron.scheduler_provider import resolve_cron_scheduler
+            from cron.scheduler_provider import (
+                provider_supports_split_fire,
+                resolve_cron_scheduler,
+            )
             provider = resolve_cron_scheduler()
 
             loop = asyncio.get_running_loop()
@@ -5940,10 +6006,55 @@ class APIServerAdapter(BasePlatformAdapter):
                     runner = None
             adapters = getattr(runner, "adapters", None) or None
 
-            # Fire in the background (202 immediately). fire_due claims via the
-            # store CAS, so a retry while this is in flight is de-duped.
+            if not provider_supports_split_fire(provider):
+                # Legacy single-phase provider: it overrides the documented
+                # ``fire_due`` hook (custom claim/re-arm/telemetry) but
+                # inherits the base ``claim_fire`` — driving it through the
+                # split claim path would silently bypass that override.
+                task = asyncio.create_task(
+                    asyncio.to_thread(
+                        provider.fire_due,
+                        job_id,
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                )
+                reservation["detached"] = True
+                task.add_done_callback(
+                    lambda _task: _release_pending_api_work(self, reservation)
+                )
+                try:
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                except (TypeError, AttributeError):
+                    pass
+                return web.json_response(
+                    {"status": "accepted", "job_id": job_id}, status=202
+                )
+
+            # Persist the attempt and exact store owner before acknowledging NAS.
+            # A failure here is retryable and the reservation remains attached.
+            try:
+                claimed_job = await asyncio.to_thread(provider.claim_fire, job_id)
+            except Exception as exc:
+                logger.error("cron fire admission failed for %s: %s", job_id, exc)
+                return web.json_response(
+                    {"error": "cron fire admission failed", "job_id": job_id},
+                    status=503,
+                )
+            if claimed_job is None:
+                return web.json_response(
+                    {"status": "duplicate", "job_id": job_id},
+                    status=200,
+                )
+
             task = asyncio.create_task(
-                asyncio.to_thread(provider.fire_due, job_id, adapters=adapters, loop=loop)
+                asyncio.to_thread(
+                    provider.fire_claimed,
+                    claimed_job,
+                    adapters=adapters,
+                    loop=loop,
+                )
             )
             reservation["detached"] = True
             task.add_done_callback(
@@ -7320,6 +7431,9 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
 
+        with self._session_db_cache_lock:
+            self._session_db_cache_closed = False
+
         if not self._api_key_passes_startup_guard():
             # A rejected API_SERVER_KEY is a configuration error, not a
             # transient blip — the key will not become valid on its own. A
@@ -7490,13 +7604,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
-        if self._site:
-            await self._site.stop()
-            self._site = None
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        self._app = None
+        try:
+            if self._site:
+                await self._site.stop()
+                self._site = None
+            if self._runner:
+                await self._runner.cleanup()
+                self._runner = None
+        finally:
+            self._close_cached_session_dbs()
+            self._app = None
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

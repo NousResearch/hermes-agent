@@ -79,7 +79,7 @@ class TestOriginThreadStaleGuard:
             "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
         monkeypatch.setattr(
             "tools.send_message_tool.resolve_send_target",
-            lambda platform, rest: (rest, None, None))
+            lambda platform, rest, **kw: (rest, None, None))
         job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
                           "thread_id": SYNTH}}
         target = _resolve_single_delivery_target(job, "slack:D0BJTDCSR7C")
@@ -92,7 +92,7 @@ class TestOriginThreadStaleGuard:
             "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
         monkeypatch.setattr(
             "tools.send_message_tool.resolve_send_target",
-            lambda platform, rest: (rest, None, None))
+            lambda platform, rest, **kw: (rest, None, None))
         job = {"origin": {"platform": "slack", "chat_id": "C0AGENERAL",
                           "thread_id": "1755040000.000100"}}
         target = _resolve_single_delivery_target(job, "slack:C0AGENERAL")

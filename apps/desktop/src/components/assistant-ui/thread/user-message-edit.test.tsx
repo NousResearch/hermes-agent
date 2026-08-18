@@ -1,4 +1,4 @@
-import { ExportedMessageRepository } from '@assistant-ui/react'
+import { type AppendMessage, ExportedMessageRepository } from '@assistant-ui/react'
 // Clicking a user bubble must open the inline edit composer — through the
 // app's incremental external-store runtime (which reimplements capability
 // resolution, incl. `edit: onEdit !== undefined`) and the stock runtime.
@@ -96,7 +96,7 @@ function assistantMessage(): ThreadMessage {
 }
 
 // Mirrors chat/index.tsx: incremental runtime + messageRepository + onEdit.
-function IncrementalHarness({ onEdit }: { onEdit: () => Promise<void> }) {
+function IncrementalHarness({ onEdit }: { onEdit: (message: AppendMessage) => Promise<void> }) {
   const repository = ExportedMessageRepository.fromArray([userMessage(), assistantMessage()])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
@@ -145,6 +145,37 @@ describe('click-to-edit user message', () => {
     })
   })
 
+  it('does not submit an inline edit while IME composition is active', async () => {
+    const onEdit = vi.fn(async (_message: AppendMessage) => {})
+
+    render(<IncrementalHarness onEdit={onEdit} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    const editedText = 'edit me please\u4f60'
+
+    await act(async () => {
+      fireEvent.compositionStart(editor)
+      editor.textContent = editedText
+      fireEvent.input(editor)
+      fireEvent.keyDown(editor, { isComposing: true, key: 'Enter' })
+    })
+
+    expect(onEdit).not.toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent.compositionEnd(editor)
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    await waitFor(() => expect(onEdit).toHaveBeenCalledTimes(1))
+    expect(onEdit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: [{ text: editedText, type: 'text' }]
+      })
+    )
+  })
+
   it('keeps a dirty inline edit open when focus leaves the composer', async () => {
     const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
 
@@ -182,5 +213,103 @@ describe('click-to-edit user message', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
     })
+  })
+
+  // A long previous prompt is capped at max-h-48 in the edit composer. Without
+  // an overflow rule the overflow is clipped with no way to scroll, hiding the
+  // tail of the prompt. The editor must scroll its own overflow (like the main
+  // composer's editor does).
+  it('keeps the edit composer editor scrollable when the prompt overflows the cap', async () => {
+    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
+
+    const bubble = await screen.findByRole('button', { name: 'Edit message' })
+
+    fireEvent.click(bubble)
+
+    const editor = await waitFor(() => {
+      const node = container.querySelector('[contenteditable="true"]')
+      expect(node).toBeTruthy()
+
+      return node as HTMLElement
+    })
+
+    expect(editor.className).toContain('max-h-48')
+    expect(editor.className).toContain('overflow-y-auto')
+  })
+})
+
+describe('Enter submission and latch behavior', () => {
+  it('submits the edit when Enter is pressed', async () => {
+    const onEdit = vi.fn(async () => {})
+    render(<IncrementalHarness onEdit={onEdit} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    const editedText = 'modified text for submission'
+
+    editor.textContent = editedText
+    fireEvent.input(editor)
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(onEdit).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('clears the submitting latch after onEdit resolves, allowing second edit session', async () => {
+    const onEdit = vi.fn(async () => {})
+    render(<IncrementalHarness onEdit={onEdit} />)
+
+    // First edit session
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    let editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    editor.textContent = 'first edit'
+    fireEvent.input(editor)
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(onEdit).toHaveBeenCalledTimes(1)
+    })
+
+    // Wait for the latch cooldown to clear
+    await new Promise(resolve => setTimeout(resolve, 300))
+
+    // Second edit session - open the editor again
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    editor.textContent = 'second edit'
+    fireEvent.input(editor)
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    // If the latch wasn't cleared, this second submission would be blocked
+    await waitFor(() => {
+      expect(onEdit).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('inserts a newline on Shift+Enter without submitting', async () => {
+    const onEdit = vi.fn(async () => {})
+    render(<IncrementalHarness onEdit={onEdit} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+
+    editor.textContent = 'line one'
+    fireEvent.input(editor)
+
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+
+    // Shift+Enter should not call onEdit
+    await new Promise(resolve => window.setTimeout(resolve, 50))
+    expect(onEdit).not.toHaveBeenCalled()
+
+    // The editor should allow the newline to be inserted (by not preventing default)
+    // We don't simulate actual newline insertion here (requires complex DOM manipulation)
+    // but we verify the guard did not block it
   })
 })

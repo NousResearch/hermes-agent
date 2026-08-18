@@ -38,6 +38,7 @@ import { cn } from '@/lib/utils'
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
+import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } from './transcript-directive'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -462,6 +463,36 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
+/**
+ * Paragraph override. Almost always a plain `<p>` — but a paragraph that is
+ * exactly one `::name{...}` directive claimed by a plugin renders as that
+ * plugin's transcript component instead (`transcript.directives` area). The
+ * claim check subscribes to the registry, so hot-loading a plugin upgrades
+ * already-rendered directives in place; unclaimed directives stay prose.
+ */
+function MarkdownParagraph({
+  children,
+  className,
+  streaming,
+  ...props
+}: ComponentProps<'p'> & { streaming?: boolean }) {
+  const plain = paragraphPlainText(children)
+  const claimed = useIsClaimedDirective(plain)
+
+  if (claimed && plain !== null) {
+    return <TranscriptDirectiveLeaf streaming={streaming} text={plain} />
+  }
+
+  return (
+    // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
+    // must out-specify Tailwind Typography's `prose` margins — so no
+    // `my-*` here on purpose.
+    <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
+      {children}
+    </p>
+  )
+}
+
 function MarkdownTextSurface({
   containerClassName,
   containerProps,
@@ -493,12 +524,7 @@ function MarkdownTextSurface({
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: ({ className, ...props }: ComponentProps<'p'>) => (
-          // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
-          // must out-specify Tailwind Typography's `prose` margins — so no
-          // `my-*` here on purpose.
-          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
-        ),
+        p: (props: ComponentProps<'p'>) => <MarkdownParagraph {...props} streaming={isStreaming} />,
         a: MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),

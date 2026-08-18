@@ -91,6 +91,20 @@ class TestRuntimeGate:
         langfuse_plugin = self._fresh_plugin()
         assert langfuse_plugin._get_langfuse() is None
 
+    def test_missing_sdk_logs_one_warning(self, monkeypatch, caplog):
+        langfuse_plugin = self._fresh_plugin()
+        monkeypatch.setattr(langfuse_plugin, "Langfuse", None)
+        langfuse_plugin._LANGFUSE_CLIENT = None
+
+        with caplog.at_level(logging.WARNING, logger=langfuse_plugin.__name__):
+            assert langfuse_plugin._get_langfuse() is None
+            assert langfuse_plugin._get_langfuse() is None
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert len(messages) == 1
+        assert "SDK is unavailable" in messages[0]
+        assert "tracing is disabled" in messages[0]
+
     def test_get_langfuse_caches_failure_no_config_load(self, monkeypatch):
         """A miss must be cached — no per-hook config.yaml reads, no env re-reads."""
         for k in (

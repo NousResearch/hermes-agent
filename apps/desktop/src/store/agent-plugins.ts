@@ -40,29 +40,61 @@ export const $agentPluginsError = atom<string | null>(null)
 export const $agentPluginBusy = atom<string | null>(null)
 
 let inflight: Promise<void> | null = null
+let inflightProfile: string | null = null
+// Bumped per load so a slow response from a previous profile scope can't
+// overwrite the newer scope's list (async results can land out of order).
+let loadGeneration = 0
 
-/** Fetch the backend plugin list. Always refetches (it's a cheap local disk
- *  scan on the backend); concurrent callers share one in-flight request. */
-export function loadAgentPlugins(request: GatewayRequest): Promise<void> {
-  if (inflight) {
+/** Scope a `plugins.manage` payload to a profile. Omitted (null) = the
+ *  backend's launch profile — older backends ignore the extra param. */
+const withProfile = (params: Record<string, unknown>, profile?: string | null) =>
+  profile ? { ...params, profile } : params
+
+/** Fetch the backend plugin list, optionally scoped to another profile's
+ *  HERMES_HOME. Always refetches (it's a cheap local disk scan on the
+ *  backend); concurrent callers for the SAME profile share one in-flight
+ *  request — a different profile starts fresh so a scope switch can't get a
+ *  stale list. */
+export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
+  const scope = profile ?? null
+
+  if (inflight && inflightProfile === scope) {
     return inflight
   }
 
+  const generation = ++loadGeneration
+
+  inflightProfile = scope
   inflight = (async () => {
     if ($agentPluginsStatus.get() !== 'ready') {
       $agentPluginsStatus.set('loading')
     }
 
     try {
-      const result = await request<{ plugins?: AgentPluginRow[] }>('plugins.manage', { action: 'list' })
+      const result = await request<{ plugins?: AgentPluginRow[] }>(
+        'plugins.manage',
+        withProfile({ action: 'list' }, scope)
+      )
+
+      if (generation !== loadGeneration) {
+        return
+      }
+
       $agentPlugins.set(result?.plugins ?? [])
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
     } catch (e) {
+      if (generation !== loadGeneration) {
+        return
+      }
+
       $agentPluginsError.set(e instanceof Error ? e.message : String(e))
       $agentPluginsStatus.set('error')
     } finally {
-      inflight = null
+      if (generation === loadGeneration) {
+        inflight = null
+        inflightProfile = null
+      }
     }
   })()
 
@@ -80,16 +112,23 @@ export async function toggleAgentPlugin(
   request: GatewayRequest,
   key: string,
   enable: boolean,
-  failMessage: string
+  failMessage: string,
+  profile?: string | null
 ): Promise<boolean> {
   $agentPluginBusy.set(key)
 
   try {
-    const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>('plugins.manage', {
-      action: 'toggle',
-      key,
-      enable
-    })
+    const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
+      'plugins.manage',
+      withProfile(
+        {
+          action: 'toggle',
+          key,
+          enable
+        },
+        profile
+      )
+    )
 
     if (!result?.ok) {
       throw new Error(failMessage)
@@ -100,7 +139,7 @@ export async function toggleAgentPlugin(
     if (refreshed) {
       $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...refreshed } : row)))
     } else {
-      await loadAgentPlugins(request)
+      await loadAgentPlugins(request, profile)
     }
 
     return true

@@ -761,6 +761,142 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
 
+    def test_cloud_backed_symlink_fails_closed_without_opening_target(
+        self, tmp_path, monkeypatch
+    ):
+        """A FileProvider placeholder must not block terminal preflight.
+
+        ``O_NONBLOCK`` has no effect on regular files.  On macOS, opening an
+        iCloud placeholder can therefore wait indefinitely for hydration,
+        before the terminal command's own timeout has even started.  Detect
+        the resolved FileProvider path from local metadata and fail closed
+        without opening it.
+        """
+        import cron.lifecycle_guard as lifecycle_guard
+
+        cloud_dir = (
+            tmp_path
+            / "Library"
+            / "Mobile Documents"
+            / "com~apple~CloudDocs"
+            / "scripts"
+        )
+        cloud_dir.mkdir(parents=True)
+        target = cloud_dir / "helper"
+        target.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        launcher = bin_dir / "helper"
+        launcher.symlink_to(target)
+
+        real_open = lifecycle_guard.os.open
+
+        def reject_cloud_open(path, flags, *args, **kwargs):
+            if str(path) == str(launcher):
+                pytest.fail("lifecycle guard opened a cloud-backed symlink")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", reject_cloud_open)
+
+        assert lifecycle_guard.contains_gateway_lifecycle_command_or_referenced_script(
+            str(launcher)
+        ) is True
+
+    def test_third_party_cloudstorage_path_fails_closed_without_opening(
+        self, tmp_path, monkeypatch
+    ):
+        """~/Library/CloudStorage (Dropbox/OneDrive/Google Drive) is the same
+        FileProvider hazard as iCloud's Mobile Documents: an evicted
+        placeholder's open() can hang preflight. The guard must fail closed
+        on the lexical path without opening the file."""
+        import cron.lifecycle_guard as lifecycle_guard
+
+        cloud_dir = (
+            tmp_path
+            / "Library"
+            / "CloudStorage"
+            / "Dropbox-Personal"
+            / "scripts"
+        )
+        cloud_dir.mkdir(parents=True)
+        script = cloud_dir / "helper.sh"
+        script.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        real_open = lifecycle_guard.os.open
+
+        def reject_cloud_open(path, flags, *args, **kwargs):
+            if str(path) == str(script):
+                pytest.fail("lifecycle guard opened a CloudStorage path")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", reject_cloud_open)
+
+        assert lifecycle_guard.contains_gateway_lifecycle_command_or_referenced_script(
+            str(script)
+        ) is True
+
+    def test_read_referenced_script_choke_point_refuses_cloud_paths(
+        self, tmp_path, monkeypatch
+    ):
+        """The cloud refusal lives in _read_referenced_script itself so EVERY
+        caller (terminal walk AND cron-script scan) is covered — not just the
+        walk-level short-circuit in _contains_unsafe_gateway_action."""
+        import cron.lifecycle_guard as lifecycle_guard
+
+        cloud_dir = tmp_path / "Library" / "CloudStorage" / "OneDrive" / "s"
+        cloud_dir.mkdir(parents=True)
+        script = cloud_dir / "job.sh"
+        script.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        def forbid_open(path, flags, *args, **kwargs):  # pragma: no cover
+            pytest.fail("choke point opened a cloud placeholder path")
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", forbid_open)
+
+        text, unsafe = lifecycle_guard._read_referenced_script(script)
+        assert text is None
+        assert unsafe is True
+
+    def test_cron_script_scan_blocks_cloud_script_without_opening(
+        self, tmp_path, monkeypatch
+    ):
+        """The cron-script scan path (_read_script_for_scanning via
+        check_gateway_lifecycle) must also refuse a cloud-resident script
+        without opening it, and the surfaced reason must attribute the
+        refusal to the cloud-synced path — not to a lifecycle command."""
+        import cron.lifecycle_guard as lifecycle_guard
+        from cron.lifecycle_guard import (
+            GatewayLifecycleBlocked,
+            check_gateway_lifecycle,
+        )
+
+        cloud_dir = (
+            tmp_path
+            / "Library"
+            / "Mobile Documents"
+            / "com~apple~CloudDocs"
+            / "scripts"
+        )
+        cloud_dir.mkdir(parents=True)
+        script = cloud_dir / "nightly.sh"
+        script.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        real_open = lifecycle_guard.os.open
+
+        def reject_cloud_open(path, flags, *args, **kwargs):
+            if str(path) == str(script):
+                pytest.fail("cron-script scan opened a cloud-resident script")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", reject_cloud_open)
+
+        with pytest.raises(GatewayLifecycleBlocked) as excinfo:
+            check_gateway_lifecycle("nightly job", str(script))
+        message = str(excinfo.value)
+        assert "cloud-synced" in message
+        assert "lifecycle command" not in message
+
     # -- Whole-class regression tests (tilllt's T1-T4 on PR #79454) --------
 
     def test_tilde_nul_candidate_does_not_crash_terminal_walk(self):
@@ -1204,11 +1340,55 @@ class TestLifecycleGuardNeverRaises:
         weird.write_bytes(b"\xff\xfe\x00\x01 not really a script")
         assert self._scan(f"bash {weird}") is False
 
+    def test_sourced_zshrc_docker_completions_dir_is_not_blocked(self, tmp_path):
+        """#86753: Docker Desktop writes ``fpath=(~/.docker/completions …)``
+        into ``.zshrc``. Completions is a directory. The walk must treat
+        that as nothing-to-scan, not fail-closed, or ``source ~/.zshrc``
+        is blocked on every terminal command."""
+        completions = tmp_path / ".docker" / "completions"
+        completions.mkdir(parents=True)
+        zshrc = tmp_path / ".zshrc"
+        zshrc.write_text(
+            f"fpath=({completions} /usr/local/share/zsh/site-functions $fpath)\n",
+            encoding="utf-8",
+        )
+        assert self._scan(f"source {zshrc}") is False
+
+    def test_fstat_directory_mode_is_not_unsafe(self, tmp_path, monkeypatch):
+        """#86753 Unix contract: os.open(dir) succeeds, fstat is not S_ISREG.
+
+        Windows raises OSError on os.open(dir) and already returns
+        nothing-to-scan. Linux/macOS open the directory and used to
+        return unsafe=True, blocking sourced zshrcs that mention
+        ``~/.docker/completions``.
+        """
+        import os
+        import stat as statmod
+
+        from cron.lifecycle_guard import _read_referenced_script
+
+        probe = tmp_path / "probe"
+        probe.write_text("echo hi\n", encoding="utf-8")
+        orig = os.fstat
+
+        def _dir_fstat(fd):
+            orig(fd)
+            class _DirStat:
+                st_mode = statmod.S_IFDIR | 0o755
+            return _DirStat()
+
+        monkeypatch.setattr(os, "fstat", _dir_fstat)
+        text, unsafe = _read_referenced_script(probe)
+        assert text is None
+        assert unsafe is False
+
     def test_directory_and_dev_null_fail_closed_not_crash(self, tmp_path):
-        # Non-regular files are suspicious (fail closed = blocked), but the
-        # important contract is: verdict, not exception.
-        assert self._scan(f"bash {tmp_path}") is True
-        assert self._scan("bash /dev/null") is True
+        # Directories are not scripts (#86753). Devices stay fail-closed
+        # where the OS actually exposes them (POSIX /dev/null).
+        # The important contract is: verdict, not exception.
+        assert self._scan(f"bash {tmp_path}") is False
+        if os.name != "nt":
+            assert self._scan("bash /dev/null") is True
 
     def test_magic_prefix_binaries_skipped_without_full_read(self, tmp_path):
         """Executable magic (ELF/PE/Mach-O) short-circuits the read: the
@@ -1236,8 +1416,8 @@ class TestLifecycleGuardNeverRaises:
         )
         binary = tmp_path / "prog"
         binary.write_bytes(b"\x7fELF" + bytes(128))
-        for value in ("nul\x00byte.sh", str(binary), "/nonexistent/x.sh"):
+        for value in ("nul\x00byte.sh", str(binary), "/nonexistent/x.sh", str(tmp_path)):
             check_gateway_lifecycle("clean prompt", value)  # must not raise
-        for value in ("/dev/null", str(tmp_path)):
+        if os.name != "nt":
             with pytest.raises(GatewayLifecycleBlocked):
-                check_gateway_lifecycle("clean prompt", value)
+                check_gateway_lifecycle("clean prompt", "/dev/null")

@@ -14,6 +14,7 @@ function hud() {
   shell.setAttribute('data-hud-shell', '')
 
   const bar = document.createElement('input')
+  bar.setAttribute('data-slot', 'composer-rich-input')
 
   const overlay = document.createElement('div')
   overlay.setAttribute('role', 'dialog')
@@ -45,10 +46,23 @@ describe('hudIgnoresMouse', () => {
     expect(hudIgnoresMouse(shell, overlay, null, true)).toBe(false)
   })
 
-  it('does not pin the window just because the composer holds the caret', () => {
+  it('keeps the native HUD window solid while the composer holds the caret', () => {
     const { bar, mount, shell } = hud()
 
-    expect(hudIgnoresMouse(shell, mount, bar, true)).toBe(true)
+    // On Windows, making the native window click-through while its editor owns
+    // focus can immediately hand the mouse activation back to the app below.
+    // The caret then flashes, focus leaves, and the transcript collapses before
+    // the user can read it.
+    expect(hudIgnoresMouse(shell, mount, bar, true)).toBe(false)
+  })
+
+  it('keeps the native HUD window solid while focus is inside the composer editor', () => {
+    const { bar, mount, shell } = hud()
+    const editable = document.createElement('span')
+    editable.contentEditable = 'true'
+    bar.append(editable)
+
+    expect(hudIgnoresMouse(shell, mount, editable, true)).toBe(false)
   })
 
   it('pins the window while a portalled overlay holds focus, so an outside click can dismiss it', () => {

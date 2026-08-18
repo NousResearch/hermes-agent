@@ -608,6 +608,7 @@ class TestBuildAssistantMessageEmptyContentPad:
             "Builder must store textless turns as-is — wire repair is owned "
             "by repair_empty_non_final_messages at the send boundary."
         )
+        assert isinstance(msg["timestamp"], float)
 
 
     def test_tool_call_turn_content_left_empty(self):
@@ -622,6 +623,7 @@ class TestBuildAssistantMessageEmptyContentPad:
         )
         assert msg["content"] == ""
         assert msg["tool_calls"]
+        assert isinstance(msg["timestamp"], float)
 
     def test_non_empty_content_unchanged(self):
         from agent.chat_completion_helpers import build_assistant_message
@@ -630,6 +632,7 @@ class TestBuildAssistantMessageEmptyContentPad:
         agent = self._agent_for_builder()
         msg = build_assistant_message(agent, _mock_assistant_msg(content="hi"), "stop")
         assert msg["content"] == "hi"
+        assert isinstance(msg["timestamp"], float)
 
 
 class TestSendTimeEmptyAssistantPad:

@@ -13,6 +13,7 @@ from agent.skill_utils import (
     is_external_skill_path,
     is_skill_support_path,
     iter_skill_index_files,
+    parse_config_string_list,
     parse_frontmatter,
     resolve_skill_config_values,
     skill_matches_platform,
@@ -71,6 +72,79 @@ skills:
         {"key": "wiki.path", "description": "Wiki path"}
     ])["wiki.path"].endswith("/wiki")
     assert parse_count == 1
+
+
+class TestParseConfigStringList:
+    """#86661: `hermes config set` and JSON-mode editor saves store lists as
+    quoted strings (e.g. '["a","b"]'). Treating such a string as a single name
+    made curated disabled lists silently filter nothing."""
+
+    def test_json_array_string_parses(self):
+        assert parse_config_string_list('["skill-a","skill-b"]') == [
+            "skill-a",
+            "skill-b",
+        ]
+
+    def test_python_literal_array_string_parses(self):
+        # `hermes config set` can persist single-quoted Python-literal forms.
+        assert parse_config_string_list("['skill-a']") == ["skill-a"]
+
+    def test_scalar_string_means_one_name(self):
+        # #13026: a scalar string still names a single entry.
+        assert parse_config_string_list("skill-a") == ["skill-a"]
+
+    def test_real_list_passes_through(self):
+        assert parse_config_string_list(["skill-a", "skill-b"]) == [
+            "skill-a",
+            "skill-b",
+        ]
+        assert parse_config_string_list(("skill-a",)) == ["skill-a"]
+
+    def test_none_returns_empty(self):
+        assert parse_config_string_list(None) == []
+
+    def test_malformed_json_falls_back_to_single_name(self):
+        assert parse_config_string_list('["skill-a"') == ['["skill-a"']
+
+    def test_empty_array_string_returns_empty(self):
+        assert parse_config_string_list("[]") == []
+
+
+class TestDisabledSkillsJsonArrayString:
+    """The skills.disabled setting must honor a JSON-array string form, not
+    treat the whole string as one dead skill name (#86661)."""
+
+    def test_get_disabled_skill_names_parses_json_array_string(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n  disabled: '[\"skill-a\",\"skill-b\"]'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        from agent import skill_utils
+
+        getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
+
+        assert get_disabled_skill_names() == {"skill-a", "skill-b"}
+
+    def test_get_disabled_skill_names_scalar_string_still_single_name(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n  disabled: 'hidden-skill'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        from agent import skill_utils
+
+        getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
+
+        assert get_disabled_skill_names() == {"hidden-skill"}
 
 
 

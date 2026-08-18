@@ -364,3 +364,126 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
     assert not (d / "srv.client.json").exists()
     assert provider._initialized is False
     assert provider.context.client_info is None
+@pytest.mark.asyncio
+async def test_manager_provider_token_exchange_includes_dcr_secret(tmp_path, monkeypatch):
+    """The manager provider path applies the same Supabase DCR secret fix."""
+    from urllib.parse import parse_qs
+
+    from mcp.shared.auth import OAuthClientInformationFull
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider("supabase", "https://mcp.supabase.com/mcp", None)
+    assert provider is not None
+    redirect_uris = provider.context.client_metadata.redirect_uris
+    assert redirect_uris is not None
+    provider.context.client_info = OAuthClientInformationFull.model_validate({
+        "client_id": "client-id",
+        "client_secret": "secret",
+        "redirect_uris": [str(redirect_uris[0])],
+        "token_endpoint_auth_method": "none",
+    })
+
+    request = await provider._exchange_token_authorization_code("auth-code", "verifier")
+    body = parse_qs(request.content.decode())
+
+    assert body["client_secret"] == ["secret"]
+    assert provider.context.client_info is not None
+    assert provider.context.client_info.token_endpoint_auth_method == "client_secret_post"
+
+
+@pytest.mark.asyncio
+async def test_manager_malformed_201_token_response_does_not_expose_body(
+    tmp_path, monkeypatch
+):
+    from mcp.client.auth.oauth2 import OAuthTokenError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    with pytest.raises(OAuthTokenError, match="^Invalid token response$") as exc_info:
+        await provider._handle_token_response(
+            _fake_response(
+                201,
+                "https://idp.example.com/oauth/token",
+                b'{"access_token": {"secret": "access-secret"}}',
+            )
+        )
+
+    assert "access-secret" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_manager_token_read_error_does_not_expose_body(tmp_path, monkeypatch):
+    import httpx
+    from mcp.client.auth.oauth2 import OAuthTokenError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    class _ReadErrorResponse:
+        status_code = 201
+
+        async def aread(self):
+            raise httpx.ReadError("access-secret refresh-secret")
+
+    with pytest.raises(OAuthTokenError, match="^Invalid token response$") as exc_info:
+        await provider._handle_token_response(_ReadErrorResponse())
+
+    assert "access-secret" not in str(exc_info.value)
+    assert "refresh-secret" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_manager_malformed_201_refresh_response_clears_tokens(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    provider.context.current_tokens = object()
+
+    response = _fake_response(
+        201,
+        "https://idp.example.com/oauth/token",
+        b'{"refresh_token": "refresh-secret"}',
+    )
+    with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth_manager"):
+        result = await provider._handle_refresh_response(response)
+
+    assert result is False
+    assert provider.context.current_tokens is None
+    assert "refresh-secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_manager_refresh_read_error_clears_tokens(tmp_path, monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    provider.context.current_tokens = object()
+
+    class _ReadErrorResponse:
+        status_code = 201
+
+        async def aread(self):
+            raise httpx.ReadError("body read failed")
+
+    result = await provider._handle_refresh_response(_ReadErrorResponse())
+
+    assert result is False
+    assert provider.context.current_tokens is None

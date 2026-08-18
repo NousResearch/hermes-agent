@@ -720,7 +720,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         DEFAULT_XAI_OAUTH_BASE_URL,
         PROVIDER_REGISTRY,
     )
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.models import provider_model_ids
 
     status = get_xai_oauth_auth_status()
     if status.get("logged_in"):
@@ -780,8 +780,8 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     except Exception:
         pass
 
-    models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-build-0.1"))
+    models = provider_model_ids("xai-oauth")
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
@@ -2308,10 +2308,25 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         if not isinstance(model, dict):
             model = {"default": model} if model else {}
             cfg["model"] = model
-        model["provider"] = "custom"
-        model["base_url"] = mantle_base_url
-        model.pop("api_mode", None)  # chat_completions is the default
-        clear_model_endpoint_credentials(model, clear_api_mode=False)
+        model["provider"] = "custom:bedrock-mantle"
+        clear_model_endpoint_credentials(
+            model, clear_api_mode=True, clear_base_url=True
+        )
+
+        # Deliver the bearer token through a named provider entry. A bare
+        # ``provider: custom`` cannot carry a credential for this host:
+        # OPENAI_API_KEY is deliberately gated to openai.com (#28660), so the
+        # token was dropped and requests went out as "no-key-required".
+        providers = cfg.get("providers")
+        if not isinstance(providers, dict):
+            providers = {}
+            cfg["providers"] = providers
+        mantle_entry = providers.get("bedrock-mantle")
+        if not isinstance(mantle_entry, dict):
+            mantle_entry = {}
+        mantle_entry["base_url"] = mantle_base_url
+        mantle_entry["key_env"] = "AWS_BEARER_TOKEN_BEDROCK"
+        providers["bedrock-mantle"] = mantle_entry
 
         # Also save region in bedrock config for reference
         bedrock_cfg = cfg.get("bedrock", {})
@@ -2319,10 +2334,6 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
             bedrock_cfg = {}
         bedrock_cfg["region"] = region
         cfg["bedrock"] = bedrock_cfg
-
-        # Save the API key env var name so hermes knows where to find it
-        save_env_value("OPENAI_API_KEY", existing_key)
-        save_env_value("OPENAI_BASE_URL", mantle_base_url)
 
         save_config(cfg)
         deactivate_provider()

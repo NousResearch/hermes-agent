@@ -149,10 +149,32 @@ class TestValidateSignature:
             "X-Hub-Signature-256",
             "X-Gitlab-Token",
             "X-Webhook-Signature",
+            "linear-signature",
         ):
             req = _mock_request(headers={header: hostile})
             # Must return False, never raise.
             assert adapter._validate_signature(req, body, secret) is False
+
+    def test_linear_signature_valid_accepts(self):
+        """Linear signs the raw body (hex HMAC-SHA256) in linear-signature."""
+        adapter = _make_adapter()
+        body = b'{"type": "Issue", "data": {"id": "abc"}}'
+        secret = "linear-webhook-key"
+        sig = _generic_signature(body, secret)  # same math as linear-signature
+
+        req = _mock_request(headers={"linear-signature": sig})
+
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_linear_signature_mismatch_rejects(self):
+        """A well-formed linear-signature computed with the wrong key fails closed."""
+        adapter = _make_adapter()
+        body = b'{"type": "Issue"}'
+        sig = _generic_signature(body, "attacker-controlled-key")
+
+        req = _mock_request(headers={"linear-signature": sig})
+
+        assert adapter._validate_signature(req, body, "real-secret") is False
 
 
     def test_non_ascii_svix_signature_rejected(self):

@@ -96,6 +96,39 @@ class TestProfileMessageHandler:
         assert seen["profile"] == "coder"
 
 
+class TestProfileRuntimeStatus:
+    def test_base_adapter_uses_namespaced_platform_key(self, monkeypatch):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        class _ConcreteAdapter(BasePlatformAdapter):
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                return None
+
+            async def send(self, *_args, **_kwargs):
+                return None
+
+            async def get_chat_info(self, *_args, **_kwargs):
+                return None
+
+        adapter = _ConcreteAdapter.__new__(_ConcreteAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter._runtime_status_platform_key = "reviewer:discord"
+        writes = []
+        monkeypatch.setattr(
+            "gateway.status.write_runtime_status",
+            lambda **kwargs: writes.append(kwargs),
+        )
+
+        adapter._write_runtime_status_safe("fatal", platform_state="fatal")
+
+        assert writes == [
+            {"platform": "reviewer:discord", "platform_state": "fatal"}
+        ]
+
+
 class _SecondaryRecoveryAdapter:
     platform = Platform.DISCORD
 
@@ -277,6 +310,98 @@ class TestSecondaryProfileConfigHandling:
         assert "telegram" not in message
         assert "reviewer" not in runner._profile_adapters
 
+    def test_configured_secondary_adapter_namespaces_runtime_status(self):
+        runner = _secondary_recovery_runner()
+        adapter = _SecondaryRecoveryAdapter()
+
+        runner._configure_profile_adapter(adapter, "reviewer", Platform.DISCORD)
+
+        assert adapter._runtime_status_platform_key == "reviewer:discord"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_credential_is_persisted_as_profile_fatal(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        config = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True, token="shared-discord-token"
+                )
+            },
+        )
+        adapter = _SecondaryRecoveryAdapter()
+        adapter.config = config.platforms[Platform.DISCORD]
+        writes = []
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+        monkeypatch.setattr(runner, "_create_adapter", lambda _p, _c: adapter)
+        monkeypatch.setattr(
+            runner,
+            "_update_platform_runtime_status",
+            lambda platform, **kwargs: writes.append((platform, kwargs)),
+        )
+        claim = runner._adapter_credential_claim(Platform.DISCORD, adapter)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {claim: "default"}
+        )
+
+        assert connected == 0
+        assert writes == [
+            (
+                "reviewer:discord",
+                {
+                    "platform_state": "fatal",
+                    "error_code": "duplicate_credential",
+                    "error_message": (
+                        "Profile 'default' and 'reviewer' both configure discord "
+                        "with the same credential. Give each profile its own "
+                        "discord credential."
+                    ),
+                },
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_listener_is_persisted_without_public_bind_details(
+        self, monkeypatch
+    ):
+        class _ListenerAdapter(_SecondaryRecoveryAdapter):
+            _sidecar_bind = "127.0.0.1"
+            _sidecar_port = 8789
+
+        runner = _secondary_recovery_runner()
+        platform = Platform("photon")
+        config = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={platform: PlatformConfig(enabled=True)},
+        )
+        adapter = _ListenerAdapter()
+        adapter.platform = platform
+        adapter.config = config.platforms[platform]
+        writes = []
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+        monkeypatch.setattr(runner, "_create_adapter", lambda _p, _c: adapter)
+        monkeypatch.setattr(
+            runner,
+            "_update_platform_runtime_status",
+            lambda key, **kwargs: writes.append((key, kwargs)),
+        )
+        claim = runner._adapter_listener_claim(platform, adapter)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {claim: "default"}
+        )
+
+        assert connected == 0
+        assert writes[0][0] == "reviewer:photon"
+        assert writes[0][1]["error_code"] == "duplicate_listener"
+        assert "127.0.0.1" not in writes[0][1]["error_message"]
+        assert "8789" not in writes[0][1]["error_message"]
+
     @pytest.mark.asyncio
     async def test_multiplexer_skips_bad_profile_and_continues(self, monkeypatch, caplog):
         from pathlib import Path
@@ -409,7 +534,7 @@ class TestSecondaryProfileConfigHandling:
             GatewayRunner._adapter_listener_claim(photon, primary): "default"
         }
 
-        async def _connect(adapter, platform):
+        async def _connect(adapter, platform, **_kw):
             adapter.connected = True
             return True
 
@@ -468,7 +593,7 @@ class TestSecondaryProfileConfigHandling:
         adapters = iter((failed, later))
         claimed = {}
 
-        async def _connect(adapter, platform):
+        async def _connect(adapter, platform, **_kw):
             return adapter.should_connect
 
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)

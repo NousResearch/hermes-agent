@@ -145,14 +145,28 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
 }
 
 export async function setMainModelAssignment(
-  request: Omit<ModelAssignmentRequest, 'scope'>
+  request: Omit<ModelAssignmentRequest, 'scope'>,
+  scopeProfile?: null | string
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()
   const profile = profileIdentity()
-  const result = await setModelAssignment({ ...request, scope: 'main' })
+
+  // Only pass the extra arg when a scope override exists, so unscoped callers
+  // keep the exact legacy call shape.
+  const result =
+    scopeProfile == null
+      ? await setModelAssignment({ ...request, scope: 'main' })
+      : await setModelAssignment({ ...request, scope: 'main' }, scopeProfile)
 
   if (result.ok !== true) {
     throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
+  }
+
+  // A scoped assignment targets ANOTHER profile's backend: its cron impact
+  // belongs to that profile, and the review action would open the ACTIVE
+  // profile's cron view — skip the warning rather than mis-route it.
+  if (scopeProfile != null) {
+    return result
   }
 
   if (!currentResponseScope(profile, connection, generation)) {

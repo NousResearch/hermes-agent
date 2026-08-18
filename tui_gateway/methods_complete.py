@@ -45,6 +45,47 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"items": []})
 
     items: list[dict] = []
+
+    def _profile_mention_items(prefix: str) -> list[dict]:
+        """`@<profile>` completions: agent profiles as mentionable names.
+
+        Multi-agent UIs (and the Bot Mode plugin) route `@<profile>` text to
+        another agent profile; completing profile names alongside path refs
+        makes that discoverable. Bare-word matches only — never for
+        `@kind:` directive queries. The primary profile is also offered
+        under the 'hermes' alias when no real profile claims that name.
+        """
+        out: list[dict] = []
+        try:
+            from hermes_cli.profiles import list_profiles
+
+            seen: set[str] = set()
+            for p in list_profiles():
+                name = (p.name or "").strip()
+                if not name:
+                    continue
+                seen.add(name.lower())
+                desc = (getattr(p, "description", "") or "").strip()
+                if name.lower().startswith(prefix.lower()):
+                    out.append(
+                        {
+                            "text": f"@{name}",
+                            "display": f"@{name}",
+                            "meta": desc or "agent profile",
+                        }
+                    )
+            if "hermes".startswith(prefix.lower()) and "hermes" not in seen:
+                out.append(
+                    {
+                        "text": "@hermes",
+                        "display": "@hermes",
+                        "meta": "agent profile (primary)",
+                    }
+                )
+        except Exception:
+            return []
+        return out
+
     try:
         root = _completion_cwd(params)
         is_context = word.startswith("@")
@@ -59,6 +100,9 @@ def _(rid, params: dict) -> dict:
                 {"text": "@url:", "display": "@url:", "meta": "fetch url"},
                 {"text": "@git:", "display": "@git:", "meta": "git log"},
             ]
+            # Agent profiles are mentionable — list them alongside the
+            # directive hints so `@` alone reveals them.
+            items.extend(_profile_mention_items(""))
             # Append plugin-registered context reference prefixes
             try:
                 from agent.context_references import get_context_reference_providers
@@ -206,6 +250,12 @@ def _(rid, params: dict) -> dict:
                     }
                 )
 
+            # Bare-word `@name` may equally be an agent mention — surface
+            # matching profiles ABOVE file hits (there are at most a handful,
+            # and a user typing `@tur` for a bot shouldn't have to dig).
+            if not prefix_tag:
+                items = _profile_mention_items(path_part) + items
+
             return _ok(rid, {"items": items})
 
         expanded = _normalize_completion_path(path_part) if path_part else "."
@@ -265,6 +315,14 @@ def _(rid, params: dict) -> dict:
                 break
     except Exception as e:
         return _err(rid, 5021, str(e))
+
+    # Bare-word `@name` (including single characters, which skip the fuzzy
+    # branch) may be an agent mention — profiles rank above path entries.
+    try:
+        if is_context and not prefix_tag and path_part and "/" not in path_part:
+            items = _profile_mention_items(path_part) + items
+    except Exception:
+        pass
 
     return _ok(rid, {"items": items})
 

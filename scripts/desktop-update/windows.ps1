@@ -421,7 +421,7 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
             manual     = $ManualAction
             message    = $Message
             branch     = $Branch
-            finished_at = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
+            finished_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         } | ConvertTo-Json -Compress
         [System.IO.File]::WriteAllText($ResultPath, $obj)
     } catch {}
@@ -447,7 +447,19 @@ function Start-DesktopRelaunch {
     # the pid exists, or the fallback spawn returned a live process). The
     # finally block downgrades the on-screen/on-disk outcome when it didn't
     # — the sibling truth contract to posix.sh's launch acceptance.
-    if (-not ($RelaunchExe -and (Test-Path -LiteralPath $RelaunchExe))) { return $false }
+    if (-not $RelaunchExe) { return $false }
+    # electron-builder replaces win-unpacked in place. After a successful
+    # update it can remove the old Hermes.exe before writing the replacement,
+    # so a one-shot existence check races the rebuild and strands the user.
+    $relaunchDeadline = (Get-Date).AddSeconds(120)
+    while (-not (Test-Path -LiteralPath $RelaunchExe)) {
+        if ((Get-Date) -ge $relaunchDeadline) {
+            Write-HandoffLog "WARNING: desktop relaunch executable did not reappear within 120s: $RelaunchExe"
+            return $false
+        }
+        Start-Sleep -Milliseconds 500
+        if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+    }
     Write-HandoffLog "relaunching desktop: $RelaunchExe"
     # DO NOT spawn Hermes.exe as our child: Electron/Chromium calls
     # AttachConsole(ATTACH_PARENT_PROCESS) at boot, so a Desktop launched
@@ -611,7 +623,7 @@ try {
 
     # -- 0. Claim the update marker with OUR pid ---------------------------
     try {
-        $epoch = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
+        $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
         # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
         [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$epoch`n")
@@ -672,23 +684,55 @@ try {
     # is unlocked; the venv-python holder guard (orphan reap included) stays
     # active. Our marker claim is adopted by the child via update_lock.py's
     # process-ancestry rule.
-    $hermesExe = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
-    if (-not (Test-Path -LiteralPath $hermesExe)) {
+    #
+    # DRIVE THE UPDATE THROUGH venv\Scripts\python.exe, NOT venv\Scripts\hermes.exe.
+    # `uv pip install -e .` has to replace the console-script shims, so
+    # _quarantine_running_hermes_exe must first rename the running hermes.exe
+    # out of the way. On Windows that rename fails whenever ANY child process
+    # spawned from that hermes.exe is still alive: a child inherits a handle on
+    # the parent image, and the resulting sharing violation is indistinguishable
+    # from a user leaving a second Hermes window open. It is the inherited
+    # handle, not the trampoline itself, that pins the file -- killing the child
+    # makes the same rename succeed immediately, and the shim flavour (uv
+    # trampoline vs distlib launcher) makes no difference.
+    #
+    # The updater reliably spawns such children itself (npx cache warm, memory
+    # provider refresh -- hindsight-api runs as a daemon with --idle-timeout
+    # 300 and outlives the step that started it), so this is a race, not a
+    # deterministic failure: the same hand-off succeeds on one run and dies on
+    # the next. Step 2's preflight cannot catch it, because the shim genuinely
+    # IS unlocked at that moment.
+    #
+    # When the rename loses that race, _schedule_replace_on_reboot is the last
+    # resort -- and it writes to HKLM\...\PendingFileRenameOperations, which
+    # requires elevation. A Desktop-driven update runs non-elevated, so it
+    # returns ERROR_ACCESS_DENIED and `uv pip install -e .` exits 2. The ZIP
+    # fallback repeats the identical sequence, so the desktop build stage is
+    # never reached and apps/desktop/release is left missing -- an install whose
+    # Start Menu shortcut points at a Hermes.exe that no longer exists.
+    #
+    # Running the same code as `python.exe -m hermes_cli.main update` puts the
+    # inherited handles on python.exe, which uv never has to replace.
+    #
+    # posix.sh is deliberately left alone: unlinking a running executable is
+    # legal there, so the equivalent call is harmless.
+    $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $pythonExe)) {
         $finalCode = 3
-        $finalMsg = "Update aborted: $hermesExe is missing. The install needs repair (run the Hermes installer or `hermes doctor`)."
+        $finalMsg = "Update aborted: $pythonExe is missing. The install needs repair (run the Hermes installer or `hermes doctor`)."
         Write-HandoffLog $finalMsg
         exit $finalCode
     }
-    $updateArgs = @("update", "--yes", "--gateway", "--force", "--branch", $Branch)
-    Write-HandoffLog ("running: hermes " + ($updateArgs -join " "))
-    $res = Invoke-HermesStep $hermesExe $updateArgs "update"
+    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    Write-HandoffLog ("running: python " + ($updateArgs -join " "))
+    $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
     if ($res.Code -ne 0 -and $res.Code -ne 2) {
         # One retry for the update-boundary class (fresh code on disk, stale
         # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
         Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
-        $res = Invoke-HermesStep $hermesExe $updateArgs "update"
+        $res = Invoke-HermesStep $pythonExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
     }
 
@@ -700,7 +744,7 @@ try {
     $desktopBuildFailed = $false
     if ($res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
         Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
-        $rebuild = Invoke-HermesStep $hermesExe @("desktop", "--force-build", "--build-only") "rebuild"
+        $rebuild = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "desktop", "--force-build", "--build-only") "rebuild"
         Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
         if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
     }

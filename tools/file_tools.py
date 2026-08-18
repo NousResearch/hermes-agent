@@ -16,7 +16,7 @@ import stat
 import threading
 import time
 from contextlib import ExitStack
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
@@ -128,6 +128,310 @@ _BLOCKED_PROC_SUFFIXES = (
     "/fd/0", "/fd/1", "/fd/2",  # stdio aliases
     "/environ", "/cmdline", "/maps", "/smaps", "/smaps_rollup", "/numa_maps",
     "/mem", "/auxv", "/pagemap")
+
+
+def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+    """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
+    instead of the main repository root.
+    """
+    return _resolve_path_for_task(filepath, task_id)
+
+
+# Sentinel ``TERMINAL_CWD`` values that mean "not configured", NOT a literal
+# directory to resolve against. A stale config / .env commonly leaves the
+# literal "." here; "auto"/"cwd" are setup-wizard placeholders. Treating any of
+# these as a real relative base silently anchors edits to the agent PROCESS cwd
+# (e.g. the main repo while a worktree session is active), routing writes to the
+# wrong checkout. The gateway sanitizes the same set at import time
+# (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
+# sessions get the same protection. See references/worktree-cwd-discipline.md.
+_TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+
+
+def _terminal_env_type_for_task(task_id: str = "default") -> str:
+    """Best-effort terminal backend type for path-resolution decisions."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _resolve_container_task_id,
+        )
+
+        try:
+            container_key = _resolve_container_task_id(task_id)
+        except Exception:
+            container_key = task_id
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+        if env is not None:
+            name = env.__class__.__name__.lower()
+            if "local" in name:
+                return "local"
+            if "ssh" in name:
+                return "ssh"
+            if "docker" in name:
+                return "docker"
+            if "singularity" in name:
+                return "singularity"
+            if "modal" in name:
+                return "modal"
+            if "daytona" in name:
+                return "daytona"
+        cfg = _get_env_config()
+        return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
+    except Exception:
+        return str(os.getenv("TERMINAL_ENV") or "local").lower()
+
+
+def _uses_container_paths(task_id: str = "default") -> bool:
+    try:
+        from tools.terminal_tool import _CONTAINER_BACKENDS
+        container_backends = _CONTAINER_BACKENDS
+    except Exception:
+        container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
+    env_type = _terminal_env_type_for_task(task_id)
+    # ssh (and WSL-via-ssh) exposes a POSIX filesystem in a namespace distinct
+    # from the Windows host, so file-tool paths there are POSIX paths. Treat it
+    # like a container backend for PATH RESOLUTION so absolute POSIX paths
+    # (/home/steve/...) aren't misrouted through Windows ntpath on the host.
+    if env_type == "ssh":
+        return True
+    return env_type in container_backends
+
+
+def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
+    """Normalize path syntax without following host symlinks.
+
+    Container backends use paths that are meaningful inside the sandbox. Calling
+    ``Path.resolve()`` on the host can dereference a host-side symlink such as
+    ``/workspace`` and rewrite the path before Docker sees it.
+    """
+    return PurePosixPath(posixpath.normpath(str(path)))
+
+
+def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
+    """Normalize a cwd candidate to an absolute, sentinel-free anchor.
+
+    Returns the expanded path only when *raw* is non-empty, not a sentinel (see
+    ``_TERMINAL_CWD_SENTINELS``), and absolute. A relative anchor is meaningless
+    without knowing which cwd it is relative to — exactly the ambiguity that
+    misroutes worktree edits — so relative/sentinel/empty values yield ``None``.
+    """
+    raw = str(raw or "").strip()
+    if raw.lower() in _TERMINAL_CWD_SENTINELS:
+        return None
+    expanded = _expand_tilde(raw)
+    if not os.path.isabs(expanded):
+        return None
+    return expanded
+
+
+def _configured_terminal_cwd() -> str | None:
+    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+
+    Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
+    rejected — a relative anchor is meaningless without knowing which cwd it is
+    relative to, which is exactly the ambiguity that misroutes worktree edits.
+    Only an absolute, sentinel-free value is honored.
+    """
+    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+
+
+def _registered_task_cwd_override(task_id: str = "default") -> str | None:
+    """Return a registered cwd override for the raw task id, when available.
+
+    ``terminal_tool`` intentionally collapses CWD-only task overrides to the
+    shared ``"default"`` environment so TUI/dashboard/ACP sessions do not spin
+    up isolated sandboxes just because they have different workspaces. The cwd
+    value itself is still keyed by the raw session/task id, so file tools must
+    read that raw override before falling back to the collapsed container key.
+    """
+    try:
+        from tools.terminal_tool import resolve_task_overrides
+
+        overrides = resolve_task_overrides(task_id)
+    except Exception:
+        return None
+
+    return _sentinel_free_abs_cwd(overrides.get("cwd"))
+
+
+def _authoritative_workspace_root(task_id: str = "default") -> str | None:
+    """Best-effort absolute workspace root for divergence checks.
+
+    Resolution:
+
+      1. The session's own cwd RECORD (``terminal_tool.get_session_cwd``) —
+         written on every completed terminal command and seeded by workspace
+         registration, keyed by the raw session id. Because the record is
+         per-session, one session's ``cd`` can never leak into another
+         session's resolution.
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed cwd before any tool runs). Normally already
+         mirrored into the record at registration; kept as a direct fallback
+         so a cleared/never-written record still resolves the workspace.
+      3. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
+         ``cli.py``/``main.py`` for ``-w`` sessions).
+
+    Returns ``None`` only when there is genuinely no reliable anchor, in which
+    case callers fall back to the process cwd.
+    """
+    try:
+        from tools.terminal_tool import get_session_cwd
+
+        recorded = get_session_cwd(task_id)
+    except Exception:
+        recorded = None
+    if recorded:
+        return recorded
+    registered = _registered_task_cwd_override(task_id)
+    if registered:
+        return registered
+    return _configured_terminal_cwd()
+
+
+def _resolve_base_dir(
+    task_id: str = "default",
+    *,
+    container_paths: bool | None = None,
+) -> Path | PurePosixPath:
+    """Return the ABSOLUTE base directory for resolving relative paths.
+
+    Resolution order:
+      1. The task's live terminal cwd (the directory the agent is actually
+         working in — e.g. a git worktree). Authoritative when known.
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed workspace cwd before any terminal command runs).
+      3. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
+         ``cli.py``/``main.py`` for ``-w`` sessions). Used even before any
+         terminal command has populated the live cwd registry.
+      4. The process cwd.
+
+    The returned base is ALWAYS absolute. This is the core invariant that
+    prevents the worktree-cwd divergence bug: a relative or sentinel
+    ``TERMINAL_CWD`` (commonly the literal ``"."`` from a stale config) is
+    meaningless as a resolution anchor — left to ``Path.resolve()`` it silently
+    resolves against whatever the agent PROCESS cwd happens to be (e.g. the main
+    repo while the terminal is in a worktree), routing edits to the wrong
+    checkout. We therefore reject sentinel/relative ``TERMINAL_CWD`` values
+    outright (rather than anchoring them to the process cwd) and fall through to
+    the process cwd only as a last resort, deterministically.
+    """
+    root = _authoritative_workspace_root(task_id)
+    if container_paths is None:
+        container_paths = _uses_container_paths(task_id)
+    if root:
+        base_text = _expand_tilde(root)
+    else:
+        base_text = os.getcwd()
+    if container_paths:
+        if not posixpath.isabs(base_text):
+            base_text = posixpath.join(os.getcwd(), base_text)
+        return _normalize_without_host_deref(base_text)
+    # Git Bash ``pwd -P`` reports ``/c/Users/...``; translate before Path so
+    # relative file-tool paths don't anchor under a nonexistent ``\\c\\Users``.
+    from tools.environments.local import _msys_to_windows_path
+
+    base_text = _msys_to_windows_path(base_text)
+    if sys.platform == "win32":
+        import ntpath
+
+        if not ntpath.isabs(base_text):
+            base_text = ntpath.join(os.getcwd(), base_text)
+        return Path(ntpath.normpath(base_text))
+    base = Path(base_text)
+    if not base.is_absolute():
+        # Last-resort anchoring: a live cwd should already be absolute, but if a
+        # terminal backend ever reports a relative cwd, anchor it to the process
+        # cwd once, here, so the result no longer depends on cwd at resolve().
+        base = Path(os.getcwd()) / base
+    return base.resolve()
+
+
+def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+    """Resolve *filepath* against the task's absolute base directory.
+
+    See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
+    paths are returned resolved-but-unanchored.
+
+    On native Windows, Git Bash / MSYS drive paths (``/c/Users/...``) are
+    translated to ``C:\\Users\\...`` before resolution so file tools don't
+    treat them as relative ``\\c\\Users\\...`` under the process cwd.
+    """
+    container_paths = _uses_container_paths(task_id)
+    if container_paths:
+        expanded = _expand_tilde(filepath)
+        if posixpath.isabs(expanded):
+            return _normalize_without_host_deref(expanded)
+        resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
+        return _normalize_without_host_deref(resolved)
+
+    # Host paths only — never rewrite Linux paths inside a container/WSL env.
+    from tools.environments.local import _msys_to_windows_path
+
+    expanded = _expand_tilde(_msys_to_windows_path(filepath))
+    if sys.platform == "win32":
+        import ntpath
+
+        if ntpath.isabs(expanded):
+            return Path(ntpath.normpath(expanded))
+        joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
+        return Path(ntpath.normpath(joined))
+
+    p = Path(expanded)
+    if p.is_absolute():
+        return p.resolve()
+    resolved = _resolve_base_dir(task_id, container_paths=False) / p
+    return resolved.resolve()
+
+
+def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
+    """Warn when a relative path resolved OUTSIDE the task's workspace root.
+
+    Surfaces the worktree-cwd divergence the moment it would matter: if the
+    agent passes a relative path but it resolves under a directory that is not
+    the workspace root (i.e. the edit is about to land in a different checkout
+    than the one the agent is working in), return a message naming the absolute
+    target. ``None`` when the path is absolute, the base is unknown, or the
+    resolved path is correctly under the workspace root.
+
+    The workspace root is the live terminal cwd when known, else a registered
+    task/session cwd override, else a sentinel-free absolute ``$TERMINAL_CWD``
+    — so a worktree or Desktop session whose terminal registry is still empty
+    (no ``cd`` run yet) is warned on the very first write.
+    """
+    try:
+        expanded_input = _expand_tilde(filepath)
+        if _uses_container_paths(task_id):
+            # POSIX-namespace backend (container, ssh/WSL): a leading-slash path
+            # is absolute in the backend's filesystem.
+            if posixpath.isabs(expanded_input):
+                return None
+        elif Path(expanded_input).is_absolute():
+            return None
+        workspace_root = _authoritative_workspace_root(task_id)
+        if not workspace_root:
+            return None  # No authoritative workspace root to compare against.
+        if _uses_container_paths(task_id):
+            root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+        else:
+            root = Path(_expand_tilde(workspace_root)).resolve()
+        # Is `resolved` inside `root`?
+        try:
+            resolved.relative_to(root)
+            return None  # Inside the workspace — expected.
+        except ValueError:
+            return (
+                f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
+                f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
+                f"a different directory than the terminal's cwd. If this is not "
+                f"intended (e.g. a git-worktree session writing into the main "
+                f"checkout), pass an absolute path under the workspace instead."
+            )
+    except Exception:
+        return None
 
 
 def _file_ops_uses_host_paths(file_ops) -> bool:

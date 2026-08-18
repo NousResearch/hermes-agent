@@ -20,15 +20,22 @@ import { retireLocalProfileGateways } from '@/store/gateway'
 
 import { isValidProfileName } from './create-profile-dialog'
 
+// Display names are free text (Unicode fine) — no slug sanitizing.
+const identity = (raw: string) => raw
+
 // Self-contained rename (owns the renameProfile call) so every caller just
 // reacts via onRenamed. Unchanged name is a no-op close.
 export function RenameProfileDialog({
   currentName,
+  isDefault = false,
   onClose,
   onRenamed,
   open
 }: {
   currentName: string
+  /** Default profile: sets a presentation-only display name (Unicode ok);
+   *  the canonical id stays "default" and no backend teardown is needed. */
+  isDefault?: boolean
   onClose: () => void
   onRenamed?: (name: string) => Promise<void> | void
   open: boolean
@@ -44,14 +51,15 @@ export function RenameProfileDialog({
       return
     }
 
-    setName(currentName)
+    // Display-name mode starts blank — "default" is the id, not a name.
+    setName(isDefault ? '' : currentName)
     setError(null)
     setStatus('idle')
-  }, [currentName, open])
+  }, [currentName, isDefault, open])
 
   const trimmed = name.trim()
-  const unchanged = trimmed === currentName
-  const invalid = trimmed !== '' && !unchanged && !isValidProfileName(trimmed)
+  const unchanged = !isDefault && trimmed === currentName
+  const invalid = trimmed !== '' && !unchanged && !isDefault && !isValidProfileName(trimmed)
   const busy = status === 'saving' || status === 'done'
 
   async function handleSubmit(event: React.FormEvent) {
@@ -77,7 +85,10 @@ export function RenameProfileDialog({
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
-      retireLocalProfileGateways(currentName)
+      if (!isDefault) {
+        retireLocalProfileGateways(currentName)
+      }
+
       await renameProfile(currentName, trimmed)
       await onRenamed?.(trimmed)
       setStatus('done')
@@ -92,25 +103,31 @@ export function RenameProfileDialog({
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{p.renameTitle}</DialogTitle>
+          <DialogTitle>{isDefault ? p.displayNameTitle : p.renameTitle}</DialogTitle>
           <DialogDescription>
-            {p.renameDescPrefix}
-            <span className="font-mono">~/.local/bin</span>
-            {p.renameDescSuffix}
+            {isDefault ? (
+              p.displayNameDesc
+            ) : (
+              <>
+                {p.renameDescPrefix}
+                <span className="font-mono">~/.local/bin</span>
+                {p.renameDescSuffix}
+              </>
+            )}
           </DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={handleSubmit}>
-          <Field htmlFor="rename-profile-name" label={p.newNameLabel}>
+          <Field htmlFor="rename-profile-name" label={isDefault ? p.displayNameLabel : p.newNameLabel}>
             <SanitizedInput
               aria-invalid={invalid}
               autoFocus
               id="rename-profile-name"
               onValueChange={setName}
-              sanitize={slug}
+              sanitize={isDefault ? identity : slug}
               value={name}
             />
-            <FieldHint error={invalid}>{p.nameHint}</FieldHint>
+            {!isDefault && <FieldHint error={invalid}>{p.nameHint}</FieldHint>}
           </Field>
 
           {error && (

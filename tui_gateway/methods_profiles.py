@@ -200,6 +200,7 @@ def _(rid, params: dict) -> dict:
                 "model": p.model,
                 "provider": p.provider,
                 "description": getattr(p, "description", "") or "",
+                "display_name": getattr(p, "display_name", "") or "",
                 "skill_count": getattr(p, "skill_count", 0) or 0,
             }
             if include_sessions:

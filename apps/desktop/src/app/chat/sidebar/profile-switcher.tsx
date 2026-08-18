@@ -53,6 +53,7 @@ import {
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
+  profileLabel,
   refreshActiveProfile,
   selectProfile,
   setProfileColor,
@@ -240,7 +241,7 @@ export function ProfileRail() {
           <ProfilePill
             active={isAll || onDefault}
             glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
+            label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(defaultProfile))}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
@@ -252,7 +253,7 @@ export function ProfileRail() {
         <ProfilePill
           active
           glyph="home"
-          label={defaultProfile.name}
+          label={profileLabel(defaultProfile)}
           onSelect={() => selectProfile(defaultProfile.name)}
         />
       )}
@@ -294,7 +295,7 @@ export function ProfileRail() {
                       active={!isAll && normalizeProfileKey(profile.name) === activeKey}
                       color={resolveProfileColor(profile.name, colors)}
                       key={profile.name}
-                      label={profile.name}
+                      label={profileLabel(profile)}
                       onDelete={() => setPendingDelete(profile)}
                       onEditSoul={() => setPendingSoul(profile.name)}
                       onRecolor={color => setProfileColor(profile.name, color)}
@@ -345,6 +346,7 @@ export function ProfileRail() {
 
       <RenameProfileDialog
         currentName={pendingRename?.name ?? ''}
+        isDefault={pendingRename?.is_default ?? false}
         onClose={() => setPendingRename(null)}
         onRenamed={refreshActiveProfile}
         open={pendingRename !== null}
@@ -502,6 +504,7 @@ function ProfileDropdown({
           <ProfileDropdownItem
             color={resolveProfileColor(profile.name, colors)}
             key={profile.name}
+            label={profileLabel(profile)}
             name={profile.name}
           />
         ))}
@@ -512,14 +515,14 @@ function ProfileDropdown({
 
 // One dropdown row per profile — its own component so each row can own a
 // hover-intent prewarm timer (see useProfilePrewarm).
-function ProfileDropdownItem({ color, name }: { color: null | string; name: string }) {
+function ProfileDropdownItem({ color, label, name }: { color: null | string; label: string; name: string }) {
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
 
   return (
     <SelectItem onPointerEnter={startPrewarm} onPointerLeave={cancelPrewarm} value={name}>
       <span className="flex min-w-0 items-center gap-1.5">
         <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
-        <span className="truncate">{name}</span>
+        <span className="truncate">{label}</span>
       </span>
     </SelectItem>
   )

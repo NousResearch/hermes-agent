@@ -49,6 +49,7 @@ vi.mock('@/store/profile', () => ({
   $profileScope: atom('default'),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,
+  profileLabel: (profile: { display_name?: string; name: string }) => (profile.display_name ?? '').trim() || profile.name,
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),
   selectProfile: vi.fn(),
   setProfileColor: vi.fn(),

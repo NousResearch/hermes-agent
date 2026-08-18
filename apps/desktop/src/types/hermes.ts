@@ -920,6 +920,8 @@ export interface ProfileCreatePayload {
 }
 
 export interface ProfileInfo {
+  /** Presentation-only label override (profile.yaml display_name). */
+  display_name?: string
   has_env: boolean
   is_default: boolean
   model: null | string

@@ -3103,6 +3103,13 @@ function displayName(bot, meta) {
     return meta.title.trim()
   }
 
+  // Core-profile display name (profile.yaml, set via `hermes profile rename
+  // default <name>` or the dashboard) — the CLI-level equivalent of a Bot
+  // Mode title. Rides the profiles.list row; presentation-only.
+  if (typeof bot?.display_name === 'string' && bot.display_name.trim()) {
+    return bot.display_name.trim()
+  }
+
   // The primary profile is literally named "default" — as a bot identity
   // that reads like nobody bothered. Present it as Hermes (the agent it is)
   // unless the user gives it a real title.

@@ -3171,6 +3171,15 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # When `hermes update` finds the source checkout parked on a feature
+        # branch (left behind by tooling or a manual checkout), switch back
+        # to the update target automatically — but only when the branch is
+        # clean and every commit on it is already merged into the target.
+        # When it is not safe, the code update is SKIPPED with a loud
+        # warning instead of pretending success (2026-08-17 incident:
+        # "✓ Code updated!" printed while the checkout stayed days behind
+        # main on a stale branch). Set false to never auto-switch.
+        "auto_switch_parked_branch": True,
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example

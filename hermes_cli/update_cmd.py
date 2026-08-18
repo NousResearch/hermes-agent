@@ -828,11 +828,171 @@ def _commit_staged_replacements(staged) -> None:
                 pass
 
 
+def _branch_head_label(git_cmd=None, cwd=None) -> str | None:
+    """``"<branch> @ <short-sha>"`` for the checkout, or None when unknown.
+
+    Appended to the update summary lines so branch drift is visible at a
+    glance (live incident 2026-08-17: a checkout parked on a stale feature
+    branch got "✓ Update complete!" with nothing on the line saying WHERE
+    the checkout actually sat). Never raises — summary decoration must not
+    break an update.
+    """
+    try:
+        cmd = list(git_cmd) if git_cmd else ["git"]
+        root = cwd if cwd is not None else _m().PROJECT_ROOT
+        branch = subprocess.run(
+            cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=root, capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        sha = subprocess.run(
+            cmd + ["rev-parse", "--short", "HEAD"],
+            cwd=root, capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        branch_name = branch.stdout.strip()
+        sha_text = sha.stdout.strip()
+        if branch.returncode != 0 or sha.returncode != 0 or not sha_text:
+            return None
+        if not branch_name:
+            return None
+        label = "detached" if branch_name == "HEAD" else branch_name
+        return f"{label} @ {sha_text}"
+    except Exception:
+        return None
+
+
+def _branch_head_suffix(git_cmd=None, cwd=None) -> str:
+    """`` [<branch> @ <sha>]`` suffix for summary lines ("" when unknown)."""
+    label = _branch_head_label(git_cmd, cwd)
+    return f" [{label}]" if label else ""
+
+
+def _assess_parked_branch_switch(
+    git_cmd: list[str], cwd: Path, current_branch: str, target_branch: str
+) -> tuple[bool, str]:
+    """Decide whether it is safe to auto-switch a parked feature branch back
+    to the update target.
+
+    Live incident (2026-08-17, Teknium's box): the source checkout sat on a
+    stale feature branch left behind by earlier tooling; ``hermes update``
+    autostashed, ran its post-update steps and printed "✓ Code updated!"
+    while the running code stayed days behind main. The guard's contract:
+
+    - safe (True, "") only when the working tree + index are clean AND every
+      commit on the parked branch is already contained in
+      ``origin/<target_branch>`` (``git cherry`` reports no ``+`` lines).
+    - anything else — dirty tree, unmerged commits, git errors, or the
+      ``updates.auto_switch_parked_branch: false`` config opt-out — returns
+      (False, <reason>) and the caller must NOT touch the branch.
+
+    Reasons: "disabled", "dirty", "unmerged:<count>", "unverifiable".
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        _update_cfg = (load_config() or {}).get("updates", {})
+        if isinstance(_update_cfg, dict) and not bool(
+            _update_cfg.get("auto_switch_parked_branch", True)
+        ):
+            return False, "disabled"
+    except Exception as exc:
+        # A config read failure must not disable the guard's safety checks —
+        # fall through to them with the default (auto-switch allowed).
+        logger.debug("Could not read updates.auto_switch_parked_branch: %s", exc)
+
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=cwd, capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if status.returncode != 0:
+        return False, "unverifiable"
+    if status.stdout.strip():
+        return False, "dirty"
+
+    cherry = subprocess.run(
+        git_cmd + ["cherry", f"origin/{target_branch}"],
+        cwd=cwd, capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if cherry.returncode != 0:
+        return False, "unverifiable"
+    unmerged = [
+        line for line in cherry.stdout.splitlines() if line.startswith("+")
+    ]
+    if unmerged:
+        return False, f"unmerged:{len(unmerged)}"
+    return True, ""
+
+
+def _print_parked_branch_skip_warning(
+    git_cmd: list[str],
+    cwd: Path,
+    current_branch: str,
+    target_branch: str,
+    reason: str,
+) -> None:
+    """LOUD block explaining why the code update was skipped on a parked
+    branch, with the behind-count and the exact commands to resolve."""
+    behind = None
+    try:
+        behind_result = subprocess.run(
+            git_cmd + ["rev-list", f"HEAD..origin/{target_branch}", "--count"],
+            cwd=cwd, capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if behind_result.returncode == 0 and behind_result.stdout.strip():
+            behind = int(behind_result.stdout.strip())
+    except Exception:
+        behind = None
+
+    if reason == "dirty":
+        why = "the working tree has uncommitted changes"
+    elif reason.startswith("unmerged:"):
+        count = reason.split(":", 1)[1]
+        why = (
+            f"the branch has {count} commit(s) not merged into "
+            f"origin/{target_branch}"
+        )
+    elif reason == "disabled":
+        why = "updates.auto_switch_parked_branch is set to false in config.yaml"
+    else:
+        why = (
+            f"the branch state could not be verified against "
+            f"origin/{target_branch}"
+        )
+
+    bar = "=" * 68
+    print()
+    print(bar)
+    print(f"⚠ CODE UPDATE SKIPPED — checkout is parked on '{current_branch}'")
+    print(f"  Not auto-switching to {target_branch}: {why}.")
+    if behind is not None and behind > 0:
+        print(
+            f"  This checkout is {behind} commit(s) BEHIND "
+            f"origin/{target_branch} — the code you are running is stale."
+        )
+    print()
+    print("  To resolve, inspect the branch and switch back yourself:")
+    print(f"    git -C {cwd} status")
+    print(f"    git -C {cwd} checkout {target_branch} && hermes update")
+    print(
+        "  (commit or stash your work on the branch first if you want to "
+        "keep it)"
+    )
+    print(bar)
+
+
 def _print_update_completion(message: str) -> None:
     """Print an update outcome plus, when the dashboard launched this run
     with an action id, a terminal receipt line the Desktop can match after
-    the dashboard restarts (see #47359 / #58764)."""
-    print(message)
+    the dashboard restarts (see #47359 / #58764).
+
+    The outcome line carries the checkout's actual branch + HEAD short-sha
+    so branch drift is visible at a glance (2026-08-17 parked-branch
+    incident)."""
+    print(f"{message}{_branch_head_suffix()}")
     action_id = os.environ.get("HERMES_ACTION_ID", "")
     if len(action_id) == 32 and all(char in "0123456789abcdef" for char in action_id):
         print(f"=== hermes-update completed {action_id} ===")
@@ -4718,13 +4878,47 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # "always update against main" behavior; for any other target it's
         # the same thing — get HEAD onto the requested branch first, then
         # fast-forward.
+        #
+        # Parked-branch guard (2026-08-17 live incident): the checkout can be
+        # left parked on a stale feature branch by earlier tooling. Blindly
+        # stash-switch-pull-switch-back "updates" main while the running code
+        # stays days behind, then prints "✓ Code updated!". Only auto-switch
+        # when the parked branch is clean AND fully merged into the target;
+        # otherwise warn loudly, mark the code update SKIPPED, and stop
+        # before the post-update steps reinforce the stale tree.
+        parked_branch_switched = False
         if current_branch != branch:
-            label = (
-                "detached HEAD"
-                if current_branch == "HEAD"
-                else f"branch '{current_branch}'"
-            )
-            print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
+            if current_branch != "HEAD":
+                switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
+                    git_cmd, _m().PROJECT_ROOT, current_branch, branch
+                )
+                if not switch_safe:
+                    _m()._print_parked_branch_skip_warning(
+                        git_cmd,
+                        _m().PROJECT_ROOT,
+                        current_branch,
+                        branch,
+                        switch_block_reason,
+                    )
+                    print()
+                    print(
+                        "⚠ Update finished — code update SKIPPED"
+                        f"{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}"
+                    )
+                    _m()._resume_windows_gateways_after_update(
+                        _windows_gateway_resume
+                    )
+                    sys.exit(1)
+                parked_branch_switched = True
+                print(
+                    f"  ⚠ Checkout was parked on '{current_branch}' "
+                    f"(fully merged) — switching back to {branch}..."
+                )
+            else:
+                print(
+                    f"  ⚠ Currently on detached HEAD — switching to {branch} "
+                    "for update..."
+                )
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
             checkout_result = subprocess.run(
@@ -4817,7 +5011,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_fork and branch == "main":
                 _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
 
-            # Restore stash and switch back to original branch if we moved
+            # Restore stash and switch back to original branch if we moved.
+            # EXCEPTION: a parked feature branch we verified clean + fully
+            # merged stays on the target — re-parking the checkout on the
+            # stale branch is the 2026-08-17 incident all over again.
             if auto_stash_ref is not None:
                 _m()._restore_stashed_changes(
                     git_cmd,
@@ -4826,7 +5023,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {branch, "HEAD"}:
+            if parked_branch_switched:
+                print(
+                    f"  ✓ Checkout was parked on '{current_branch}' (fully "
+                    f"merged) — switched back to {branch}."
+                )
+            elif current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=_m().PROJECT_ROOT,
@@ -5079,6 +5281,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
 
+        # And verify HEAD actually sits on the target branch. The parked-
+        # branch guard above should make this unreachable, but if any path
+        # leaves the checkout attached elsewhere, "✓ Code updated!" would be
+        # a lie — refuse to claim success (2026-08-17 incident class).
+        post_pull_branch = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        ).stdout.strip()
+        if post_pull_branch and post_pull_branch not in {branch, "HEAD"}:
+            print()
+            print(
+                f"✗ Update pulled origin/{branch}, but the checkout is on "
+                f"'{post_pull_branch}' — not claiming success."
+            )
+            print(
+                "  Switch to the target branch and retry: "
+                f"git -C {_m().PROJECT_ROOT} checkout {branch} && hermes update"
+            )
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
+
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
         # the old bytecode (e.g. get_hermes_home added to hermes_constants).
@@ -5245,7 +5470,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
         print()
-        print("✓ Code updated!")
+        print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
 
         # ── Post-update state.db integrity guard (#68474) ─────────────────
         # Verify that state.db survived the update intact.  If the live file

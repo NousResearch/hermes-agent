@@ -521,3 +521,33 @@ export function preprocessMarkdown(text: string): string {
     .join('')
     .replace(/[ \t]+\n/g, '\n')
 }
+
+/**
+ * Math-only normalization for static file previews. Mirrors the math half of
+ * `preprocessMarkdown` — delimiter normalization (`\(…\)`, `\[…\]`), display
+ * math on its own lines, and currency-dollar escaping — but deliberately skips
+ * the chat-only transforms (reasoning-block stripping, `@session:` ref
+ * linking, preview-target stripping, raw-URL autolinking, citation-marker
+ * stripping). A file's prose is author content, not model output, so those
+ * rewrites must not touch it. Code fences and inline code spans pass through
+ * untouched so `$`, `\(` and `\begin` inside listings are never mangled.
+ *
+ * ` ```math ` fences need no preprocessing: remark/rehype emit them as
+ * `<code class="language-math">` and the memoized rehype-katex wrapper renders
+ * them regardless of this function.
+ */
+export function normalizeFilePreviewMath(text: string): string {
+  return text
+    .split(CODE_FENCE_SPLIT_RE)
+    .map(part => {
+      if (/^(?:```|~~~)/.test(part)) {
+        return part
+      }
+
+      return part
+        .split(INLINE_CODE_SPLIT_RE)
+        .map(segment => (segment.startsWith('`') ? segment : normalizeProseMath(segment)))
+        .join('')
+    })
+    .join('')
+}

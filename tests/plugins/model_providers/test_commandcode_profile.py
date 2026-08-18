@@ -256,3 +256,22 @@ class TestCommandCodeFetchModelsPickerContract:
         profile = providers.get_provider_profile(profile_name)
         assert profile is not None
         assert "base_url" in inspect.signature(profile.fetch_models).parameters
+
+    def test_resolve_provider_full(self):
+        """Both profiles must resolve through the model-switch path.
+
+        Regression: ``resolve_provider_full`` only knew models.dev + overlay
+        providers, so plugin-only providers (commandcode) failed with
+        "Unknown provider" on /model switches even though the picker listed
+        them.
+        """
+        from hermes_cli.providers import resolve_provider_full
+
+        chat = resolve_provider_full("commandcode", {}, [])
+        assert chat is not None and chat.id == "commandcode"
+        assert chat.transport == "openai_chat"
+        assert "COMMANDCODE_API_KEY" in chat.api_key_env_vars
+
+        anth = resolve_provider_full("commandcode-anthropic", {}, [])
+        assert anth is not None and anth.id == "commandcode-anthropic"
+        assert anth.transport == "anthropic_messages"

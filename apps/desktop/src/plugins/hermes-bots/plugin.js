@@ -6967,13 +6967,16 @@ function RoutinesPane() {
           ? jsxs('div', {
               className: 'flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center',
               children: [
-                jsx(Codicon, { name: 'calendar', className: 'text-[1.6rem] text-(--ui-text-quaternary)' }),
-                jsx('div', {
-                  className: 'text-xs leading-5 text-(--ui-text-tertiary)',
-                  children: filterHint
-                    ? filterHint
-                    : 'Cronjobs are recurring tasks this agent runs on a schedule.'
-                }),
+                // No generic placeholder here: an icon + "cronjobs are…" blurb and the
+                // create button both just said "empty" (Teknium, Aug 2026). The hint
+                // text stays only when jobs exist but are hidden by the bot filter —
+                // that carries real information, not an empty-state marker.
+                filterHint
+                  ? jsx('div', {
+                      className: 'text-xs leading-5 text-(--ui-text-tertiary)',
+                      children: filterHint
+                    })
+                  : null,
                 jsx(Button, {
                   variant: 'secondary',
                   size: 'sm',

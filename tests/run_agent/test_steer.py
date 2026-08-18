@@ -711,3 +711,139 @@ class TestSteerCommandRegistry:
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+class TestLegacyHiddenPlaceholderWireSubstitution:
+    """Projection-side half of #88955: rows persisted BEFORE the writer-side
+    ``api_content`` stamp are ``content=""`` + ``display_kind="hidden"`` with
+    no sidecar. The send-time projection must give the WIRE copy the neutral
+    ``[response interrupted]`` payload so legacy sessions converge instead of
+    re-healing forever — while the durable row stays hidden and empty."""
+
+    def _loop_agent(self):
+        from unittest.mock import MagicMock, patch
+
+        from run_agent import AIAgent
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.client = MagicMock()
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        return agent
+
+    def test_legacy_empty_hidden_assistant_row_gets_neutral_wire_payload(self):
+        """The projection itself must fill the row — the sanitizer must have
+        NOTHING left to heal (its per-turn warning spam IS the bug)."""
+        from unittest.mock import patch
+
+        import agent.agent_runtime_helpers as _arh
+
+        from tests.run_agent.test_run_agent import _mock_response
+
+        agent = self._loop_agent()
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="ok", finish_reason="stop"),
+        ]
+        sanitizer_inputs = []
+        _real_repair = _arh.repair_empty_non_final_messages
+
+        def _spy_repair(messages, *a, **k):
+            sanitizer_inputs.append(
+                [
+                    (m.get("role"), m.get("content"))
+                    for m in messages
+                    if isinstance(m, dict)
+                ]
+            )
+            return _real_repair(messages, *a, **k)
+        # Legacy pre-fix row: no api_content sidecar.
+        history = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "", "display_kind": "hidden"},
+            {"role": "user", "content": "correction", "finish_reason": "stop"},
+            {"role": "assistant", "content": "earlier reply", "finish_reason": "stop"},
+        ]
+
+        with (
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(
+                _arh, "repair_empty_non_final_messages", side_effect=_spy_repair
+            ),
+        ):
+            agent.run_conversation("next question", conversation_history=history)
+
+        # Precondition: the sanitizer actually ran on this call path.
+        assert sanitizer_inputs, "sanitizer was never invoked — test is vacuous"
+        # The projection already filled the legacy row BEFORE sanitization:
+        # every assistant row the sanitizer saw carried payload, so it healed 0.
+        for snapshot in sanitizer_inputs:
+            for role, content in snapshot:
+                if role == "assistant":
+                    assert (content or "").strip(), (
+                        "sanitizer still received an empty assistant row — "
+                        "the re-heal loop is back (#88955)"
+                    )
+
+        wire = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        wire_assistants = [m for m in wire if m.get("role") == "assistant"]
+        legacy = wire_assistants[0]
+        # Substituted on the wire by the projection (not the sanitizer):
+        assert legacy["content"] == "[response interrupted]"
+        assert "display_kind" not in legacy
+        # #81841: never the interrupt scaffold.
+        assert "[This response was interrupted" not in legacy["content"]
+        # Durable history untouched.
+        assert history[1]["content"] == ""
+        assert history[1]["display_kind"] == "hidden"
+        assert "api_content" not in history[1]
+
+    def test_hidden_row_with_tool_calls_or_text_is_not_touched(self):
+        from agent.conversation_loop import _clone_message_for_send  # noqa: F401
+        from unittest.mock import patch
+
+        from tests.run_agent.test_run_agent import _mock_response
+
+        agent = self._loop_agent()
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="ok", finish_reason="stop"),
+        ]
+        history = [
+            {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": "visible text",
+                "display_kind": "hidden",
+                "finish_reason": "stop",
+            },
+            {"role": "user", "content": "more"},
+            {"role": "assistant", "content": "reply", "finish_reason": "stop"},
+        ]
+
+        with (
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("next", conversation_history=history)
+
+        wire = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        wire_assistants = [m for m in wire if m.get("role") == "assistant"]
+        assert wire_assistants[0]["content"] == "visible text"

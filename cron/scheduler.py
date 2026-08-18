@@ -2404,10 +2404,10 @@ def _send_media_via_adapter(
             try:
                 # Large attachments (long TTS audio, concatenated recordings,
                 # big exports) can legitimately exceed a fixed 30s upload
-                # window. Configurable, matching the other cron timeouts.
-                result = future.result(
-                    timeout=int(os.getenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", "300"))
-                )
+                # window. Configurable, matching the other cron timeouts
+                # (cron.media_send_timeout_seconds in config.yaml, or the
+                # HERMES_CRON_MEDIA_SEND_TIMEOUT env override).
+                result = future.result(timeout=_get_media_send_timeout())
             except TimeoutError:
                 future.cancel()
                 raise
@@ -3254,6 +3254,44 @@ def _get_script_timeout() -> int:
         logger.debug("Failed to load cron script timeout from config: %s", exc)
 
     return _DEFAULT_SCRIPT_TIMEOUT
+
+
+_DEFAULT_MEDIA_SEND_TIMEOUT = 300
+
+
+def _get_media_send_timeout() -> int:
+    """Resolve the per-attachment media-send timeout from env/config.
+
+    Mirrors the ``script_timeout_seconds`` resolution pattern: the
+    HERMES_CRON_MEDIA_SEND_TIMEOUT env var wins, then
+    ``cron.media_send_timeout_seconds`` in config.yaml, then the default
+    (300s — large attachments like long TTS audio can legitimately exceed
+    the old fixed 30s upload window).
+    """
+    env_value = os.getenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            timeout = int(float(env_value))
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning(
+                "Invalid HERMES_CRON_MEDIA_SEND_TIMEOUT=%r; using config/default",
+                env_value,
+            )
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("media_send_timeout_seconds")
+        if configured is not None:
+            timeout = int(float(configured))
+            if timeout > 0:
+                return timeout
+    except Exception as exc:
+        logger.debug("Failed to load cron media-send timeout from config: %s", exc)
+
+    return _DEFAULT_MEDIA_SEND_TIMEOUT
 
 
 def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:

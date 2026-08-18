@@ -2502,6 +2502,12 @@ DEFAULT_CONFIG = {
         # wedges the job's dispatch guard forever. Also overridable via
         # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
         "session_db_timeout_seconds": 10,
+        # Timeout (seconds) for each media attachment send during cron
+        # delivery via a live gateway adapter. Large attachments (long TTS
+        # audio, big exports) can exceed the old fixed 30s window. Also
+        # overridable via HERMES_CRON_MEDIA_SEND_TIMEOUT env var. Keep in
+        # sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
+        "media_send_timeout_seconds": 300,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

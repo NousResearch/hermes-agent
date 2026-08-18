@@ -33,3 +33,9 @@ test('source contract: create-group modal has search, checkboxes, name, create',
 test('source contract: group name falls back to member names, Discord-style', () => {
   assert.match(pluginSource, /selected\.map\(bot => displayName\(bot, botRosterMeta\(bot, allMeta\)\)\)\.join\(', '\)/)
 })
+
+test('source contract: every selected machine is persisted in the durable room record', () => {
+  assert.match(pluginSource, /const roomMembers = durableGroupChatMembers\(selected\)/)
+  assert.match(pluginSource, /room\.members = roomMembers/)
+  assert.doesNotMatch(pluginSource, /const remoteMembers = selected/)
+})

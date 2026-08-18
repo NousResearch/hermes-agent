@@ -2402,7 +2402,28 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
   // This-device shadow of default.
   const liveProvided = arguments.length >= 3
   const liveId = String(activeConnectionId || '').trim()
-  const activeId = liveId || (liveProvided ? '' : String(union?.primaryConnectionId || '').trim())
+  let activeId = liveId || (liveProvided ? '' : String(union?.primaryConnectionId || '').trim())
+
+  // Migrated remote-primary windows can still expose a legacy remote
+  // descriptor without connectionId. That produces a null live id even
+  // though profiles.list is answering from the registry primary. Infer the
+  // primary only when its inventory matches the rich rows and the local
+  // inventory does not. A genuinely local window has a matching local row,
+  // so it keeps the null-is-local behavior used after clicking This device.
+  if (!activeId && liveProvided) {
+    const primaryId = String(union?.primaryConnectionId || '').trim()
+    const richNames = new Set(localProfiles.map(profile => String(profile?.name || '').trim()).filter(Boolean))
+    const localMatches = agents.some(
+      agent => agent?.connectionKind === 'local' && richNames.has(String(agent?.profile || '').trim())
+    )
+    const primaryMatches = agents.some(
+      agent => String(agent?.connectionId || '').trim() === primaryId && richNames.has(String(agent?.profile || '').trim())
+    )
+
+    if (!localMatches && primaryId && primaryMatches) {
+      activeId = primaryId
+    }
+  }
   const activeByName = new Map()
 
   // Treat the rich list as one row per active-source profile. Clone every
@@ -3178,6 +3199,21 @@ function groupChatMemberBots(group, roster, metaByName) {
   return [...local, ...remote]
 }
 
+/** Persist source-qualified identities for every selected member. The active
+ *  source's row may become remote after a connection switch, so retaining it
+ *  here is what keeps the same room intact across machines. */
+function durableGroupChatMembers(bots) {
+  return (bots || []).map(bot => ({
+    name: bot.name,
+    handle: bot.handle || bot.name,
+    connectionId: bot.connectionId,
+    connectionKind: bot.connectionKind,
+    connectionLabel: bot.connectionLabel,
+    remoteSource: true,
+    sourceScoped: true
+  }))
+}
+
 /** Existing group names, alphabetical — feeds the Move-to-group dialog. */
 function knownGroups(metaByName) {
   const names = new Set()
@@ -3412,8 +3448,8 @@ function updateGroupChat(group, mutate) {
         // with the pre-turn message baseline. Survives reloads so finished
         // work is still harvested after a window restart.
         stranded: room.stranded || {},
-        // Cross-connection member descriptors — remote bots can't ride
-        // bot-meta, so the room record carries who they are.
+        // Source-qualified member descriptors keep the room whole when the
+        // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : []
       }
     }
@@ -7361,27 +7397,15 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
       }
     }
 
-    // Members from OTHER connections can't ride bot-meta (it is scoped to
-    // the active gateway and name-keyed). Their descriptors live on the room
-    // record instead, so the roster merge can seat them every refresh.
-    const remoteMembers = selected
-      .filter(bot => bot.remoteSource)
-      .map(bot => ({
-        name: bot.name,
-        handle: bot.handle || bot.name,
-        connectionId: bot.connectionId,
-        connectionKind: bot.connectionKind,
-        connectionLabel: bot.connectionLabel,
-        remoteSource: true,
-        sourceScoped: true
-      }))
+    // Persist every machine identity, including today's active source. That
+    // member becomes remote after a source switch and cannot rely on the new
+    // gateway's name-keyed bot metadata to remain seated in this room.
+    const roomMembers = durableGroupChatMembers(selected)
 
-    if (remoteMembers.length) {
-      updateGroupChat(groupName, room => {
-        room.members = remoteMembers
-        return room
-      })
-    }
+    updateGroupChat(groupName, room => {
+      room.members = roomMembers
+      return room
+    })
 
     host.notify({ kind: 'info', message: `“${groupName}” created with ${selected.length} bots` })
     onClose()

@@ -12825,29 +12825,16 @@ ipcMain.handle('hermes:connections:update-all', async () => {
   return { ok: true, results }
 })
 
-// POST helper against a resolved backend descriptor. Token-auth descriptors
-// use the session-token header; OAuth descriptors have token: null and
-// authenticate via the OAuth partition's cookies (same split as the rest of
-// the REST surface).
+// Convenience wrappers around the bearer-aware descriptor request path.
+// Native OAuth sessions are cookieless, so these must not bypass
+// fetchJsonForBackend and fall straight through to the cookie partition.
 async function postJsonForBackend(descriptor, path, body, opts: any = {}) {
-  const url = `${descriptor.baseUrl}${path}`
-
-  if (descriptor.authMode === 'oauth') {
-    return fetchJsonViaOauthSession(url, { ...opts, body: body ?? {}, method: 'POST' })
-  }
-
-  return fetchJson(url, descriptor.token, { ...opts, body: body ?? {}, method: 'POST' })
+  return fetchJsonForBackend(descriptor, path, { ...opts, body: body ?? {}, method: 'POST' })
 }
 
-// GET twin of postJsonForBackend — same token/cookie auth split.
+// GET twin of postJsonForBackend.
 async function getJsonForBackend(descriptor, path, opts: any = {}) {
-  const url = `${descriptor.baseUrl}${path}`
-
-  if (descriptor.authMode === 'oauth') {
-    return fetchJsonViaOauthSession(url, requestOptionsWithHeaders(opts, descriptor.headers || {}))
-  }
-
-  return fetchJson(url, descriptor.token, requestOptionsWithHeaders(opts, descriptor.headers || {}))
+  return fetchJsonForBackend(descriptor, path, opts)
 }
 
 // Any-method REST call against a resolved backend descriptor — the descriptor

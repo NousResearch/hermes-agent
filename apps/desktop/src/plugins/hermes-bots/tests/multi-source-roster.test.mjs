@@ -380,6 +380,29 @@ test('merge: live-null local window does not treat registry primary as active', 
   )
 })
 
+test('merge: legacy remote descriptor infers a matching remote primary when local inventory differs', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const local = { profiles: [{ name: 'default', last_session: { id: 'noah-chat' } }] }
+  const union = {
+    primaryConnectionId: 'noah',
+    agents: [
+      { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'archie', handle: 'archie' },
+      { connectionId: 'noah', connectionKind: 'remote', connectionLabel: 'Noah', profile: 'default', handle: 'default' }
+    ]
+  }
+
+  // Legacy remote descriptors have mode:'remote' but no connectionId, so the
+  // host state is null. The matching primary row must annotate the rich row,
+  // while Archie remains a selectable other-source agent.
+  const out = merge(local, union, null)
+
+  assert.equal(out.profiles.length, 2)
+  assert.equal(out.profiles.find(p => p.name === 'default').connectionId, 'noah')
+  assert.equal(out.profiles.find(p => p.name === 'default').remoteSource, undefined)
+  assert.equal(out.profiles.find(p => p.name === 'archie').connectionId, 'local')
+  assert.equal(out.profiles.find(p => p.name === 'archie').remoteSource, true)
+})
+
 test('merge: previously seen remotes survive a connect-on-demand empty union', () => {
   const { __mergeMultiSourceRoster: merge } = runtime()
   const previous = [

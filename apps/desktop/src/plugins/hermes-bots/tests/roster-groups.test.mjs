@@ -30,7 +30,7 @@ function load() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__groups = { groupChatNames, groupLastActivity, groupChatMemberBots, knownGroups, stripPreviewMarkdown, $groupChats };\n'
+      '\nglobalThis.__groups = { groupChatNames, groupLastActivity, groupChatMemberBots, durableGroupChatMembers, knownGroups, stripPreviewMarkdown, $groupChats };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   return context.__groups
@@ -81,6 +81,46 @@ test('groupChatMemberBots: seats local meta members plus stored remote descripto
   assert.equal(JSON.stringify(members.map(m => m.name)), JSON.stringify(['researcher', 'spark']))
   // The LIVE roster row was preferred over the stored descriptor.
   assert.equal(members[1], roster[2])
+})
+
+test('durableGroupChatMembers: retains active and remote source identities', () => {
+  const { durableGroupChatMembers } = load()
+  const members = durableGroupChatMembers([
+    { name: 'default', handle: 'noah', connectionId: 'noah', connectionKind: 'remote', connectionLabel: 'Noah' },
+    {
+      name: 'default',
+      handle: 'maya',
+      connectionId: 'maya',
+      connectionKind: 'remote',
+      connectionLabel: 'Maya',
+      remoteSource: true
+    }
+  ])
+
+  assert.equal(members.length, 2)
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(members)),
+    [
+      {
+        name: 'default',
+        handle: 'noah',
+        connectionId: 'noah',
+        connectionKind: 'remote',
+        connectionLabel: 'Noah',
+        remoteSource: true,
+        sourceScoped: true
+      },
+      {
+        name: 'default',
+        handle: 'maya',
+        connectionId: 'maya',
+        connectionKind: 'remote',
+        connectionLabel: 'Maya',
+        remoteSource: true,
+        sourceScoped: true
+      }
+    ]
+  )
 })
 
 test('knownGroups: unique, trimmed, alphabetical', () => {

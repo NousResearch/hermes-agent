@@ -922,6 +922,19 @@ function readMain() {
   return fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
 }
 
+test('registry JSON helpers retain native OAuth bearer authentication', () => {
+  const source = readMain()
+  const postStart = source.indexOf('async function postJsonForBackend(')
+  const fetchStart = source.indexOf('async function fetchJsonForBackend(', postStart)
+  const helpers = source.slice(postStart, fetchStart)
+
+  assert.notEqual(postStart, -1)
+  assert.notEqual(fetchStart, -1)
+  assert.match(helpers, /return fetchJsonForBackend\(descriptor, path, \{ \.\.\.opts, body: body \?\? \{\}, method: 'POST' \}\)/)
+  assert.match(helpers, /return fetchJsonForBackend\(descriptor, path, opts\)/)
+  assert.doesNotMatch(helpers, /fetchJsonViaOauthSession/)
+})
+
 test('coerceDesktopConnectionConfig routes token persistence through resolvePersistedRemoteToken', () => {
   const source = readMain()
   const fnStart = source.indexOf('function coerceDesktopConnectionConfig(')

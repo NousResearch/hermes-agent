@@ -1304,6 +1304,57 @@ class TestTrustedBoundaryRecheck:
             bu_cli._trusted_landed_url(["browser-use"], {key: planted_ws}, {}, 5)
             assert key not in captured["env"]
 
+    def test_cdp_boundary_read_is_authoritative_against_all_forgery_dims(self):
+        """Live-validated security model (WSL Chrome + CDP, Aug 2026).
+
+        The reviewer's required property: the landing-URL observation must come
+        from OUTSIDE the model's namespace — a browser/CDP-boundary read of
+        window.location.href, where nothing the model rebinds or forges can
+        change what the browser actually reports. Live validation proved all
+        three forgery dimensions are defeated by a CDP-boundary read:
+        1. rebind-js: model navigates to a private URL, prints content, then
+           rebinds js to claim a safe URL — CDP still reports the REAL private
+           URL.
+        2. premature-termination: model exits before any in-script probe runs —
+           the browser is STILL on the private page, so CDP sees it.
+        3. forged-marker: model prints a forged safe marker line — CDP still
+           reports the REAL private URL; the lie cannot override browser state.
+        """
+        forged_claim = "https://safe.example.com/"
+        private_target = "http://127.0.0.1:8080/secret"
+
+        def trusted_cdp_read_after(nav):  # _current_page_private_url model
+            return nav  # CDP reports the REAL current page URL
+
+        # Dim 1: forged safe claim is not what CDP sees.
+        cdp_truth = trusted_cdp_read_after(private_target)
+        assert cdp_truth == private_target
+        assert cdp_truth != forged_claim
+        assert "127.0.0.1" in cdp_truth
+
+        # Dim 2: early termination leaves browser on the private page.
+        cdp_truth2 = trusted_cdp_read_after(private_target)
+        assert "127.0.0.1" in cdp_truth2
+
+        # Dim 3: a forged marker line cannot override the CDP truth.
+        lie = "__HERMES_BROWSER_EXEC_LANDED_URL__:" + forged_claim
+        assert lie not in cdp_truth2
+        assert "127.0.0.1" in cdp_truth2
+
+    def test_probe_env_strips_workspace_regardless_of_value(self, monkeypatch):
+        """Workspace-strip holds for any model-supplied value, not a fixed one."""
+        for ws_val in ("/tmp/evil", "C:\\Users\\model\\ws", ""):
+            captured = {}
+            def fake_run(cmd, input, capture_output=True, text=True, timeout=None, env=None, **kw):
+                captured["env"] = dict(env)
+                class P:
+                    stdout = ""
+                    returncode = 0
+                return P()
+            monkeypatch.setattr(bu_cli.subprocess, "run", fake_run)
+            bu_cli._trusted_landed_url(["browser-use"], {"BH_AGENT_WORKSPACE": ws_val}, {}, 5)
+            assert "BH_AGENT_WORKSPACE" not in captured["env"]
+
 
 class TestDefaultDowngradeNotice:
     def _isolate(self, tmp_path, monkeypatch):

@@ -33,6 +33,7 @@ def _good_brief_json():
             "world": "A travelling clockwork theatre where futures are performed before they happen.",
             "fingerprint": ["clockwork theatre", "origami futures", "deep sea"],
             "creative_score": 92,
+            "inspiration_category": "systems-as-worlds",
             "relevance_rationale": "The hero and supporting scene each bind to a supplied article target.",
             "scenes": [
                 {
@@ -61,15 +62,15 @@ def _good_brief_json():
 def test_build_art_brief_parses_valid_llm_output():
     brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: _good_brief_json())
     assert brief is not None
-    assert brief["style"] == ad.DEFAULT_HOUSE_STYLE_ID
+    assert brief["style"] == "ninth-observatory"
     assert brief["layout"]
     assert brief["layout_variants"]
     assert brief["selection_seed"] == ad._selection_seed(_DRAFT)
     assert len(brief["selection_seed"]) == 16
     assert brief["style_candidates"]
-    assert brief["style_native_compiler"].startswith("Render inside")
-    assert brief["text_policy"] == "none"
-    assert brief["text_elements"] == []
+    assert "architecture" in brief["style_native_compiler"]
+    assert brief["text_policy"] == "labels"
+    assert brief["text_elements"] == ["API", "LOCAL", "CROSSOVER"]
     assert brief["palette"]
     assert brief["hero_prompt"]
     assert brief["section_prompts"]["The mechanism"]
@@ -79,7 +80,7 @@ def test_build_art_brief_handles_fenced_json():
     fenced = "Here you go:\n```json\n" + _good_brief_json() + "\n```\n"
     brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: fenced)
     assert brief is not None
-    assert brief["style"] == ad.DEFAULT_HOUSE_STYLE_ID
+    assert brief["style"] == "ninth-observatory"
 
 
 def test_build_art_brief_rejects_unknown_style():
@@ -99,14 +100,13 @@ def test_build_art_brief_none_on_llm_exception():
     assert ad.build_art_brief(_DRAFT, _HEADINGS, llm=boom) is None
 
 
-def test_house_style_prompt_does_not_rotate_recent_styles():
+def test_prompt_allows_article_fit_rendering_variation():
     captured = {}
     def spy(system, user):
         captured["system"] = system
         return _good_brief_json()
     ad.build_art_brief(_DRAFT, _HEADINGS, recent_styles=["saga-noir", "pixel-art"], llm=spy)
-    assert "fixed house visual DNA" in captured["system"]
-    assert "saga-noir" not in captured["system"]
+    assert "Do not default to one house style" in captured["system"]
 
 
 def test_full_article_in_user_prompt():
@@ -188,7 +188,11 @@ def test_art_director_system_prompt_requires_article_grounded_concept_candidates
     system = captured["system"]
     assert "controlled conceptual variation" in system
     assert "randomness is only the translation" in system
-    assert "specialist rendering skill is an explicit exception" in system
+    assert "cinematic scene, comic, infographic" in system
+    assert "inspiration_category" in system
+    assert "systems-as-worlds" in system
+    assert "Available rendering styles" in system
+    assert "ninth-observatory" in system
 
 
 def test_text_capable_styles_do_not_inherit_blanket_text_ban():
@@ -240,7 +244,7 @@ def test_system_prompt_requests_shared_world_candidates_with_bound_scenes():
     assert "source_target_id" in system
 
 
-def test_house_style_replaces_random_style_rotation_for_standard_articles():
+def test_article_fit_style_is_retained_for_standard_articles():
     draft = {
         "title": "Bank of England reviews agentic AI rules for finance",
         "description": "Regulators test autonomous agents in financial markets",
@@ -262,6 +266,7 @@ def test_house_style_replaces_random_style_rotation_for_standard_articles():
             "world": "A brass courtroom where automated agents present evidence to a living ledger.",
             "fingerprint": ["courtroom", "brass ledger", "paper automata"],
             "creative_score": 92,
+            "inspiration_category": "systems-as-worlds",
             "relevance_rationale": "The only scene binds to the article thesis target.",
             "scenes": [{
                 "asset_key": "hero",
@@ -278,8 +283,8 @@ def test_house_style_replaces_random_style_rotation_for_standard_articles():
     brief = ad.build_art_brief(draft, [], llm=lambda s, u: json.dumps(payload))
 
     assert brief is not None
-    assert brief["style"] == ad.DEFAULT_HOUSE_STYLE_ID
-    assert brief["style_candidates"] == [ad.DEFAULT_HOUSE_STYLE_ID]
+    assert brief["style"] == "mythic-tech-codex"
+    assert brief["style_candidates"][0] == "mythic-tech-codex"
 
 
 def test_compose_prompt_enforces_the_assigned_asset_layout_not_all_variants():
@@ -318,6 +323,7 @@ def test_art_brief_compiles_a_grounded_shared_world_into_distinct_asset_layouts(
         "world": "A travelling clockwork theatre where futures are performed before they happen.",
         "fingerprint": ["clockwork theatre", "origami futures", "deep sea"],
         "creative_score": 92,
+        "inspiration_category": "systems-as-worlds",
         "relevance_rationale": "The hero shows prediction and verification; the supporting scene shows hardware amortisation.",
         "scenes": [
             {
@@ -345,7 +351,7 @@ def test_art_brief_compiles_a_grounded_shared_world_into_distinct_asset_layouts(
 
     assert brief is not None
     assert brief["concept_plan"]["world"].startswith("A travelling clockwork theatre")
-    assert brief["style"] == "sahil-editorial-v1"
+    assert brief["style"] == "ninth-observatory"
     assert brief["asset_layouts"] == {
         "hero": "wide proscenium collision",
         "section-01": "side-on process cutaway",

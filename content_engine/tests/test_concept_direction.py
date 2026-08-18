@@ -5,8 +5,7 @@ import pytest
 
 from blog.concept_direction import (
     ConceptPlanError,
-    DEFAULT_HOUSE_STYLE_ID,
-    PALETTE_LIBRARY,
+    INSPIRATION_CATEGORIES,
     build_concept_plan,
     build_source_targets,
 )
@@ -46,6 +45,7 @@ def _candidate(candidate_id: str, *, fingerprint: list[str], creative_score: int
         "world": "A travelling clockwork theatre where futures are performed before they happen.",
         "fingerprint": fingerprint,
         "creative_score": creative_score,
+        "inspiration_category": "systems-as-worlds",
         "relevance_rationale": "Each scene binds to a supplied source target rather than merely decorating the topic.",
         "scenes": [
             _scene(
@@ -76,7 +76,7 @@ def test_source_targets_bind_hero_and_each_selected_section():
     assert "rejects incorrect guesses" in targets[2].source_text.lower()
 
 
-def test_concept_plan_locks_house_dna_but_selects_a_fresh_shared_world():
+def test_concept_plan_selects_a_fresh_shared_world_and_records_its_inspiration():
     plan = build_concept_plan(
         DRAFT,
         HEADINGS,
@@ -87,8 +87,7 @@ def test_concept_plan_locks_house_dna_but_selects_a_fresh_shared_world():
         recent_concept_fingerprints=["theatre|clockwork|futures"],
     )
 
-    assert plan.house_style_id == DEFAULT_HOUSE_STYLE_ID
-    assert plan.palette_id in PALETTE_LIBRARY
+    assert plan.inspiration_category in INSPIRATION_CATEGORIES
     assert plan.specialist_skill is None
     assert plan.candidate_id == "fresh"
     assert [scene.asset_key for scene in plan.scenes] == ["hero", "section-01", "section-02"]
@@ -122,4 +121,12 @@ def test_concept_plan_only_allows_an_explicit_specialist_override():
 
     candidate["specialist_skill"] = "random-unregistered-style"
     with pytest.raises(ConceptPlanError, match="unknown specialist skill"):
+        build_concept_plan(DRAFT, HEADINGS, candidates=[candidate])
+
+
+def test_concept_plan_rejects_unknown_inspiration_category():
+    candidate = _candidate("bad-category", fingerprint=["theatre", "origami", "deep-sea"], creative_score=90)
+    candidate["inspiration_category"] = "random-images"
+
+    with pytest.raises(ConceptPlanError, match="unknown inspiration_category"):
         build_concept_plan(DRAFT, HEADINGS, candidates=[candidate])

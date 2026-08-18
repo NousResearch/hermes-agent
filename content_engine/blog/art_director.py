@@ -17,14 +17,13 @@ from __future__ import annotations
 
 import json
 import hashlib
-import random
 import re
 from pathlib import Path
 from typing import Mapping, Optional
 
 from blog.asset_manifest import AssetManifest, build_asset_manifest
 from blog.concept_direction import (
-    DEFAULT_HOUSE_STYLE_ID,
+    INSPIRATION_CATEGORIES,
     ConceptPlanError,
     build_concept_plan,
 )
@@ -72,15 +71,6 @@ TEXT_POLICIES = {
 # skills (Baoyu, data, typography, diorama, etc.) are represented as prompt
 # modes here; the blog path never calls their original FAL/Pollinations tools.
 STYLE_LIBRARY = [
-    {
-        "id": DEFAULT_HOUSE_STYLE_ID,
-        "label": "Sahil Editorial House Style",
-        "kind": "house-style",
-        "look": "tactile editorial illustration with deliberate framing, restrained print texture, concrete narrative action, and no generic AI gloss.",
-        "best_for": "the default rendering language for all publication imagery.",
-        "layout": "editorial widescreen tableau, process cutaway, overhead consequence map, asymmetrical narrative spread",
-        "text_policy": "none",
-    },
     {
         "id": "mythic-tech-codex",
         "label": "Mythic Tech Codex",
@@ -230,19 +220,7 @@ STYLE_LIBRARY = [
 STYLE_IDS = {s["id"] for s in STYLE_LIBRARY}
 STYLE_BY_ID = {s["id"]: s for s in STYLE_LIBRARY}
 
-UNDERUSED_STYLE_BOOSTS = {
-    "baoyu-article-illustrator": 1.20,
-    "baoyu-infographic": 1.20,
-    "baoyu-comic": 1.10,
-    "data-atlas": 1.15,
-    "typographic-poster-design": 1.10,
-    "technical-diorama": 1.08,
-    "vintage-print-atelier": 1.05,
-    "photographic-realism": 1.05,
-}
-
 STYLE_NATIVE_COMPILERS = {
-    DEFAULT_HOUSE_STYLE_ID: "Render inside the Sahil Editorial House Style: tactile editorial craft, concrete narrative action, deliberate framing, restrained print texture, and no generic AI gloss.",
     "baoyu-article-illustrator": "Redraft the concept as an article-illustration system: choose a clear Type (infographic, scene, flowchart, comparison, framework, or timeline), visible information hierarchy, section cards, arrows, and exact short labels.",
     "baoyu-infographic": "Redraft the concept as a dense infographic: bento panels, comparison blocks, numbered steps, icon-like objects, arrows, category labels, and a strong top-to-bottom reading path.",
     "baoyu-comic": "Redraft the concept as a single-card knowledge comic: 2-4 panels inside one 16:9 image, expressive characters or objects, before/after contrast, concise caption labels, and a memorable punchline moment.",
@@ -261,26 +239,6 @@ STYLE_NATIVE_COMPILERS = {
     "pixel-art": "Redraft the concept as a crafted retro system: pixel UI rooms, inventory/map/dashboard metaphors, limited palette, blocky readable labels, and playful implementation detail.",
 }
 
-STYLE_KEYWORDS = {
-    "data-atlas": ["data", "metric", "benchmark", "score", "cost", "econom", "price", "%", "token", "market", "graph", "trend"],
-    "technical-diorama": ["infrastructure", "architecture", "pipeline", "system", "hardware", "gpu", "server", "tool", "agent", "automation", "factory"],
-    "baoyu-infographic": ["framework", "steps", "rules", "process", "comparison", "trade-off", "decision", "how", "guide"],
-    "baoyu-article-illustrator": ["explainer", "article", "strategy", "business", "product", "workflow", "operating model"],
-    "baoyu-comic": ["failure", "lesson", "learning", "training", "human", "skills", "mistake", "quality"],
-    "typographic-poster-design": ["why", "not", "before", "against", "means", "manifesto", "principle", "wall"],
-    "vintage-print-atelier": ["warning", "rules", "regulator", "bank", "risk", "ban", "fails", "rehire", "public"],
-    "photographic-realism": ["human", "worker", "engineer", "office", "factory", "real", "company", "ford", "bbc"],
-    "ninth-observatory": ["governance", "control", "finance", "bank", "memory", "orchestration", "runtime", "rules"],
-    "signal-hud": ["eval", "monitor", "diagnostic", "security", "cyber", "failure", "test", "observability"],
-    "mythic-tech-codex": ["science", "research", "paper", "reasoning", "model", "taxonomy", "claude", "nvidia", "biology"],
-    "chromatic-institute": ["research", "network", "alignment", "model", "behaviour", "abstract", "mapping"],
-    "cosmic-postcard": ["future", "frontier", "trajectory", "adoption", "scale", "crossover"],
-    "ink-ember-studio": ["leadership", "culture", "trust", "career", "team", "people"],
-    "saga-noir": ["battle", "stakes", "competition", "crisis", "turning point", "breakthrough"],
-    "pixel-art": ["cli", "indie", "retro", "small", "game", "terminal", "tooling"],
-}
-
-
 def _styles_catalogue() -> str:
     lines = []
     for s in STYLE_LIBRARY:
@@ -294,15 +252,6 @@ def _styles_catalogue() -> str:
 
 
 
-def _article_blob(draft: dict) -> str:
-    return "\n".join([
-        str(draft.get("title", "")),
-        str(draft.get("description", "")),
-        str(draft.get("body_md", ""))[:4000],
-        str(draft.get("stream", "")),
-    ]).lower()
-
-
 def _selection_seed(draft: dict) -> str:
     """Stable selector seed for debugging/reproducibility logs."""
     seed_src = "|".join([
@@ -311,74 +260,6 @@ def _selection_seed(draft: dict) -> str:
         str(draft.get("stream", "")),
     ])
     return hashlib.sha256(seed_src.encode("utf-8")).hexdigest()[:16]
-
-
-def _stable_rng(draft: dict):
-    return random.Random(int(_selection_seed(draft), 16))
-
-
-def _fit_score(style_id: str, draft: dict) -> float:
-    """Content-fit heuristic used to build a viable shortlist before sampling."""
-    blob = _article_blob(draft)
-    score = 1.0
-    for kw in STYLE_KEYWORDS.get(style_id, []):
-        if kw in blob:
-            score += 0.55
-    stream = str(draft.get("stream", "")).lower()
-    if stream == "pm" and style_id in {"baoyu-infographic", "baoyu-article-illustrator", "typographic-poster-design"}:
-        score += 0.65
-    if stream == "builder" and style_id in {"technical-diorama", "signal-hud", "pixel-art", "ninth-observatory"}:
-        score += 0.65
-    if stream == "ai" and style_id in {"mythic-tech-codex", "data-atlas", "chromatic-institute", "technical-diorama"}:
-        score += 0.45
-    return score
-
-
-def _style_candidates(draft: dict, preferred: str, supplied: list | None) -> list[str]:
-    """Return a viable top set: supplied LLM candidates + heuristic candidates."""
-    out: list[str] = []
-    for item in supplied or []:
-        sid = ""
-        if isinstance(item, str):
-            sid = item
-        elif isinstance(item, dict):
-            sid = str(item.get("style") or item.get("id") or "")
-        if sid in STYLE_IDS and sid not in out:
-            out.append(sid)
-    if preferred in STYLE_IDS and preferred not in out:
-        out.insert(0, preferred)
-    ranked = sorted(STYLE_IDS, key=lambda sid: _fit_score(sid, draft), reverse=True)
-    for sid in ranked[:6]:
-        if sid not in out:
-            out.append(sid)
-    return out[:7]
-
-
-def _choose_style(
-    draft: dict,
-    preferred: str,
-    recent_styles: list[str],
-    supplied_candidates: list | None = None,
-) -> str:
-    """Constrained stochastic selector.
-
-    Not pure random: every candidate must be viable. Not deterministic best-fit:
-    stable jitter + underused boosts + recent penalties prevent repeated safe
-    defaults like Mythic/Ninth from dominating batches.
-    """
-    candidates = _style_candidates(draft, preferred, supplied_candidates)
-    rng = _stable_rng(draft)
-    weights: list[float] = []
-    for sid in candidates:
-        weight = _fit_score(sid, draft)
-        weight *= UNDERUSED_STYLE_BOOSTS.get(sid, 1.0)
-        if sid in recent_styles:
-            weight *= 0.28
-        if sid == preferred:
-            weight *= 1.18
-        weight *= rng.uniform(0.78, 1.32)
-        weights.append(max(weight, 0.01))
-    return rng.choices(candidates, weights=weights, k=1)[0]
 
 
 def _layout_variants_for(style_id: str, base_layout: str = "") -> list[str]:
@@ -406,11 +287,13 @@ def _native_compiler_for(style_id: str) -> str:
 
 def _brief_system_prompt(recent_styles: list[str]) -> str:
     return (
-        "You are the concept director for a technical publication. The publication has a fixed "
-        "house visual DNA: tactile editorial craft, deliberate framing, restrained print texture, "
-        "concrete narrative action, and no generic AI gloss. Do NOT rotate styles for novelty. "
-        "A specialist rendering skill is an explicit exception only when the article genuinely "
-        "needs a diagram, infographic, comic, or technical diorama.\n\n"
+        "You are the concept director for a technical publication. Each article earns its own "
+        "rendering language: cinematic scene, comic, infographic, retro artefact, documentary "
+        "photo, technical cutaway, or another style from the supplied catalogue. Do not default "
+        "to one house style. Choose visual variation only when it makes the article clearer, more "
+        "memorable, or more emotionally precise — never as random decoration.\n\n"
+        f"Choose one inspiration_category per candidate from: {', '.join(sorted(INSPIRATION_CATEGORIES))}.\n\n"
+        f"Available rendering styles (use the exact id in the style field):\n{_styles_catalogue()}\n\n"
         "Your job is to create controlled conceptual variation. First identify the article truth. "
         "Then produce 3-5 candidate shared worlds by combining it with an unexpected world, a "
         "narrative rule, and a story moment. Every candidate must visibly explain the article; "
@@ -421,7 +304,7 @@ def _brief_system_prompt(recent_styles: list[str]) -> str:
         "unique creative technique. No candidate is valid if it cannot supply every requested asset.\n\n"
         "Return ONLY a JSON object, no prose, with this exact shape:\n"
         '{\n'
-        '  "style": "sahil-editorial-v1",\n'
+        '  "style": "<one style id from the supplied catalogue>",\n'
         '  "layout": "<legacy compatibility layout>",\n'
         '  "text_policy": "none",\n'
         '  "text_elements": [],\n'
@@ -434,7 +317,8 @@ def _brief_system_prompt(recent_styles: list[str]) -> str:
         '    {"candidate_id":"<stable short id>","world":"<one shared creative world>",'
         '"fingerprint":["<3 concrete world terms>"],"creative_score":<0-100>,\n'
         '     "relevance_rationale":"<why every scene explains the article>",'
-        '"specialist_skill":"<optional allowed specialist id; omit for house style>",\n'
+        '"inspiration_category":"<one approved inspiration category>",'
+        '"specialist_skill":"<optional specialist override; normally omit>",\n'
         '     "scenes":[{"asset_key":"hero","source_target_id":"hero",'
         '"source_claim":"<claim from that target>","visual_translation":"<claim made visible>",'
         '"scene":"<specific moment>","composition":"<specific layout>",'
@@ -551,18 +435,12 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
             )
         except ConceptPlanError:
             return None
-        # The publication house style is the default. A specialist is a deliberate
-        # rendering exception, never a random style roulette result.
-        style = concept_plan.specialist_skill or DEFAULT_HOUSE_STYLE_ID
-    elif draft is not None:
-        style = _choose_style(
-            draft,
-            preferred=style,
-            recent_styles=recent_styles or [],
-            supplied_candidates=brief.get("style_candidates") or [],
-        )
+        # The scene and article select the rendering language. A specialist
+        # candidate is a deliberate override; otherwise retain the validated
+        # article-fit style supplied by the art director.
+        style = concept_plan.specialist_skill or preferred_style
 
-    palette = concept_plan.palette if concept_plan is not None else str(brief.get("palette", "")).strip()
+    palette = str(brief.get("palette", "")).strip()
     motif = str(brief.get("motif", "")).strip()
     direction = str(brief.get("art_direction", "")).strip()
     asset_layouts: dict[str, str] = {}
@@ -608,7 +486,7 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
         "layout_variants": layout_variants,
         "asset_layouts": asset_layouts,
         "selection_seed": selection_seed,
-        "style_candidates": [style] if concept_plan is not None else _style_candidates(draft or {}, style, brief.get("style_candidates") or []),
+        "style_candidates": [style],
         "style_native_compiler": _native_compiler_for(style),
         "text_policy": text_policy,
         "text_elements": text_elements,
@@ -720,7 +598,7 @@ def fallback_brief(draft: dict, headings: list[str],
         "layout": layout,
         "layout_variants": layout_variants,
         "selection_seed": _selection_seed(draft),
-        "style_candidates": _style_candidates(draft, style, []),
+        "style_candidates": [style],
         "style_native_compiler": _native_compiler_for(style),
         "text_policy": text_policy,
         "text_elements": [title[:40]] if text_policy != "none" and title else [],

@@ -8,29 +8,22 @@ it can be rendered.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import re
 from typing import Any, Mapping, Sequence
 
 
-DEFAULT_HOUSE_STYLE_ID = "sahil-editorial-v1"
-
-# The house system governs craft, framing and material treatment.  A palette
-# family may vary per article, but arbitrary model-invented colours may not.
-HOUSE_VISUAL_DNA = {
-    "id": DEFAULT_HOUSE_STYLE_ID,
-    "craft": "tactile editorial illustration, deliberate framing, restrained print texture, no generic AI gloss",
-    "text_policy": "style-dependent and minimal",
-    "framing": "16:9 editorial frame with one clear focal action",
-}
-
-PALETTE_LIBRARY = {
-    "ink-amber": "charcoal ink, bone paper, oxidised brass, amber signal, muted teal",
-    "cobalt-vermilion": "ink black, warm cream, cobalt blue, vermilion red, parchment tan",
-    "verdigris-coral": "deep navy, sea-verdigris, coral signal, old ivory, copper brown",
-    "plum-citron": "aubergine, smoked plum, dusty lilac, citron accent, warm grey",
-    "slate-saffron": "slate blue, graphite, pale stone, saffron gold, faded rust",
-}
+INSPIRATION_CATEGORIES = frozenset(
+    {
+        "systems-as-worlds",
+        "character-led-scenes",
+        "dark-comic-cautionary-tales",
+        "mythic-occult-technology",
+        "retro-media-formats",
+        "editorial-explainer",
+        "warm-human-craft",
+        "cinematic-documentary",
+    }
+)
 
 # These are explicit render-language exceptions.  They do not determine the
 # subject matter; concept selection still runs first.
@@ -84,9 +77,7 @@ class ScenePlan:
 @dataclass(frozen=True)
 class ConceptPlan:
     candidate_id: str
-    house_style_id: str
-    palette_id: str
-    palette: str
+    inspiration_category: str
     specialist_skill: str | None
     world: str
     fingerprint: tuple[str, ...]
@@ -96,9 +87,7 @@ class ConceptPlan:
     def to_dict(self) -> dict[str, object]:
         return {
             "candidate_id": self.candidate_id,
-            "house_style_id": self.house_style_id,
-            "palette_id": self.palette_id,
-            "palette": self.palette,
+            "inspiration_category": self.inspiration_category,
             "specialist_skill": self.specialist_skill,
             "world": self.world,
             "fingerprint": list(self.fingerprint),
@@ -156,20 +145,6 @@ def build_source_targets(draft: Mapping[str, object], headings: Sequence[str]) -
             )
         )
     return tuple(targets)
-
-
-def _palette_for(draft: Mapping[str, object]) -> tuple[str, str]:
-    seed = "|".join(
-        (
-            str(draft.get("title", "")),
-            str(draft.get("description", "")),
-            str(draft.get("stream", "")),
-        )
-    )
-    palette_ids = tuple(sorted(PALETTE_LIBRARY))
-    index = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16) % len(palette_ids)
-    palette_id = palette_ids[index]
-    return palette_id, PALETTE_LIBRARY[palette_id]
 
 
 def _fingerprint(raw: object) -> tuple[str, ...]:
@@ -232,6 +207,13 @@ def _specialist(raw: object) -> str | None:
     return skill
 
 
+def _inspiration_category(raw: object) -> str:
+    category = _text(raw, "inspiration_category")
+    if category not in INSPIRATION_CATEGORIES:
+        raise ConceptPlanError(f"unknown inspiration_category {category!r}")
+    return category
+
+
 def _normalised_recent(values: Sequence[str] | None) -> set[str]:
     return {"|".join(part.strip().lower() for part in value.split("|") if part.strip()) for value in values or []}
 
@@ -255,16 +237,16 @@ def build_concept_plan(
 ) -> ConceptPlan:
     """Validate several grounded worlds and auto-select the strongest eligible one.
 
-    The selected world is shared by hero and in-article scenes. The house visual
-    DNA and a palette from the curated library remain stable; only an explicitly
-    named specialist can replace the normal rendering language.
+    The selected world is shared by hero and in-article scenes. Rendering style,
+    medium and palette are chosen for each article by the art director; this plan
+    records the relevant creative-inspiration category without imposing a house
+    style.
     """
     if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)) or not candidates:
         raise ConceptPlanError("candidates must be a non-empty sequence")
     targets = build_source_targets(draft, headings)
     recent = _normalised_recent(recent_concept_fingerprints)
     valid: list[tuple[int, int, ConceptPlan]] = []
-    palette_id, palette = _palette_for(draft)
     for index, candidate in enumerate(candidates):
         if not isinstance(candidate, Mapping):
             raise ConceptPlanError("candidate must be an object")
@@ -273,9 +255,7 @@ def build_concept_plan(
         scenes = _validate_scenes(candidate.get("scenes"), targets)
         plan = ConceptPlan(
             candidate_id=candidate_id,
-            house_style_id=DEFAULT_HOUSE_STYLE_ID,
-            palette_id=palette_id,
-            palette=palette,
+            inspiration_category=_inspiration_category(candidate.get("inspiration_category")),
             specialist_skill=_specialist(candidate.get("specialist_skill")),
             world=_text(candidate.get("world"), "world"),
             fingerprint=fingerprint,

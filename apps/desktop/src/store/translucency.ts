@@ -251,10 +251,40 @@ const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void
 }
 
 if (typeof window !== 'undefined') {
-  $translucency.subscribe(state => {
+  // The intensity slider fires ~100 updates per drag, and two of the three
+  // things a sync does are expensive per-tick: localStorage.setItem is
+  // synchronous, and the IPC send wakes the main process. Only the page paint
+  // has to keep up with the hand — nothing reads the persisted value until a
+  // cold launch, and main's own work is diffed anyway.
+  //
+  // So: paint every tick, persist and notify on a trailing edge.
+  let flushTimer: null | number = null
+
+  const flush = () => {
+    flushTimer = null
+
+    const state = $translucency.get()
+
     writeJson(KEY, state)
-    applyGlassSurfaces(state)
     window.hermesDesktop?.setTranslucency?.(state)
+  }
+
+  $translucency.subscribe(state => {
+    applyGlassSurfaces(state)
+
+    if (flushTimer !== null) {
+      window.clearTimeout(flushTimer)
+    }
+
+    flushTimer = window.setTimeout(flush, 120)
+  })
+
+  // A window closing mid-drag must not lose the setting.
+  window.addEventListener('pagehide', () => {
+    if (flushTimer !== null) {
+      window.clearTimeout(flushTimer)
+      flush()
+    }
   })
 
   $translucencyPeek.subscribe(count => {

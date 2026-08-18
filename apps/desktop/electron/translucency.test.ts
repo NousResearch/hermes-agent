@@ -260,3 +260,48 @@ describe('windowBackingOptions', () => {
     expect(windowBackingOptions(clear(0), '#f7f7f7')).toEqual({ backgroundColor: '#f7f7f7' })
   })
 })
+
+// The jank fix, as a contract: dragging the intensity slider under glass must
+// not touch ANY native property. Each tick used to re-issue setVibrancy, whose
+// 150ms animation then restarted before macOS could settle the material —
+// which is both the stutter and the reason the frost levels read alike.
+describe('what an update actually changes natively', () => {
+  const nativeDiff = (previous: TranslucencyState, next: TranslucencyState) => ({
+    backing: glassActive(previous) !== glassActive(next),
+    material: vibrancyFor(previous) !== vibrancyFor(next),
+    opacity: windowOpacityFor(previous) !== windowOpacityFor(next)
+  })
+
+  it('is nothing at all while dragging intensity under glass', () => {
+    for (let intensity = 41; intensity <= 100; intensity += 1) {
+      expect(nativeDiff(glass(intensity - 1), glass(intensity)), `at ${intensity}`).toEqual({
+        backing: false,
+        material: false,
+        opacity: false
+      })
+    }
+  })
+
+  it('is only the opacity while dragging intensity under clear', () => {
+    expect(nativeDiff(clear(40), clear(41))).toEqual({ backing: false, material: false, opacity: true })
+  })
+
+  it('is the material alone when the frost level changes', () => {
+    expect(nativeDiff(glass(60, 'under-window'), glass(60, 'header'))).toEqual({
+      backing: false,
+      material: true,
+      opacity: false
+    })
+  })
+
+  // Crossing zero flips glass on/off, which is exactly when the backing has to
+  // move — the one intensity change that is NOT free.
+  it('is the backing and material when glass crosses zero', () => {
+    expect(nativeDiff(glass(0), glass(1))).toEqual({ backing: true, material: true, opacity: false })
+    expect(nativeDiff(glass(1), glass(0))).toEqual({ backing: true, material: true, opacity: false })
+  })
+
+  it('is everything when switching between the two modes', () => {
+    expect(nativeDiff(clear(60), glass(60))).toEqual({ backing: true, material: true, opacity: true })
+  })
+})

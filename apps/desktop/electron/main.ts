@@ -924,6 +924,13 @@ function windowOpacity() {
 // every other state needs the opaque themed backing (anti-flash, and it is
 // what makes clear mode fade to the desktop instead of to black).
 //
+// `changed` says which native properties actually need touching. Dragging the
+// intensity slider emits ~100 updates, and in glass mode NONE of them change
+// anything native — the effect is painted by the renderer and windowOpacityFor
+// returns 1 throughout. Re-issuing setVibrancy on every tick restarts its
+// 150ms animation before macOS can settle the material, which reads as jank
+// and flattens the frost levels into each other.
+//
 // CAUTION (measured, macOS 26 / Electron 40): a runtime
 // setBackgroundColor('#00000000') is silently LOST on a window whose
 // compositor hasn't been up for a few seconds — including calls from
@@ -931,7 +938,7 @@ function windowOpacity() {
 // rely on this path: windows are BORN with the right backing
 // (windowBackingOptions at each creation site). This path only has to cover
 // live toggles from Settings, where the window is long settled.
-function applyWindowTranslucency(win) {
+function applyWindowTranslucency(win, changed = { backing: true, material: true, opacity: true }) {
   if (!win || win.isDestroyed()) {
     return
   }
@@ -940,18 +947,19 @@ function applyWindowTranslucency(win) {
     // Backing swap + material are scoped to registered chat windows (see
     // translucencyBackedWindows above).
     if (translucencyBackedWindows.has(win)) {
-      if (typeof win.setBackgroundColor === 'function') {
+      if (changed.backing && typeof win.setBackgroundColor === 'function') {
         win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
       }
 
       // Glass frost level = the vibrancy material (macOS has no blur-radius
-      // knob). Animate the hop so slider-adjacent switches feel continuous.
-      if (IS_MAC && typeof win.setVibrancy === 'function') {
+      // knob). Animate the hop so a deliberate frost switch feels continuous —
+      // which only works if we don't re-issue it on unrelated updates.
+      if (changed.material && IS_MAC && typeof win.setVibrancy === 'function') {
         win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
       }
     }
 
-    if (typeof win.setOpacity === 'function') {
+    if (changed.opacity && typeof win.setOpacity === 'function') {
       win.setOpacity(windowOpacity())
     }
   } catch (error) {
@@ -13805,25 +13813,69 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
   }
 })
 
-// See-through window translucency. Persist + re-apply opacity to every open
-// window at runtime (no recreation, so caching/sessions are untouched).
+// See-through window translucency. Persist + re-apply to every open window at
+// runtime (no recreation, so caching/sessions are untouched).
+//
+// The intensity slider is a HOT path: ~100 updates per drag. Two things make
+// that cheap. Native work is diffed, so an intensity-only change under glass
+// touches nothing (it's painted by the renderer). And the disk write is
+// coalesced onto a trailing timer, because writePersistedTranslucency is a
+// synchronous writeFileSync and doing one per tick blocks the main process
+// mid-drag. Only a cold launch reads that file, so it just has to be correct
+// once the hand comes off the slider.
+let translucencyWriteTimer = null
+
+function scheduleTranslucencyWrite() {
+  if (translucencyWriteTimer) {
+    clearTimeout(translucencyWriteTimer)
+  }
+
+  translucencyWriteTimer = setTimeout(() => {
+    translucencyWriteTimer = null
+    writePersistedTranslucency(translucencyState)
+  }, 250)
+}
+
+// Flush a pending write before the process can exit, so a quit landing inside
+// the debounce window doesn't lose the setting.
+app.on('before-quit', () => {
+  if (translucencyWriteTimer) {
+    clearTimeout(translucencyWriteTimer)
+    translucencyWriteTimer = null
+    writePersistedTranslucency(translucencyState)
+  }
+})
+
 ipcMain.on('hermes:translucency', (_event, payload) => {
   const next = normalizeTranslucency(payload, IS_MAC)
+  const previous = translucencyState
 
   if (
-    next.intensity === translucencyState.intensity &&
-    next.mode === translucencyState.mode &&
-    next.material === translucencyState.material &&
-    next.scope === translucencyState.scope
+    next.intensity === previous.intensity &&
+    next.mode === previous.mode &&
+    next.material === previous.material &&
+    next.scope === previous.scope
   ) {
     return
   }
 
   translucencyState = next
-  writePersistedTranslucency(next)
 
-  for (const win of BrowserWindow.getAllWindows()) {
-    applyWindowTranslucency(win)
+  // Which native properties actually moved. `scope` is renderer-only (which
+  // surfaces thin), so it never appears here.
+  const changed = {
+    // The backing follows whether glass is ON, not the intensity behind it.
+    backing: glassActive(previous) !== glassActive(next),
+    material: vibrancyForTranslucency(previous) !== vibrancyForTranslucency(next),
+    opacity: windowOpacityFor(previous) !== windowOpacityFor(next)
+  }
+
+  scheduleTranslucencyWrite()
+
+  if (changed.backing || changed.material || changed.opacity) {
+    for (const win of BrowserWindow.getAllWindows()) {
+      applyWindowTranslucency(win, changed)
+    }
   }
 })
 

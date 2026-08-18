@@ -84,7 +84,11 @@ describe('window translucency lever', () => {
     expect($translucency.get().mode).toBe(GLASS_SUPPORTED ? 'glass' : 'clear')
   })
 
-  it('persists intensity and mode together under one stable key', () => {
+  // Persistence is debounced: the slider emits ~100 updates per drag and
+  // localStorage.setItem is synchronous, so writing per tick janks the drag.
+  // Nothing reads the stored value until a cold launch.
+  it('persists intensity and mode together under one stable key, once the drag settles', () => {
+    vi.useFakeTimers()
     const writes: PersistenceEvent[] = []
 
     const stop = onPersistenceEvent(event => {
@@ -94,34 +98,77 @@ describe('window translucency lever', () => {
     })
 
     try {
-      setTranslucency(23)
+      // A drag: every intermediate value paints, none of them hit storage.
+      for (let intensity = 18; intensity <= 23; intensity += 1) {
+        setTranslucency(intensity)
+      }
+
+      expect(writes).toHaveLength(0)
+
+      vi.advanceTimersByTime(200)
+
+      // One write, carrying the value the hand landed on.
+      expect(writes).toHaveLength(1)
+      expect(writes.at(-1)).toEqual({
+        key: KEY,
+        op: 'write',
+        value: JSON.stringify({
+          intensity: 23,
+          mode: 'clear',
+          material: DEFAULT_GLASS_MATERIAL,
+          scope: DEFAULT_GLASS_SCOPE
+        })
+      })
     } finally {
       stop()
+      vi.useRealTimers()
     }
+  })
 
-    expect(writes.at(-1)).toEqual({
-      key: KEY,
-      op: 'write',
-      value: JSON.stringify({
-        intensity: 23,
+  it('mirrors the whole state to the desktop bridge, coalesced across a drag', () => {
+    vi.useFakeTimers()
+    const calls: unknown[] = []
+    window.hermesDesktop = { setTranslucency: (payload: unknown) => calls.push(payload) } as never
+
+    try {
+      for (let intensity = 36; intensity <= 40; intensity += 1) {
+        setTranslucency(intensity)
+      }
+
+      // Each tick would otherwise wake the main process.
+      expect(calls).toHaveLength(0)
+
+      vi.advanceTimersByTime(200)
+
+      expect(calls).toHaveLength(1)
+      expect(calls.at(-1)).toEqual({
+        intensity: 40,
         mode: 'clear',
         material: DEFAULT_GLASS_MATERIAL,
         scope: DEFAULT_GLASS_SCOPE
       })
-    })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('mirrors the whole state to the desktop bridge', () => {
-    const calls: unknown[] = []
-    window.hermesDesktop = { setTranslucency: (payload: unknown) => calls.push(payload) } as never
+  // The page paint is the one thing that must NOT wait for the debounce —
+  // the field has to track the hand.
+  it('paints every tick even though it persists once', () => {
+    vi.useFakeTimers()
 
-    setTranslucency(40)
-    expect(calls.at(-1)).toEqual({
-      intensity: 40,
-      mode: 'clear',
-      material: DEFAULT_GLASS_MATERIAL,
-      scope: DEFAULT_GLASS_SCOPE
-    })
+    try {
+      setTranslucencyMode('glass')
+      setTranslucency(30)
+      expect(keep()).toBe('70%')
+
+      setTranslucency(80)
+      expect(keep()).toBe('20%')
+    } finally {
+      vi.useRealTimers()
+      setTranslucencyMode('clear')
+      setTranslucency(TRANSLUCENCY_MIN)
+    }
   })
 })
 

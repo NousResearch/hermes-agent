@@ -905,7 +905,7 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
         return dispatch
 
     def _run_uds_calls(self, enabled_tools, requests):
-        from tools.code_execution_tool import _rpc_server_loop
+        from tools.code_execution_rpc import _rpc_server_loop
 
         allowed_tools = _sandbox_tools_for(enabled_tools)
         dispatched = []

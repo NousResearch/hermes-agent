@@ -173,10 +173,13 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
     )
 
     outputs = []
+    child_cwd = tmp_path / "child-workspace"
+    child_cwd.mkdir()
     for phase in ("first", "resume"):
         env = os.environ.copy()
         env.update(
             HERMES_HOME=str(tmp_path / "hermes-home"),
+            TERMINAL_CWD=str(child_cwd),
             TEST_DB=str(db_path),
             TEST_CALLS=str(calls_path),
             TEST_PHASE=phase,

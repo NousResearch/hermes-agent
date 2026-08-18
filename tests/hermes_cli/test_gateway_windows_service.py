@@ -19,6 +19,22 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import update_cmd, update_cmd_windows
+
+
+def _patch_desktop_owns_lifecycle(monkeypatch, value: bool) -> None:
+    """Patch the Desktop-ownership probe wherever the update flow reads it.
+
+    Upstream moved the Windows update flow out of ``hermes_cli.main`` into
+    ``hermes_cli.update_cmd_windows``; the callee imports
+    ``_desktop_owns_gateway_lifecycle`` from ``hermes_cli.update_cmd``, so both
+    namespaces are patched (same convention as
+    ``tests/hermes_cli/test_windows_gateway_cold_start_desktop_lifecycle.py``).
+    """
+    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: value)
+    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: value)
+
+
 # Skip all tests on non-Windows platforms
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32",
@@ -767,320 +783,42 @@ class TestServiceScriptEarlyArgParsing:
 
 
 class TestUpdatePauseResumeScm:
-    """PR #50200 review: ``hermes update`` pause/resume must route through
-    SCM for SCM-managed profiles and never call ``_spawn_detached()`` for
-    them. Scheduled Task / detached gateways keep their existing behavior.
+    """PR #50200 semantic rebase: upstream now owns SCM supervision during
+    update via find_windows_gateway_services() + services/expected_services
+    token fields + _stop/_start_windows_gateway_service. The PR's remaining
+    obligation here is contract #3: the cold-start path must NEVER spawn a
+    detached gateway when an SCM unit is registered for this install — a
+    registered-but-stopped service has no live process tree for upstream's
+    discovery, so _cold_start_windows_gateway_after_update() checks
+    is_service_registered() itself and goes through StartService.
     """
 
-    def _fake_profile_process(self, name, path, pid):
-        from hermes_cli.gateway import ProfileGatewayProcess
-
-        return ProfileGatewayProcess(profile=name, path=path, pid=pid)
-
-    def test_pause_calls_scm_stop_not_terminate_pid_for_service_profile(
+    def test_cold_start_routes_through_scm_when_service_registered(
         self, monkeypatch
     ):
-        """When a profile is SCM-managed, ``_pause_windows_gateways_for_update``
-        must call ``gateway_windows.stop_service_for_hermes_home`` for that
-        home and must NOT call ``terminate_pid`` on the service child PID.
-        """
-        from hermes_cli import main as main_module
+        """Registered service ⇒ StartService path, never _spawn_detached."""
 
-        proc = self._fake_profile_process(
-            name="coder", path=Path("/tmp/profiles/coder"), pid=12345
-        )
-        proc_path = Path("/tmp/profiles/coder")
-
-        calls = {
-            "stop_service_for_home": [],
-            "terminate_pid": [],
-        }
-
-        # Stub find_gateway_pids / find_profile_gateway_processes so the
-        # pause logic discovers exactly one SCM-managed profile gateway.
-        monkeypatch.setattr(
-            "hermes_cli.gateway.find_gateway_pids",
-            lambda all_profiles=False: [12345],
-        )
-        monkeypatch.setattr(
-            "hermes_cli.gateway.find_profile_gateway_processes",
-            lambda exclude_pids=None: [proc],
-        )
-
-        def fake_stop_service_for_hermes_home(home):
-            calls["stop_service_for_home"].append(home)
-            return True
-
-        def fake_is_service_registered_for_hermes_home(_home):
-            return True
-
-        monkeypatch.setattr(
-            "hermes_cli.gateway_windows.stop_service_for_hermes_home",
-            fake_stop_service_for_hermes_home,
-        )
-        monkeypatch.setattr(
-            "hermes_cli.gateway_windows.is_service_registered_for_hermes_home",
-            fake_is_service_registered_for_hermes_home,
-        )
-
-        # terminate_pid is the legacy escape hatch — must NOT be called
-        # for an SCM-managed profile, otherwise RecoveryActions would
-        # immediately restart the gateway we just paused.
-        def fake_terminate_pid(pid, force=False):
-            calls["terminate_pid"].append((pid, force))
-            raise ProcessLookupError(pid)
-
-        # Patch the gateway.status.terminate_pid that main.py imports.
-        import gateway.status as gstatus
-        monkeypatch.setattr(gstatus, "terminate_pid", fake_terminate_pid)
-        # Also patch it where main.py's namespace has already imported it.
-        monkeypatch.setattr(
-            "hermes_cli.main.terminate_pid", fake_terminate_pid, raising=False
-        )
-
-        token = main_module._pause_windows_gateways_for_update()
-
-        assert calls["stop_service_for_home"] == [str(proc_path.resolve())], (
-            "SCM-managed profile must be paused via "
-            "stop_service_for_hermes_home, got "
-            f"{calls['stop_service_for_home']}"
-        )
-        assert calls["terminate_pid"] == [], (
-            "terminate_pid must NOT be called for SCM-managed profile; got "
-            f"{calls['terminate_pid']}"
-        )
-        assert token is not None
-        assert "coder" in token["scm_managed_profiles"]
-        assert token["scm_managed_profiles"]["coder"] == str(proc_path.resolve())
-
-    def test_pause_keeps_legacy_terminate_pid_path_for_manual_profile(
-        self, monkeypatch
-    ):
-        """Non-SCM profiles must keep the legacy
-        ``_write_update_planned_stop_marker`` + drain + ``terminate_pid``
-        path (review: 'original Scheduled Task and non-service backends
-        must remain unchanged').
-
-        Specifically: ``stop_service_for_hermes_home`` must NOT be called
-        for a non-SCM profile (so the SCM branch stays exclusive to
-        SCM-managed profiles), and the planned-stop marker IS written.
-        """
-        from hermes_cli import main as main_module
-        import gateway.status as gstatus
-
-        proc = self._fake_profile_process(
-            name="default", path=Path("/tmp/default_home"), pid=22222
-        )
-
-        monkeypatch.setattr(
-            "hermes_cli.gateway.find_gateway_pids",
-            lambda all_profiles=False: [22222],
-        )
-        monkeypatch.setattr(
-            "hermes_cli.gateway.find_profile_gateway_processes",
-            lambda exclude_pids=None: [proc],
-        )
-        monkeypatch.setattr(
-            "hermes_cli.gateway_windows.is_service_registered_for_hermes_home",
-            lambda _home: False,  # not SCM-managed
-        )
-
-        marker_writes: list = []
-        monkeypatch.setattr(
-            main_module,
-            "_write_update_planned_stop_marker",
-            lambda profile_path, pid: marker_writes.append((str(profile_path), pid)),
-        )
-
-        scm_calls = []
-        monkeypatch.setattr(
-            "hermes_cli.gateway_windows.stop_service_for_hermes_home",
-            lambda home: scm_calls.append(home) or True,
-        )
-
-        calls = {"terminate_pid": []}
-
-        def fake_terminate_pid(pid, force=False):
-            calls["terminate_pid"].append((pid, force))
-            raise ProcessLookupError(pid)
-
-        monkeypatch.setattr(gstatus, "terminate_pid", fake_terminate_pid)
-        monkeypatch.setattr(
-            "hermes_cli.main.terminate_pid", fake_terminate_pid, raising=False
-        )
-
-        token = main_module._pause_windows_gateways_for_update()
-
-        # Legacy non-SCM path keeps the planned-stop marker.
-        assert marker_writes == [(str(Path("/tmp/default_home")), 22222)]
-        # And does NOT route through SCM stop.
-        assert scm_calls == []
-        assert token is not None
-        assert "scm_managed_profiles" in token
-        assert token["scm_managed_profiles"] == {}
-
-    def test_resume_calls_scm_start_not_detached_for_service_profile(
-        self, monkeypatch
-    ):
-        """When a token marks a profile as SCM-managed, the resume path
-        must use ``start_service_for_hermes_home`` and MUST NOT call
-        ``launch_detached_profile_gateway_restart`` for that profile.
-        """
-        from hermes_cli import main as main_module
-
-        token = {
-            "resume_needed": True,
-            "profiles": {"coder": 12345},
-            "unmapped_pids": [],
-            "unmapped": [],
-            "scm_managed_profiles": {"coder": "/tmp/profiles/coder"},
-        }
-
-        calls = {
-            "start_service_for_home": [],
-            "launch_detached_profile_gateway_restart": [],
-        }
-
-        def fake_start_service_for_hermes_home(home):
-            calls["start_service_for_home"].append(home)
-            return True
-
-        def fake_launch_detached_profile_gateway_restart(profile, old_pid):
-            calls["launch_detached_profile_gateway_restart"].append((profile, old_pid))
-            return True
-
-        monkeypatch.setattr(
-            "hermes_cli.gateway_windows.start_service_for_hermes_home",
-            fake_start_service_for_hermes_home,
-        )
-        monkeypatch.setattr(
-            "hermes_cli.gateway.launch_detached_profile_gateway_restart",
-            fake_launch_detached_profile_gateway_restart,
-        )
-
-        main_module._resume_windows_gateways_after_update(token)
-
-        assert calls["start_service_for_home"] == ["/tmp/profiles/coder"], (
-            "SCM-managed profile must be restarted via "
-            "start_service_for_hermes_home, got "
-            f"{calls['start_service_for_home']}"
-        )
-        assert calls["launch_detached_profile_gateway_restart"] == [], (
-            "Must NOT call launch_detached_profile_gateway_restart for an "
-            f"SCM-managed profile; got {calls['launch_detached_profile_gateway_restart']}"
-        )
-
-    def test_resume_routes_named_profile_to_correct_service(self, monkeypatch):
-        """For multiple profiles with different HERMES_HOME, the resume
-        must route each SCM-managed profile to its OWN
-        ``start_service_for_hermes_home`` call (not to a single shared
-        active-profile service)."""
-        from hermes_cli import main as main_module
-
-        token = {
-            "resume_needed": True,
-            "profiles": {"coder": 100, "writer": 200, "default": 300},
-            "unmapped_pids": [],
-            "unmapped": [],
-            "scm_managed_profiles": {
-                "coder": "/tmp/profiles/coder",
-                "writer": "/tmp/profiles/writer",
-            },
-        }
-
-        calls = []
-
-        def fake_start_service_for_hermes_home(home):
-            calls.append(home)
-            return True
-
-        monkeypatch.setattr(
-            "hermes_cli.gateway_windows.start_service_for_hermes_home",
-            fake_start_service_for_hermes_home,
-        )
-        # If any non-SCM profile falls through to the legacy detached
-        # path, this list captures it.
-        detached_calls = []
-        monkeypatch.setattr(
-            "hermes_cli.gateway.launch_detached_profile_gateway_restart",
-            lambda profile, old_pid: detached_calls.append((profile, old_pid)) or True,
-        )
-
-        main_module._resume_windows_gateways_after_update(token)
-
-        assert "/tmp/profiles/coder" in calls
-        assert "/tmp/profiles/writer" in calls
-        assert ("coder", 100) not in detached_calls
-        assert ("writer", 200) not in detached_calls
-        # Default profile is not SCM-managed — legacy detached path applies.
-        assert ("default", 300) in detached_calls
-
-    def test_resume_keeps_legacy_detached_path_for_manual_profile(
-        self, monkeypatch
-    ):
-        """Non-SCM profiles continue to use ``launch_detached_profile_gateway_restart``.
-        """
-        from hermes_cli import main as main_module
-
-        token = {
-            "resume_needed": True,
-            "profiles": {"default": 999},
-            "unmapped_pids": [],
-            "unmapped": [],
-            "scm_managed_profiles": {},
-        }
-
-        calls = {"scm_start": [], "detached": []}
-
-        monkeypatch.setattr(
-            "hermes_cli.gateway_windows.start_service_for_hermes_home",
-            lambda home: calls["scm_start"].append(home) or True,
-        )
-        monkeypatch.setattr(
-            "hermes_cli.gateway.launch_detached_profile_gateway_restart",
-            lambda profile, old_pid: calls["detached"].append((profile, old_pid)) or True,
-        )
-
-        main_module._resume_windows_gateways_after_update(token)
-
-        assert calls["scm_start"] == []
-        assert calls["detached"] == [("default", 999)]
-
-    def test_resume_cold_start_uses_scm_when_active_profile_service_registered(
-        self, monkeypatch
-    ):
-        """When no gateway was running but the active install has an
-        SCM service registered, cold-start must go through SCM StartService
-        (not ``_spawn_detached``), avoiding a parallel detached gateway.
-        """
-        from hermes_cli import main as main_module
-
-        token = {
-            "resume_needed": True,
-            "profiles": {},
-            "unmapped_pids": [],
-            "unmapped": [],
-            "scm_managed_profiles": {},
-            "cold_start_if_installed": True,
-            "cold_start_via_scm": True,
-        }
-
-        # Re-check liveness: no PID.
+        # Re-check liveness: no gateway running.
         monkeypatch.setattr(
             "hermes_cli.gateway.find_gateway_pids",
             lambda all_profiles=False: [],
         )
-
+        # Desktop does not own lifecycle.
+        _patch_desktop_owns_lifecycle(monkeypatch, False)
         calls = {"scm_start": [], "spawn_detached": []}
 
         def fake_start_service():
             calls["scm_start"].append(True)
             return True
 
-        def fake_spawn_detached():
+        def fake_spawn_detached(*a, **k):
             calls["spawn_detached"].append(True)
             return 1234
 
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.is_service_registered",
+            lambda: True,
+        )
         monkeypatch.setattr(
             "hermes_cli.gateway_windows.start_service",
             fake_start_service,
@@ -1090,13 +828,108 @@ class TestUpdatePauseResumeScm:
             fake_spawn_detached,
         )
 
-        main_module._resume_windows_gateways_after_update(token)
+        result = update_cmd._cold_start_windows_gateway_after_update()
 
+        assert result is True
         assert calls["scm_start"] == [True]
         assert calls["spawn_detached"] == [], (
-            "Must NOT call _spawn_detached when SCM is registered; got "
-            f"{calls['spawn_detached']}"
+            "Cold start must NOT call _spawn_detached when an SCM unit is "
+            f"registered; got {calls['spawn_detached']}"
         )
+
+    def test_cold_start_scm_failure_never_falls_back_to_detached(
+        self, monkeypatch
+    ):
+        """SCM start failure surfaces — no silent detached fallback."""
+        import pytest as _pytest
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_gateway_pids",
+            lambda all_profiles=False: [],
+        )
+        _patch_desktop_owns_lifecycle(monkeypatch, False)
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.is_service_registered",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.start_service",
+            lambda: calls.append("start") or False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows._spawn_detached",
+            lambda *a, **k: calls.append("detached") or 1234,
+        )
+
+        with _pytest.raises(RuntimeError):
+            update_cmd._cold_start_windows_gateway_after_update()
+
+        assert "detached" not in calls, (
+            f"SCM failure must not fall back to detached spawn; got {calls}"
+        )
+
+    def test_cold_start_unmanaged_probe_failure_fails_closed(self, monkeypatch):
+        """If the ownership probe raises (e.g. pywin32 gone missing AND the
+        winreg fallback also fails), cold-start must fail closed rather than
+        risk a second gateway beside an SCM-owned install."""
+        import pytest as _pytest
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_gateway_pids",
+            lambda all_profiles=False: [],
+        )
+        _patch_desktop_owns_lifecycle(monkeypatch, False)
+
+        def boom():
+            raise OSError("probe unavailable")
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.is_service_registered", boom
+        )
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows._spawn_detached",
+            lambda *a, **k: calls.append(True) or 1234,
+        )
+
+        with _pytest.raises(RuntimeError):
+            update_cmd._cold_start_windows_gateway_after_update()
+        assert calls == []
+
+    def test_cold_start_unregistered_keeps_upstream_detached_path(
+        self, monkeypatch
+    ):
+        """No SCM unit registered ⇒ upstream behavior unchanged: detached
+        spawn via the same hidden-console breakaway path as before."""
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_gateway_pids",
+            lambda all_profiles=False: [],
+        )
+        _patch_desktop_owns_lifecycle(monkeypatch, False)
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.is_service_registered",
+            lambda: False,
+        )
+        scm_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.start_service",
+            lambda: scm_calls.append(True) or True,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows._spawn_detached",
+            lambda *a, **k: 1234,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows._wait_for_gateway_ready",
+            lambda *a, **k: [1234],
+        )
+
+        result = update_cmd._cold_start_windows_gateway_after_update()
+
+        assert result is True
+        assert scm_calls == []
 
 
 class TestServiceNameForHermesHome:
@@ -1131,7 +964,7 @@ class TestServiceNameForHermesHome:
 
 
 # =========================================================================
-# SCM dispatch, tagId, via_scm no-fallback, wait-for-state
+# SCM dispatch, tagId, cold-start SCM-ownership probe tests, wait-for-state
 # =========================================================================
 
 
@@ -1227,58 +1060,34 @@ class TestScmDispatchAndTagId:
         )
 
 
-class TestScmViaScmNoFallback:
-    """via_scm=True must never fall back to _spawn_detached."""
+class TestScmProbeNoFallback:
+    """PR #50200 semantic rebase: cold-start SCM ownership is decided by the
+    live registry/SCM probe inside _cold_start_windows_gateway_after_update()
+    (upstream removed the via_scm token flag). The probe→StartService path
+    must never fall through to _spawn_detached on any failure mode.
+    """
 
-    def test_via_scm_failure_does_not_fall_through_to_detached(self, monkeypatch):
-        """When cold_start_via_scm=True and SCM start fails,
-        _cold_start_windows_gateway_after_update must NOT call
-        _spawn_detached.
-        """
-        from hermes_cli import main as main_module
-
-        monkeypatch.setattr(
-            "hermes_cli.gateway.find_gateway_pids",
-            lambda all_profiles=False: [],
-        )
-        monkeypatch.setattr(
-            "hermes_cli.gateway_windows.start_service",
-            lambda: False,  # SCM start fails
-        )
-        calls = []
-        monkeypatch.setattr(
-            "hermes_cli.gateway_windows._spawn_detached",
-            lambda: calls.append(True) or 1234,
-        )
-
-        main_module._cold_start_windows_gateway_after_update(via_scm=True)
-
-        assert calls == [], (
-            "Must NOT call _spawn_detached when via_scm=True and SCM failed; "
-            f"got {calls}"
-        )
-
-    def test_via_scm_false_falls_through_to_detached(self, monkeypatch):
-        """When via_scm=False, _cold_start_windows_gateway_after_update
-        must fall through to _spawn_detached (legacy path unchanged)."""
-        from hermes_cli import main as main_module
+    def test_probe_failure_does_not_reach_detached_spawn(self, monkeypatch):
+        import pytest as _pytest
 
         monkeypatch.setattr(
             "hermes_cli.gateway.find_gateway_pids",
             lambda all_profiles=False: [],
         )
+        _patch_desktop_owns_lifecycle(monkeypatch, False)
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.is_service_registered",
+            lambda: (_ for _ in ()).throw(RuntimeError("SCM unreachable")),
+        )
         calls = []
         monkeypatch.setattr(
             "hermes_cli.gateway_windows._spawn_detached",
-            lambda: calls.append(True) or 1234,
+            lambda *a, **k: calls.append(True) or 1234,
         )
 
-        main_module._cold_start_windows_gateway_after_update(via_scm=False)
-
-        assert calls == [True], (
-            "Must call _spawn_detached when via_scm=False; "
-            f"got {calls}"
-        )
+        with _pytest.raises(RuntimeError):
+            update_cmd._cold_start_windows_gateway_after_update()
+        assert calls == []
 
 
 class TestScmWaitForState:
@@ -1427,3 +1236,166 @@ class TestNoDetachedFallbackFromStartService:
         out = capsys.readouterr().out
         assert "Windows Service start failed" in out
         assert "sc start <service-name>" in out
+
+
+class TestScmProbeFallbackWithoutPywin32:
+    """SCM ownership probe must survive pywin32 unavailability (contract #3).
+
+    If pywin32 is missing, is_service_registered() / is_service_registered_for_hermes_home()
+    must still see a registered SCM service via the stdlib winreg probe;
+    otherwise `hermes gateway start` would spawn a detached second gateway
+    alongside a registered (or running) service. Also: start_service /
+    stop_service / service_status must NOT fall back to the detached
+    start()/stop()/status() paths when pywin32 is missing (recursion +
+    double-gateway hazard)."""
+
+    @staticmethod
+    def _make_winreg(key_exists: bool):
+        import types
+        fw = types.ModuleType("winreg")
+        fw.HKEY_LOCAL_MACHINE = 1
+
+        class _Key:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_open_key(root, path, *a, **k):
+            if key_exists and "HermesGateway" in path:
+                return _Key()
+            raise FileNotFoundError(path)
+
+        fw.OpenKey = fake_open_key
+        return fw
+
+    @staticmethod
+    def _patch_pywin32_missing(monkeypatch, key_exists: bool):
+        """Force `import win32service` to fail and provide a fake winreg."""
+        import builtins, sys, types
+        real_import = builtins.__import__
+        fake_winreg = TestScmProbeFallbackWithoutPywin32._make_winreg(key_exists)
+
+        def fake_import(name, *a, **k):
+            if name == "win32service":
+                raise ImportError(name)
+            if name == "winreg":
+                return fake_winreg
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    def test_is_service_registered_true_via_registry_fallback(self, monkeypatch):
+        self._patch_pywin32_missing(monkeypatch, key_exists=True)
+        from hermes_cli import gateway_windows
+
+        assert gateway_windows.is_service_registered() is True
+
+    def test_is_service_registered_false_via_registry_fallback(self, monkeypatch):
+        self._patch_pywin32_missing(monkeypatch, key_exists=False)
+        from hermes_cli import gateway_windows
+
+        assert gateway_windows.is_service_registered() is False
+
+    def test_is_service_registered_for_home_true_via_registry_fallback(
+        self, monkeypatch
+    ):
+        from hermes_cli import gateway_windows
+
+        # The per-home probe derives a profile-specific service name; the
+        # registry fallback must see it too. Make the fake registry answer
+        # whatever name the probe asks for (key_exists semantics = any
+        # HermesGateway-prefixed key exists).
+        import builtins, types
+        real_import = builtins.__import__
+        fw = types.ModuleType("winreg")
+        fw.HKEY_LOCAL_MACHINE = 1
+
+        class _Key:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_open_key(root, path, *a, **k):
+            if "HermesGateway" in path:
+                return _Key()
+            raise FileNotFoundError(path)
+
+        fw.OpenKey = fake_open_key
+
+        def fake_import(name, *a, **k):
+            if name == "win32service":
+                raise ImportError(name)
+            if name == "winreg":
+                return fw
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        name = gateway_windows.get_service_name_for_hermes_home(
+            r"C:\Users\x\AppData\Local\hermes"
+        )
+        assert name.startswith("HermesGateway")
+        assert gateway_windows.is_service_registered_for_hermes_home(
+            r"C:\Users\x\AppData\Local\hermes"
+        ) is True
+
+    def test_start_service_registered_pywin32_missing_never_detached(
+        self, monkeypatch, capsys
+    ):
+        """start() with a registered service + missing pywin32 must route to
+        SCM start_service() and NEVER call _spawn_detached."""
+        from hermes_cli import gateway_windows
+
+        self._patch_pywin32_missing(monkeypatch, key_exists=True)
+
+        def boom(*a, **k):
+            raise AssertionError("_spawn_detached must not run when SCM owns the service")
+
+        monkeypatch.setattr(gateway_windows, "_spawn_detached", boom)
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "get_service_name", lambda: "HermesGateway")
+
+        gateway_windows.start()
+
+        out = capsys.readouterr().out
+        assert "cannot start Windows Service" in out
+
+    def test_stop_service_pywin32_missing_no_stop_fallback(
+        self, monkeypatch, capsys
+    ):
+        from hermes_cli import gateway_windows
+
+        self._patch_pywin32_missing(monkeypatch, key_exists=True)
+
+        def boom(*a, **k):
+            raise AssertionError("stop() must not be called from stop_service()")
+
+        monkeypatch.setattr(gateway_windows, "stop", boom)
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "get_service_name", lambda: "HermesGateway")
+
+        gateway_windows.stop_service()
+
+        out = capsys.readouterr().out
+        assert "cannot stop Windows Service" in out
+
+    def test_service_status_pywin32_missing_no_status_fallback(
+        self, monkeypatch, capsys
+    ):
+        from hermes_cli import gateway_windows
+
+        self._patch_pywin32_missing(monkeypatch, key_exists=True)
+
+        def boom(*a, **k):
+            raise AssertionError("status() must not be called from service_status()")
+
+        monkeypatch.setattr(gateway_windows, "status", boom)
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "get_service_name", lambda: "HermesGateway")
+
+        gateway_windows.service_status()
+
+        out = capsys.readouterr().out
+        assert "cannot query Windows Service status" in out

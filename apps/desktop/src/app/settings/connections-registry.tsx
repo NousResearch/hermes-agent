@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -12,8 +12,13 @@ import type {
   DesktopRegistryConnectionInput
 } from '@/global'
 import { useI18n } from '@/i18n'
+import {
+  CONNECTION_SEARCH_THRESHOLD,
+  connectionMatchesQuery,
+  sortConnectionsForDisplay
+} from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
-import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, Terminal, Trash2 } from '@/lib/icons'
+import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Terminal, Trash2 } from '@/lib/icons'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -214,6 +219,7 @@ export function ConnectionsRegistrySection() {
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
   const [launchModeBusy, setLaunchModeBusy] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   // Inline duplicate rejection from the save path (dedupe is also enforced in
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
@@ -468,6 +474,18 @@ export function ConnectionsRegistrySection() {
     ssh: { desc: s.kindSshDesc, label: s.kindSsh }
   }
 
+  const sortedConnections = useMemo(
+    () => sortConnectionsForDisplay(registry?.connections ?? []),
+    [registry?.connections]
+  )
+
+  const showSearch = sortedConnections.length >= CONNECTION_SEARCH_THRESHOLD
+  const effectiveSearchQuery = showSearch ? searchQuery : ''
+
+  const displayedConnections = sortedConnections.filter(connection =>
+    connectionMatchesQuery(connection, effectiveSearchQuery, [kindMeta[connection.kind].label])
+  )
+
   if (!bridge) {
     return null
   }
@@ -500,21 +518,36 @@ export function ConnectionsRegistrySection() {
         />
       )}
 
+      {!loading && showSearch && (
+        <Input
+          aria-label={s.searchPlaceholder}
+          containerClassName="mb-3 w-full max-w-sm"
+          onChange={event => setSearchQuery(event.target.value)}
+          placeholder={s.searchPlaceholder}
+          prefix={<SearchIcon className="size-3.5" />}
+          size="sm"
+          type="search"
+          value={searchQuery}
+        />
+      )}
+
       {loading ? (
         <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
           <Loader2 className="size-4 animate-spin" />
         </div>
       ) : !registry || registry.connections.length === 0 ? (
         <EmptyState title={s.empty} />
+      ) : displayedConnections.length === 0 ? (
+        <EmptyState title={s.noSearchResults} />
       ) : (
-        registry.connections.map(conn => {
+        displayedConnections.map(conn => {
           const Icon = KIND_ICONS[conn.kind]
           const isCurrent = activeConnectionId === conn.id
           const isPrimary = registry.primary === conn.id
           const busy = busyId === conn.id
           // Display-only: this connection is a second address for a backend
           // already registered under another entry (same install_id).
-          const sameBackendPeer = sameBackendPeerLabel(conn, registry.connections)
+          const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
 
           const baseDescription =
             conn.kind === 'ssh'

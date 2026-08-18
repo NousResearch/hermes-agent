@@ -914,6 +914,8 @@ export const zh: Translations = {
       launchModeDesc: '选择 Hermes 启动时打开主网关，或上次成功连接的网关。',
       launchPrimary: '主网关',
       launchLastUsed: '上次使用',
+      searchPlaceholder: '搜索网关…',
+      noSearchResults: '没有与搜索匹配的网关。',
       loadFailed: '无法加载连接',
       currentPill: '当前',
       primaryPill: '主连接',

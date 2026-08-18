@@ -163,6 +163,53 @@ describe('ConnectionsRegistrySection', () => {
     expect(screen.queryByText('Open on launch')).toBeNull()
   })
 
+  it('keeps search out of the way for a small registry', async () => {
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+    expect(screen.queryByRole('searchbox', { name: 'Search gateways…' })).toBeNull()
+  })
+
+  it('sorts a large registry and searches names and endpoints', async () => {
+    const largeRegistry: DesktopConnectionsRegistry = {
+      ...registry,
+      connections: [
+        {
+          authMode: 'token',
+          id: 'zulu',
+          kind: 'remote',
+          label: 'Zulu',
+          tokenPreview: null,
+          tokenSet: false,
+          url: 'https://zulu.example.test'
+        },
+        registry.connections[0],
+        ...Array.from({ length: 6 }, (_, index) => ({
+          authMode: 'token' as const,
+          id: `gateway-${index}`,
+          kind: 'remote' as const,
+          label: index === 0 ? 'Alpha' : `Gateway ${index}`,
+          tokenPreview: null,
+          tokenSet: false,
+          url: index === 4 ? 'https://studio.example.test' : `https://gateway-${index}.example.test`
+        }))
+      ]
+    }
+
+    list.mockResolvedValueOnce(largeRegistry)
+    render(<ConnectionsRegistrySection />)
+
+    const search = await screen.findByRole('searchbox', { name: 'Search gateways…' })
+    const alpha = screen.getByText('Alpha')
+    const zulu = screen.getByText('Zulu')
+    expect(alpha.compareDocumentPosition(zulu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.change(search, { target: { value: 'studio.example' } })
+
+    expect(screen.getByText('Gateway 4')).toBeTruthy()
+    expect(screen.queryByText('Alpha')).toBeNull()
+  })
+
   it('tests a connection through the bridge', async () => {
     render(<ConnectionsRegistrySection />)
 

@@ -710,6 +710,8 @@ export const en: Translations = {
         'Choose whether Hermes opens your primary gateway or the last gateway that connected successfully.',
       launchPrimary: 'Primary gateway',
       launchLastUsed: 'Last used',
+      searchPlaceholder: 'Search gateways…',
+      noSearchResults: 'No gateways match your search.',
       loadFailed: 'Could not load connections',
       currentPill: 'Current',
       primaryPill: 'Primary',

@@ -596,6 +596,8 @@ export interface Translations {
       launchModeDesc: string
       launchPrimary: string
       launchLastUsed: string
+      searchPlaceholder: string
+      noSearchResults: string
       loadFailed: string
       currentPill: string
       primaryPill: string

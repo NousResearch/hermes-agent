@@ -10,6 +10,12 @@ import { ConnectionSwitcher } from './connection-switcher'
 Element.prototype.hasPointerCapture ??= () => false
 Element.prototype.setPointerCapture ??= () => undefined
 Element.prototype.releasePointerCapture ??= () => undefined
+Element.prototype.scrollIntoView ??= () => undefined
+globalThis.ResizeObserver ??= class ResizeObserver {
+  disconnect() {}
+  observe() {}
+  unobserve() {}
+}
 
 vi.mock('@/store/connections', () => ({
   $activeConnectionId: atom<null | string>('local'),
@@ -41,7 +47,17 @@ vi.mock('@/i18n', () => ({
         switchToConnection: (name: string) => `Switch to ${name}`,
         connectGateway: 'Connect another Hermes gateway…'
       },
-      settings: { connections: { title: 'Registered gateways' } }
+      settings: {
+        connections: {
+          noSearchResults: 'No gateways match your search.',
+          searchPlaceholder: 'Search gateways…',
+          kindCloud: 'Hermes Cloud',
+          kindLocal: 'Local',
+          kindRemote: 'Remote gateway',
+          kindSsh: 'SSH',
+          title: 'Registered gateways'
+        }
+      }
     }
   })
 }))
@@ -164,6 +180,110 @@ describe('ConnectionSwitcher', () => {
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
     expect(screen.getByRole('button', { name: 'Registered gateways: This device' })).toBeTruthy()
+  })
+
+  it('keeps small gateway lists simple and naturally sorted', () => {
+    $connectionsRegistry.set(
+      registry([
+        connection('zulu', 'Zulu'),
+        connection('local', 'This device', 'local'),
+        connection('studio-10', 'Studio 10'),
+        connection('alpha', 'alpha'),
+        connection('studio-2', 'Studio 2')
+      ])
+    )
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+
+    expect(screen.queryByPlaceholderText('Search gateways…')).toBeNull()
+    expect(screen.getAllByRole('menuitemradio').map(item => item.textContent)).toEqual([
+      'This device',
+      'alpha',
+      'Studio 2',
+      'Studio 10',
+      'Zulu'
+    ])
+  })
+
+  it('adds search at eight gateways and filters stable results without moving the connect action', async () => {
+    $connectionsRegistry.set(
+      registry([
+        connection('zulu', 'Zulu'),
+        connection('local', 'This device', 'local'),
+        connection('studio-10', 'Studio 10'),
+        connection('alpha', 'Alpha'),
+        connection('studio-2', 'Studio 2'),
+        connection('work', 'Work VPS'),
+        connection('homelab', 'Homelab'),
+        connection('cloud', 'Cloud lab')
+      ])
+    )
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
+    fireEvent.pointerDown(trigger, {
+      button: 0,
+      pointerType: 'mouse'
+    })
+
+    const search = screen.getByPlaceholderText('Search gateways…')
+    expect(screen.getByRole('menuitem', { name: 'Connect another Hermes gateway…' })).toBeTruthy()
+    expect(screen.getAllByRole('menuitemradio').map(item => item.textContent)).toEqual([
+      'This device',
+      'Alpha',
+      'Cloud lab',
+      'Homelab',
+      'Studio 2',
+      'Studio 10',
+      'Work VPS',
+      'Zulu'
+    ])
+
+    fireEvent.change(search, { target: { value: 'studio 10' } })
+    expect(screen.getAllByRole('menuitemradio').map(item => item.textContent)).toEqual(['Studio 10'])
+
+    const result = screen.getByRole('menuitemradio', { name: 'Studio 10' })
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    expect(globalThis.document.activeElement).toBe(result)
+
+    result.focus()
+    fireEvent.keyDown(result, { key: 'f', metaKey: true })
+    expect(globalThis.document.activeElement).toBe(search)
+
+    fireEvent.keyDown(search, { key: 'Escape' })
+    expect(screen.queryByPlaceholderText('Search gateways…')).toBeNull()
+    await waitFor(() => expect(globalThis.document.activeElement).toBe(trigger))
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    expect((screen.getByPlaceholderText('Search gateways…') as HTMLInputElement).value).toBe('')
+
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Studio 10' }))
+    expect(selectConnection).toHaveBeenCalledWith('studio-10')
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    expect((screen.getByPlaceholderText('Search gateways…') as HTMLInputElement).value).toBe('')
+  })
+
+  it('explains an empty large-list search', () => {
+    $connectionsRegistry.set(
+      registry([
+        connection('local', 'This device', 'local'),
+        ...Array.from({ length: 7 }, (_, index) => connection(`remote-${index}`, `Remote ${index}`))
+      ])
+    )
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: This device' }), {
+      button: 0,
+      pointerType: 'mouse'
+    })
+    fireEvent.change(screen.getByPlaceholderText('Search gateways…'), { target: { value: 'missing' } })
+
+    expect(screen.getByText('No gateways match your search.')).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Connect another Hermes gateway…' })).toBeTruthy()
+    expect(globalThis.document.querySelector('[data-slot="dropdown-menu-radio-group"]')?.className).toContain('h-48')
   })
 
   it('announces a pending switch in the compact source menu', () => {

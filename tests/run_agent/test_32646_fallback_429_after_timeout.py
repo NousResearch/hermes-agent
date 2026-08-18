@@ -23,10 +23,12 @@ Scenario:
 
 from __future__ import annotations
 
+import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agent.turn_retry_state import TurnRetryState
+from agent.retry_utils import adaptive_rate_limit_backoff, zai_coding_overload_retry_ceiling
 from run_agent import AIAgent
 
 
@@ -81,6 +83,20 @@ class RateLimitError(Exception):
         super().__init__("Error code: 429 - rate limit exceeded")
         self.response = SimpleNamespace(headers={})
         self.body = {"error": {"message": "rate limit exceeded"}}
+
+
+class ZaiCodingOverloadError(Exception):
+    status_code = 429
+
+    def __init__(self):
+        super().__init__("Error code: 1305 - temporarily overloaded")
+        self.response = SimpleNamespace(headers={})
+        self.body = {
+            "error": {
+                "code": "1305",
+                "message": "The service may be temporarily overloaded, please try again later",
+            }
+        }
 
 
 # Regression: post-recovery reset of fallback-chain state
@@ -289,6 +305,116 @@ class TestFallbackChainResetOnTransportRecovery:
         mock_resolve.assert_called_once()
         assert agent._fallback_activated is True
         assert agent.model == "glm-4.7"
+
+    @pytest.mark.parametrize("model", ["glm-5.2", "glm-5.3"])
+    def test_zai_overload_retries_before_fallback_at_ceiling(self, model, monkeypatch):
+        """Drive the actual retry loop: overload backoff gets its full budget,
+        then the configured fallback is activated exactly at the ceiling."""
+        agent = _make_agent_with_fallback([
+            {
+                "provider": "openai",
+                "model": "fallback-model",
+                "base_url": "https://fallback.example/v1",
+            }
+        ])
+        agent.model = model
+        agent._model = model
+        agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        agent._api_max_retries = 2
+        calls = []
+        waits = []
+        statuses = []
+
+        def fake_api_call(_api_kwargs):
+            calls.append((agent.provider, agent.model))
+            if agent._fallback_activated:
+                return _mock_response("fallback success")
+            raise ZaiCodingOverloadError()
+
+        def fake_sleep(seconds):
+            waits.append(seconds)
+            clock[0] += max(seconds, 1000.0)
+
+        clock = [0.0]
+        monkeypatch.setattr("agent.conversation_loop.time.time", lambda: clock[0])
+        monkeypatch.setattr("agent.conversation_loop.time.sleep", fake_sleep)
+        monkeypatch.setattr(agent, "_emit_status", statuses.append)
+
+        import agent.conversation_loop as conversation_loop
+        import agent.retry_utils as retry_utils
+        monkeypatch.setattr(
+            conversation_loop,
+            "jittered_backoff",
+            lambda *args, **kwargs: kwargs["base_delay"],
+        )
+        monkeypatch.setattr(
+            "agent.retry_utils.jittered_backoff",
+            lambda *args, **kwargs: kwargs["base_delay"],
+        )
+        # The retry loop lives in turn_recovery.py, which lazily imports these
+        # names from agent.retry_utils - patch that binding, not the
+        # conversation_loop compatibility alias.
+        real_backoff = retry_utils.adaptive_rate_limit_backoff
+
+        def recording_backoff(*args, **kwargs):
+            result = real_backoff(*args, **kwargs)
+            waits.append(result[0])
+            return result
+
+        monkeypatch.setattr(retry_utils, "adaptive_rate_limit_backoff", recording_backoff)
+
+        mock_fb_client = MagicMock()
+        mock_fb_client.api_key = "fallback-key"
+        mock_fb_client.base_url = "https://fallback.example/v1"
+        mock_fb_client._custom_headers = None
+        mock_fb_client.default_headers = None
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_fb_client, "fallback-model")),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        ):
+            result = agent.run_conversation("hello")
+
+        ceiling = zai_coding_overload_retry_ceiling()
+        assert result["final_response"] == "fallback success"
+        assert len(calls) == ceiling + 1
+        assert calls[:ceiling] == [("zai", model)] * ceiling
+        assert calls[-1] == ("openai", "fallback-model")
+        assert [wait for wait in waits if wait in (30.0, 60.0, 90.0, 120.0)] == [30.0, 60.0, 90.0, 120.0]
+        assert sum("fallback" in str(status).lower() for status in statuses) >= 1
+
+    def test_quota_429_keeps_existing_eager_failover(self):
+        agent = _make_agent_with_fallback([{"provider": "openai", "model": "fallback-model"}])
+        agent._api_max_retries = 2
+        calls = []
+
+        def fake_api_call(_api_kwargs):
+            calls.append((agent.provider, agent.model))
+            if agent._fallback_activated:
+                return _mock_response("quota fallback")
+            raise RateLimitError()
+
+        mock_fb_client = MagicMock()
+        mock_fb_client.api_key = "fallback-key"
+        mock_fb_client.base_url = "https://fallback.example/v1"
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_fb_client, "fallback-model")),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+            patch("agent.conversation_loop.time.sleep"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "quota fallback"
+        assert calls == [("zai", "glm-5.1"), ("openai", "fallback-model")]
 
 
 # Defensive: pure-timeout cycle without 429 still works

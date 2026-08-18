@@ -1436,9 +1436,23 @@ def route_classified_error(
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+    _zai_overload_attempts_remain = (
+        _is_zai_coding_overload
+        and retry_count < zai_coding_overload_retry_ceiling()
+    )
     _should_fallback = (
-        (is_rate_limited and _wrapped_output_cap_budget is None)
-        or (_is_transport_failure and retry_count >= 2)
+        (
+            is_rate_limited
+            and _wrapped_output_cap_budget is None
+            # Localized/code-only 1305s can classify as a generic rate limit.
+            # Billing and upstream-quota verdicts retain immediate failover.
+            and not (_zai_overload_attempts_remain and classified.reason == FailoverReason.rate_limit)
+        )
+        or (
+            _is_transport_failure
+            and retry_count >= 2
+            and not _zai_overload_attempts_remain
+        )
     )
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an

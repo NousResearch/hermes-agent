@@ -11,7 +11,7 @@ description: |
   ~/.hermes installation and are shared with the snap automatically.
 
 base: core24
-confinement: strict
+confinement: devmode
 grade: stable
 
 architectures:

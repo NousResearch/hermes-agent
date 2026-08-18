@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
@@ -13,6 +14,7 @@ import {
   invokePluginNotifyActivate,
   respondToApprovalAction
 } from '@/store/native-notifications'
+import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
 import {
   getRememberedRoute,
@@ -234,9 +236,11 @@ export function useDesktopIntegrations({
 
   // hermes:// deep links:
   //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
+  //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
+  //    modal awaiting explicit confirmation. Never auto-installs.
+  //  - blueprint/<name>?… → reviewable /blueprint command in the composer
   //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
   //  - open/<path>?… → in-app navigate (generic)
-  //  - blueprint/<name>?… → reviewable /blueprint command in the composer
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
       if (!payload?.kind) {
@@ -249,12 +253,10 @@ export function useDesktopIntegrations({
         return
       }
 
-      if (payload.kind === 'blueprint') {
-        if (!payload.name) {
-          return
-        }
+      const action = resolveDeepLinkAction(payload)
 
-        const slots = Object.entries(payload.params || {})
+      if (action.type === 'composer-blueprint') {
+        const slots = Object.entries(action.params || {})
           .map(([k, v]) => {
             const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
 
@@ -262,13 +264,27 @@ export function useDesktopIntegrations({
           })
           .join(' ')
 
-        const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
+        const command = `/blueprint ${action.name}${slots ? ' ' + slots : ''}`
         requestComposerInsert(command, { mode: 'block', target: 'main' })
         requestComposerFocus('main')
 
         return
       }
 
+      if (action.type === 'plugin-install') {
+        openPluginInstallRequest({
+          repo: action.repo,
+          enable: action.enable,
+          force: action.force,
+          legacyHint: action.legacyHint
+        })
+
+        return
+      }
+
+      // Not a core action — treat as a plugin-scoped or open/ navigation deep
+      // link (hermes://index-network/intent/1, hermes://open/…). The resolver
+      // rejects reserved kinds and unsafe paths.
       const path = pathFromHermesDeepLink(payload.kind, payload.name || '', payload.params || {})
 
       if (path) {

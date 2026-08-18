@@ -392,6 +392,40 @@ export const en: Translations = {
         toggleFailed: (name: string) => `Could not toggle ${name}`,
         updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
         sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
+      },
+      installModal: {
+        title: 'Install plugin',
+        description: 'Review what this repository contains before installing anything.',
+        repoLabel: 'Repository',
+        includesHeading: 'This package includes',
+        agentLabel: 'Agent plugin',
+        desktopLabel: 'Desktop UI',
+        agentTargetLocal: profile => `Installs into the ${profile} backend (~/.hermes/plugins/)`,
+        agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
+        desktopTarget: "Installs into this app's local desktop-plugins folder",
+        desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
+        insecureWarning:
+          'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
+        securityHeading: 'Before you install',
+        securityIntro:
+          'Install only from sources you trust — review the repository below if you want to see what will be added.',
+        sourceHeading: 'Source code',
+        viewRepository: 'View repository',
+        viewPluginFiles: 'View plugin files',
+        gitCloneLabel: 'Git clone URL',
+        enableAgent: 'Enable agent plugin after install',
+        forceReinstall: 'Force reinstall (replace if already installed)',
+        install: 'Install',
+        installing: 'Installing…',
+        probing: 'Inspecting repository…',
+        probeUnavailable: 'Plugin inspection is unavailable in this environment.',
+        desktopUnavailable: 'Desktop plugin install is unavailable in this environment.',
+        selectComponent: 'Select at least one component to install.',
+        agentSuccess: name => `Agent plugin ${name} installed`,
+        desktopSuccess: name => `Desktop plugin ${name} installed`,
+        agentFailed: 'Agent plugin install failed',
+        desktopFailed: 'Desktop plugin install failed',
+        missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`
       }
     },
     notifications: {

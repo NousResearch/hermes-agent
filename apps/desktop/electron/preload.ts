@@ -323,6 +323,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:deep-link', listener)
   },
   signalDeepLinkReady: () => ipcRenderer.invoke('hermes:deep-link-ready'),
+  probePluginRepo: payload => ipcRenderer.invoke('hermes:plugin:probe', payload),
+  installDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:installDesktop', payload),
   onWindowStateChanged: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:window-state-changed', listener)

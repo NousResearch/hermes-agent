@@ -117,6 +117,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
+import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { resolveDesktopRemoteRoute } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
@@ -14639,6 +14640,33 @@ ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => localPluginsRoot('des
 // this root for it — one installable folder serving both SDKs.
 ipcMain.handle('hermes:fs:agentPluginsRoot', async () => localPluginsRoot('plugins'))
 
+ipcMain.handle('hermes:plugin:probe', async (_event, payload) => {
+  const identifier = String(payload?.identifier || payload?.repo || '').trim()
+
+  if (!identifier) {
+    return { ok: false, error: 'identifier is required', agent: false, desktop: false, warnings: [] }
+  }
+
+  return probePluginRepo(resolveGitBinary(), identifier)
+})
+
+ipcMain.handle('hermes:plugin:installDesktop', async (_event, payload) => {
+  const identifier = String(payload?.identifier || payload?.repo || '').trim()
+
+  if (!identifier) {
+    return { ok: false, error: 'identifier is required' }
+  }
+
+  const desktopPluginsRoot = await localPluginsRoot('desktop-plugins')
+
+  return installDesktopPluginFromGit(
+    resolveGitBinary(),
+    identifier,
+    desktopPluginsRoot,
+    Boolean(payload?.force)
+  )
+})
+
 // Rename a file/folder in place. The renderer passes the existing path + a new
 // base name; the destination is resolved in the SAME parent dir so a rename can
 // never move the item elsewhere or traverse out. Rejects on a name collision.
@@ -15224,15 +15252,20 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
 // ---------------------------------------------------------------------------
-// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00, or
+// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00,
 // hermes://mcp/install?name=NAME&config=B64 — the vendor "Add to Hermes"
-// button). Parsing is generic ({kind, name, params}); the renderer routes per
-// kind and anything install-shaped requires explicit user confirmation there.
+// button, or hermes://plugin/install?repo=owner/repo). Dev
+// (`HERMES_DESKTOP_DEV_SERVER`) registers hermes-dev:// instead — bare
+// Electron or a stale OS handler often owns hermes:// on dev machines.
+// Parsing is generic ({kind, name, params}); the renderer routes per kind
+// and anything install-shaped requires explicit user confirmation there.
 // A docs/dashboard "Send to App" button opens this URL; we route it into the
 // running app. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
-const HERMES_PROTOCOL = 'hermes'
+const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
+/** Schemes accepted when parsing inbound URLs (dev accepts both). */
+const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 
@@ -15241,7 +15274,11 @@ function _extractDeepLink(argv) {
     return null
   }
 
-  return argv.find(a => typeof a === 'string' && a.startsWith(`${HERMES_PROTOCOL}://`)) || null
+  return (
+    argv.find(
+      a => typeof a === 'string' && DEEPLINK_SCHEMES.some(s => a.startsWith(`${s}://`))
+    ) || null
+  )
 }
 
 function handleDeepLink(url) {
@@ -15255,6 +15292,14 @@ function handleDeepLink(url) {
     parsed = new URL(url)
   } catch {
     rememberLog(`[deeplink] ignoring malformed url: ${url}`)
+
+    return
+  }
+
+  const scheme = parsed.protocol.replace(/:$/, '')
+
+  if (!DEEPLINK_SCHEMES.includes(scheme)) {
+    rememberLog(`[deeplink] ignoring scheme ${scheme} (expected ${DEEPLINK_SCHEMES.join(' or ')})`)
 
     return
   }
@@ -15308,11 +15353,15 @@ function registerDeepLinkProtocol() {
   try {
     if (process.defaultApp && process.argv.length >= 2) {
       // Dev: register with the electron exec path + entry script so the OS can
-      // relaunch us with the URL.
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+      // relaunch us with the URL. argv[1] is usually "." when launched via
+      // `electron .` from apps/desktop — resolve against cwd.
+      const entry = path.resolve(process.argv[1])
+      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [entry])
     } else {
       app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
     }
+
+    rememberLog(`[deeplink] registered ${HERMES_PROTOCOL}:// handler`)
   } catch (err) {
     rememberLog(`[deeplink] protocol registration failed: ${err.message}`)
   }
@@ -15394,6 +15443,7 @@ app.whenReady().then(() => {
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
+
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()

@@ -340,6 +340,38 @@ export interface Translations {
         updateBackendToManage: string
         sources: Record<string, string>
       }
+      installModal: {
+        title: string
+        description: string
+        repoLabel: string
+        includesHeading: string
+        agentLabel: string
+        desktopLabel: string
+        agentTargetLocal: (profile: string) => string
+        agentTargetRemote: (profile: string) => string
+        desktopTarget: string
+        desktopOnlyNote: string
+        insecureWarning: string
+        securityHeading: string
+        securityIntro: string
+        sourceHeading: string
+        viewRepository: string
+        viewPluginFiles: string
+        gitCloneLabel: string
+        enableAgent: string
+        forceReinstall: string
+        install: string
+        installing: string
+        probing: string
+        probeUnavailable: string
+        desktopUnavailable: string
+        selectComponent: string
+        agentSuccess: (name: string) => string
+        desktopSuccess: (name: string) => string
+        agentFailed: string
+        desktopFailed: string
+        missingEnv: (vars: string) => string
+      }
     }
     notifications: {
       title: string

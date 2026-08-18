@@ -152,6 +152,44 @@ def test_start_server_insecure_public_no_longer_bypasses_gate(monkeypatch):
     assert web_server.app.state.auth_required is True
 
 
+def test_fail_closed_gate_surfaces_every_bundled_providers_skip_reason(monkeypatch):
+    """The gate's refusal must name EVERY bundled provider that declined to
+    register, not just nous (#88959).
+
+    All four bundled providers expose the module-level LAST_SKIP_REASON
+    contract (the basic plugin's docstring says the gate's fail-closed branch
+    surfaces it), but only nous was ever read — an operator hitting the gate
+    with basic installed-but-unconfigured saw a bare "no providers".
+    """
+    import plugins.dashboard_auth.basic as _basic
+    import plugins.dashboard_auth.drain as _drain
+    import plugins.dashboard_auth.nous as _nous
+    import plugins.dashboard_auth.self_hosted as _self_hosted
+
+    monkeypatch.setattr(_nous, "LAST_SKIP_REASON", "missing HERMES_DASHBOARD_OAUTH_CLIENT_ID")
+    monkeypatch.setattr(_basic, "LAST_SKIP_REASON", "username is not set")
+    monkeypatch.setattr(_self_hosted, "LAST_SKIP_REASON", "no client secret")
+    monkeypatch.setattr(_drain, "LAST_SKIP_REASON", "drain secret absent")
+
+    from hermes_cli.dashboard_auth import clear_providers
+    clear_providers()
+    _stub_uvicorn_run(monkeypatch)
+    web_server.app.state.auth_required = None
+    with pytest.raises(SystemExit) as exc_info:
+        web_server.start_server(
+            host="0.0.0.0", port=9119,
+            open_browser=False, allow_public=True,
+        )
+    message = str(exc_info.value)
+    for provider_name, reason in (
+        ("nous", "missing HERMES_DASHBOARD_OAUTH_CLIENT_ID"),
+        ("basic", "username is not set"),
+        ("self_hosted", "no client secret"),
+        ("drain", "drain secret absent"),
+    ):
+        assert f"• {provider_name}: {reason}" in message, provider_name
+
+
 def test_start_server_public_without_insecure_records_auth_required(monkeypatch):
     """Public bind without --insecure: the gate engages and auth_required=True.
 

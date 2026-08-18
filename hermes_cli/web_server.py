@@ -637,6 +637,31 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _collect_provider_skip_reasons() -> "list[str]":
+    """Every bundled dashboard-auth provider's LAST_SKIP_REASON, prefixed.
+
+    All four bundled providers (nous / basic / self_hosted / drain) expose the
+    module-level ``LAST_SKIP_REASON`` contract for the gate's fail-closed
+    branch; reading only nous left the other three's skip reasons invisible —
+    an operator hitting the gate with `basic` installed-but-unconfigured just
+    saw "no providers" (#88959). Import failures count as no reason (the
+    provider may not be installed at all).
+    """
+    reasons: "list[str]" = []
+    for provider_name in ("nous", "basic", "self_hosted", "drain"):
+        try:
+            provider_mod = __import__(
+                f"plugins.dashboard_auth.{provider_name}",
+                fromlist=["LAST_SKIP_REASON"],
+            )
+            reason = getattr(provider_mod, "LAST_SKIP_REASON", "")
+            if reason:
+                reasons.append(f"  • {provider_name}: {reason}")
+        except Exception:
+            pass
+    return reasons
+
+
 def should_require_auth(host: str, allow_public: bool = False) -> bool:
     """Return True iff the dashboard auth gate must be active.
 
@@ -18796,16 +18821,7 @@ def start_server(
             # module-level ``LAST_SKIP_REASON`` string for this purpose;
             # without it the operator would only see "no providers" which
             # is misleading when the provider IS installed but unconfigured.
-            skip_reasons: list[str] = []
-            try:
-                from plugins.dashboard_auth import nous as _nous_plugin
-
-                if _nous_plugin.LAST_SKIP_REASON:
-                    skip_reasons.append(
-                        f"  • nous: {_nous_plugin.LAST_SKIP_REASON}"
-                    )
-            except Exception:
-                pass
+            skip_reasons = _collect_provider_skip_reasons()
 
             _fix_hint = (
                 "Configure an auth provider before exposing the dashboard:\n"

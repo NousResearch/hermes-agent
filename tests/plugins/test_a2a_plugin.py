@@ -612,7 +612,21 @@ class TestReplyCapture:
             runner = asyncio.create_task(consumer.run())
             consumer.on_delta("event_id: evt_178645280")
             await asyncio.sleep(0.01)
+
+            # A2A deliberately reports the invisible preview as an
+            # unsuccessful delivery. GatewayStreamConsumer must treat
+            # that as an internal streaming downgrade, not as a terminal
+            # A2A error: the request/reply waiter stays pending and later
+            # deltas continue accumulating for the notify-marked final.
+            assert consumer._edit_supported is False
+            assert consumer.already_sent is False
+            assert consumer.final_response_sent is False
+            assert fut.done() is False
+
             consumer.on_delta("9212_97bccc7032364276")
+            await asyncio.sleep(0.01)
+            assert fut.done() is False
+
             consumer.finish()
             await runner
 

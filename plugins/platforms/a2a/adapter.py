@@ -788,7 +788,9 @@ class A2AAdapter(BasePlatformAdapter):
             # fallback as only the missing suffix.  Since we actually drop the
             # preview, that loses the start of the reply.  Report the delivery
             # truthfully so the consumer retains the full accumulated buffer
-            # for the notify-marked terminal send.
+            # for the notify-marked terminal send. Runtime A2A request/reply
+            # completion uses notify-marked sends; this non-notify path is the
+            # gateway stream-preview path and must not resolve the A2A waiter.
             logger.debug("A2A: deferring non-final send for context %s", chat_id)
             return SendResult(success=False, error="A2A defers non-final previews")
         if not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):

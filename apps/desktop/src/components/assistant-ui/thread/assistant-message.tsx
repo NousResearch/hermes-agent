@@ -7,7 +7,7 @@ import {
   useMessageRuntime
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FC, useCallback, useMemo, useState } from 'react'
+import { type FC, type ReactNode, useCallback, useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
@@ -111,47 +111,56 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   )
 }
 
+/** The compact stand-in a settled inter-agent reply collapses to (Grok-bots
+ *  parity — the transcript shows the event; the text is one click away). */
+const InterAgentCollapsedNotice: FC<{ sender: string }> = ({ sender }) => (
+  <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
+    <span className="flex items-center justify-center gap-1.5">
+      <Codicon className="shrink-0 text-muted-foreground/55" name="arrow-small-right" size="0.8125rem" />
+      <span className="wrap-anywhere">Replied to {sender}</span>
+    </span>
+    <details className="self-center">
+      <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
+        show reply
+      </summary>
+      <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
+        {MESSAGE_PARTS}
+      </div>
+    </details>
+  </div>
+)
+
 /**
  * An assistant reply that answers an inter-agent delivery. Owns the only
  * root-level `isRunning` subscription left in this file, and it is confined to
  * the rare inter-agent case: the reply renders collapsed once it settles, so
  * the gate genuinely needs live status. Never collapse while streaming — the
  * user should see progress.
+ *
+ * The collapse is expressed as a CHILD of the normal body, not as a competing
+ * root. Returning a bare MessagePrimitive.Root here for the settled case put a
+ * different element type in this position than the running case
+ * (AssistantMessageBody), so settling unmounted the whole row and mounted a
+ * fresh one — throwing away the DOM the scroll anchor was holding, which can
+ * jump the transcript under the reader. One component, one root, children
+ * vary: settling is now a prop change React applies in place.
  */
 const InterAgentAssistantMessage: FC<AssistantMessageProps & { sender: string }> = ({ sender, ...props }) => {
   const isRunning = useAuiState(s => s.message.status?.type === 'running')
 
-  if (isRunning) {
-    return <AssistantMessageBody {...props} />
-  }
-
-  // Render collapsed (Grok-bots parity — the transcript shows the event; the
-  // text is one click away).
   return (
-    <MessagePrimitive.Root
-      className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden pb-(--conversation-turn-gap)"
-      data-role="assistant"
-      data-slot="aui_assistant-message-root"
-    >
-      <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
-        <span className="flex items-center justify-center gap-1.5">
-          <Codicon className="shrink-0 text-muted-foreground/55" name="arrow-small-right" size="0.8125rem" />
-          <span className="wrap-anywhere">Replied to {sender}</span>
-        </span>
-        <details className="self-center">
-          <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
-            show reply
-          </summary>
-          <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
-            {MESSAGE_PARTS}
-          </div>
-        </details>
-      </div>
-    </MessagePrimitive.Root>
+    <AssistantMessageBody
+      {...props}
+      collapsedNotice={isRunning ? null : <InterAgentCollapsedNotice sender={sender} />}
+    />
   )
 }
 
-const AssistantMessageBody: FC<AssistantMessageProps> = ({ onBranchInNewChat, onDismissError }) => {
+const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null | ReactNode }> = ({
+  collapsedNotice = null,
+  onBranchInNewChat,
+  onDismissError
+}) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
   const { t } = useI18n()
@@ -191,52 +200,62 @@ const AssistantMessageBody: FC<AssistantMessageProps> = ({ onBranchInNewChat, on
 
   return (
     <MessagePrimitive.Root
-      className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
+      className={cn(
+        'group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden',
+        collapsedNotice && 'pb-(--conversation-turn-gap)'
+      )}
       data-role="assistant"
       data-slot="aui_assistant-message-root"
-      onDoubleClick={onDoubleClick}
+      // Collapsed inter-agent rows never carried the tapback listener; keeping
+      // that exact truth table means gating it on the notice rather than on
+      // whether the hook returned a handler.
+      onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
       ref={enterRef}
     >
-      <div
-        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
-        data-slot="aui_assistant-message-content"
-      >
-        {/* Todos render in the composer status stack now, not inline. */}
-        {MESSAGE_PARTS}
-        <AssistantStatusSlot />
-        <AssistantPreviewEmbeds />
-        <MessagePrimitive.Error>
-          <ErrorPrimitive.Root
-            className="mt-1.5 flex items-start gap-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
-            role="alert"
+      {collapsedNotice ?? (
+        <>
+          <div
+            className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
+            data-slot="aui_assistant-message-content"
           >
-            <ErrorPrimitive.Message className="min-w-0 flex-1" />
-            {onDismissError && (
-              <TooltipIconButton
-                className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
-                onClick={() => onDismissError(messageId)}
-                side="top"
-                tooltip={t.assistant.thread.dismissError}
+            {/* Todos render in the composer status stack now, not inline. */}
+            {MESSAGE_PARTS}
+            <AssistantStatusSlot />
+            <AssistantPreviewEmbeds />
+            <MessagePrimitive.Error>
+              <ErrorPrimitive.Root
+                className="mt-1.5 flex items-start gap-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
+                role="alert"
               >
-                <XIcon className="size-3.5" />
-              </TooltipIconButton>
-            )}
-          </ErrorPrimitive.Root>
-        </MessagePrimitive.Error>
-      </div>
-      <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
-      {hasVisibleText && !isInterim && (
-        <AssistantFooter
-          durationS={turnDurationS}
-          getMessageText={getMessageText}
-          messageId={messageId}
-          onBranchInNewChat={onBranchInNewChat}
-        />
-      )}
-      {/* Last thing in the turn — under the action bar, the way Cursor ends a
+                <ErrorPrimitive.Message className="min-w-0 flex-1" />
+                {onDismissError && (
+                  <TooltipIconButton
+                    className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
+                    onClick={() => onDismissError(messageId)}
+                    side="top"
+                    tooltip={t.assistant.thread.dismissError}
+                  >
+                    <XIcon className="size-3.5" />
+                  </TooltipIconButton>
+                )}
+              </ErrorPrimitive.Root>
+            </MessagePrimitive.Error>
+          </div>
+          <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
+          {hasVisibleText && !isInterim && (
+            <AssistantFooter
+              durationS={turnDurationS}
+              getMessageText={getMessageText}
+              messageId={messageId}
+              onBranchInNewChat={onBranchInNewChat}
+            />
+          )}
+          {/* Last thing in the turn — under the action bar, the way Cursor ends a
           turn on its summary rather than burying it above the controls. */}
-      <SettledChangedFiles />
-      <StreamingMarker />
+          <SettledChangedFiles />
+          <StreamingMarker />
+        </>
+      )}
     </MessagePrimitive.Root>
   )
 }
@@ -267,18 +286,25 @@ const AssistantMessageBody: FC<AssistantMessageProps> = ({ onBranchInNewChat, on
  * itself a leaf and this stays off the message root either way.
  */
 const AssistantStatusSlot: FC = () => {
-  const isLastMessage = useAuiState(s => s.thread.messages[s.thread.messages.length - 1]?.id === s.message.id)
-  const isPlaceholder = useAuiState(s => s.message.status?.type === 'running' && s.message.content.length === 0)
+  // ONE subscription, not one per input. Each useAuiState is a separate store
+  // subscription with its own equality check and its own chance to schedule a
+  // render, and these inputs always move together on a status flip — so
+  // reading them separately just multiplies the wake-ups for a single logical
+  // change. The selector collapses them to one stable string, which bails out
+  // on every flush that does not actually change what this slot renders.
+  const slot = useAuiState(s => {
+    if (s.thread.messages[s.thread.messages.length - 1]?.id !== s.message.id) {
+      return 'none'
+    }
 
-  if (!isLastMessage) {
+    return s.message.status?.type === 'running' && s.message.content.length === 0 ? 'placeholder' : 'activity'
+  })
+
+  if (slot === 'none') {
     return null
   }
 
-  if (isPlaceholder) {
-    return <ResponseLoadingIndicator />
-  }
-
-  return <TurnActivityIndicator />
+  return slot === 'placeholder' ? <ResponseLoadingIndicator /> : <TurnActivityIndicator />
 }
 
 /**
@@ -362,11 +388,13 @@ const SettledChangedFiles: FC = () => {
  *
  * The flag has no CSS behind it (every `[data-streaming='true']` rule targets
  * `[data-slot='code-card']`), but it is not dead: it is the settled-row signal
- * for the short-session hang repro, which counts
- * `[data-slot='aui_assistant-message-root']:not(:has([data-message-streaming='true']))`
- * and gates the assistant-response wait on that count growing.
+ * for the short-session hang repro, which derives the settled count by
+ * subtracting the number of `[data-message-streaming='true']` markers from the
+ * number of message roots, and gates the assistant-response wait on that count
+ * growing. At most one marker per row carries the attribute, which is what
+ * makes the subtraction exact.
  *
- * Deliberately NOT named `data-streaming`: shiki-highlighter.tsx:148 puts that
+ * Deliberately NOT named `data-streaming`: shiki-highlighter.tsx puts that
  * exact attribute on a deferred `[data-slot='code-card']`, which is a
  * descendant of this root. Once the repro matches on a descendant rather than
  * the root's own attribute, a shared name would make any message holding a
@@ -377,12 +405,12 @@ const SettledChangedFiles: FC = () => {
  * whole message subtree, which is the invalidation this prong exists to remove.
  * Three properties make this placement cheap and behaviour-neutral:
  *
- *  - A ROOT-LEVEL sibling, not a child of the message content. The rules at
- *    styles.css:1995-2003 match the first/last block *inside*
- *    `[data-slot='aui_assistant-message-content']`; a node added there would
- *    steal `:last-child` from the stall indicator and silently change the gap
- *    between bubbles mid-stream. No rule selects message-root children by
- *    position, so this slot is inert.
+ *  - A ROOT-LEVEL sibling, not a child of the message content. The
+ *    `:first-child` / `:last-child` margin rules in styles.css match blocks
+ *    *inside* `[data-slot='aui_assistant-message-content']`; a node added
+ *    there would steal `:last-child` from the status indicator and silently
+ *    change the gap between bubbles mid-stream. No rule selects message-root
+ *    children by position, so this slot is inert.
  *  - PERMANENTLY MOUNTED, toggling only the attribute. Mounting/unmounting per
  *    flip would be a DOM structure change and dirty its siblings; an attribute
  *    write on a childless node invalidates exactly one element.
@@ -395,7 +423,14 @@ const SettledChangedFiles: FC = () => {
 const StreamingMarker: FC = () => {
   const isRunning = useAuiState(s => s.message.status?.type === 'running')
 
-  return <span aria-hidden="true" className="hidden" data-message-streaming={isRunning ? 'true' : undefined} />
+  return (
+    <span
+      aria-hidden="true"
+      className="hidden"
+      data-message-streaming={isRunning ? 'true' : undefined}
+      data-slot="aui_message-streaming-marker"
+    />
+  )
 }
 
 const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText, onBranchInNewChat }) => {

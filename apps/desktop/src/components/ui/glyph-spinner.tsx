@@ -13,6 +13,18 @@ interface NormalisedSpinner {
   interval: number
 }
 
+/**
+ * The two custom properties `glyph-spinner.css` reads off the strip to size
+ * `steps()` and the cycle duration. Naming them in a type, rather than casting
+ * the inline style with a bare `as CSSProperties`, makes a typo in a property
+ * name a compile error instead of a silently dead declaration that falls back
+ * to the braille defaults at runtime.
+ */
+export type GlyphSpinnerVars = CSSProperties & {
+  '--glyph-spinner-duration': string
+  '--glyph-spinner-frames': number
+}
+
 // Some spinners ship multi-character frames. Pull the first cell so each
 // frame fits in one monospace box — matches how the TUI uses them.
 const FRAMES_BY_NAME: Record<SpinnerName, NormalisedSpinner> = (() => {
@@ -70,7 +82,15 @@ export function GlyphSpinner({
   // `:root[data-renderer-animations-paused]` rule in styles.css that
   // main.tsx's installRendererAnimationPauseState() drives — the same
   // mechanism every other continuous decorative animation already uses.
+  // Note that only the primary window arms that attribute: a spinner mounted
+  // in an overlay / quick / wake window keeps animating while its window is
+  // blurred, exactly as the other decorative animations there do.
   const visible = usePaneVisible()
+
+  const vars: GlyphSpinnerVars = {
+    '--glyph-spinner-duration': `${spin.frames.length * spin.interval}ms`,
+    '--glyph-spinner-frames': spin.frames.length
+  }
 
   return (
     <span
@@ -83,15 +103,7 @@ export function GlyphSpinner({
           implementation rewrote its text ~12x/second, which would announce a
           new glyph on every tick. */}
       <span aria-hidden="true" className="glyph-spinner" data-paused={paused || !visible ? 'true' : undefined}>
-        <span
-          className="glyph-spinner__strip"
-          style={
-            {
-              '--glyph-spinner-duration': `${spin.frames.length * spin.interval}ms`,
-              '--glyph-spinner-frames': spin.frames.length
-            } as CSSProperties
-          }
-        >
+        <span className="glyph-spinner__strip" style={vars}>
           {spin.frames.map((frame, index) => (
             <span className="glyph-spinner__frame" key={`${index}:${frame}`}>
               {frame}

@@ -8,8 +8,8 @@
 //    likely to break if the split is revisited.
 // 2. The streaming marker. `data-message-streaming` moved off the message root
 //    onto a permanently-mounted hidden leaf, and
-//    scripts/run-short-session-hang-repro.mjs counts settled rows with
-//    `[data-slot="aui_assistant-message-root"]:not(:has([data-message-streaming="true"]))`.
+//    scripts/run-short-session-hang-repro.mjs derives its settled-row count by
+//    subtracting `[data-message-streaming="true"]` markers from message roots.
 //    Nothing in the app itself reads it, so without this test a delete would
 //    look free and would silently regress that repro's response gate.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
@@ -112,6 +112,8 @@ describe('inter-agent collapse gate', () => {
     await screen.findByText('done')
     expect(container.querySelector('[data-message-streaming="true"]')).toBeNull()
     // The marker element itself stays mounted (attribute toggles, no remount).
-    expect(container.querySelector('[data-slot="aui_assistant-message-root"] span.hidden')).toBeTruthy()
+    expect(
+      container.querySelector('[data-slot="aui_assistant-message-root"] [data-slot="aui_message-streaming-marker"]')
+    ).toBeTruthy()
   })
 })

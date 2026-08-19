@@ -13,15 +13,13 @@
 //  - the custom properties feeding `steps()` / duration match the source data,
 //    so cadence per variant is preserved;
 //  - no timer is ever created (the ticker is really gone);
-//  - the kept-alive-tab gate still resolves to a paused animation;
-//  - the strip is named in the global renderer-pause rule, which is what now
-//    delivers the window-blur / minimize / document-hidden suspension that
-//    this component used to implement itself via
-//    createRendererLoopPauseController. That mechanism has its own coverage in
-//    lib/renderer-loop-pause.test.ts.
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
-
+//  - the kept-alive-tab gate still resolves to a paused animation.
+//
+// The CSS itself is verified where it can actually run: e2e/glyph-spinner.spec.ts
+// reads getComputedStyle / getAnimations in a real browser. Asserting on the
+// text of the stylesheet from here would test the shape of the source rather
+// than its behaviour (banned outright — see AGENTS.md), and did in fact break
+// on a pure var()-fallback edit that changed no rendered pixel.
 import { render, screen } from '@testing-library/react'
 import { Profiler, type ProfilerOnRenderCallback } from 'react'
 import spinners from 'unicode-animations'
@@ -156,38 +154,4 @@ describe('GlyphSpinner', () => {
     expect(viewport()?.hasAttribute('data-paused')).toBe(false)
   })
 
-  it('travels an absolute length, so the animation can be composited', () => {
-    // A percentage translate resolves against the strip's own box, which makes
-    // the animation layout-dependent and Chromium refuses to composite it:
-    // instrumentation recorded compositeFailed on 184/184 records while the
-    // keyframes used translateY(-100%). This guards the regression back to it,
-    // which is invisible in jsdom and subtle on screen.
-    const css = readFileSync(resolve(process.cwd(), 'src/components/ui/glyph-spinner.css'), 'utf8')
-    const keyframes = css.slice(css.indexOf('@keyframes glyph-spinner-advance'))
-
-    expect(keyframes).not.toMatch(/translateY\(\s*-?\d+%/)
-    expect(keyframes).toContain('var(--glyph-spinner-frame-height)')
-    expect(css).toContain('will-change: transform')
-  })
-
-  it('keeps the decorative strip out of text selection', () => {
-    // These sit inside [data-selectable-text] subtrees; without this a
-    // transcript copy would pick up all N glyphs of every spinner.
-    const css = readFileSync(resolve(process.cwd(), 'src/components/ui/glyph-spinner.css'), 'utf8')
-
-    expect(css.slice(css.indexOf('.glyph-spinner {'), css.indexOf('.glyph-spinner__strip'))).toContain(
-      'user-select: none'
-    )
-  })
-
-  it('is wired into the global renderer-animation pause rule', () => {
-    // Window blur / minimize / document-hidden suspension now comes from this
-    // rule rather than from a per-spinner pause controller. Dropping the class
-    // from it would silently leave every spinner animating behind an inactive
-    // window — the CPU burn the original implementation existed to avoid.
-    const css = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
-    const pauseRule = css.slice(css.indexOf(':root[data-renderer-animations-paused]'))
-
-    expect(pauseRule.slice(0, pauseRule.indexOf('animation-play-state'))).toContain('.glyph-spinner__strip')
-  })
 })

@@ -115,3 +115,57 @@ def test_no_subscriber_short_circuits_task_updated(kanban_home, monkeypatch):
     finally:
         conn.close()
     assert "on_kanban_task_updated" not in invoked
+
+
+def test_edit_completed_task_result_fires_updated_with_changed_fields(
+    kanban_home, captured_updates
+):
+    """edit_completed_task_result (the CLI --result backfill path) mutates a
+    user-facing task field outside the claim/complete/block lifecycle — same
+    class as assign_task/set_model_override/set_reasoning_effort — and must
+    fire the observer post-commit."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="alice")
+        assert kb.complete_task(conn, tid, result="original") is True
+        captured_updates.clear()  # completion-time bookkeeping is not under test
+        assert kb.edit_completed_task_result(
+            conn, tid, result="backfilled result", summary="backfilled summary"
+        ) is True
+    finally:
+        conn.close()
+
+    assert len(captured_updates) == 1
+    kw = captured_updates[0]
+    assert kw["task_id"] == tid
+    assert kw["changed_fields"] == ["result", "summary"]
+
+
+def test_edit_completed_task_result_with_metadata_includes_field(
+    kanban_home, captured_updates
+):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="alice")
+        assert kb.complete_task(conn, tid, result="original") is True
+        captured_updates.clear()
+        assert kb.edit_completed_task_result(
+            conn, tid, result="r2", metadata={"note": "x"}
+        ) is True
+    finally:
+        conn.close()
+
+    assert captured_updates[0]["changed_fields"] == ["result", "summary", "metadata"]
+
+
+def test_edit_completed_task_result_refused_edit_never_fires(
+    kanban_home, captured_updates
+):
+    """A task that isn't 'done' yet must not fire the observer (refused edit)."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="alice")
+        assert kb.edit_completed_task_result(conn, tid, result="r") is False
+    finally:
+        conn.close()
+    assert captured_updates == []

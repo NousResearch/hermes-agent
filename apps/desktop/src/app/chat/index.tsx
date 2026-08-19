@@ -26,6 +26,7 @@ import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
+import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
@@ -60,6 +61,7 @@ import { ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from 
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
+import { shouldShowIntro } from './intro-visibility'
 import { ProfileTag } from './profile-tag'
 import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
@@ -391,6 +393,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
+  const introSplash = useStore($introSplash)
   // PERF: ChatView must not subscribe to the view's $messages — the atom is
   // replaced on every streaming delta flush (~30×/s) and a subscription here
   // re-renders the entire chat shell (header, chat bar, thread wrapper) per
@@ -455,15 +458,18 @@ const ChatViewContent = memo(function ChatViewContent({
   const routeSessionMismatch = isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions) : false
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
-  // scratch window, not the full-height empty state.
-  const showIntro =
-    isPrimary &&
-    !isAuxiliaryWindow() &&
-    freshDraftReady &&
-    !isRoutedSessionView &&
-    !selectedSessionId &&
-    !activeSessionId &&
-    messagesEmpty
+  // scratch window, not the full-height empty state. The Appearance toggle
+  // turns it off everywhere else.
+  const showIntro = shouldShowIntro({
+    activeSessionId,
+    auxiliaryWindow: isAuxiliaryWindow(),
+    enabled: introSplash,
+    freshDraftReady,
+    messagesEmpty,
+    primary: isPrimary,
+    routedSessionView: isRoutedSessionView,
+    selectedSessionId
+  })
 
   // Session is still loading if the route references a session we haven't
   // resumed yet. Once `activeSessionId` is set (runtime has resumed), the

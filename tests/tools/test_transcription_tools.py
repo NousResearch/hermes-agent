@@ -1097,6 +1097,125 @@ class TestLocalBaseUrlNoApiKey:
         assert not _is_local_or_private_url("")
 
 
+class TestOpenAIAudioGatewayPreference:
+    def test_gateway_preference_uses_the_loaded_stt_config(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+
+        managed = MagicMock(
+            nous_user_token="managed-token",
+            gateway_origin="https://openai-audio-gateway.nousresearch.com",
+        )
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "stt": {
+                    "use_gateway": True,
+                    "openai": {"api_key": "direct-config-key"},
+                }
+            },
+        ) as config_loader, patch(
+            "tools.transcription_tools.resolve_openai_audio_api_key",
+            return_value="direct-env-key",
+        ) as direct_resolver, patch(
+            "tools.transcription_tools.resolve_managed_tool_gateway",
+            return_value=managed,
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+
+        assert api_key == "managed-token"
+        assert base_url == "https://openai-audio-gateway.nousresearch.com/v1"
+        config_loader.assert_called_once_with()
+        direct_resolver.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("openai_config", "direct_api_key"),
+        [
+            ({"api_key": "direct-config-key"}, "direct-env-key"),
+            ({"base_url": "http://localhost:8504/v1"}, ""),
+            ({}, "direct-env-key"),
+        ],
+        ids=["config-key", "local-endpoint", "environment-key"],
+    )
+    def test_gateway_preference_overrides_each_direct_source(
+        self, openai_config, direct_api_key
+    ):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+
+        managed = MagicMock(
+            nous_user_token="managed-token",
+            gateway_origin="https://openai-audio-gateway.nousresearch.com",
+        )
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"use_gateway": True, "openai": openai_config},
+        ), patch(
+            "tools.transcription_tools.resolve_openai_audio_api_key",
+            return_value=direct_api_key,
+        ) as direct_resolver, patch(
+            "tools.transcription_tools.resolve_managed_tool_gateway",
+            return_value=managed,
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+
+        assert api_key == "managed-token"
+        assert base_url == "https://openai-audio-gateway.nousresearch.com/v1"
+        direct_resolver.assert_not_called()
+
+    def test_gateway_preference_propagates_from_real_config(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OPENAI_API_KEY", "direct-env-key")
+        (tmp_path / "config.yaml").write_text(
+            "stt:\n"
+            "  provider: openai\n"
+            "  use_gateway: true\n"
+            "  openai:\n"
+            "    api_key: direct-config-key\n",
+            encoding="utf-8",
+        )
+        managed = MagicMock(
+            nous_user_token="managed-token",
+            gateway_origin="https://openai-audio-gateway.nousresearch.com",
+        )
+        with patch(
+            "tools.transcription_tools.resolve_managed_tool_gateway",
+            return_value=managed,
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+
+        assert api_key == "managed-token"
+        assert base_url == "https://openai-audio-gateway.nousresearch.com/v1"
+
+    def test_gateway_preference_does_not_fall_back_to_direct_credentials(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"use_gateway": True},
+        ), patch(
+            "tools.transcription_tools.resolve_openai_audio_api_key",
+            return_value="direct-env-key",
+        ) as direct_resolver, patch(
+            "tools.transcription_tools.resolve_managed_tool_gateway",
+            return_value=None,
+        ), patch(
+            "tools.transcription_tools.nous_tool_gateway_unavailable_message",
+            return_value="Managed audio gateway is unavailable",
+        ):
+            with pytest.raises(
+                ValueError,
+                match="stt.use_gateway is enabled, so direct credentials were skipped",
+            ) as excinfo:
+                _resolve_openai_audio_client_config()
+
+        assert "Managed audio gateway is unavailable" in str(excinfo.value)
+        assert "is set" not in str(excinfo.value)
+        direct_resolver.assert_not_called()
+
+
 # =====================================================================
 
 

@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 
 from tools.vision_tools import (
@@ -76,7 +76,10 @@ class TestVideoAnalyzeSchema:
 
 
     def test_schema_description_mentions_video(self):
-        assert "video" in VIDEO_ANALYZE_SCHEMA["description"].lower()
+        description = VIDEO_ANALYZE_SCHEMA["description"].lower()
+        assert "video" in description
+        assert "local files use ffmpeg frames first" in description
+        assert "remote http(s) urls use native video first" in description
 
 
 # ---------------------------------------------------------------------------
@@ -127,21 +130,26 @@ class TestVideoAnalyzeTool:
         return asyncio.get_event_loop().run_until_complete(coro)
 
     def test_local_file_success(self, tmp_path, monkeypatch):
-        """Analyze a local video file — happy path."""
+        """Analyze a local video file through ffmpeg frames first."""
         video = tmp_path / "demo.mp4"
         video.write_bytes(b"\x00" * 1024)
 
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "A short video showing a demo."
-
-        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response):
-            with patch("tools.vision_tools.extract_content_or_reasoning", return_value="A short video showing a demo."):
-                result = self._run(video_analyze_tool(str(video), "What is this?"))
+        with (
+            patch(
+                "tools.vision_tools._analyze_video_via_frames",
+                new_callable=AsyncMock,
+                return_value=("A short video showing a demo.", ["/tmp/frame-001.jpg"]),
+            ) as mock_frames,
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm,
+        ):
+            result = self._run(video_analyze_tool(str(video), "What is this?"))
 
         data = json.loads(result)
         assert data["success"] is True
         assert "demo" in data["analysis"].lower()
+        assert data["method"] == "ffmpeg_frames+vision"
+        mock_frames.assert_awaited_once()
+        mock_llm.assert_not_awaited()
 
     def test_local_file_read_guard_blocks_env_via_video_extension(self, tmp_path):
         """A .env file symlinked with a video extension must still be blocked.
@@ -179,31 +187,26 @@ class TestVideoAnalyzeTool:
 
 
     def test_api_message_format(self, tmp_path):
-        """Verify the message sent to LLM uses video_url content type."""
+        """Verify a local file is handed to the frame-analysis path."""
         video = tmp_path / "test.mp4"
         video.write_bytes(b"\x00" * 100)
 
-        captured_kwargs = {}
+        with (
+            patch(
+                "tools.vision_tools._analyze_video_via_frames",
+                new_callable=AsyncMock,
+                return_value=("Grounded frame analysis", ["/tmp/frame-001.jpg"]),
+            ) as mock_frames,
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm,
+        ):
+            result = self._run(video_analyze_tool(str(video), "Describe this"))
 
-        async def capture_llm(**kwargs):
-            captured_kwargs.update(kwargs)
-            mock_response = MagicMock()
-            mock_response.choices = [MagicMock()]
-            mock_response.choices[0].message.content = "OK"
-            return mock_response
-
-        with patch("tools.vision_tools.async_call_llm", side_effect=capture_llm):
-            with patch("tools.vision_tools.extract_content_or_reasoning", return_value="OK"):
-                self._run(video_analyze_tool(str(video), "Describe this"))
-
-        messages = captured_kwargs["messages"]
-        assert len(messages) == 1
-        content = messages[0]["content"]
-        assert len(content) == 2
-        assert content[0]["type"] == "text"
-        assert content[1]["type"] == "video_url"
-        assert "video_url" in content[1]
-        assert content[1]["video_url"]["url"].startswith("data:video/mp4;base64,")
+        data = json.loads(result)
+        assert data["method"] == "ffmpeg_frames+vision"
+        args = mock_frames.await_args.args
+        assert args[0] == video
+        assert args[1] == "Describe this"
+        mock_llm.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

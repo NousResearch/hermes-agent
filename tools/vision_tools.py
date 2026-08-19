@@ -1585,8 +1585,7 @@ _VIDEO_BLIND_RE = re.compile(
     r"|there (?:is|was) no video"
     r")"
 )
-_VIDEO_FRAME_COUNT = 8
-_VIDEO_FRAME_FPS = 1.0
+_VIDEO_FRAME_COUNT = 16
 
 
 def _detect_video_mime_type(video_path: Path) -> Optional[str]:
@@ -1605,6 +1604,25 @@ def _video_analysis_is_blind(text: Optional[str]) -> bool:
     return bool(_VIDEO_BLIND_RE.search(t))
 
 
+def _should_use_frames_first(video_url: str) -> bool:
+    """Use frames first for resolved local/file sources, never remote HTTP(S)."""
+    source = str(video_url).strip().lower()
+    return not source.startswith(("http://", "https://"))
+
+
+def _video_frame_timestamps(
+    duration_seconds: float,
+    *,
+    max_frames: int = _VIDEO_FRAME_COUNT,
+) -> list[float]:
+    """Return evenly spaced sample times spanning the full video duration."""
+    duration = max(float(duration_seconds), 0.0)
+    frame_count = max(int(max_frames), 1)
+    if frame_count == 1 or duration == 0.0:
+        return [0.0]
+    return [duration * index / (frame_count - 1) for index in range(frame_count)]
+
+
 def _extract_video_frames(video_path: Path, out_dir: Path, *, max_frames: int = _VIDEO_FRAME_COUNT) -> list[Path]:
     """Extract still frames with ffmpeg. Raises RuntimeError on failure."""
     import shutil
@@ -1613,6 +1631,37 @@ def _extract_video_frames(video_path: Path, out_dir: Path, *, max_frames: int = 
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("ffmpeg not found on PATH — cannot extract video frames")
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise RuntimeError("ffprobe not found on PATH — cannot sample full video duration")
+
+    probe = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if probe.returncode != 0:
+        err = (probe.stderr or probe.stdout or "")[-400:]
+        raise RuntimeError(f"ffprobe duration check failed (rc={probe.returncode}): {err}")
+    try:
+        duration_seconds = float(probe.stdout.strip())
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"ffprobe returned invalid video duration: {probe.stdout.strip()!r}"
+        ) from exc
+    timestamps = _video_frame_timestamps(duration_seconds, max_frames=max_frames)
+    sample_fps = (len(timestamps) - 1) / duration_seconds if len(timestamps) > 1 else 1.0
+
     out_dir.mkdir(parents=True, exist_ok=True)
     # Wipe prior frames in this dir only (run-scoped cache dirs).
     for old in out_dir.glob("frame-*.jpg"):
@@ -1627,7 +1676,7 @@ def _extract_video_frames(video_path: Path, out_dir: Path, *, max_frames: int = 
         "-i",
         str(video_path),
         "-vf",
-        f"fps={_VIDEO_FRAME_FPS}",
+        f"fps={sample_fps:.12g}:start_time=0:eof_action=pass",
         "-frames:v",
         str(max_frames),
         "-q:v",
@@ -1880,81 +1929,101 @@ async def video_analyze_tool(
         except Exception:
             pass
 
-        # Prefer native video pass first (when payload fits); if the model is
-        # blind / refuses / text-only fallback, hard-fail that path and re-read
-        # via ffmpeg frames + multi-image vision (reliable for WA screen recs).
+        # Local / file sources (including WhatsApp clips) use frames first to
+        # avoid fluent native-video hallucinations. Remote HTTP(S) sources keep
+        # native video first and use the existing blind/refusal frame fallback.
+        frames_first = _should_use_frames_first(video_url)
         analysis = None
-        method = "video_url"
+        method = "ffmpeg_frames+vision" if frames_first else "video_url"
         frame_paths: list[str] = []
         primary_error = None
 
-        try:
-            video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
-            data_size_mb = len(video_data_url) / (1024 * 1024)
-            if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
-                raise ValueError(
-                    f"Video too large for API: base64 payload is {data_size_mb:.1f} MB "
-                    f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
-                    f"Compress or trim the video and retry."
+        if frames_first:
+            try:
+                analysis, frame_paths = await _analyze_video_via_frames(
+                    temp_video_path,
+                    user_prompt,
+                    model,
+                    vision_timeout=vision_timeout,
+                    vision_temperature=vision_temperature,
                 )
-
-            # Grounding instruction reduces club/nightlife hallucinations on
-            # phone screen-recordings of IG carousels / stories.
-            grounded_prompt = (
-                "You are looking at an actual video attachment (bytes attached). "
-                "Describe only what is visibly present. Quote on-screen text "
-                "verbatim. Do not invent locations, club/bar scenes, or people "
-                "not shown. If this is a phone UI / social app screen recording, "
-                "say so and transcribe captions/slides.\n\n"
-                f"{user_prompt}"
-            )
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": grounded_prompt},
-                        {
-                            "type": "video_url",
-                            "video_url": {"url": video_data_url},
-                        },
-                    ],
-                }
-            ]
-            call_kwargs = {
-                "task": "vision",
-                "messages": messages,
-                "temperature": vision_temperature,
-                "max_tokens": 4000,
-                "timeout": vision_timeout,
-            }
-            if model:
-                call_kwargs["model"] = model
-
-            _load_auxiliary_client()
-            response = await async_call_llm(**call_kwargs)
-            analysis = extract_content_or_reasoning(response)
-            if not analysis:
-                logger.warning("Empty video response, retrying once")
-                response = await async_call_llm(**call_kwargs)
-                analysis = extract_content_or_reasoning(response)
-
-            if _video_analysis_is_blind(analysis):
+            except Exception as frames_exc:
+                primary_error = f"frames_first_failed: {frames_exc}"
                 logger.warning(
-                    "Primary video path returned blind/refusal analysis (%s chars); "
-                    "falling back to ffmpeg frames + vision",
-                    len(analysis or ""),
+                    "Frames-first video path failed (%s); falling back to native video_url",
+                    str(frames_exc)[:160],
                 )
-                primary_error = "primary_video_blind"
                 analysis = None
-        except Exception as primary_exc:
-            primary_error = str(primary_exc)
-            logger.warning(
-                "Primary video_url path failed (%s); trying frame fallback",
-                str(primary_exc)[:160],
-            )
-            analysis = None
+                method = "video_url"
 
         if analysis is None:
+            try:
+                video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
+                data_size_mb = len(video_data_url) / (1024 * 1024)
+                if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
+                    raise ValueError(
+                        f"Video too large for API: base64 payload is {data_size_mb:.1f} MB "
+                        f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
+                        f"Compress or trim the video and retry."
+                    )
+
+                # Grounding instruction reduces club/nightlife hallucinations on
+                # phone screen-recordings of IG carousels / stories.
+                grounded_prompt = (
+                    "You are looking at an actual video attachment (bytes attached). "
+                    "Describe only what is visibly present. Quote on-screen text "
+                    "verbatim. Do not invent locations, club/bar scenes, or people "
+                    "not shown. If this is a phone UI / social app screen recording, "
+                    "say so and transcribe captions/slides.\n\n"
+                    f"{user_prompt}"
+                )
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": grounded_prompt},
+                            {
+                                "type": "video_url",
+                                "video_url": {"url": video_data_url},
+                            },
+                        ],
+                    }
+                ]
+                call_kwargs = {
+                    "task": "vision",
+                    "messages": messages,
+                    "temperature": vision_temperature,
+                    "max_tokens": 4000,
+                    "timeout": vision_timeout,
+                }
+                if model:
+                    call_kwargs["model"] = model
+
+                _load_auxiliary_client()
+                response = await async_call_llm(**call_kwargs)
+                analysis = extract_content_or_reasoning(response)
+                if not analysis:
+                    logger.warning("Empty video response, retrying once")
+                    response = await async_call_llm(**call_kwargs)
+                    analysis = extract_content_or_reasoning(response)
+
+                if _video_analysis_is_blind(analysis):
+                    logger.warning(
+                        "Primary video path returned blind/refusal analysis (%s chars); "
+                        "falling back to ffmpeg frames + vision",
+                        len(analysis or ""),
+                    )
+                    primary_error = "primary_video_blind"
+                    analysis = None
+            except Exception as primary_exc:
+                primary_error = str(primary_exc)
+                logger.warning(
+                    "Primary video_url path failed (%s); trying frame fallback",
+                    str(primary_exc)[:160],
+                )
+                analysis = None
+
+        if analysis is None and not frames_first:
             method = "ffmpeg_frames+vision"
             analysis, frame_paths = await _analyze_video_via_frames(
                 temp_video_path,
@@ -2059,9 +2128,9 @@ VIDEO_ANALYZE_SCHEMA = {
     "name": "video_analyze",
     "description": (
         "Analyze a video from a URL or local file path using a multimodal AI model. "
-        "Sends the video to a video-capable model (e.g. Gemini) for understanding. "
-        "If the primary video pass is blind/refuses, automatically extracts ffmpeg "
-        "frames and re-reads via vision (returns method + frame paths). "
+        "Local files use ffmpeg frames first, then fall back to native video if frame "
+        "extraction fails. Remote HTTP(S) URLs use native video first, then extract "
+        "ffmpeg frames and re-read via vision on a blind/refusal response. "
         "Use this for video files — for images, use vision_analyze instead. "
         "Supports mp4, webm, mov, avi, mkv, mpeg formats. "
         "Note: large videos (>20 MB) may be slow; max ~50 MB."

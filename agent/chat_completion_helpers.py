@@ -1332,6 +1332,335 @@ def direct_api_call(agent, api_kwargs: dict):
             )
 
 
+def direct_streaming_api_call(agent, api_kwargs: dict):
+    """Streaming variant of :func:`direct_api_call` for delegated children.
+
+    Same inline shape (no interrupt-worker thread → the nested-pool deadlock
+    class #62151 / #60203 stays closed), but the wire request carries
+    ``stream: True`` and the SSE iterator is consumed inline. Iterating a
+    generator does not spawn a thread, so the deadlock properties are
+    unchanged — while the connection now emits bytes that keepalive-hungry
+    proxies (z.ai edge ~180-210s → HTTP 524) never kill.
+
+    Why this matters: the non-streaming direct path was chosen under the
+    premise "no stream consumer, so the deltas go nowhere" — but streaming is
+    not (only) about delivering deltas; it is the transport keepalive. Claude
+    Code / OpenCode / Cline always stream and never observe these 524 walls.
+
+    Stream-consumption details (chunk -> delta accumulation) mirror the
+    Relay-managed path's semantics: tool calls are accumulated by index,
+    text/reasoning concatenated, usage captured from the final chunk. On a
+    stream-open error that classifies as "stream not supported" the session
+    falls back to the non-streaming inline path (via ``_disable_streaming``,
+    which the per-turn reset from #25723 re-arms on the next turn); any other
+    stream-open error falls back for THIS call only and is re-raised if the
+    fallback also fails.
+    """
+    if getattr(agent, "_disable_streaming", False):
+        return direct_api_call(agent, api_kwargs)
+
+    # Build streaming kwargs without mutating the caller's dict.
+    stream_kwargs = {
+        **api_kwargs,
+        "stream": True,
+    }
+    if "timeout" not in stream_kwargs and not is_native_gemini_base_url(agent.base_url):
+        # Chat-completions wire: cap connect like the Relay path so a dead
+        # provider does not hold the inline thread on a TCP handshake.
+        try:
+            base_timeout_cfg = _resolve_direct_stale_timeout(agent, api_kwargs)
+            if math.isfinite(base_timeout_cfg) and base_timeout_cfg > 0:
+                stream_kwargs["timeout"] = _httpx.Timeout(
+                    connect=min(base_timeout_cfg, 60.0),
+                    read=base_timeout_cfg,
+                    write=base_timeout_cfg,
+                    pool=min(base_timeout_cfg, 1.0) * 60.0,
+                )
+        except Exception:
+            pass  # provider-config resolution failure: keep SDK default timeouts
+    if not is_native_gemini_base_url(agent.base_url):
+        stream_kwargs["stream_options"] = {"include_usage": True}
+
+    content_parts: list = []
+    reasoning_parts: list = []
+    tool_calls_acc: dict = {}
+    _last_id_at_idx: dict = {}
+    _active_slot_by_idx: dict = {}
+    finish_reason = None
+    model_name = None
+    role = "assistant"
+    usage_obj = None
+    first_chunk_id = None
+    created_ts = None
+    last_chunk_time = {"t": time.time()}
+    call_start = time.time()
+    stream_opened = {"v": False}
+    request_state = {
+        "client": None,
+        "done": False,
+        "stale": False,
+        "cancelled": False,
+    }
+    request_client_lock = threading.Lock()
+    activity_hb_stop = threading.Event()
+
+    def _abort_active_request(reason: str) -> bool:
+        # Same atomicity contract as direct_api_call._abort_active_request.
+        with request_client_lock:
+            if request_state["done"]:
+                return False
+            if reason == "stale_call_kill" and request_state["cancelled"]:
+                return False
+            if reason != "stale_call_kill":
+                request_state["cancelled"] = True
+            newly_stale = reason == "stale_call_kill" and not request_state["stale"]
+            if newly_stale:
+                request_state["stale"] = True
+                _bump_stale_streak(agent)
+            request_client = request_state["client"]
+            if request_client is not None:
+                try:
+                    agent._abort_request_openai_client(request_client, reason=reason)
+                except Exception:
+                    logger.debug(
+                        "Inline streaming abort failed (%s)", reason, exc_info=True
+                    )
+            return newly_stale
+
+    def _make_client(reason: str):
+        client = agent._create_request_openai_client(
+            reason="chat_completion_stream_request", api_kwargs=stream_kwargs
+        )
+        with request_client_lock:
+            request_state["client"] = client
+        agent._active_request_abort = _abort_active_request
+        return client
+
+    def _activity_heartbeat() -> None:
+        while not activity_hb_stop.wait(_DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS):
+            try:
+                agent._touch_activity("waiting for provider response (streaming)")
+            except Exception:
+                pass
+
+    def _consume(chunk: Any) -> None:
+        # Inline accumulation of one SSE chunk — no callbacks fired (children
+        # have no stream consumers by design; the bytes keep the connection
+        # alive, and the accumulated response is returned to the loop).
+        last_chunk_time["t"] = time.time()
+        nonlocal finish_reason, model_name, role, usage_obj
+        nonlocal first_chunk_id, created_ts
+        try:
+            _cid = getattr(chunk, "id", None)
+            if _cid and first_chunk_id is None:
+                first_chunk_id = _cid
+            _cts = getattr(chunk, "created", None)
+            if _cts:
+                created_ts = _cts
+            choices = getattr(chunk, "choices", None)
+            if choices:
+                first = choices[0]
+                delta = getattr(first, "delta", None)
+                if delta is not None:
+                    _content = getattr(delta, "content", None)
+                    if isinstance(_content, str) and _content:
+                        content_parts.append(_content)
+                    _reasoning = getattr(delta, "reasoning_content", None)
+                    if isinstance(_reasoning, str) and _reasoning:
+                        reasoning_parts.append(_reasoning)
+                    _tool_calls = getattr(delta, "tool_calls", None)
+                    if _tool_calls:
+                        for tc in _tool_calls:
+                            idx = getattr(tc, "index", None)
+                            if idx is None:
+                                idx = 0 if not tool_calls_acc else max(tool_calls_acc) + 1
+                            _id = getattr(tc, "id", None)
+                            if _id:
+                                _last_id_at_idx[idx] = _id
+                            elif _last_id_at_idx.get(idx):
+                                _id = _last_id_at_idx[idx]
+                            slot = _active_slot_by_idx.get(idx)
+                            if slot is None or (
+                                _id and slot in tool_calls_acc and tool_calls_acc[slot].get("id") != _id
+                            ):
+                                candidates = [
+                                    s for s, entry in tool_calls_acc.items()
+                                    if entry.get("id") == _id
+                                ]
+                                slot = candidates[0] if candidates else len(tool_calls_acc)
+                                if slot not in tool_calls_acc:
+                                    tool_calls_acc[slot] = {
+                                        "id": _id,
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+                                _active_slot_by_idx[idx] = slot
+                            entry = tool_calls_acc[slot]
+                            fn = getattr(tc, "function", None)
+                            if fn is not None:
+                                _name = getattr(fn, "name", None)
+                                if _name:
+                                    entry["function"]["name"] = (
+                                        entry["function"]["name"] + _name
+                                    )
+                                _args = getattr(fn, "request_arguments", None) or getattr(fn, "arguments", None)
+                                if _args:
+                                    entry["function"]["arguments"] += _args
+                _fr = getattr(first, "finish_reason", None)
+                if _fr:
+                    finish_reason = _fr
+                _role = getattr(delta, "role", None) or getattr(first, "role", None)
+                if _role:
+                    role = _role
+            _usage = getattr(chunk, "usage", None)
+            if _usage is not None:
+                usage_obj = _usage
+            _model = getattr(chunk, "model", None)
+            if _model:
+                model_name = _model
+        except Exception:
+            logger.debug("direct stream chunk accumulation failed", exc_info=True)
+
+    # Resolve the stale budget before starting the heartbeat (same
+    # fail-closed contract as direct_api_call; a raise here leaks nothing).
+    stale_timeout = _resolve_direct_stale_timeout(agent, api_kwargs)
+    activity_hb = threading.Thread(
+        target=_activity_heartbeat,
+        name="direct-stream-activity-hb",
+        daemon=True,
+        )
+    activity_hb.start()
+    stale_watchdog = None
+    if math.isfinite(stale_timeout) and stale_timeout > 0:
+        def _on_stale() -> None:
+            if not _abort_active_request("stale_call_kill"):
+                return
+            elapsed = time.time() - call_start
+            _report_stale_nonstream_kill(
+                agent, api_kwargs, elapsed, stale_timeout, inline=True
+            )
+            _touch_stale_kill_activity(agent, elapsed)
+        stale_watchdog = threading.Timer(stale_timeout, _on_stale)
+        stale_watchdog.name = "direct-stream-stale-watchdog"
+        stale_watchdog.daemon = True
+        stale_watchdog.start()
+
+    succeeded = False
+    stream = None
+    request_client = None
+    try:
+        request_client = _make_client("chat_completion_stream_request")
+        stream = request_client.chat.completions.create(**stream_kwargs)
+        stream_opened["v"] = True
+        agent._capture_rate_limits(getattr(stream, "response", None))
+        for chunk in _iter_provider_stream_chunks(stream):
+            if agent._interrupt_requested:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                raise InterruptedError("Agent interrupted during API call")
+            _consume(chunk)
+        with request_client_lock:
+            request_state["done"] = True
+        _reset_stale_streak(agent)
+        succeeded = True
+        tool_calls = [tool_calls_acc[index] for index in sorted(tool_calls_acc)]
+        # Reconstruct a real SDK ChatCompletion, not a dict: the conversation
+        # loop's post-processing contract is attribute-style access on the
+        # response object — including vars(response) in the invalid-response
+        # diagnostics path (conversation_loop.py ~3280) — and the loop's
+        # validity probes (hasattr(response, 'choices') ...) classify a plain
+        # dict as an invalid response. direct_api_call returns the raw SDK
+        # object (line ~1315); match that contract exactly.
+        from openai.types.chat import ChatCompletion, ChatCompletionMessage
+
+        _finish = finish_reason or "stop"
+        if _finish not in {"stop", "length", "tool_calls", "content_filter", "function_call"}:
+            _finish = "stop"
+        _usage = usage_obj
+        if isinstance(_usage, dict):
+            from openai.types.completion_usage import CompletionUsage
+
+            try:
+                _usage = CompletionUsage(**_usage)
+            except Exception:
+                _usage = None
+        message_kwargs = {
+            "role": role,
+            "content": "".join(content_parts) or None,
+        }
+        if tool_calls:
+            message_kwargs["tool_calls"] = tool_calls
+        if reasoning_parts:
+            # Extra field on the SDK model (extra="allow"); preserves GLM
+            # reasoning the same way the Relay path delivers it.
+            message_kwargs["reasoning_content"] = "".join(reasoning_parts)
+        completion_kwargs = {
+            "id": first_chunk_id or f"chatcmpl-direct-stream-{int(call_start)}",
+            "created": created_ts or int(call_start),
+            "model": model_name or api_kwargs.get("model", "unknown"),
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": ChatCompletionMessage(**message_kwargs),
+                    "finish_reason": _finish,
+                }
+            ],
+        }
+        if _usage is not None:
+            completion_kwargs["usage"] = _usage
+        return ChatCompletion(**completion_kwargs)
+    except Exception as e:
+        if getattr(agent, "_interrupt_requested", False):
+            raise InterruptedError("Agent interrupted during API call") from None
+        with request_client_lock:
+            was_stale = request_state["stale"]
+        if was_stale:
+            raise TimeoutError(
+                f"Streaming API call timed out after "
+                f"{int(time.time() - call_start)}s with no response "
+                f"(threshold: {int(stale_timeout)}s)"
+            ) from None
+        _err_lower = str(e).lower()
+        _is_stream_unsupported = "stream" in _err_lower and "not supported" in _err_lower
+        if _is_stream_unsupported:
+            agent._disable_streaming = True
+        elif not stream_opened["v"]:
+            # Transient open failure: one non-streaming inline attempt for
+            # THIS call; the error re-raises if it too fails.
+            logger.warning(
+                "Direct stream open failed (%s); falling back to inline "
+                "non-streaming for this call",
+                e,
+            )
+            return direct_api_call(agent, api_kwargs)
+        raise
+    finally:
+        if stale_watchdog is not None:
+            stale_watchdog.cancel()
+        if stream is not None and not succeeded:
+            try:
+                stream.close()
+            except Exception:
+                pass
+        with request_client_lock:
+            request_state["done"] = True
+        activity_hb_stop.set()
+        activity_hb.join(timeout=2.0)
+        if getattr(agent, "_active_request_abort", None) is _abort_active_request:
+            agent._active_request_abort = None
+        with request_client_lock:
+            request_client = request_state["client"]
+            request_state["client"] = None
+        if request_client is not None:
+            agent._close_request_openai_client(
+                request_client,
+                reason="request_complete" if succeeded else "request_error_cleanup",
+            )
+
+
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
@@ -1348,9 +1677,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
     """
     # Cron and other non-interactive, nested-pool contexts must not spawn the
     # interrupt worker — it wedges before the socket opens on the 2nd+ call
-    # (#62151). Run inline instead. See should_use_direct_api_call.
+    # (#62151). Run inline instead — the streaming inline variant keeps the
+    # connection alive for keepalive-hungry proxies. See
+    # direct_streaming_api_call / should_use_direct_api_call.
     if should_use_direct_api_call(agent):
-        return direct_api_call(agent, api_kwargs)
+        return direct_streaming_api_call(agent, api_kwargs)
 
     result = {"response": None, "error": None}
 
@@ -3327,13 +3658,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             emit(final_text=final_text, finished=finished, error=error)
 
     # Cron and other non-interactive, nested-pool contexts deadlock on the
-    # spawned worker thread (#62151). They also have no stream consumer, so the
-    # deltas this path produces go nowhere. Delegate to the non-streaming entry
-    # (which runs inline via should_use_direct_api_call) exactly like the codex
-    # branch below — routing through the _interruptible_api_call method keeps the
-    # outer loop's per-request retry/refresh seam intact.
+    # spawned worker thread (#62151). Delegate to the INLINE streaming
+    # entry instead of the silent non-streaming one: inline SSE consumption
+    # spawns no thread (deadlock class stays closed) while keeping bytes
+    # flowing so keepalive-hungry proxies (z.ai edge → HTTP 524) never kill
+    # the connection. Falls back to non-streaming when the provider truly
+    # does not support streaming.
     if should_use_direct_api_call(agent):
-        return agent._interruptible_api_call(api_kwargs)
+        return direct_streaming_api_call(agent, api_kwargs)
 
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch

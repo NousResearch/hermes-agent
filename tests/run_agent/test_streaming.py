@@ -397,6 +397,98 @@ class TestStreamingFallback:
         # The flag should be set so the main retry loop switches to non-streaming
         assert agent._disable_streaming is True
 
+    def test_reset_streaming_disable_for_new_turn_clears_flag(self):
+        """#25723: new user turns must re-attempt streaming so a single
+        false-positive fallback can't strand the whole session on
+        non-streaming behind a proxy that kills silent connections."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._disable_streaming = True
+        agent._reset_streaming_disable_for_new_turn()
+        assert agent._disable_streaming is False
+
+    def test_reset_streaming_disable_noop_when_unset(self):
+        """#25723: the reset must be safe to call when the flag was never
+        set, so we don't pay a log line for every healthy turn."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        assert not getattr(agent, "_disable_streaming", False)
+        agent._reset_streaming_disable_for_new_turn()
+        assert not getattr(agent, "_disable_streaming", False)
+
+    def test_direct_streaming_api_call_accumulates_chunks(self):
+        """#25723 sibling: delegated children take the inline streaming path;
+        it must consume SSE chunks inline and return a complete response."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        from agent import chat_completion_helpers as h
+
+        def mk_chunk(content=None, reasoning=None, tool=None, finish=None):
+            delta = SimpleNamespace(
+                role="assistant", content=content,
+                reasoning_content=reasoning,
+                tool_calls=[tool] if tool else None,
+            )
+            first = SimpleNamespace(delta=delta, finish_reason=finish)
+            return SimpleNamespace(choices=[first], usage=None, model="test-model")
+
+        def mk_tool(cid, name, args):
+            return SimpleNamespace(
+                index=0, id=cid,
+                function=SimpleNamespace(name=name, arguments=args),
+            )
+
+        chunks = [
+            mk_chunk(reasoning="thinking..."),
+            mk_chunk(content="Hello "),
+            mk_chunk(content="world"),
+            mk_chunk(tool=mk_tool("call_1", "read_file", '{"path": "')),
+            mk_chunk(tool=mk_tool(None, None, 'a.py"}')),
+            mk_chunk(finish="tool_calls"),
+        ]
+
+        agent = MagicMock()
+        agent._disable_streaming = False
+        agent._interrupt_requested = False
+        client = MagicMock()
+        client.chat.completions.create.side_effect = lambda **kw: iter(chunks)
+        agent._create_request_openai_client.return_value = client
+
+        with patch.object(h, "_resolve_direct_stale_timeout", return_value=90.0):
+            response = h.direct_streaming_api_call(agent, {"model": "test-model"})
+
+        msg = response.choices[0].message
+        assert msg.content == "Hello world"
+        assert msg.reasoning_content == "thinking..."
+        assert msg.tool_calls[0].function.name == "read_file"
+        assert msg.tool_calls[0].function.arguments == '{"path": "a.py"}'
+        assert response.choices[0].finish_reason == "tool_calls"
+        # Regression (probe #2, 2026-08-19): the conversation loop's
+        # invalid-response diagnostics call vars(response) — a plain dict
+        # return raised TypeError there after a full streamed generation.
+        assert hasattr(response, "choices") and hasattr(response, "model")
+        _ = {k: v for k, v in vars(response).items() if not k.startswith("_")}
+        # The wire request must be streaming.
+        sent = client.chat.completions.create.call_args
+        assert sent.kwargs.get("stream") is True
+
+
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

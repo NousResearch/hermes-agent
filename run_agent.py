@@ -8373,6 +8373,29 @@ class AIAgent:
                 logger.debug("Conversation root lineage walk failed", exc_info=True)
         return start
 
+    def _reset_streaming_disable_for_new_turn(self) -> None:
+        """Reset the per-session ``_disable_streaming`` fallback at the start
+        of each user turn (#25723).
+
+        Without this, a single transient "stream not supported" error during
+        a session permanently disables streaming for every subsequent turn.
+        That compounds badly with upstream proxies that kill silent non-
+        stream connections (e.g. z.ai's ~180s edge timeout) — the agent ends
+        up looping on non-streaming requests that always die at the proxy
+        boundary.
+
+        Re-enabling streaming per turn costs at most one extra failed retry
+        for providers that truly don't support streaming, and those users
+        already have a permanent opt-out via ``display.streaming: false``
+        in ``config.yaml``.
+        """
+        if getattr(self, "_disable_streaming", False):
+            logger.info(
+                "Re-enabling streaming for new turn — previous fallback "
+                "was scoped to the prior turn only (#25723)."
+            )
+            self._disable_streaming = False
+
     def run_conversation(
         self,
         user_message: Any,

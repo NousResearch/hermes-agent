@@ -1,7 +1,7 @@
 """Parallel.ai web search (sync ``Parallel`` SDK) + async extract (``AsyncParallel``).
 
 Env: ``PARALLEL_API_KEY`` (https://parallel.ai), optional
-``PARALLEL_SEARCH_MODE`` = agentic (default) | fast | one-shot.
+``PARALLEL_SEARCH_MODE`` accepts v1 and legacy mode names.
 """
 
 from __future__ import annotations
@@ -37,9 +37,18 @@ def _get_async_client() -> Any:
     return _client("_async_parallel_client", "AsyncParallel")
 
 
+_V1_SEARCH_MODES = {"turbo", "fast", "basic", "advanced"}
+_LEGACY_SEARCH_MODES = {
+    "agentic": "basic",
+    "one-shot": "advanced",
+}
+
+
 def _resolve_search_mode() -> str:
+    """Return a validated v1 mode, translating legacy configuration values."""
     mode = os.getenv("PARALLEL_SEARCH_MODE", "agentic").lower().strip()
-    return mode if mode in {"fast", "one-shot", "agentic"} else "agentic"
+    mode = _LEGACY_SEARCH_MODES.get(mode, mode)
+    return mode if mode in _V1_SEARCH_MODES else "basic"
 
 
 class ParallelWebSearchProvider(BaseWebSearchProvider):
@@ -57,7 +66,12 @@ class ParallelWebSearchProvider(BaseWebSearchProvider):
                 return keyless_search("Parallel", "parallel", query, limit, logger)
             mode = _resolve_search_mode()
             logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit)
-            response = _get_sync_client().beta.search(search_queries=[query], objective=query, mode=mode, max_results=min(limit, SEARCH_LIMIT_CAP))
+            response = _get_sync_client().search(
+                search_queries=[query],
+                objective=query,
+                mode=mode,
+                advanced_settings={"max_results": min(limit, SEARCH_LIMIT_CAP)},
+            )
             return search_ok([
                 web_hit(r.url or "", r.title or "", " ".join(r.excerpts or []), i + 1)
                 for i, r in enumerate(response.results or [])
@@ -71,7 +85,10 @@ class ParallelWebSearchProvider(BaseWebSearchProvider):
                 # Keyless ring is blocking HTTP — hop off the event loop.
                 return await asyncio.to_thread(keyless_extract, "Parallel", "parallel", urls, logger)
             logger.info("Parallel extract: %d URL(s)", len(urls))
-            response = await _get_async_client().beta.extract(urls=urls, full_content=True)
+            response = await _get_async_client().extract(
+                urls=urls,
+                advanced_settings={"full_content": True},
+            )
             results = [document(r.url or "", r.title or "", r.full_content or "\n\n".join(r.excerpts or [])) for r in response.results or []]
             return results + [
                 {**page_error(e.url or "", e.content or e.error_type or "extraction failed"), "metadata": {"sourceURL": e.url or ""}}

@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 
 import pytest
 
@@ -47,14 +50,16 @@ def test_client_credentials_via_env(monkeypatch):
 
     captured = {}
 
-    def fake_urlopen(req, timeout=None):
+    def fake_open_credentialed_url(req, *, timeout=None, opener_factory=None):
         captured["url"] = req.full_url
         captured["method"] = req.get_method()
         captured["body"] = req.data.decode()
         captured["headers"] = {k.lower(): v for k, v in req.headers.items()}
         return io.BytesIO(json.dumps({"access_token": "idp-workload-token"}).encode())
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "hermes_cli.urllib_security.open_credentialed_url", fake_open_credentialed_url
+    )
 
     token = relay._resolve_relay_identity_token()
     assert token == "idp-workload-token"
@@ -73,10 +78,12 @@ def test_raises_when_no_access_token_in_response(monkeypatch):
     monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_ID", "c")
     monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_SECRET", "s")
 
-    def fake_urlopen(req, timeout=None):
+    def fake_open_credentialed_url(req, *, timeout=None, opener_factory=None):
         return io.BytesIO(json.dumps({"token_type": "Bearer"}).encode())
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "hermes_cli.urllib_security.open_credentialed_url", fake_open_credentialed_url
+    )
     with pytest.raises(RuntimeError, match="no access_token"):
         relay._resolve_relay_identity_token()
 
@@ -206,11 +213,13 @@ def test_client_credentials_still_selected_when_creds_present(monkeypatch):
 
     captured = {}
 
-    def fake_urlopen(req, timeout=None):
+    def fake_open_credentialed_url(req, *, timeout=None, opener_factory=None):
         captured["method"] = req.get_method()
         return io.BytesIO(json.dumps({"access_token": "cc-token"}).encode())
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "hermes_cli.urllib_security.open_credentialed_url", fake_open_credentialed_url
+    )
     assert relay._resolve_relay_identity_token() == "cc-token"
     assert captured["method"] == "POST"
 
@@ -255,3 +264,95 @@ def test_ambient_via_config_yaml(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     assert relay._resolve_relay_identity_token() == _FAKE_JWT
+
+
+# ───────────────── redirect credential stripping (installed opener) ─────────────
+# stdlib's own POST-redirect semantics (301/302/303 downgrade to GET and drop
+# the body; 307/308 refuse to resend a body at all) already keep a *default*
+# opener from forwarding client_secret — the real risk open_credentialed_url()
+# closes is a process-wide INSTALLED opener/request-processor (e.g. from
+# another dependency) that re-adds credential-shaped headers after urllib's
+# own redirect handling. Mirrors
+# test_urllib_security.py::test_installed_request_processor_cannot_resurrect_cross_origin_secret,
+# applied to this resolver's actual client_credentials call site rather than
+# to open_credentialed_url() directly — proving the *wiring*, not just the
+# underlying mechanism (which that file already covers exhaustively).
+
+
+class _RecordingTokenTargetHandler(BaseHTTPRequestHandler):
+    """Redirect target for the hostile-installed-opener test: records every
+    header it receives and answers with a harmless token of its own."""
+
+    received_headers: dict = {}
+
+    def do_GET(self):
+        type(self).received_headers = dict(self.headers)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"access_token": "target-own-token"}).encode())
+
+    def log_message(self, format, *args):
+        pass
+
+
+class _RedirectingTokenSourceHandler(BaseHTTPRequestHandler):
+    """Answers POST /token with a 302 to a configurable cross-origin target."""
+
+    redirect_to = ""  # full URL, set per test
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        self.send_response(302)
+        self.send_header("Location", type(self).redirect_to)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+
+def test_client_credentials_post_ignores_hostile_installed_opener(monkeypatch):
+    """Even with a hostile, process-wide installed opener/request-processor
+    (simulating another dependency's global urllib configuration) that tries
+    to re-attach a secret header after any redirect, the client_credentials
+    POST's redirect target must never see it — proving this call site is
+    wired through open_credentialed_url()'s policy, not a raw urlopen() that
+    would simply inherit whatever opener happens to be installed process-wide."""
+    _RecordingTokenTargetHandler.received_headers = {}
+    source = HTTPServer(("127.0.0.1", 0), _RedirectingTokenSourceHandler)
+    target = HTTPServer(("127.0.0.1", 0), _RecordingTokenTargetHandler)
+    source_port = source.server_address[1]
+    target_port = target.server_address[1]
+    _RedirectingTokenSourceHandler.redirect_to = f"http://127.0.0.1:{target_port}/collect"
+    Thread(target=source.serve_forever, daemon=True).start()
+    Thread(target=target.serve_forever, daemon=True).start()
+
+    class _HostileProcessor(urllib.request.BaseHandler):
+        handler_order = float("inf")  # type: ignore[assignment]
+
+        def http_request(self, request):
+            request.add_header("X-Installed-Secret", "must-not-cross-origin")
+            return request
+
+    hostile_opener = urllib.request.build_opener(_HostileProcessor())
+    hostile_opener.addheaders = [("X-Opener-Secret", "also-must-not-cross-origin")]
+    monkeypatch.setattr(urllib.request, "_opener", hostile_opener)
+
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", f"http://127.0.0.1:{source_port}/token")
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_ID", "agent-client")
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_SECRET", "shh-do-not-leak")
+
+    try:
+        # The redirect target answers normally (it isn't blocked outright),
+        # proving the request really was followed.
+        token = relay._resolve_relay_identity_token()
+    finally:
+        source.shutdown()
+        target.shutdown()
+
+    assert token == "target-own-token"
+    headers = {k.lower(): v for k, v in _RecordingTokenTargetHandler.received_headers.items()}
+    assert "x-installed-secret" not in headers
+    assert "x-opener-secret" not in headers
+    assert "authorization" not in headers

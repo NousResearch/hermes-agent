@@ -15,7 +15,10 @@ Covers:
 
 from __future__ import annotations
 
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from threading import Thread
 from typing import Optional
 
 import pytest
@@ -23,7 +26,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.relay.media import RelayMediaClient, media_base_url
+from gateway.relay.media import RelayMediaClient
 
 from tests.gateway.relay.stub_connector import StubConnector
 
@@ -167,6 +170,22 @@ async def test_inbound_without_client_keeps_public_drops_rehost():
 # ── RelayMediaClient unit surface ────────────────────────────────────────
 
 
+def test_client_rejects_hostile_origin_media_url():
+    """A path-substring match alone is spoofable: a caller-supplied event
+    could name https://attacker.example/relay/media/x and get our
+    per-gateway bearer attached to an arbitrary host. The URL's origin must
+    match the configured connector's origin too."""
+    c = RelayMediaClient("https://c.example", "gw1", "sec")
+    # Same-origin re-host reference — still recognized.
+    assert c.is_relay_media_url("https://c.example/relay/media/abc") is True
+    # A public URL with no rehost path segment — never recognized.
+    assert c.is_relay_media_url("https://cdn.discordapp.com/a/b.png") is False
+    # Path substring matches, but the origin doesn't — rejected.
+    assert c.is_relay_media_url("https://attacker.example/relay/media/x") is False
+    # Same path, different port — still a different origin.
+    assert c.is_relay_media_url("https://c.example:8443/relay/media/x") is False
+
+
 @pytest.mark.asyncio
 async def test_client_upload_rejects_oversize_and_missing(tmp_path: Path):
     c = RelayMediaClient("https://c.example", "gw1", "sec")
@@ -176,3 +195,203 @@ async def test_client_upload_rejects_oversize_and_missing(tmp_path: Path):
     empty = tmp_path / "empty.bin"
     empty.write_bytes(b"")
     assert await c.upload(str(empty)) is None
+
+
+# ── RelayMediaClient credential-redirect hardening (real servers) ────────
+
+
+class _RedirectingMediaHandler(BaseHTTPRequestHandler):
+    """Answers the configured path with a 302 to a configurable target.
+
+    Same shape as _RedirectingProvisionHandler in test_self_provision.py:
+    a second, independent server plays the redirect target and records the
+    headers it received, proving the gateway's per-gateway bearer never
+    reaches an unintended origin.
+    """
+
+    redirect_to = ""  # full URL, set per test
+    trigger_path = "/relay/media"  # path that answers 302, set per test
+    received_headers: dict = {}
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        if self.path.rstrip("/") == type(self).trigger_path:
+            self.send_response(302)
+            self.send_header("Location", type(self).redirect_to)
+            self.end_headers()
+        else:
+            self._respond()
+
+    def do_GET(self):
+        if self.path.rstrip("/") == type(self).trigger_path:
+            self.send_response(302)
+            self.send_header("Location", type(self).redirect_to)
+            self.end_headers()
+        else:
+            self._respond()
+
+    def _respond(self):
+        type(self).received_headers = dict(self.headers)
+        body = json.dumps({"id": "collected"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_media_upload_strips_bearer_on_cross_host_redirect(tmp_path: Path):
+    """upload()'s Authorization must not follow a redirect to a different
+    origin — mirrors the same fix already applied to _post_provision() /
+    _post_policy() / _post_enroll()."""
+    _RedirectingMediaHandler.received_headers = {}
+    _RedirectingMediaHandler.trigger_path = "/relay/media"
+    server = HTTPServer(("127.0.0.1", 0), _RedirectingMediaHandler)
+    target_server = HTTPServer(("127.0.0.1", 0), _RedirectingMediaHandler)
+    port = server.server_address[1]
+    target_port = target_server.server_address[1]
+    _RedirectingMediaHandler.redirect_to = f"http://127.0.0.1:{target_port}/collect"
+    Thread(target=server.serve_forever, daemon=True).start()
+    Thread(target=target_server.serve_forever, daemon=True).start()
+
+    f = tmp_path / "pic.png"
+    f.write_bytes(b"png-bytes")
+    c = RelayMediaClient(f"http://127.0.0.1:{port}", "gw1", "sec")
+    try:
+        result = await c.upload(str(f))
+    finally:
+        server.shutdown()
+        target_server.shutdown()
+
+    # The redirect target answered normally, proving the request really was
+    # followed — but without the Bearer token attached.
+    assert result is not None
+    headers = {k.lower(): v for k, v in _RedirectingMediaHandler.received_headers.items()}
+    assert "authorization" not in headers
+
+
+@pytest.mark.asyncio
+async def test_media_upload_preserves_bearer_on_same_origin_redirect(tmp_path: Path):
+    """A same-origin redirect (e.g. the connector's own load balancer) must
+    still carry the Bearer token — only cross-origin hops strip it."""
+    _RedirectingMediaHandler.received_headers = {}
+    _RedirectingMediaHandler.trigger_path = "/relay/media"
+    server = HTTPServer(("127.0.0.1", 0), _RedirectingMediaHandler)
+    port = server.server_address[1]
+    _RedirectingMediaHandler.redirect_to = f"http://127.0.0.1:{port}/collect"
+    Thread(target=server.serve_forever, daemon=True).start()
+
+    f = tmp_path / "pic.png"
+    f.write_bytes(b"png-bytes")
+    c = RelayMediaClient(f"http://127.0.0.1:{port}", "gw1", "sec")
+    try:
+        result = await c.upload(str(f))
+    finally:
+        server.shutdown()
+
+    assert result is not None
+    headers = {k.lower(): v for k, v in _RedirectingMediaHandler.received_headers.items()}
+    assert "authorization" in headers
+    assert headers["authorization"].startswith("Bearer ")
+
+
+@pytest.mark.asyncio
+async def test_media_download_strips_bearer_on_cross_host_redirect():
+    """download()'s Authorization must not follow a redirect to a different
+    origin either. The requested URL is a /relay/media/ reference on the
+    client's OWN configured origin (so it is authenticated on the initial
+    request), which then redirects cross-origin."""
+    _RedirectingMediaHandler.received_headers = {}
+    _RedirectingMediaHandler.trigger_path = "/relay/media/abc123"
+    server = HTTPServer(("127.0.0.1", 0), _RedirectingMediaHandler)
+    target_server = HTTPServer(("127.0.0.1", 0), _RedirectingMediaHandler)
+    port = server.server_address[1]
+    target_port = target_server.server_address[1]
+    _RedirectingMediaHandler.redirect_to = f"http://127.0.0.1:{target_port}/collect"
+    Thread(target=server.serve_forever, daemon=True).start()
+    Thread(target=target_server.serve_forever, daemon=True).start()
+
+    c = RelayMediaClient(f"http://127.0.0.1:{port}", "gw1", "sec")
+    try:
+        result = await c.download(f"http://127.0.0.1:{port}/relay/media/abc123")
+    finally:
+        server.shutdown()
+        target_server.shutdown()
+
+    assert result is not None
+    headers = {k.lower(): v for k, v in _RedirectingMediaHandler.received_headers.items()}
+    assert "authorization" not in headers
+
+
+@pytest.mark.asyncio
+async def test_media_download_preserves_bearer_on_same_origin_redirect():
+    _RedirectingMediaHandler.received_headers = {}
+    _RedirectingMediaHandler.trigger_path = "/relay/media/abc123"
+    server = HTTPServer(("127.0.0.1", 0), _RedirectingMediaHandler)
+    port = server.server_address[1]
+    _RedirectingMediaHandler.redirect_to = f"http://127.0.0.1:{port}/collect"
+    Thread(target=server.serve_forever, daemon=True).start()
+
+    c = RelayMediaClient(f"http://127.0.0.1:{port}", "gw1", "sec")
+    try:
+        result = await c.download(f"http://127.0.0.1:{port}/relay/media/abc123")
+    finally:
+        server.shutdown()
+
+    assert result is not None
+    headers = {k.lower(): v for k, v in _RedirectingMediaHandler.received_headers.items()}
+    assert "authorization" in headers
+    assert headers["authorization"].startswith("Bearer ")
+
+
+class _HostileMediaHandler(BaseHTTPRequestHandler):
+    """A server standing in for an attacker.example host: any path is
+    answered 200 directly (no redirect), recording whatever headers it
+    received."""
+
+    received_headers: dict = {}
+
+    def do_GET(self):
+        type(self).received_headers = dict(self.headers)
+        body = b"not-really-media"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_media_download_omits_bearer_for_hostile_origin_url():
+    """A URL that merely CONTAINS '/relay/media/' but lives on a different
+    origin than the configured connector must never receive the bearer —
+    is_relay_media_url()'s origin check must gate the initial request, not
+    just cross-origin redirects."""
+    _HostileMediaHandler.received_headers = {}
+    hostile_server = HTTPServer(("127.0.0.1", 0), _HostileMediaHandler)
+    hostile_port = hostile_server.server_address[1]
+    Thread(target=hostile_server.serve_forever, daemon=True).start()
+
+    # Client is configured for a DIFFERENT connector origin than the one
+    # it's asked to download from.
+    c = RelayMediaClient("https://real-connector.example", "gw1", "sec")
+    try:
+        result = await c.download(
+            f"http://127.0.0.1:{hostile_port}/relay/media/x"
+        )
+    finally:
+        hostile_server.shutdown()
+
+    # The download still succeeds (public URLs are fetched without auth) —
+    # what matters is the credential never went to the hostile host.
+    assert result is not None
+    headers = {k.lower(): v for k, v in _HostileMediaHandler.received_headers.items()}
+    assert "authorization" not in headers

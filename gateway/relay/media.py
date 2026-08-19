@@ -90,8 +90,18 @@ class RelayMediaClient:
         return make_upgrade_token(self._gateway_id, self._secret)
 
     def is_relay_media_url(self, url: str) -> bool:
-        """Is ``url`` a connector re-host reference (needs our bearer to GET)?"""
-        return "/relay/media/" in (url or "")
+        """Is ``url`` a connector re-host reference (needs our bearer to GET)?
+
+        A path substring match alone is spoofable: a caller-supplied event
+        could name ``https://attacker.example/relay/media/x`` and get our
+        per-gateway bearer attached to a request to an arbitrary host. Require
+        the URL's origin to match the configured connector's origin too.
+        """
+        if "/relay/media/" not in (url or ""):
+            return False
+        from hermes_cli.urllib_security import url_origin
+
+        return url_origin(url) == url_origin(self._base_url)
 
     async def upload(
         self,
@@ -135,9 +145,11 @@ class RelayMediaClient:
         url = f"{self._base_url}/relay/media"
 
         def _post() -> Optional[str]:
+            from hermes_cli.urllib_security import open_credentialed_url
+
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                with open_credentialed_url(req, timeout=_REQUEST_TIMEOUT_S) as resp:
                     import json
 
                     body = json.loads(resp.read().decode("utf-8"))
@@ -169,9 +181,11 @@ class RelayMediaClient:
             headers["Authorization"] = f"Bearer {self._bearer()}"
 
         def _get() -> Optional[str]:
+            from hermes_cli.urllib_security import open_credentialed_url
+
             req = urllib.request.Request(url, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                with open_credentialed_url(req, timeout=_REQUEST_TIMEOUT_S) as resp:
                     length = int(resp.headers.get("Content-Length") or 0)
                     if length > MEDIA_MAX_BYTES:
                         logger.warning("relay media download too large: %s", url)

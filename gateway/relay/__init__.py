@@ -467,6 +467,8 @@ def _post_provision(
     import urllib.error
     import urllib.request
 
+    from hermes_cli.urllib_security import open_credentialed_url
+
     body: dict = {
         "gatewayId": gateway_id,
         "platform": platform,
@@ -499,7 +501,7 @@ def _post_provision(
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -567,9 +569,10 @@ def _resolve_relay_identity_token() -> str:
         return resolve_nous_access_token()
 
     import json
-    import urllib.error
     import urllib.parse
     import urllib.request
+
+    from hermes_cli.urllib_security import open_credentialed_url
 
     if not client_id and not client_secret:
         # Mode 1b — ambient token endpoint (no client credentials configured).
@@ -632,7 +635,7 @@ def _resolve_relay_identity_token() -> str:
             "Accept": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=15.0) as resp:
+    with open_credentialed_url(req, timeout=15.0) as resp:
         payload = json.loads(resp.read().decode())
     access_token = (payload or {}).get("access_token")
     if not isinstance(access_token, str) or not access_token.strip():
@@ -792,6 +795,8 @@ def _post_policy(*, policy_url: str, token: str, policy: dict, timeout: float = 
     import urllib.error
     import urllib.request
 
+    from hermes_cli.urllib_security import open_credentialed_url
+
     data = json.dumps(policy).encode("utf-8")
     req = urllib.request.Request(
         policy_url,
@@ -804,7 +809,7 @@ def _post_policy(*, policy_url: str, token: str, policy: dict, timeout: float = 
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             return int(resp.status)
     except urllib.error.HTTPError as exc:
         return int(exc.code)

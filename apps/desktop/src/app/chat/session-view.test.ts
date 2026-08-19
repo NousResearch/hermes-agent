@@ -50,9 +50,15 @@ describe('primary session view reads its own session slice', () => {
   })
 
   it('ignores a background session that keeps streaming after the user switches away', () => {
-    publishSessionState('runtime-a', stateWith('runtime-a', 'session A turn', true))
+    publishSessionState('runtime-a', {
+      ...stateWith('runtime-a', 'session A turn', true),
+      resumePublicationRevision: 8
+    })
     $activeSessionId.set('runtime-b')
-    publishSessionState('runtime-b', stateWith('runtime-b', 'session B turn', false))
+    publishSessionState('runtime-b', {
+      ...stateWith('runtime-b', 'session B turn', false),
+      resumePublicationRevision: 3
+    })
 
     // Session A streams on: another delta lands for the session the user left.
     publishSessionState('runtime-a', {
@@ -63,6 +69,7 @@ describe('primary session view reads its own session slice', () => {
     expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([message('runtime-b-msg', 'session B turn')])
     expect(PRIMARY_SESSION_VIEW.$lastVisibleIsUser.get()).toBe(false)
     expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(false)
+    expect(PRIMARY_SESSION_VIEW.$resumePublicationRevision?.get()).toBe(3)
   })
 
   it('falls back to the draft atoms while the chat has no runtime session yet', () => {
@@ -73,6 +80,7 @@ describe('primary session view reads its own session slice', () => {
     expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([message('draft-msg', 'unsent draft')])
     expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(true)
     expect(PRIMARY_SESSION_VIEW.$messagesEmpty.get()).toBe(false)
+    expect(PRIMARY_SESSION_VIEW.$resumePublicationRevision?.get()).toBe(0)
   })
 
   it('does not mark B busy when A is still running and B has no slice yet', () => {

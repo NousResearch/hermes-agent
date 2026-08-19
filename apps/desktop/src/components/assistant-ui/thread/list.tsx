@@ -1,14 +1,16 @@
-import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
+import { ThreadPrimitive, type ThreadMessage, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import {
   type ComponentProps,
+  createContext,
   type CSSProperties,
   type FC,
   memo,
   type ReactNode,
   startTransition,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -19,6 +21,7 @@ import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
 import { usePaneLifecycle } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
@@ -35,6 +38,159 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
+
+/**
+ * Revision-bound acknowledgement of a committed Thread message-list render.
+ * The semantic signature covers the complete non-optimistic chain while the
+ * leaf reports only after every required rendered message part has committed.
+ */
+export interface ThreadCommitReceipt {
+  revision: number
+  chainSignature: string
+  headMessage: ThreadMessage | null
+  contentSignature: string
+  publicationIdentity: string
+  complete: boolean
+}
+
+type ThreadMessageCommitReport = {
+  message: ThreadMessage
+  part?: object
+}
+
+type ThreadMessageCommitReporter = (report: ThreadMessageCommitReport) => void
+
+const ThreadMessageCommitContext = createContext<ThreadMessageCommitReporter | null>(null)
+const ThreadPublicationIdentityContext = createContext('standalone')
+
+export const ThreadPublicationIdentityProvider = ThreadPublicationIdentityContext.Provider
+export const useThreadPublicationIdentity = (): string => useContext(ThreadPublicationIdentityContext)
+
+/** Report the commit boundary for a message row itself. */
+export function useReportThreadMessageCommit(waitForParts = false): void {
+  const report = useContext(ThreadMessageCommitContext)
+  const message = useAuiState(s => s.message as unknown as ThreadMessage)
+  const partCount = useAuiState(s => s.message.parts.length)
+
+  useLayoutEffect(() => {
+    if (!waitForParts || partCount === 0) {
+      report?.({ message })
+    }
+  }, [message, partCount, report, waitForParts])
+}
+
+/** Report from a part component that owns its actual DOM commit boundary. */
+export function useReportThreadMessagePartCommit(): void {
+  const report = useContext(ThreadMessageCommitContext)
+  const message = useAuiState(s => s.message as unknown as ThreadMessage)
+  const part = useAuiState(s => s.part as unknown as object)
+
+  useLayoutEffect(() => {
+    report?.({ message, part })
+  }, [message, part, report])
+}
+
+/** Bind a nested markdown renderer's receipt to the current part projection. */
+export function useThreadMessagePartCommitCallback(
+  expectedText?: string
+): ((committedText: string) => void) | undefined {
+  const report = useContext(ThreadMessageCommitContext)
+  const message = useAuiState(s => s.message as unknown as ThreadMessage)
+  const part = useAuiState(s => s.part as unknown as object)
+  const renderedText = expectedText ?? (part as { text?: unknown }).text
+
+  return useMemo(
+    () =>
+      report
+        ? (committedText: string) => {
+            if (renderedText === committedText) {
+              report({ message, part })
+            }
+          }
+        : undefined,
+    [message, part, renderedText, report]
+  )
+}
+
+/** A group renderer acknowledges parts that deliberately have no mounted leaf. */
+export function useThreadMessagePartRangeCommitCallback(
+  startIndex: number,
+  endIndex: number
+): (() => void) | undefined {
+  const report = useContext(ThreadMessageCommitContext)
+  const message = useAuiState(s => s.message as unknown as ThreadMessage)
+  const parts = useAuiState(s => s.message.parts as unknown as readonly object[])
+
+  return useMemo(
+    () =>
+      report
+        ? () => {
+            for (let index = Math.max(0, startIndex); index <= endIndex; index += 1) {
+              const part = parts[index]
+
+              if (part) {
+                report({ message, part })
+              }
+            }
+          }
+        : undefined,
+    [endIndex, message, parts, report, startIndex]
+  )
+}
+
+export function commitReceiptContentSignature(messages: readonly ThreadMessage[]): string {
+  return JSON.stringify(
+    messages.map(message => [message.id, message.role, message.content, message.status ?? null] as const)
+  )
+}
+
+export function commitReceiptChain(messages: readonly ThreadMessage[]): {
+  chainSignature: string
+  headMessage: ThreadMessage | null
+  contentSignature: string
+} {
+  const committed: ThreadMessage[] = []
+
+  for (const message of messages) {
+    if (message.metadata?.isOptimistic !== true) {
+      committed.push(message)
+    }
+  }
+
+  const headMessage = committed.at(-1) ?? null
+
+  return {
+    chainSignature: committed.map(message => message.id).join('\n'),
+    headMessage,
+    contentSignature: commitReceiptContentSignature(committed)
+  }
+}
+
+export function partRequiresCommit(part: object): boolean {
+  const type = (part as { type?: string }).type
+
+  return type === 'text' || type === 'reasoning' || type === 'tool-call'
+}
+
+export function pruneCommitMap<T>(map: Map<string, T>, messages: readonly { id: string }[]): void {
+  const currentIds = new Set(messages.map(message => message.id))
+
+  for (const id of map.keys()) {
+    if (!currentIds.has(id)) {
+      map.delete(id)
+    }
+  }
+}
+
+/** The first-paint render is complete once no groups are hidden, or after this
+ * pane's shared DOM budget backfill has committed. */
+export function isThreadRenderComplete(
+  hiddenCount: number,
+  renderBudget: number,
+  targetBudget = RENDER_BUDGET
+): boolean {
+  return hiddenCount === 0 || renderBudget >= targetBudget
+}
 
 export type MessageGroup = { id: string; weight: number } & (
   { index: number; kind: 'standalone' } | { indices: number[]; kind: 'turn' }
@@ -63,7 +219,7 @@ export type MessageGroup = { id: string; weight: number } & (
 // What the DOM can hold is bounded above by the store window regardless
 // (TRANSCRIPT_WINDOW_BUDGET), so this cannot admit more than one window's
 // content.
-const RENDER_BUDGET = 600
+export const RENDER_BUDGET = 600
 // Every mounted transcript list registers here (see the mount effect). The
 // budget above is sized for ONE full-height pane; a grid split shows several
 // panes at once, each a fraction of the screen — yet each was still mounting
@@ -172,7 +328,17 @@ interface ThreadMessageListProps {
   components: ThreadMessageComponents
   emptyPlaceholder?: ReactNode
   loadingIndicator?: ReactNode
+  onCommitReceipt?: (receipt: ThreadCommitReceipt) => void
+  resumePublicationRevision?: number
   sessionKey?: string | null
+}
+
+export function shouldRestoreResumeAnchor(
+  previousRevision: number,
+  nextRevision: number,
+  followingBottom: boolean
+): boolean {
+  return nextRevision > previousRevision && followingBottom
 }
 
 // Group each user message with the assistant turn(s) that follow it so the
@@ -361,6 +527,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   components,
   emptyPlaceholder,
   loadingIndicator,
+  onCommitReceipt,
+  resumePublicationRevision = 0,
   sessionKey
 }) => {
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
@@ -379,6 +547,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
   )
 
+  // Identity of the non-optimistic semantic chain rendered by this leaf.
+  // Skip its full serialization outside the short-lived reveal handshake.
+  const threadMessages = useAuiState(s => s.thread.messages)
+  const paneVisible = usePaneVisible()
+  const publicationIdentity = useThreadPublicationIdentity()
+  const {
+    chainSignature: committedChainSignature,
+    headMessage: committedHeadMessage,
+    contentSignature: committedContentSignature
+  } = useMemo(
+    () =>
+      onCommitReceipt
+        ? commitReceiptChain(threadMessages)
+        : { chainSignature: '', headMessage: null, contentSignature: '[]' },
+    [onCommitReceipt, threadMessages]
+  )
+
   const { t } = useI18n()
   // Row structure is memoized on the STRUCTURAL signature only, so streaming
   // part-appends can't churn group identity (that would defeat the rows memo
@@ -391,11 +576,72 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // spring can't tell live-token growth from a session-switch bulk relayout, and
   // chasing the latter reads as the view scrolling to random spots before
   // settling. Its refs hang off our own DOM so the sticky human bubbles survive.
-  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll, state } = useStickToBottom({
     initial: 'instant',
     resize: 'instant',
     targetScrollTop: resolveThreadScrollTarget
   })
+
+  // use-stick-to-bottom's negative-resize branch only re-asserts the lock — it
+  // trusts the browser's scrollTop clamp to keep a shrink anchored. That trust
+  // fails for delayed content-visibility re-measurement after the reveal
+  // settle: content ABOVE the viewport collapses, scrollTop stays in range (no
+  // clamp fires) and the surface keeps following a bottom that moved up — a
+  // persistent offset (packaged GUI: a 32.3px gap that never recovered). Watch
+  // the content height and re-anchor a strictly-following viewport to the true
+  // bottom on any shrink.
+  //
+  // The correction must be SYNCHRONOUS: ResizeObserver callbacks run after
+  // layout but before paint, so a direct assignment lands in the same frame
+  // the collapse paints. `scrollToBottom('instant')` re-enters the library's
+  // rAF loop and leaks exactly one painted frame at the stale offset
+  // (packaged GUI: one sampled frame at bottomGap 32.67, the next recovered).
+  // `state.scrollTop` is the library's own synchronous scrollTop setter — the
+  // same assignment its instant path performs, minus the rAF hop — and
+  // `state.calculatedTargetScrollTop` routes through the shared
+  // resolveThreadScrollTarget resolver, so the single scroll owner and its
+  // target semantics are preserved. An escaped reader (or one mid-edit) has
+  // `state.isAtBottom` off and is left exactly where they are; growth
+  // (streaming) is followed by the library's positive-resize path.
+  //
+  // The ref is ONE stable useCallback composing the library's contentRef with
+  // our observer: an inline ref function would be a new identity on every
+  // render, and React would detach (null) and reattach (node) on each one —
+  // disconnecting both observers and resetting the height baseline, so a
+  // shrink arriving after any ordinary re-render would never be detected.
+  const shrinkReanchorObserverRef = useRef<ResizeObserver | null>(null)
+  const threadContentRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      contentRef(node)
+      shrinkReanchorObserverRef.current?.disconnect()
+      shrinkReanchorObserverRef.current = null
+
+      if (!node) {
+        return
+      }
+
+      let previousHeight: number | undefined
+      const observer = new ResizeObserver(entries => {
+        const height = entries[0]?.contentRect.height
+
+        if (height === undefined) {
+          return
+        }
+
+        const shrunk = previousHeight !== undefined && height < previousHeight
+
+        previousHeight = height
+
+        if (shrunk && state.isAtBottom) {
+          state.scrollTop = state.calculatedTargetScrollTop
+        }
+      })
+
+      observer.observe(node)
+      shrinkReanchorObserverRef.current = observer
+    },
+    [contentRef, state]
+  )
 
   const { olderAvailable, expandWindow } = useTranscriptWindow()
 
@@ -455,6 +701,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
+  const lastResumePublicationRevisionRef = useRef(resumePublicationRevision)
 
   // Record where the view should land once a prepend has grown the content,
   // measured from the BOTTOM so the added height doesn't invalidate it. Only a
@@ -537,6 +784,128 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // memo hold; heavy sessions lost it exactly when they could least afford to.
   const visibleGroups = useMemo(() => (hiddenCount > 0 ? groups.slice(hiddenCount) : groups), [groups, hiddenCount])
 
+  const renderedMessages = useMemo(
+    () =>
+      visibleGroups
+        .flatMap(group =>
+          group.kind === 'turn' ? group.indices.map(index => threadMessages[index]) : [threadMessages[group.index]]
+        )
+        .filter(
+          (message): message is NonNullable<typeof message> =>
+            Boolean(message) && message.metadata?.isOptimistic !== true
+        ),
+    [threadMessages, visibleGroups]
+  )
+
+  const onCommitReceiptRef = useRef(onCommitReceipt)
+  onCommitReceiptRef.current = onCommitReceipt
+
+  const expectedCommitRef = useRef({
+    revision: resumePublicationRevision,
+    chainSignature: committedChainSignature,
+    headMessage: committedHeadMessage,
+    contentSignature: committedContentSignature,
+    publicationIdentity,
+    complete: isThreadRenderComplete(hiddenCount, renderBudget, paneBudget),
+    renderedMessages
+  })
+  expectedCommitRef.current = {
+    revision: resumePublicationRevision,
+    chainSignature: committedChainSignature,
+    headMessage: committedHeadMessage,
+    contentSignature: committedContentSignature,
+    publicationIdentity,
+    complete: isThreadRenderComplete(hiddenCount, renderBudget, paneBudget),
+    renderedMessages
+  }
+
+  // An empty authoritative chain has no message or part leaf that can report a
+  // commit. Acknowledge it from the real list layout boundary, but only while
+  // the pane is visible: a receipt emitted while hidden is intentionally
+  // ignored by ChatView and must be re-issued on the reveal commit.
+  useLayoutEffect(() => {
+    if (!paneVisible || !onCommitReceipt) {
+      return
+    }
+
+    const expected = expectedCommitRef.current
+
+    if (
+      expected.complete &&
+      expected.renderedMessages.length === 0 &&
+      expected.chainSignature === '' &&
+      expected.headMessage === null &&
+      expected.contentSignature === '[]'
+    ) {
+      onCommitReceipt({
+        revision: expected.revision,
+        chainSignature: '',
+        headMessage: null,
+        contentSignature: '[]',
+        publicationIdentity: expected.publicationIdentity,
+        complete: true
+      })
+    }
+  }, [
+    committedChainSignature,
+    committedContentSignature,
+    committedHeadMessage,
+    hiddenCount,
+    onCommitReceipt,
+    paneVisible,
+    publicationIdentity,
+    renderBudget,
+    renderedMessages,
+    resumePublicationRevision
+  ])
+
+  const committedLeafObjectsRef = useRef(
+    new Map<string, { message: ThreadMessage; messageCommitted: boolean; parts: Set<object> }>()
+  )
+  pruneCommitMap(committedLeafObjectsRef.current, renderedMessages)
+
+  const reportMessageCommit = useCallback(({ message, part }: ThreadMessageCommitReport) => {
+    let committed = committedLeafObjectsRef.current.get(message.id)
+
+    if (!committed || committed.message !== message) {
+      committed = { message, messageCommitted: false, parts: new Set<object>() }
+      committedLeafObjectsRef.current.set(message.id, committed)
+    }
+
+    if (part) {
+      committed.parts.add(part)
+    } else {
+      committed.messageCommitted = true
+    }
+
+    const expected = expectedCommitRef.current
+
+    if (
+      expected.complete &&
+      expected.renderedMessages.every(renderedMessage => {
+        const leaf = committedLeafObjectsRef.current.get(renderedMessage.id)
+
+        if (!leaf || leaf.message !== renderedMessage) {
+          return false
+        }
+
+        const parts = (renderedMessage as unknown as { parts?: readonly object[] }).parts ?? []
+        const publicationSensitiveParts = renderedMessage.role === 'assistant' ? parts.filter(partRequiresCommit) : []
+
+        return leaf.messageCommitted && publicationSensitiveParts.every(renderedPart => leaf.parts.has(renderedPart))
+      })
+    ) {
+      onCommitReceiptRef.current?.({
+        revision: expected.revision,
+        chainSignature: expected.chainSignature,
+        headMessage: expected.headMessage,
+        contentSignature: expected.contentSignature,
+        publicationIdentity: expected.publicationIdentity,
+        complete: true
+      })
+    }
+  }, [])
+
   // Where the always-rendered live tail begins. Derived from the WEIGHTED
   // groups (render cost, not turns) so the tail is a viewport's worth of content —
   // see liveTailStart. Computed once here rather than per row.
@@ -608,6 +977,48 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => () => endEditHold(), [endEditHold])
   // New run → snap to the latest turn.
   useAuiEvent('thread.runStart', () => void scrollToBottom())
+
+  // A cached transcript can be followed by a genuinely different persisted-
+  // authority publication under the same session key. The revision may commit
+  // before assistant-ui publishes the corresponding message DOM. Cover both
+  // schedules: restore immediately for a same-commit resize, and arm one
+  // MutationObserver for a following DOM commit. Mutation callbacks run before
+  // paint, unlike use-stick-to-bottom's ResizeObserver + rAF correction.
+  useLayoutEffect(() => {
+    const previousRevision = lastResumePublicationRevisionRef.current
+    lastResumePublicationRevisionRef.current = resumePublicationRevision
+
+    const el = scrollRef.current
+
+    if (
+      !el ||
+      !shouldRestoreResumeAnchor(previousRevision, resumePublicationRevision, el.dataset.following === 'true')
+    ) {
+      return
+    }
+
+    stopScroll()
+    const restoreIfFollowing = () => {
+      if (el.dataset.following === 'true') {
+        el.scrollTop = el.scrollHeight
+      }
+    }
+
+    restoreIfFollowing()
+
+    const observer = new MutationObserver(() => {
+      restoreIfFollowing()
+      observer.disconnect()
+    })
+    observer.observe(el, { childList: true, characterData: true, subtree: true })
+
+    const timeout = window.setTimeout(() => observer.disconnect(), 250)
+
+    return () => {
+      window.clearTimeout(timeout)
+      observer.disconnect()
+    }
+  }, [resumePublicationRevision, scrollRef, stopScroll])
 
   // Reset the cap and pin to bottom on mount + every session switch (messages
   // swap in place on a long-lived runtime, so sessionKey is the only signal).
@@ -735,68 +1146,70 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   )
 
   return (
-    <div
-      className="relative min-h-0 max-w-full overflow-hidden contain-[layout_paint]"
-      style={
-        {
-          height: clampToComposer ? 'var(--thread-viewport-height)' : '100%',
-          ...(secondaryWindow ? { '--sticky-human-top': secondaryTitlebarGap } : {})
-        } as CSSProperties
-      }
-    >
-      {secondaryWindow && (
-        // Secondary windows hide the titlebar chrome, so the scroller runs to
-        // the window's top edge and streamed text slides up under the OS
-        // traffic lights. Content padding alone scrolls away with the text — a
-        // fixed opaque strip (the titlebar's drag region) masks anything behind
-        // it and keeps the window draggable, matching the main window's header.
-        <div
-          aria-hidden="true"
-          className="absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background [-webkit-app-region:drag]"
-        />
-      )}
+    <ThreadMessageCommitContext.Provider value={onCommitReceipt ? reportMessageCommit : null}>
       <div
-        className="size-full overflow-x-hidden overflow-y-auto overscroll-contain"
-        data-following={isAtBottom ? 'true' : 'false'}
-        data-slot="aui_thread-viewport"
-        ref={scrollRef as React.RefCallback<HTMLDivElement>}
+        className="relative min-h-0 max-w-full overflow-hidden contain-[layout_paint]"
+        style={
+          {
+            height: clampToComposer ? 'var(--thread-viewport-height)' : '100%',
+            ...(secondaryWindow ? { '--sticky-human-top': secondaryTitlebarGap } : {})
+          } as CSSProperties
+        }
       >
-        {renderEmpty ? (
+        {secondaryWindow && (
+          // Secondary windows hide the titlebar chrome, so the scroller runs to
+          // the window's top edge and streamed text slides up under the OS
+          // traffic lights. Content padding alone scrolls away with the text — a
+          // fixed opaque strip (the titlebar's drag region) masks anything behind
+          // it and keeps the window draggable, matching the main window's header.
           <div
-            className="mx-auto grid h-full w-full max-w-(--composer-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8"
-            data-slot="aui_thread-content"
-          >
-            {emptyPlaceholder}
-          </div>
-        ) : (
-          <div
-            className={cn('mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6', threadContentTopPad)}
-            data-slot="aui_thread-content"
-            ref={contentRef as React.RefCallback<HTMLDivElement>}
-          >
-            {(hiddenCount > 0 || olderAvailable) && (
-              <button
-                className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
-                onClick={showEarlier}
-                type="button"
-              >
-                {t.assistant.thread.showEarlier}
-              </button>
-            )}
-            {rows}
-            {loadingIndicator}
-            {clampToComposer && (
-              <div
-                aria-hidden="true"
-                className="shrink-0"
-                data-slot="aui_composer-clearance"
-                style={{ height: 'var(--thread-last-message-clearance)' }}
-              />
-            )}
-          </div>
+            aria-hidden="true"
+            className="absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background [-webkit-app-region:drag]"
+          />
         )}
+        <div
+          className="size-full overflow-x-hidden overflow-y-auto overscroll-contain"
+          data-following={isAtBottom ? 'true' : 'false'}
+          data-slot="aui_thread-viewport"
+          ref={scrollRef as React.RefCallback<HTMLDivElement>}
+        >
+          {renderEmpty ? (
+            <div
+              className="mx-auto grid h-full w-full max-w-(--composer-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8"
+              data-slot="aui_thread-content"
+            >
+              {emptyPlaceholder}
+            </div>
+          ) : (
+            <div
+              className={cn('mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6', threadContentTopPad)}
+              data-slot="aui_thread-content"
+              ref={threadContentRef}
+            >
+              {(hiddenCount > 0 || olderAvailable) && (
+                <button
+                  className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={showEarlier}
+                  type="button"
+                >
+                  {t.assistant.thread.showEarlier}
+                </button>
+              )}
+              {rows}
+              {loadingIndicator}
+              {clampToComposer && (
+                <div
+                  aria-hidden="true"
+                  className="shrink-0"
+                  data-slot="aui_composer-clearance"
+                  style={{ height: 'var(--thread-last-message-clearance)' }}
+                />
+              )}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </ThreadMessageCommitContext.Provider>
   )
 }
 

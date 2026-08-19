@@ -6,12 +6,26 @@ import {
   useMessagePartReasoning
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
+import {
+  type ComponentProps,
+  type FC,
+  type PropsWithChildren,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState
+} from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
+import {
+  useReportThreadMessagePartCommit,
+  useThreadMessagePartCommitCallback,
+  useThreadMessagePartRangeCommitCallback
+} from '@/components/assistant-ui/thread/list'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
@@ -63,6 +77,10 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
 }
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
+  // One parent layout acknowledgement covers every Tool path after its child
+  // DOM commits, including the deliberate null renderers below.
+  useReportThreadMessagePartCommit()
+
   // todo parts are hoisted to a dedicated panel above the message content.
   if (props.toolName === 'todo') {
     return null
@@ -111,25 +129,54 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   return <ToolFallback {...props} />
 }
 
+const ChainToolGroup: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
+  children,
+  endIndex,
+  startIndex
+}) => {
+  const acknowledgeGroup = useThreadMessagePartRangeCommitCallback(startIndex, endIndex)
+
+  // This parent layout boundary runs after ToolGroupSlot's current projection
+  // has committed: the summary/header while collapsed, or every child row when
+  // expanded. Collapsed runs deliberately do not mount their per-tool fallbacks;
+  // a lone tool keeps using that existing per-tool commit boundary.
+  useLayoutEffect(() => {
+    if (endIndex > startIndex) {
+      acknowledgeGroup?.()
+    }
+  }, [acknowledgeGroup, endIndex, startIndex])
+
+  return (
+    <ToolGroupSlot endIndex={endIndex} startIndex={startIndex}>
+      {children}
+    </ToolGroupSlot>
+  )
+}
+
 type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
 
-const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
-  <>
-    <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
-    <MarkdownText />
-  </>
-)
+const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => {
+  const onCommit = useThreadMessagePartCommitCallback()
+
+  return (
+    <>
+      <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
+      <MarkdownText onCommit={onCommit} />
+    </>
+  )
+}
 
 const ThinkingDisclosure: FC<{
   children: ReactNode
   completedAt?: number
   messageRunning?: boolean
+  onCollapsedCommit?: () => void
   pending?: boolean
   timestamp?: number
   // Required: the block's duration is remembered against this key, so a
   // component that mounts after the block finished can still report it.
   timerKey: string
-}> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey }) => {
+}> = ({ children, completedAt, messageRunning = false, onCollapsedCommit, pending = false, timestamp, timerKey }) => {
   const { t } = useI18n()
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   // `null` = no explicit user toggle yet. Live reasoning remains visible by
@@ -143,6 +190,12 @@ const ThinkingDisclosure: FC<{
 
   const open = userOpen ?? (pending && !reasoningCollapsedByDefault)
   const isPreview = pending && userOpen === null && !reasoningCollapsedByDefault
+
+  useLayoutEffect(() => {
+    if (!open) {
+      onCollapsedCommit?.()
+    }
+  }, [onCollapsedCommit, open])
 
   // Three ways a finished block can report itself. With a measured duration it
   // says so, unless the timer's whole seconds round it to "0s" — accurate and
@@ -270,6 +323,13 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
       .slice(Math.max(0, startIndex), endIndex + 1)
       .some(p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0)
   )
+  const publishUnrenderedCommit = useThreadMessagePartRangeCommitCallback(startIndex, endIndex)
+
+  useLayoutEffect(() => {
+    if (!hasContent) {
+      publishUnrenderedCommit?.()
+    }
+  }, [hasContent, publishUnrenderedCommit])
 
   const timestamp = useAuiState(s =>
     s.message.parts.slice(Math.max(0, startIndex), endIndex + 1).reduce<number | undefined>((earliest, part) => {
@@ -299,6 +359,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     <ThinkingDisclosure
       completedAt={completedAt}
       messageRunning={messageRunning}
+      onCollapsedCommit={publishUnrenderedCommit}
       pending={pending}
       timerKey={`reasoning:${messageId}:${startIndex}`}
       timestamp={timestamp}
@@ -314,6 +375,10 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   const { status, text } = useMessagePartReasoning()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  // Preserve the target branch's glued-block projection, but make it the one
+  // source acknowledged by the commit handshake and rendered into the DOM.
+  const renderedText = separateGluedReasoningBlocks(text.trimStart())
+  const onCommit = useThreadMessagePartCommitCallback(renderedText)
 
   return (
     <MarkdownTextContent
@@ -321,7 +386,8 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       disableArtifacts
       isRunning={status.type === 'running' || messageRunning}
-      text={separateGluedReasoningBlocks(text.trimStart())}
+      onCommit={onCommit}
+      text={renderedText}
     />
   )
 }
@@ -337,6 +403,6 @@ export const MESSAGE_PARTS_COMPONENTS = {
   Reasoning: ReasoningTextPart,
   ReasoningGroup: ReasoningAccordionGroup,
   Text: TimelineMarkdownText,
-  ToolGroup: ToolGroupSlot,
+  ToolGroup: ChainToolGroup,
   tools: { Fallback: ChainToolFallback }
 } as const

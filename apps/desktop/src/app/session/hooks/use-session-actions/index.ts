@@ -883,6 +883,7 @@ export function useSessionActions({
                 : activated.messages.length || activated.inflight || activated.queued
                   ? reconcileAuthoritativeMessages(activated.messages, cachedViewState.messages, activated)
                   : cachedViewState.messages
+              let resumePublicationRevision = cachedViewState.resumePublicationRevision ?? 0
 
               // #70449: never let the activate snapshot's stale running:false
               // rewind a turn that started while the RPC was in flight — read
@@ -944,11 +945,23 @@ export function useSessionActions({
                     activated
                   )
 
-                  activatedMessages = reconcileAuthoritativeChatMessages(
+                  const reconciledMessages = reconcileAuthoritativeChatMessages(
                     persistedMessages,
                     previousMessages,
                     liveProjection
                   )
+
+                  // The resumed authority revision advances only when this
+                  // ACCEPTED persisted publication changes the final visible
+                  // message array relative to what entered the branch. A
+                  // rejected empty REST page or a mismatched session never
+                  // gets here (guarded above), and an equivalent result
+                  // leaves the revision alone.
+                  if (!chatMessageArraysEquivalent(reconciledMessages, activatedMessages)) {
+                    resumePublicationRevision += 1
+                  }
+
+                  activatedMessages = reconciledMessages
                 }
               }
 
@@ -968,6 +981,7 @@ export function useSessionActions({
                   ...state,
                   ...(runtimeInfo ?? {}),
                   messages: activatedMessages,
+                  resumePublicationRevision,
                   busy: running,
                   awaitingResponse: running,
                   // Resumed onto an already-running turn — that IS backend

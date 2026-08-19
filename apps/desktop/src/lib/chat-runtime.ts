@@ -24,6 +24,7 @@ export function createClientSessionState(
   return {
     storedSessionId,
     messages,
+    resumePublicationRevision: 0,
     branch: '',
     cwd: '',
     model: '',

@@ -1,17 +1,37 @@
-import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
+import {
+  type AppendMessage,
+  AssistantRuntimeProvider,
+  type ExportedMessageRepository,
+  type ThreadMessage
+} from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import type { ReadableAtom } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from 'react'
 import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
+import {
+  commitReceiptContentSignature,
+  type ThreadCommitReceipt,
+  ThreadPublicationIdentityProvider
+} from '@/components/assistant-ui/thread/list'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
-import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { hiddenPaneProps, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
@@ -31,19 +51,22 @@ import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
+  $activeSessionId,
   $contextSuggestions,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
   $introSeed,
   $resumeExhaustedSessionId,
+  $selectedStoredSessionId,
   $sessions,
+  idsShareLineage,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
-import { sessionTileDelegate } from '@/store/session-states'
+import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -180,13 +203,65 @@ interface ChatRuntimeBoundaryProps {
   onCancel: () => Promise<void> | void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
+  onRevealExpectationChange: (expectation: RevealExpectation) => void
+  onRevealReadyChange: (ready: boolean) => void
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+  publicationIdentity: string
+  requireRevealReceipt: boolean
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
   suppressMessages: boolean
 }
 
 const NO_MESSAGES: ChatMessage[] = []
+const ZERO_RESUME_PUBLICATION_REVISION = atom(0)
+
+/**
+ * Whether the primary surface's selected conversation is the conversation its
+ * active runtime is actually bound to.
+ *
+ * This is the mechanical discriminator between a true session switch and a
+ * same-lineage compression rotation at the moment the route and stored
+ * selection move together (routeSessionMismatch is false there):
+ *
+ * - A sidebar click can land route + $selectedStoredSessionId on B in one
+ *   batch while $activeSessionId and its $sessionStates slice still belong to
+ *   A — the slice's storedSessionId is still A's, so this is false.
+ * - Auto-compression rotates the active runtime's stored id IN PLACE (its
+ *   $sessionStates slice is published with the new tip id) BEFORE the
+ *   selection/route follow it — the slice's storedSessionId already equals
+ *   the rotated selection, so this stays true, even while the new tip row is
+ *   still missing from the session list.
+ *
+ * Lineage-aware (idsShareLineage), so a root/tip-equivalent selection counts
+ * as bound. The derived value only flips at binding edges, so the streaming
+ * delta churn of $sessionStates cannot re-render ChatView through it.
+ */
+const $primaryRuntimeBoundToSelection = computed(
+  [$sessionStates, $activeSessionId, $selectedStoredSessionId, $sessions],
+  (states, runtimeId, selectedStoredSessionId, sessions) => {
+    if (!runtimeId) {
+      // A fresh draft has no runtime; it is bound to a null selection.
+      return selectedStoredSessionId === null
+    }
+
+    const runtimeStoredId = states[runtimeId]?.storedSessionId ?? null
+
+    if (runtimeStoredId === selectedStoredSessionId) {
+      return true
+    }
+
+    if (!runtimeStoredId || !selectedStoredSessionId) {
+      return false
+    }
+
+    return idsShareLineage(runtimeStoredId, selectedStoredSessionId, sessions)
+  }
+)
+
+/** Stand-in binding value for surfaces with no global selection: a tile is
+ * never gated by — and must not subscribe to — the primary's binding edges. */
+const $alwaysBoundToSelection = atom(true)
 
 /**
  * The view's $messages, live only while this surface is the VISIBLE tab.
@@ -198,18 +273,83 @@ const NO_MESSAGES: ChatMessage[] = []
  * dots stay live through the separate status atoms) and catch up in one
  * commit on reveal — the subscribe fires immediately with the current value.
  */
-function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMessage[] {
+function useAtomWhileVisible<T>($store: ReadableAtom<T>): T {
   const visible = usePaneVisible()
-  const [messages, setMessages] = useState(() => $messages.get())
+  const frozen = useRef($store.get() as T)
 
-  // nanostores types the listener value ReadonlyIfObject; the store publishes
-  // a fresh array per flush, so the cast is safe and avoids a per-token clone.
-  useEffect(
-    () => (visible ? $messages.subscribe(value => setMessages(value as ChatMessage[])) : undefined),
-    [$messages, visible]
+  const subscribe = useCallback(
+    (notify: () => void) =>
+      visible
+        ? $store.subscribe(value => {
+            // nanostores types object values as readonly; the store owns the
+            // immutable snapshot, so retaining its reference needs no clone.
+            frozen.current = value as T
+            notify()
+          })
+        : () => undefined,
+    [$store, visible]
   )
+  const getSnapshot = useCallback(() => (visible ? ($store.get() as T) : frozen.current), [$store, visible])
 
-  return messages
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMessage[] {
+  return useAtomWhileVisible($messages)
+}
+
+/** Keep the one-shot resume publication signal in lockstep with the visible
+ * transcript. Hidden keep-alive panes catch up when revealed, just like their
+ * frozen message subscription, so the revision cannot be consumed early. */
+function useResumePublicationRevisionWhileVisible($revision: ReadableAtom<number>): number {
+  return useAtomWhileVisible($revision)
+}
+
+function activeRepositoryMessages(repository: ExportedMessageRepository): readonly ThreadMessage[] {
+  const itemById = new Map(repository.messages.map(item => [item.message.id, item]))
+  const result: ThreadMessage[] = []
+  const seen = new Set<string>()
+  let id = repository.headId ?? repository.messages.at(-1)?.message.id ?? null
+
+  while (id && !seen.has(id)) {
+    seen.add(id)
+    const item = itemById.get(id)
+
+    if (!item) return []
+
+    result.push(item.message)
+    id = item.parentId
+  }
+
+  return result.reverse()
+}
+
+/**
+ * What the Thread leaf must have committed before this surface may reveal:
+ * the current visible resume publication revision and the exact committed
+ * chain the boundary handed the runtime (ids in leaf order + exact serialized
+ * content for every message). Compared against the leaf's own commit receipt,
+ * so stale interior content cannot unlock a newer transcript.
+ */
+export interface RevealExpectation {
+  chainSignature: string
+  headMessage: ThreadMessage | null
+  contentSignature: string
+  publicationIdentity: string
+}
+
+export function revealMatchesExpectation(
+  receipt: ThreadCommitReceipt,
+  expectation: RevealExpectation,
+  revision: number
+): boolean {
+  return (
+    receipt.complete &&
+    receipt.revision === revision &&
+    receipt.chainSignature === expectation.chainSignature &&
+    receipt.contentSignature === expectation.contentSignature &&
+    receipt.publicationIdentity === expectation.publicationIdentity
+  )
 }
 
 /**
@@ -228,9 +368,14 @@ function ChatRuntimeBoundary({
   onCancel,
   onEdit,
   onReload,
+  onRevealExpectationChange,
+  onRevealReadyChange,
   onThreadMessagesChange,
+  publicationIdentity,
+  requireRevealReceipt,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
+  const visible = usePaneVisible()
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
   const storeMessages = useMessagesWhileVisible(view.$messages)
@@ -309,10 +454,47 @@ function ChatRuntimeBoundary({
     onCancel: async () => onCancel(),
     onReload
   })
+  const [adapterPublicationIdentity, setAdapterPublicationIdentity] = useState(publicationIdentity)
+
+  // The incremental runtime applies a new adapter in its passive effect. Keep
+  // the leaf identity on the adapter that is actually published until that
+  // effect has run; otherwise an old runtime's layout receipt can be mislabeled
+  // as the incoming surface during the switch commit.
+  useEffect(() => {
+    setAdapterPublicationIdentity(publicationIdentity)
+  }, [publicationIdentity])
+
+  // Bind the reveal to the active repository chain actually handed to the
+  // windowed runtime. The store may contain older pages that this Thread does
+  // not render, while repository and assistant-ui wrappers are not referentially
+  // identical, so compare their shared full-chain semantic projection.
+  const expectedChain = useMemo(() => activeRepositoryMessages(runtimeMessageRepository), [runtimeMessageRepository])
+  const revealExpectation = useMemo<RevealExpectation>(
+    () => ({
+      chainSignature: expectedChain.map(message => message.id).join('\n'),
+      headMessage: expectedChain.at(-1) ?? null,
+      contentSignature: requireRevealReceipt ? commitReceiptContentSignature(expectedChain) : '[]',
+      publicationIdentity
+    }),
+    [expectedChain, publicationIdentity, requireRevealReceipt]
+  )
+
+  // A descendant leaf receipt fires in the layout phase before this boundary's
+  // own effects. Publish the current expectation during render so that receipt
+  // can only be evaluated against the generation being committed.
+  onRevealExpectationChange(revealExpectation)
+
+  useLayoutEffect(() => {
+    if (!visible) {
+      onRevealReadyChange(false)
+    }
+  }, [onRevealReadyChange, visible])
 
   return (
     <TranscriptWindowProvider value={transcriptWindow}>
-      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+      <ThreadPublicationIdentityProvider value={adapterPublicationIdentity}>
+        <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+      </ThreadPublicationIdentityProvider>
     </TranscriptWindowProvider>
   )
 }
@@ -355,14 +537,84 @@ export const ChatView = memo(function ChatView({
   // atoms) or a tile's session slice — same component either way.
   const view = useSessionView()
   const composerScope = useComposerScope()
+  const paneVisible = usePaneVisible()
+  const [runtimeRevealReady, setRuntimeRevealReady] = useState(paneVisible)
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
+  const publicationIdentity = isPrimary
+    ? `primary:${activeSessionId ?? 'draft'}`
+    : `tile:${storedId ?? 'unbound'}:${activeSessionId ?? 'unbound'}`
   // Dock anchor for a session drop onto this surface: the workspace pane for the
   // primary, this tile's pane id for a tile. Read by the session-drop bridge.
   const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
+  const resumePublicationRevision = useResumePublicationRevisionWhileVisible(
+    view.$resumePublicationRevision ?? ZERO_RESUME_PUBLICATION_REVISION
+  )
+  // Whether the active runtime is bound to the selected conversation. That
+  // is a PRIMARY-surface fact (see $primaryRuntimeBoundToSelection): tiles
+  // own no global selection and must neither be gated by nor re-render on
+  // the primary's binding edges, so a tile reads the constant stand-in —
+  // its own receipt always counts as bound. The hook stays unconditional and
+  // `isPrimary` is constant for the life of a mounted surface, so the store
+  // argument never switches. The derived value only flips at binding edges,
+  // so streaming churn never reaches here either.
+  const runtimeBoundToSelection = useStore(isPrimary ? $primaryRuntimeBoundToSelection : $alwaysBoundToSelection)
+
+  // Stable handlers keep the memo'd Thread out of unrelated parent renders;
+  // render-assigned refs provide the current visibility/revision/expectation.
+  const paneVisibleRef = useRef(paneVisible)
+  paneVisibleRef.current = paneVisible
+  const resumeRevisionRef = useRef(resumePublicationRevision)
+  resumeRevisionRef.current = resumePublicationRevision
+  const runtimeBoundToSelectionRef = useRef(runtimeBoundToSelection)
+  runtimeBoundToSelectionRef.current = runtimeBoundToSelection
+  const revealExpectationRef = useRef<RevealExpectation>({
+    chainSignature: '',
+    headMessage: null,
+    contentSignature: '[]',
+    publicationIdentity
+  })
+  const lastCommitReceiptRef = useRef<ThreadCommitReceipt | null>(null)
+  // While the route names a session the store hasn't bound yet, the thread is
+  // deliberately blanked (suppressMessages). A receipt for that blank surface
+  // must not unlock the reveal gate for the session that is still loading.
+  const routeSessionMismatchRef = useRef(false)
+
+  const handleRevealExpectationChange = useCallback((expectation: RevealExpectation) => {
+    revealExpectationRef.current = expectation
+  }, [])
+
+  const handleCommitReceipt = useCallback((receipt: ThreadCommitReceipt) => {
+    if (
+      !paneVisibleRef.current ||
+      routeSessionMismatchRef.current ||
+      !runtimeBoundToSelectionRef.current ||
+      !revealMatchesExpectation(receipt, revealExpectationRef.current, resumeRevisionRef.current)
+    ) {
+      return
+    }
+
+    lastCommitReceiptRef.current = receipt
+    setRuntimeRevealReady(true)
+  }, [])
+
+  // An unchanged frozen transcript emits no new leaf commit on a plain
+  // visibility round-trip. Revalidate its last receipt; a hidden publication
+  // changes the revision/signature and therefore still requires a fresh one.
+  useLayoutEffect(() => {
+    if (!paneVisible || routeSessionMismatchRef.current || !runtimeBoundToSelectionRef.current) {
+      return
+    }
+
+    const last = lastCommitReceiptRef.current
+
+    if (last && revealMatchesExpectation(last, revealExpectationRef.current, resumeRevisionRef.current)) {
+      setRuntimeRevealReady(true)
+    }
+  }, [paneVisible])
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const contextSuggestions = useStore($contextSuggestions)
   // Per-session (SessionView) reads — a tile IS its session, so these come
@@ -442,7 +694,53 @@ export const ChatView = memo(function ChatView({
   // the id changes we drop the old transcript and show the loader, instead of
   // waiting for the resume effect (which paints a frame later) to clear them.
   const routeSessionMismatch = isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions) : false
+  routeSessionMismatchRef.current = routeSessionMismatch
 
+  // `runtimeRevealReady` initializes from pane visibility once, and a visible
+  // primary pane switching sessions never toggles visibility — so without a
+  // session-identity reset the incoming transcript publishes with no reveal
+  // receipt armed. Two identity signals arm the gate, render-synchronously,
+  // before the incoming transcript can paint:
+  //
+  // - The route lineage key (queueSessionKey: route-first, resolved to the
+  //   stable lineage root). It changes on the FIRST frame of a switch — the
+  //   route already names B while the store and runtime still belong to A —
+  //   which is exactly the frame the live defect publishes. It arms only
+  //   when the surface has genuinely left its conversation: either the
+  //   route and the store selection disagree (route-only frame), or both
+  //   moved together while the active runtime is still bound to the old
+  //   conversation (runtimeBoundToSelection is false). Auto-compression
+  //   rotates the runtime's stored id IN PLACE before the selection/route
+  //   follow it, so the runtime is already bound to the rotated selection —
+  //   even while the new tip row is missing from the session list and the
+  //   lineage key transiently falls back to the raw tip id — and the
+  //   surface must NOT re-hide.
+  // - The runtime id. It changes exactly when the primary surface's
+  //   conversation rebinds (a true A→B switch lands, or a draft↔session
+  //   transition) and never during compression or streaming. Tiles patch
+  //   their own runtime binding on resume, which is not a surface identity
+  //   change, so both arms are primary-only.
+  //
+  // Either arm clears the recorded receipt so a receipt captured for the
+  // previous session cannot reveal the next one, even when both transcripts
+  // have identical revision, chain, and content bytes.
+  const routeLineageRevealKey = isPrimary ? queueSessionKey : null
+  const routeLineageRevealKeyRef = useRef<string | null>(routeLineageRevealKey)
+  const runtimeRevealKeyRef = useRef<string | null>(activeSessionId)
+  const lineageRevealChanged = routeLineageRevealKeyRef.current !== routeLineageRevealKey
+  const runtimeRevealChanged = isPrimary && runtimeRevealKeyRef.current !== activeSessionId
+
+  if (lineageRevealChanged || runtimeRevealChanged) {
+    routeLineageRevealKeyRef.current = routeLineageRevealKey
+    runtimeRevealKeyRef.current = activeSessionId
+
+    const switchedSurface = lineageRevealChanged && (routeSessionMismatch || !runtimeBoundToSelection)
+
+    if (switchedSurface || runtimeRevealChanged) {
+      lastCommitReceiptRef.current = null
+      setRuntimeRevealReady(false)
+    }
+  }
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
   const showIntro =
@@ -553,13 +851,16 @@ export const ChatView = memo(function ChatView({
 
   return (
     <div
+      aria-hidden={!runtimeRevealReady || undefined}
       className={cn(
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
+        !runtimeRevealReady && 'pointer-events-none invisible',
         className
       )}
       data-chat-surface=""
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
+      {...hiddenPaneProps(!runtimeRevealReady)}
     >
       <Backdrop />
       {/* Tiles get their chrome from the layout zone (chip strip); the modal
@@ -584,7 +885,11 @@ export const ChatView = memo(function ChatView({
         onCancel={haltRun}
         onEdit={onEdit}
         onReload={onReload}
+        onRevealExpectationChange={handleRevealExpectationChange}
+        onRevealReadyChange={setRuntimeRevealReady}
         onThreadMessagesChange={onThreadMessagesChange}
+        publicationIdentity={publicationIdentity}
+        requireRevealReceipt={!runtimeRevealReady}
         suppressMessages={routeSessionMismatch}
       >
         <div
@@ -600,8 +905,10 @@ export const ChatView = memo(function ChatView({
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={haltRun}
+            onCommitReceipt={runtimeRevealReady ? undefined : handleCommitReceipt}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
+            resumePublicationRevision={resumePublicationRevision}
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />

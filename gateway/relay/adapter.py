@@ -126,6 +126,11 @@ class RelayAdapter(BasePlatformAdapter):
         # _capture_scope / send.
         self._platform_by_chat: Dict[str, str] = {}
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
+        # Cron flat continuable surface — descriptor-advertised (see
+        # _apply_descriptor; same bit, constructor path).
+        self.supports_inchannel_continuable = bool(
+            getattr(descriptor, "supports_inchannel_continuable", False)
+        )
         # Phase 7 Unit 7d-B: watches the transport for a terminal auth revocation
         # (a 4401 close after a successful handshake = the operator opted this
         # instance out of the relay). On revocation we surface a clean,
@@ -361,6 +366,13 @@ class RelayAdapter(BasePlatformAdapter):
         self.descriptor = descriptor
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
+        # Cron in_channel continuable surface (D6 gate in cron/scheduler.py):
+        # the scheduler reads this off the adapter; the connector advertises it
+        # per platform at handshake. Class default is False (BasePlatformAdapter),
+        # so only an explicit descriptor bit turns the flat surface on.
+        self.supports_inchannel_continuable = bool(
+            getattr(descriptor, "supports_inchannel_continuable", False)
+        )
 
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""

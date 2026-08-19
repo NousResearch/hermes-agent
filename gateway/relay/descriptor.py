@@ -64,6 +64,14 @@ class CapabilityDescriptor:
     # "no context" — additive within contract_version 1. from_json filters
     # unknown keys, so a connector sending this to an older gateway is safe too.
     supports_context: bool = False
+    # Whether the connector's platform can host a FLAT continuable cron
+    # surface (native Slack's ``cron_continuable_surface: in_channel``): the
+    # brief posts top-level in the channel/DM and a plain reply continues the
+    # job via the flat ``(platform, chat_id, None)`` session. The scheduler
+    # fails safe to thread mode when False (D6 gate), so an older connector
+    # that never sends this keeps today's thread behavior — additive within
+    # contract_version 1.
+    supports_inchannel_continuable: bool = False
     # Op-level capability discovery (Phase 1 parity): the outbound op names the
     # connector's sender for this platform actually implements (e.g.
     # ["send", "edit", "typing", "follow_up", "get_chat_info"]). Empty tuple =

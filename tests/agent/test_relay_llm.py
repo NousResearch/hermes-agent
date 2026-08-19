@@ -234,6 +234,31 @@ def test_provider_request_overlays_interceptor_added_codex_field():
     assert provider_request["prompt_cache_retention"] == "24h"
 
 
+def test_provider_request_overlays_interceptor_added_extra_body():
+    """Relay rewrites may also carry provider fields through extra_body."""
+    original = {"model": "gpt-5.6-sol", "input": "hello"}
+    relay_request_body = relay_llm._relay_request_body(
+        original,
+        {"api_mode": "codex_responses"},
+    )
+    provider_request = relay_llm._provider_request(
+        original,
+        SimpleNamespace(
+            content={
+                **relay_request_body,
+                "extra_body": {"prompt_cache_retention": "24h"},
+            },
+            headers={},
+        ),
+        relay_request_body=relay_request_body,
+        codec_baseline_body=dict(relay_request_body),
+        metadata={"api_mode": "codex_responses"},
+    )
+
+    assert "extra_body" not in original
+    assert provider_request["extra_body"] == {"prompt_cache_retention": "24h"}
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []

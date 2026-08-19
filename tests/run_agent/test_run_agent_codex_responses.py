@@ -590,6 +590,55 @@ def test_run_codex_stream_strips_relay_added_retention_at_consumer_wire(
     )
 
 
+def test_run_codex_stream_strips_nested_request_override_retention(
+    monkeypatch,
+    caplog,
+):
+    """Configured extra_body retention cannot cross the final wire boundary."""
+    from agent.transports.codex import ResponsesApiTransport
+
+    agent = _build_agent(monkeypatch)
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            )
+        ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+    request = ResponsesApiTransport().build_kwargs(
+        model="gpt-5.6-sol",
+        messages=[
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ],
+        tools=[],
+        is_codex_backend=True,
+        base_url="https://chatgpt.com/backend-api/codex",
+        request_overrides={
+            "extra_body": {"prompt_cache_retention": "24h"},
+        },
+    )
+    assert request["extra_body"] == {"prompt_cache_retention": "24h"}
+
+    with caplog.at_level("WARNING", logger="agent.codex_runtime"):
+        agent._run_codex_stream(request)
+
+    assert "extra_body" not in captured
+    assert request["extra_body"] == {"prompt_cache_retention": "24h"}
+    assert any(
+        "Dropped unsupported prompt_cache_retention at consumer Codex wire boundary"
+        in record.message
+        for record in caplog.records
+    )
+
+
 def test_consumer_codex_wire_guard_strips_nested_extra_body_retention(caplog):
     """The SDK merges ``extra_body`` into the JSON body, so a nested
     ``extra_body.prompt_cache_retention`` reaches the endpoint exactly like the

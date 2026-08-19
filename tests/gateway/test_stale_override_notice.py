@@ -246,6 +246,7 @@ async def test_confirm_holds_then_resumes_only_after_explicit_choice():
     assert (handled, response) == (True, None)
     assert runner._adapter.picker_call is not None
     assert runner._adapter.picker_call["metadata"]["choice_layout"] == "vertical"
+    assert runner._adapter.picker_call["metadata"]["requester_user_id"] == "u1"
     runner._adapter.handle_message.assert_not_awaited()
     runner._schedule_stale_override_prompt_expiry.assert_called_once()
 

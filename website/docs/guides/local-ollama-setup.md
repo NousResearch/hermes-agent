@@ -243,6 +243,13 @@ platforms:
 
 ## Step 8: Set Up Fallbacks (Optional)
 
+Hermes supports an ordered `fallback_providers` chain. You can use it in either direction:
+
+- Local primary with cloud fallback, for mostly-free usage.
+- Cloud primary with local Ollama fallback, for quota/rate-limit resilience.
+
+### Local primary, cloud fallback
+
 Local models can struggle with complex tasks. Set up a cloud fallback that only activates when the local model fails:
 
 ```yaml
@@ -257,6 +264,82 @@ fallback_providers:
 ```
 
 This way, 90% of your usage is free (local), and only the hard tasks hit the paid API.
+
+### Cloud primary, local Ollama fallback
+
+For always-on gateway agents, you may want the opposite: keep your hosted model as primary, but fall back to a local Ollama model if the hosted provider hits quota, rate limits, or an outage.
+
+Hermes requires a model context window of at least 64K tokens. If your Ollama model reports less than 64K, create a wrapper model with a larger `num_ctx`:
+
+```Modelfile
+FROM qwen3:8b
+PARAMETER num_ctx 65536
+PARAMETER temperature 0.2
+SYSTEM "You are a local backup model for Hermes Agent. Be concise and direct. Do not reveal hidden reasoning; provide only the final answer."
+```
+
+Create the wrapper:
+
+```bash
+ollama create qwen3:8b-hermes -f ~/.hermes/ollama-qwen3-hermes.Modelfile
+ollama show qwen3:8b-hermes --parameters
+```
+
+Then keep your existing `model:` section unchanged and add the local fallback plus an explicit context override:
+
+```yaml
+fallback_providers:
+  - provider: custom
+    model: qwen3:8b-hermes
+    base_url: http://127.0.0.1:11434/v1
+    api_key: no-key-required
+
+custom_providers:
+  - name: ollama-local
+    base_url: http://127.0.0.1:11434/v1
+    api_key: no-key-required
+    api_mode: chat_completions
+    model: qwen3:8b-hermes
+    context_length: 65536
+    models:
+      qwen3:8b-hermes:
+        context_length: 65536
+
+providers:
+  ollama-local:
+    name: Ollama Local
+    base_url: http://127.0.0.1:11434/v1
+    api_key: no-key-required
+    default_model: qwen3:8b-hermes
+    transport: chat_completions
+```
+
+Verify the local fallback directly before relying on it:
+
+```bash
+hermes config check
+hermes chat --provider ollama-local --model qwen3:8b-hermes \
+  -q 'Reply with exactly: local-ok' \
+  --toolsets '' \
+  --quiet
+```
+
+Expected response:
+
+```text
+local-ok
+```
+
+If you run Hermes Gateway, restart it after editing config:
+
+```bash
+hermes gateway restart
+hermes gateway status
+```
+
+:::tip Why the `custom_providers` context override matters
+Ollama model metadata may still report the base model's training context, even after a wrapper sets `PARAMETER num_ctx 65536`. If Hermes rejects the wrapper with a "below the minimum 64,000" context error, the per-model `custom_providers.models.<model>.context_length: 65536` override tells Hermes the intended runtime context.
+:::
 
 ## Troubleshooting
 

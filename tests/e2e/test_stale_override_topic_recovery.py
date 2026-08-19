@@ -29,7 +29,11 @@ def _runner_with_store(config, store, db):
     runner.config = config
     runner.adapters = {}
     runner._voice_mode = {}
-    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.hooks = SimpleNamespace(
+        emit=AsyncMock(),
+        emit_collect=AsyncMock(return_value=[]),
+        loaded_hooks=False,
+    )
     runner.session_store = store
     runner._async_session_store = AsyncSessionStore(store)
     runner._running_agents = {}
@@ -57,6 +61,69 @@ def _runner_with_store(config, store, db):
     runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     return runner
+
+
+def _busy_topic_command_runner(
+    tmp_path,
+    monkeypatch,
+    *,
+    quick_commands=None,
+    busy_mode="steer",
+):
+    """Build a stripped Telegram source whose canonical topic lane is busy."""
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="e2e-test-token")
+        },
+        quick_commands=quick_commands or {},
+        sessions_dir=hermes_home / "sessions",
+    )
+    store = SessionStore(config.sessions_dir, config)
+    canonical_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="topic-chat",
+        chat_type="dm",
+        user_id="topic-user",
+        thread_id="42",
+    )
+    canonical_entry = store.get_or_create_session(canonical_source)
+    canonical_key = canonical_entry.session_key
+    raw_source = dataclasses.replace(canonical_source, thread_id=None)
+    db = store._db
+    db.enable_telegram_topic_mode(chat_id="topic-chat", user_id="topic-user")
+    db.bind_telegram_topic(
+        chat_id="topic-chat",
+        thread_id="42",
+        user_id="topic-user",
+        session_key=canonical_key,
+        session_id=canonical_entry.session_id,
+    )
+
+    class ActiveAgent:
+        def __init__(self):
+            self.steered = []
+
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+        def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    runner = _runner_with_store(config, store, db)
+    runner._busy_input_mode = busy_mode
+    active_agent = ActiveAgent()
+    active_state = runner._session_state(canonical_key)
+    active_state.turn.agent = active_agent
+    active_state.turn.started_ts = time.time() - 10
+    adapter = SimpleNamespace(_pending_messages={}, send=AsyncMock())
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("recovered busy command dispatched a second turn")
+    )
+    return runner, raw_source, canonical_key, active_agent, adapter
 
 
 @pytest.mark.asyncio
@@ -469,6 +536,97 @@ async def test_stripped_topic_side_effectful_command_is_rejected_before_handler_
     assert preserved.conversation.model_override is original_override
     assert runner._peek_session_state(raw_key) is None
     assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "hook_result",
+    [
+        {"decision": "handled", "message": "optimistic hook acknowledgement"},
+        {"decision": "deny", "message": "hook denial"},
+    ],
+)
+async def test_recovered_busy_registered_command_skips_all_command_hooks(
+    tmp_path, monkeypatch, hook_result
+):
+    """Hooks cannot observe or intercept a command before canonical busy policy."""
+    runner, raw_source, _canonical_key, active_agent, adapter = (
+        _busy_topic_command_runner(tmp_path, monkeypatch)
+    )
+    pre_command = MagicMock(
+        side_effect=AssertionError("busy command fired pre_command hook")
+    )
+    monkeypatch.setattr("hermes_cli.plugins.fire_pre_command_hook", pre_command)
+    runner.hooks.emit_collect = AsyncMock(return_value=[hook_result])
+
+    result = await runner._handle_message(
+        MessageEvent(text="/learn https://example.com/source", source=raw_source)
+    )
+
+    assert result == (
+        "⏳ Agent is running — `/learn` can't run mid-turn. "
+        "Wait for the current response or `/stop` first."
+    )
+    pre_command.assert_not_called()
+    runner.hooks.emit_collect.assert_not_awaited()
+    assert active_agent.steered == []
+    adapter.send.assert_not_awaited()
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovered_busy_quick_exec_uses_canonical_busy_route_without_shell(
+    tmp_path, monkeypatch
+):
+    """A stripped quick exec is input to busy policy, never a shell invocation."""
+    runner, raw_source, _canonical_key, active_agent, adapter = (
+        _busy_topic_command_runner(
+            tmp_path,
+            monkeypatch,
+            quick_commands={
+                "danger": {"type": "exec", "command": "printf side-effect"}
+            },
+        )
+    )
+    create_shell = AsyncMock(
+        side_effect=AssertionError("busy quick command executed a shell")
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", create_shell)
+
+    result = await runner._handle_message(
+        MessageEvent(text="/danger now", source=raw_source)
+    )
+
+    assert result is None
+    create_shell.assert_not_awaited()
+    assert active_agent.steered == ["/danger now"]
+    adapter.send.assert_not_awaited()
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovered_busy_plugin_command_never_calls_handler_or_returns_ack(
+    tmp_path, monkeypatch
+):
+    """Plugin lookup may classify the sink; the handler itself stays inert."""
+    runner, raw_source, _canonical_key, active_agent, adapter = (
+        _busy_topic_command_runner(tmp_path, monkeypatch)
+    )
+    plugin_handler = MagicMock(return_value="optimistic plugin acknowledgement")
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: plugin_handler if name == "side-effect" else None,
+    )
+
+    result = await runner._handle_message(
+        MessageEvent(text="/side_effect mutate", source=raw_source)
+    )
+
+    assert result is None
+    plugin_handler.assert_not_called()
+    assert active_agent.steered == ["/side_effect mutate"]
+    adapter.send.assert_not_awaited()
+    runner._handle_message_with_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio

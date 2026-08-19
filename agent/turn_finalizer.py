@@ -104,6 +104,30 @@ def _record_kanban_budget_exhausted(
         )
 
 
+def _should_record_budget_exhaustion(agent) -> bool:
+    """LOCAL PATCH 14 — budget-exhaustion recording is dispatcher-owned only.
+
+    ``HERMES_KANBAN_TASK`` stays set in ``os.environ`` for in-process children
+    (delegate_task subagents, background-review forks, cron jobs fired via the
+    ``cronjob`` tool) running inside a dispatcher worker.  Those children carry
+    their own — much smaller — iteration budgets, so a child running out of
+    iterations must NOT record a terminal ``timed_out`` failure against the
+    worker's task: the misattribution advances the dispatcher's
+    consecutive-failure circuit breaker and can archive live work that was
+    still running fine at the parent level.
+
+    Gate on the dispatcher-ownership predicate (False for delegated children
+    and non-dispatcher-owned cron execution) plus the review fork's
+    persistence-isolation marker (``background_review.py`` sets
+    ``review_agent._persist_disabled = True``).
+    """
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
+    if not is_dispatcher_owned_worker_context():
+        return False
+    return not getattr(agent, "_persist_disabled", False)
+
+
 def _drop_verification_continuation_scaffolding(messages) -> None:
     """Remove verification-continuation nudge messages from *messages* in place.
 
@@ -203,7 +227,9 @@ def finalize_turn(
         # rather than ``kanban_block`` so this counts toward the dispatcher's
         # consecutive-failure circuit breaker (#29747 gap 2).
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-        if _kanban_task:
+        # LOCAL PATCH 14: skip when this exhaustion belongs to an in-process
+        # child (delegate subagent / review fork / in-worker cron agent).
+        if _kanban_task and _should_record_budget_exhaustion(agent):
             _record_kanban_budget_exhausted(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
             )
@@ -217,7 +243,9 @@ def finalize_turn(
         # is a no-op if another path closed it — the CAS invariant in
         # ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-        if _kanban_task:
+        # LOCAL PATCH 14: skip when this exhaustion belongs to an in-process
+        # child (delegate subagent / review fork / in-worker cron agent).
+        if _kanban_task and _should_record_budget_exhaustion(agent):
             _record_kanban_budget_exhausted(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
             )

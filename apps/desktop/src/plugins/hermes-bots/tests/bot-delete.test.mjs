@@ -5,10 +5,11 @@ import vm from 'node:vm'
 
 const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
-function load({ sdkDeleteProfile = false } = {}) {
+function load({ activeConnectionId = 'local', activeProfile = 'default', sdkDeleteProfile = false } = {}) {
   const requests = []
   const sdkDeletes = []
   const invalidations = []
+  const newChats = []
   const stored = []
   const storageOps = []
   const values = new Map()
@@ -24,9 +25,11 @@ function load({ sdkDeleteProfile = false } = {}) {
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } },
     host: {
       state: {
-        profile: { listen: () => undefined },
+        profile: { get: () => activeProfile, listen: () => undefined },
+        connectionId: { get: () => activeConnectionId, listen: () => undefined },
         gateway: { listen: () => undefined }
       },
+      newChat: profile => newChats.push(profile),
       ...(sdkDeleteProfile
         ? {
             deleteProfile: async profile => {
@@ -61,7 +64,7 @@ function load({ sdkDeleteProfile = false } = {}) {
     },
     register: () => undefined
   })
-  return { context, requests, sdkDeletes, invalidations, stored, storageOps }
+  return { context, requests, sdkDeletes, invalidations, newChats, stored, storageOps }
 }
 
 test('unit: deleting a bot prefers the SDK deleteProfile (teardown-routed REST path)', async () => {
@@ -85,6 +88,27 @@ test('unit: source-scoped deletion preserves the route targetProfile', async () 
   await context.__delete.deleteBot({ name: 'worker', sourceScoped: true, route })
 
   assert.deepEqual(JSON.parse(JSON.stringify(sdkDeletes)), [route])
+})
+
+test('unit: deleting same-name bot on another connection keeps the active chat', async () => {
+  const { context, newChats } = load({
+    activeConnectionId: 'source-b',
+    activeProfile: 'worker',
+    sdkDeleteProfile: true
+  })
+
+  await context.__delete.deleteBot({
+    name: 'worker',
+    sourceScoped: true,
+    route: {
+      connectionId: 'source-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'worker'
+    }
+  })
+
+  assert.deepEqual(newChats, [])
 })
 
 test('unit: source-scoped deletion commits bot-meta-v2 atomically', async () => {
@@ -139,6 +163,26 @@ test('unit: an alias targeting backend default is rejected before deletion', asy
   )
 
   assert.deepEqual(sdkDeletes, [])
+  assert.equal(requests.some(request => request.method === 'cli.exec'), false)
+})
+
+test('unit: source-scoped deletion without host.deleteProfile fails closed without CLI execution', async () => {
+  const { context, requests } = load()
+
+  await assert.rejects(
+    context.__delete.deleteBot({
+      name: 'worker',
+      sourceScoped: true,
+      route: {
+        connectionId: 'source-a',
+        mode: 'remote',
+        profile: 'worker',
+        targetProfile: 'worker'
+      }
+    }),
+    /source-scoped profile deletion requires host\.deleteProfile/i
+  )
+
   assert.equal(requests.some(request => request.method === 'cli.exec'), false)
 })
 

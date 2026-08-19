@@ -84,6 +84,7 @@ function load({ requestProfile, agents, profileRoutes, storage } = {}) {
         botSelectionKey,
         deleteBot,
         duplicateBot,
+        ensureBotMetadata,
         groupMemberKey,
         migrateBotMeta,
         migratedLocalRoutes,
@@ -91,6 +92,7 @@ function load({ requestProfile, agents, profileRoutes, storage } = {}) {
         openBotCanonicalChat,
         openProfileSession,
         persistBotMetaSnapshot,
+        prepareBotSource,
         requestForBot,
         saveBotMeta,
         setPluginStorage: storage => { pluginCtx = { storage } },
@@ -118,17 +120,24 @@ const remoteBot = {
   targetProfile: 'remote-default'
 }
 
-function recordingStorage(initial, failSetKey = null, failRemoveKeys = []) {
+function recordingStorage(
+  initial,
+  failSetKey = null,
+  failRemoveKeys = [],
+  failSetTimes = Number.POSITIVE_INFINITY
+) {
   const values = new Map(Object.entries(initial))
   const operations = []
   const failedRemovals = new Set(failRemoveKeys)
+  let failedSets = 0
 
   return {
     operations,
     get: async key => values.get(key) ?? null,
     set: async (key, value) => {
       operations.push(['set', key, value])
-      if (key === failSetKey) {
+      if (key === failSetKey && failedSets < failSetTimes) {
+        failedSets += 1
         throw new Error('disk full')
       }
       values.set(key, value)
@@ -192,6 +201,93 @@ test('source-scoped routing rejects a missing connection id before dispatch', as
     /no connection owner/i
   )
   assert.equal(runtime.calls.some(call => call[0] === 'ambient' || call[0] === 'profile'), false)
+})
+
+test('non-identity alias hydrates metadata from the backend row before Edit saves it', async () => {
+  const calls = []
+  const workerBot = {
+    ...remoteBot,
+    name: 'worker',
+    route: { ...remoteBot.route, profile: 'worker', targetProfile: 'backend-worker' },
+    targetProfile: 'backend-worker'
+  }
+  const runtime = load({
+    requestProfile: async (_route, method, params) => {
+      calls.push([method, params])
+      if (method === 'profiles.list') {
+        return {
+          profiles: [{
+            name: 'backend-worker',
+            ui_meta: {
+              'hermes-bots': { title: 'Hydrated', pinned: true, chat: 'worker-chat' }
+            }
+          }]
+        }
+      }
+      return { applied: { ui_meta: true } }
+    }
+  })
+
+  const prepared = await runtime.context.__race.prepareBotSource(workerBot, null)
+  assert.equal(prepared, 'worker-chat')
+
+  const hydrated = await runtime.context.__race.ensureBotMetadata(workerBot)
+  assert.deepEqual(JSON.parse(JSON.stringify(hydrated)), {
+    title: 'Hydrated',
+    pinned: true,
+    chat: 'worker-chat'
+  })
+
+  await runtime.context.__race.saveBotMeta(workerBot, { title: 'Edited' })
+  const edit = calls.find(([method]) => method === 'profiles.configure')
+  assert.deepEqual(JSON.parse(JSON.stringify(edit[1])), {
+    name: 'backend-worker',
+    ui_meta: {
+      'hermes-bots': { title: 'Edited', pinned: true, chat: 'worker-chat' }
+    }
+  })
+})
+
+test('non-identity alias reuses a canonical pin through the backend profile name', async () => {
+  const requests = []
+  const workerBot = {
+    ...remoteBot,
+    name: 'worker',
+    route: { ...remoteBot.route, profile: 'worker', targetProfile: 'backend-worker' },
+    targetProfile: 'backend-worker'
+  }
+  const runtime = load({
+    requestProfile: async (_route, method, params) => {
+      requests.push([method, params])
+      return {
+        profiles: [{
+          name: 'backend-worker',
+          preferred_session: {
+            id: 'pin-worker',
+            resolved_id: 'pin-worker-tip',
+            message_count: 3
+          }
+        }]
+      }
+    }
+  })
+
+  const result = await runtime.context.__race.openBotCanonicalChat(
+    workerBot,
+    'pin-worker',
+    { message_count: 3 }
+  )
+
+  assert.equal(result, 'pin-worker')
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[0])), [
+    'profiles.list',
+    {
+      include_sessions: true,
+      preferred_session_ids: { 'backend-worker': 'pin-worker' }
+    }
+  ])
+  const opened = runtime.calls.find(call => call[0] === 'openSession')
+  assert.equal(opened[1], 'pin-worker-tip')
 })
 
 test('delayed edit, group mutation, and canonical session RPCs retain the route', async () => {
@@ -358,6 +454,36 @@ test('migration rolls back routes when a later v1 profile has no local route', a
     first: { title: 'First' },
     missing: { title: 'Missing' }
   })
+})
+
+test('failed normal v2 successor commit preserves the last committed generation on reload', async () => {
+  const committed = {
+    'remote-a::default': { title: 'B' }
+  }
+  const storage = recordingStorage(
+    {
+      'bot-meta-v2': committed,
+      'bot-meta-v2-migrated': true
+    },
+    'bot-meta-v2-migrated',
+    [],
+    1
+  )
+  const runtime = load({
+    requestProfile: async () => ({ applied: { ui_meta: true } }),
+    storage
+  })
+  runtime.context.__race.setPluginStorage(storage)
+  assert.equal(await runtime.context.__race.migrateBotMeta(storage), true)
+
+  await runtime.context.__race.saveBotMeta(remoteBot, { title: 'D' })
+
+  const reloaded = load({ storage })
+  assert.equal(await reloaded.context.__race.migrateBotMeta(storage), true)
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(reloaded.context.__race.$botMeta.get())),
+    committed
+  )
 })
 
 test('failed marker commit rolls persisted v2 back and reload keeps v1 authoritative', async () => {

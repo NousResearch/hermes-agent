@@ -3997,7 +3997,10 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
         config[cfg_key] = cur_cfg
     current_model = cur_cfg.get("model") or default_model
     if current_model not in catalog:
-        current_model = default_model
+        # The saved model may belong to another provider (shared config key)
+        # and the catalog default itself may have drifted — never index the
+        # catalog with a key it doesn't contain.
+        current_model = default_model if default_model in catalog else next(iter(catalog))
 
     model_ids = list(catalog.keys())
     # Put current model at the top so the cursor lands on it by default.
@@ -4081,7 +4084,7 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
         config["image_gen"] = cur_cfg
     current_model = cur_cfg.get("model") or default_model
     if current_model not in catalog:
-        current_model = default_model
+        current_model = default_model if default_model in catalog else next(iter(catalog))
 
     model_ids = list(catalog.keys())
     ordered = [current_model] + [m for m in model_ids if m != current_model]
@@ -4228,7 +4231,9 @@ def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None
         config["video_gen"] = cur_cfg
     current_model = cur_cfg.get("model") or default_model
     if current_model not in catalog:
-        current_model = default_model
+        # Same guard as the image pickers: a stale cross-provider model or a
+        # drifted default must not become an unindexable catalog key.
+        current_model = default_model if default_model in catalog else next(iter(catalog))
 
     model_ids = list(catalog.keys())
     ordered = [current_model] + [m for m in model_ids if m != current_model]

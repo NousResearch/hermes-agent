@@ -148,6 +148,19 @@ function textOf(node) {
   return ''
 }
 
+function findNode(node, predicate) {
+  if (node == null || typeof node !== 'object') return null
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findNode(child, predicate)
+      if (found) return found
+    }
+    return null
+  }
+  if (predicate(node)) return node
+  return findNode(node.props?.children, predicate)
+}
+
 const DM_BOT = {
   name: 'scribe',
   title: 'Scribe',
@@ -190,6 +203,29 @@ test('render: BotRow tolerates a fresh bot with no sessions yet', () => {
   assert.match(text, /Fresh bot/)
 })
 
+test('render: a remote gateway name is not squeezed out by its handle', () => {
+  const r = renderRuntime()
+  const tree = r.__BotRow({
+    bot: {
+      connectionId: 'studio-over-ssh',
+      connectionLabel: 'Studio over SSH',
+      handle: 'default-studio-over-ssh',
+      name: 'default',
+      remoteSource: true
+    },
+    onEdit: () => undefined
+  })
+  const name = findNode(tree, node => node.type === 'span' && textOf(node) === 'Studio over SSH')
+  const handle = findNode(tree, node => node.type === 'span' && textOf(node) === '@default-studio-over-ssh')
+
+  assert.ok(name)
+  assert.match(name.props.className, /shrink-0/)
+  assert.ok(handle)
+  assert.match(handle.props.className, /min-w-0/)
+  assert.match(handle.props.className, /truncate/)
+  assert.doesNotMatch(handle.props.className, /shrink-0/)
+})
+
 test('render: BotRow previews the pinned canonical chat, not an unrelated latest session', () => {
   // hermes-agent#88200: the row opens the pinned chat on click, so the
   // preview must describe that same session — not the profile's most recent
@@ -208,4 +244,14 @@ test('render: BotRow previews the pinned canonical chat, not an unrelated latest
   const text = textOf(tree)
   assert.match(text, /pinned chat content/)
   assert.doesNotMatch(text, /unrelated scratch content/)
+})
+
+test('previewKind: the primary profile surfaces as @hermes, never @default', () => {
+  // botHandle() exists so "the word 'default' never surfaces in the UI"; the
+  // bot-to-bot badge was rendering the raw captured profile name (#89484).
+  assert.equal(fromBotOf("Message from agent 'default': deploy is green"), 'hermes')
+})
+
+test('previewKind: a named profile keeps its own handle', () => {
+  assert.equal(fromBotOf("Message from agent 'ops': deploy is green"), 'ops')
 })

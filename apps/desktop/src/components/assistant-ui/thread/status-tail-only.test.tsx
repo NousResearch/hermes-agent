@@ -102,6 +102,6 @@ describe('thinking indicator is tail-only', () => {
     await screen.findByText('answered')
 
     expect(container.querySelector('[data-slot="aui_response-loading"]')).toBeNull()
-    expect(container.querySelector('[data-slot="aui_stream-stall"]')).toBeNull()
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).toBeNull()
   })
 })

@@ -30,6 +30,7 @@ import { resolveProfileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
+import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { $bindings } from '@/store/keybinds'
 import {
@@ -377,6 +378,7 @@ export function ChatSidebar({
   const profiles = useStore($profiles)
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
+  const activeConnectionId = useStore($activeConnectionId)
 
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
@@ -742,7 +744,7 @@ export function ChatSidebar({
     const warm = window.setTimeout(() => void refreshProjectTree(), PROJECT_TREE_WARM_MS)
 
     return () => window.clearTimeout(warm)
-  }, [worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
+  }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
 
   // Sessions the branch join can't answer for get one look at their own
   // transcript — a `gh pr create` in there names the PR outright. Backfills
@@ -1679,7 +1681,10 @@ export function ChatSidebar({
                 grouping={showArchived || rankedGlobally ? 'none' : grouping === 'status' ? 'status' : 'date'}
                 groups={displayAgentGroups}
                 headerAction={
-                  <>
+                  // One cluster, not a fragment: the header is justify-between,
+                  // so two children (mark-all + the rest) park the check-all in
+                  // the middle as a blank 24px hole until hover.
+                  <div className="flex shrink-0 items-center gap-0.5">
                     {unreadCount > 0 && (
                       <Tip label={s.markAllRead}>
                         <Button
@@ -1729,7 +1734,7 @@ export function ChatSidebar({
                         </div>
                       </div>
                     ) : (
-                      <div className="flex shrink-0 items-center gap-0.5">
+                      <>
                         {!showAllProfiles ? (
                           <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
                             <Button
@@ -1754,9 +1759,9 @@ export function ChatSidebar({
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />
                         </div>
-                      </div>
+                      </>
                     )}
-                  </>
+                  </div>
                 }
                 label={sessionsLabel}
                 labelMeta={

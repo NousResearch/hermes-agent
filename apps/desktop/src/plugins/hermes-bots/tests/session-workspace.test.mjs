@@ -90,7 +90,7 @@ test('sessions workspace: opening a stored row uses profile-aware navigation and
   const runtime = load({ profile: 'default' })
   await runtime.__sessions.openProfileSession('ops', { id: 'stored-123', message_count: 4 }, 0)
   assert.deepEqual(plain(runtime.calls), [
-    ['openSession', 'stored-123', { profile: 'ops', awaitHydration: true, expectHistory: true }]
+    ['openSession', 'stored-123', { profile: 'ops', awaitHydration: true, expectHistory: true, keepAllProfilesScope: false }]
   ])
   assert.equal(runtime.__sessions.$botSelectedSessions.get().ops, 'stored-123')
 })
@@ -117,7 +117,7 @@ test('sessions workspace: an empty session with no preview does not demand histo
   const runtime = load()
   await runtime.__sessions.openProfileSession('ops', { id: 'stored-empty', message_count: 0 }, 0)
   assert.deepEqual(plain(runtime.calls), [
-    ['openSession', 'stored-empty', { profile: 'ops', awaitHydration: true, expectHistory: false }]
+    ['openSession', 'stored-empty', { profile: 'ops', awaitHydration: true, expectHistory: false, keepAllProfilesScope: false }]
   ])
 })
 

@@ -125,7 +125,9 @@ test('requestForBot: non-identity aliases translate every backend profile RPC sh
   await ctx.__x.requestForBot(bot, 'profiles.create', { name: 'worker-2', clone_from: 'worker' })
   await ctx.__x.requestForBot(bot, 'session.create', { profile: 'worker', title: 'Bot Chat' })
   await ctx.__x.requestForBot(bot, 'cli.exec', { argv: ['--profile', 'worker', 'config', 'unset', 'model'] })
-  await ctx.__x.requestForBot(bot, 'cli.exec', { argv: ['profile', 'describe', 'worker', '--text', 'x'] })
+  await ctx.__x.requestForBot(bot, 'cli.exec', {
+    argv: ['profile', 'describe', 'worker', '--text', 'worker']
+  })
 
   assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call.params))), [
     { name: 'backend-worker' },
@@ -133,7 +135,7 @@ test('requestForBot: non-identity aliases translate every backend profile RPC sh
     { name: 'worker-2', clone_from: 'backend-worker' },
     { profile: 'backend-worker', title: 'Bot Chat' },
     { argv: ['--profile', 'backend-worker', 'config', 'unset', 'model'] },
-    { argv: ['profile', 'describe', 'backend-worker', '--text', 'x'] }
+    { argv: ['profile', 'describe', 'backend-worker', '--text', 'worker'] }
   ])
   assert.equal(calls.every(call => call.route.profile === 'worker'), true)
 })

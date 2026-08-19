@@ -78,7 +78,7 @@ test('source contract: create mutations and dialog state retain one owner', () =
   )
   assert.match(pluginSource, /const \[createOwner, setCreateOwner\] = useState\(null\)/)
   assert.match(pluginSource, /const openCreate = \(\) => \{[\s\S]*setCreateOwner\(owner\)[\s\S]*setCreateOpen\(true\)/)
-  assert.match(pluginSource, /const createTarget = routineCreateTarget\(createOwner, bot\)/)
+  assert.match(pluginSource, /const createTarget = owner \? routineCreateTarget\(createOwner, bot\) : null/)
   // key must be the jsx() THIRD argument (a `key:` prop is silently ignored
   // by the react/jsx-runtime and the dialog would keep stale per-bot state).
   assert.match(pluginSource, /jsx\(CreateRoutineDialog, \{[\s\S]*?\}, createTarget\)/)

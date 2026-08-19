@@ -7,8 +7,8 @@ sidebar_position: 5
 Register every Hermes backend you own — the local runtime, remote gateways on
 your LAN or VPS, SSH hosts, and Hermes Cloud instances — in one desktop app,
 and use the agents on all of them side by side. Connections are persistent:
-each registered source dials its own backends and WebSockets on demand, and
-background agents keep streaming while you look at another source.
+each registered gateway dials its own backends and WebSockets on demand, and
+background agents keep streaming while you look at another gateway.
 
 This is the desktop-side complement to
 [Running Many Gateways at Once](./multi-profile-gateways.md): that page is
@@ -31,13 +31,12 @@ redirect there). Three doors lead to it:
 - **The command palette** — **Cmd/Ctrl+K**, then type *Gateways* (also
   matches *connections*, *add gateway*, *remote*, *ssh*, *instances*).
 
-## The connection registry
+## The gateway registry
 
-The registry section of **Settings → Gateways** manages a named list of agent
-sources. The
-pane's intro says it plainly: *"Register every place your agents live — this
-device, remote gateways on your network, and Hermes Cloud instances. All of
-them are stored here."* Each entry is a *connection*:
+The **Registered gateways** section of **Settings → Gateways** manages a named
+list of Hermes gateways. Its intro says it plainly: *"Manage this device and
+every Hermes gateway it can reach through remote, SSH, or Cloud connections."*
+Each entry is a *connection*:
 
 | Kind | What it is | Auth |
 |---|---|---|
@@ -52,13 +51,18 @@ Rules worth knowing:
   The name shows up everywhere the instance appears — roster badges, handles,
   update results. Uniqueness is case-insensitive, so `Homelab` and `homelab`
   cannot coexist.
-- The **local** entry is managed by the app (it wears a **This device** pill)
+- The **local** entry is managed by the app (it wears an **App-managed** pill)
   and cannot be removed. Removing any other connection tears down its live
   backends and tunnels; the instance itself is untouched.
-- One connection is always the **Primary** (pill on its row): it owns the
-  app-managed window backend — boot overlay and install/update machinery.
-  **Make primary** on any row retargets that; removing the primary falls back
-  to the local entry.
+- One connection is always the **Primary** (pill on its row): it is the
+  registry fallback for multi-gateway calls that do not name a gateway.
+  **Make primary** does not switch the current Sessions workspace; removing
+  the primary falls back to the local entry.
+- **At startup, return to Sessions on the last-used gateway** controls which
+  gateway Sessions opens after a full app restart. It is off by default, so
+  Sessions opens on **Primary**. Turn it on to resume the most recent gateway
+  that connected successfully. A failed switch is never remembered, and a
+  removed or unavailable saved gateway falls back to Primary.
 - **Test** probes the connection's own HTTP *and* WebSocket legs, so a pass
   (the *"Reachable"* toast) means chat will actually work — not just that the
   host pinged.
@@ -72,9 +76,10 @@ Rules worth knowing:
   the top of the Gateways page — the **Hermes Cloud** kind in the add-connection
   editor points you there.
 
-As the pane's own caption notes: *"Chats and the agent roster follow the
-source you pick; the app-managed window backend is still chosen by the
-connection-mode controls above."*
+Switch gateways from the **Sessions** sidebar. Profiles, chats, messaging, and
+cron stay scoped to that gateway; the app-managed window backend is still chosen
+by the connection-mode controls above. **Primary** is the registry fallback and
+does not switch the current workspace.
 
 ## Adding a connection, step by step
 
@@ -130,51 +135,91 @@ The legacy settings file is left untouched, so older builds on the same
 machine keep working. If a migrated name collided, it was suffixed
 (`Homelab 2`).
 
-## Agents across sources
+## Agents across gateways
 
 Every [profile](./profiles.md) on every registered connection is an *agent*.
-The union roster is what multi-source surfaces (and the built-in
+The union roster is what multi-gateway surfaces (and the built-in
 [Bot Mode](./bot-mode.md) roster) render:
 
-- When the same profile name exists on several sources, handles disambiguate
+- When the same profile name exists on several gateways, handles disambiguate
   as **`@name-device`** — `research` on your Homelab renders as
-  `@research-homelab`, while a profile unique across all sources keeps its
+  `@research-homelab`, while a profile unique across all gateways keeps its
   bare name.
 - Enumeration is eager but sockets are lazy: the app lists agents over REST
-  without dialing every source's WebSocket. An unreachable source reports
-  per-row instead of breaking the roster; SSH sources stay connect-on-demand
+  without dialing every gateway's WebSocket. An unreachable gateway reports
+  per-row instead of breaking the roster; SSH connections stay connect-on-demand
   until you first open an agent on them (no surprise tunnels).
-- Opening an agent dials **its own source** — chats, sessions, and memory
+- Opening an agent dials **its own gateway** — chats, sessions, and memory
   live on the machine that owns the profile, exactly as if you were using
   that instance directly.
 
 Each `(connection, profile)` pair gets its own backend and socket, pooled
 with the same idle-reaping as local per-profile backends — background agents
-keep streaming while you look at another source.
+keep streaming while you look at another gateway.
 
 ### Switching and scoping
 
-Switching agents is the same gesture as switching profiles:
+The sidebar foot follows one hierarchy: **gateway → profile → sessions**.
+Gateways are machines or hosted backends; profiles are isolated Hermes agents
+that live on one gateway.
 
-- **The profile rail** at the sidebar foot switches the active profile; the
-  home pill returns to the default profile and the layers pill shows the
-  **All profiles** view. **Cmd/Ctrl+1–9** switch profiles from the keyboard.
-- The sidebar's session list, cron jobs, and messaging status are **scoped to
-  the active profile** — and, for agents on another source, to that source's
-  machine. Sessions you see under `@research-homelab` live on the Homelab;
-  its cron jobs run there; its messaging channels are the ones its gateway
-  hosts. The **All profiles** view merges every profile's sessions into one
-  list, with per-profile tags.
+- With one registered gateway, no gateway control is added. Local-only Desktop
+  keeps the same profile rail and keyboard flow as before.
+- With several gateways, the sidebar shows one named gateway selector. Its device,
+  cloud, network, or terminal icon identifies the connection type; profile
+  avatars remain a separate control after the divider. The same selector scales
+  from two gateways to a larger fleet without turning backends into profile-like
+  glyphs or crowding profile actions out of the rail.
+- Selecting a gateway restores the last profile used there. The profile rail
+  then shows only that gateway's profiles; the home pill returns to its default
+  profile and the layers pill shows **All profiles on this gateway**.
+  **Cmd/Ctrl+1–9** continue to switch profiles within the active gateway.
+- The selected gateway survives a quit and relaunch only when **Settings →
+  Gateways → At startup, return to Sessions on the last-used gateway** is on.
+  The preference and gateway id live in the app's user-data registry, so
+  replacing or updating the application bundle does not reset them.
+- With more than thirteen profiles on the active gateway, their avatar strip
+  condenses into a named profile selector. Large gateway and profile sets can
+  therefore coexist without changing the **gateway → profile → sessions** model.
+- **This device** remains a first-class gateway even when a remote connection is
+  Primary. It can keep local sessions available during a remote outage, but the
+  app does not call it "offline mode": the selected model or tools may still
+  require internet access.
+- The session list, messaging channels, cron jobs, settings, files, and memory
+  are all scoped to the active `(gateway, profile)`. Switching from a Telegram
+  gateway to a Signal gateway cannot leave the previous gateway's channel groups
+  or sessions in the sidebar.
+- Merely displaying the switcher reads Electron's local connection registry.
+  Remote gateways are opened only when selected; there is no periodic fleet
+  polling.
 - Hovering an agent pre-warms its backend so the switch doesn't pay a cold
   boot.
-- The **Capabilities** page (Skills / Tools / MCP) grows a matching scope: its
+- The **Capabilities** page (Skills / Tools / MCP) has a matching scope: its
   **Configuring** selector lists every `(profile, device)` agent from the
   union roster, and picking one reads and writes **that machine's** skills,
-  toolsets, and MCP servers — no gateway switch. Hub installs, env keys, and
-  MCP setup all land on the selected agent's backend. (One caveat: the MCP
-  tab's *hot-reload into a live session* button only appears for agents on
-  the gateway your window is connected to; edits on other machines apply on
-  their next session.)
+  toolsets, and MCP servers without switching the Sessions workspace. Hub
+  installs, env keys, and MCP setup all land on the selected agent's backend.
+  The MCP tab's *hot-reload into a live session* button appears only for agents
+  on the gateway the window is connected to; edits on other machines apply on
+  their next session.
+
+Add, test, rename, or remove gateways in **Settings → Gateways**. The plug
+button beside the profile actions is a shortcut to that single management
+home, not a second add flow.
+
+### Sessions and Bot Mode
+
+Sessions intentionally show one active gateway at a time: this keeps files,
+tools, channels, cron, and session history in one understandable execution
+context. Bot Mode serves a different job and may present the union roster,
+grouped by gateway, so a user can open one agent on a NAS and another on a VPS
+from one surface. Opening a bot still activates its exact `(gateway, profile)`
+route.
+
+Direct bot mentions and delegation remain gateway-local by default. Crossing a
+backend boundary changes filesystem, credentials, tools, and trust context, so
+cross-gateway execution should be an explicit bridge rather than an accidental
+side effect of sharing one Desktop window.
 
 ## Updating every instance at once
 
@@ -214,11 +259,11 @@ with their own message, per row.
 ## For plugin authors
 
 The Desktop [plugin SDK](../developer-guide/desktop-plugin-sdk.md) exposes the
-multi-source surface directly:
+multi-gateway surface directly:
 
 - `host.connections()` — the registered connection list (labels, kinds,
   primary; never token bytes).
-- `host.agents()` — the union roster: one row per `(source, profile)` with
+- `host.agents()` — the union roster: one row per `(gateway, profile)` with
   the precomputed `@name-device` handle.
 - `host.ensureAgent(connectionId, profile)` — activate an agent's gateway so
   subsequent `host.request` calls hit its backend.
@@ -226,8 +271,8 @@ multi-source surface directly:
   (hover-intent).
 
 All four are feature-detected: on an older Desktop build they're absent and a
-plugin should fall back to the single-source `profiles.list` flow. Bot Mode's
-multi-source roster is the reference consumer.
+plugin should fall back to the single-gateway `profiles.list` flow. Bot Mode's
+multi-gateway roster is the reference consumer.
 
 ## Troubleshooting
 
@@ -238,8 +283,8 @@ multi-source roster is the reference consumer.
 - **An agent shows but won't open** — run **Test** on its connection. The
   WebSocket leg failing while HTTP passes usually means a proxy, firewall, or
   gateway auth/origin guard is blocking `/api/ws`.
-- **A remote source is missing from the roster** — its backend is down or
-  unreachable; the roster lists it under sources with the error. SSH sources
+- **A remote gateway is missing from the roster** — its backend is down or
+  unreachable; the roster lists it under gateways with the error. SSH connections
   show *connect-on-demand* until first use — that's by design, not a failure.
 - **"Update Hermes Desktop to chat with agents on other connections"** — the
   app predates the multi-connection stack; update the desktop app itself.

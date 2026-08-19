@@ -182,6 +182,65 @@ test('remote DM preserves a non-identity targetProfile through list, resume, cre
   assert.equal(calls.find(call => call.method === 'prompt.submit')?.params.session_id, 'runtime-1')
 })
 
+test('remote-active DM keeps an immutable local recipient route through lookup, submit, and poll', async () => {
+  const calls = []
+  let submitted = false
+  const ctx = runtime({
+    state: {
+      profile: { get: () => 'sender', listen: () => undefined },
+      connectionId: { get: () => 'remote-a', listen: () => undefined },
+      gateway: { listen: () => undefined }
+    },
+    requestProfile: async (route, method, params) => {
+      calls.push({ route, method, params })
+
+      if (method === 'profiles.list') {
+        return { profiles: [{ name: 'backend-worker', ui_meta: {} }] }
+      }
+
+      if (method === 'session.resume' && params.omit_messages) {
+        throw new Error('not found')
+      }
+
+      if (method === 'session.create') {
+        return { session_id: 'runtime-local', stored_session_id: 'stored-local' }
+      }
+
+      if (method === 'prompt.submit') {
+        submitted = true
+        return {}
+      }
+
+      return submitted
+        ? { messages: [{ role: 'assistant', content: 'local reply' }], inflight: false, running: false }
+        : { messages: [] }
+    }
+  })
+  const route = Object.freeze({
+    connectionId: 'local',
+    mode: 'local',
+    profile: 'worker',
+    targetProfile: 'backend-worker'
+  })
+
+  await ctx.__dm.deliverRemoteRosterMentions(
+    [{ name: 'worker', connectionId: 'local', sourceScoped: true, remoteSource: true, route }],
+    'ping local',
+    { name: 'Remote Sender', handle: 'sender' }
+  )
+
+  assert.equal(calls.length > 0, true)
+  assert.equal(calls.every(call => call.route.connectionId === 'local'), true)
+  assert.equal(calls.every(call => call.route.profile === 'worker'), true)
+  assert.equal(calls.every(call => call.route.targetProfile === 'backend-worker'), true)
+  assert.equal(calls.some(call => call.method === 'profiles.list'), true)
+  assert.equal(calls.some(call => call.method === 'prompt.submit'), true)
+  assert.equal(calls.filter(call => call.method === 'session.resume').length >= 2, true)
+  for (const call of calls.filter(call => ['session.resume', 'session.create'].includes(call.method))) {
+    assert.equal(call.params.profile, 'backend-worker')
+  }
+})
+
 test('source contract: DM poll shares the group-turn shape (bounded, new-assistant-message)', () => {
   assert.match(pluginSource, /const REMOTE_DM_TIMEOUT_MS = /)
   assert.match(pluginSource, /pollRemoteDmReply/)

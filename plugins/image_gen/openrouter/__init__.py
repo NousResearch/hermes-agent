@@ -173,6 +173,73 @@ def _dedupe_models(models: list[str]) -> list[str]:
     return out
 
 
+# Curated metadata for well-known image models; anything else discovered via
+# the live catalog gets a generic strengths line.
+_KNOWN_MODEL_META = {
+    DEFAULT_MODEL: {
+        "display": "OpenAI GPT-5.4 Image 2",
+        "strengths": "Highest fidelity; best prompt adherence; slower on OpenRouter",
+    },
+    _FALLBACK_MODEL: {
+        "display": "Gemini 3 Pro Image",
+        "strengths": "Fast, reliable fallback with good layout adherence",
+    },
+}
+
+# Router pseudo-models advertise image output but are not image models.
+_EXCLUDED_MODEL_PREFIXES = ("openrouter/auto",)
+
+_LIVE_CACHE_TTL = 300.0
+_LIVE_TIMEOUT = 10.0
+
+
+def _fetch_live_image_models(base_url: str, api_key: str) -> List[Dict[str, Any]]:
+    """List image-output models from the endpoint's ``/models`` catalog.
+
+    Filters on ``architecture.output_modalities`` containing ``image`` and
+    drops router pseudo-models (``openrouter/auto*``). Raises on failure —
+    callers fall back to the static default chain.
+    """
+    import requests
+
+    response = requests.get(
+        f"{base_url}/models",
+        headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+        timeout=_LIVE_TIMEOUT,
+    )
+    response.raise_for_status()
+    entries = response.json().get("data") or []
+    out: List[Dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        model_id = model_id.strip()
+        if model_id.startswith(_EXCLUDED_MODEL_PREFIXES):
+            continue
+        arch_raw = entry.get("architecture")
+        arch: Dict[str, Any] = arch_raw if isinstance(arch_raw, dict) else {}
+        if "image" not in (arch.get("output_modalities") or []):
+            continue
+        meta = _KNOWN_MODEL_META.get(model_id, {})
+        out.append(
+            {
+                "id": model_id,
+                "display": meta.get("display", entry.get("name") or model_id),
+                "strengths": meta.get(
+                    "strengths", "Image-output model (from live OpenRouter catalog)"
+                ),
+                "input_modalities": arch.get("input_modalities") or [],
+            }
+        )
+    # Stable order: defaults first, then alphabetical.
+    priority = {DEFAULT_MODEL: 0, _FALLBACK_MODEL: 1}
+    out.sort(key=lambda m: (priority.get(m["id"], 2), m["id"]))
+    return out
+
+
 class OpenRouterCompatImageProvider(ImageGenProvider):
     """Image generation over an OpenRouter-compatible chat-completions endpoint.
 
@@ -197,6 +264,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         self._config_key = config_key
         self._model_env_var = model_env_var
         self._setup_schema = setup_schema
+        self._live_models_cache: Optional[tuple] = None
 
     @property
     def name(self) -> str:
@@ -229,6 +297,16 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         }
 
     def list_models(self) -> List[Dict[str, Any]]:
+        """Picker catalog: live image-output models, static chain as fallback.
+
+        Fetches the endpoint's ``/models`` catalog filtered to
+        ``output_modalities`` containing ``image`` (5-min cache per backend),
+        so every image model OpenRouter serves — including ones released
+        after this code shipped — is selectable in ``hermes tools``.
+        """
+        live = self._live_models()
+        if live:
+            return live
         return [
             {
                 "id": DEFAULT_MODEL,
@@ -242,8 +320,30 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             },
         ]
 
+    def _live_models(self) -> List[Dict[str, Any]]:
+        """Cached live catalog for this backend (``[]`` when unreachable)."""
+        import time
+
+        cached = self._live_models_cache
+        if cached is not None and time.monotonic() - cached[1] < _LIVE_CACHE_TTL:
+            return cached[0]
+        models: List[Dict[str, Any]] = []
+        try:
+            runtime = self._resolve_runtime()
+            api_key = str(runtime.get("api_key") or "").strip()
+            base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+            if base_url:
+                models = _fetch_live_image_models(base_url, api_key)
+        except Exception as exc:  # noqa: BLE001 - offline/unauth → static fallback
+            logger.debug("%s live image model catalog unavailable: %s", self._name, exc)
+            models = []
+        self._live_models_cache = (models, time.monotonic())
+        return models
+
     def default_model(self) -> Optional[str]:
-        return self._resolve_model()
+        # This is the catalog default, not the effective runtime model.
+        # Runtime overrides are resolved separately by _resolve_model_chain().
+        return DEFAULT_MODEL
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return dict(self._setup_schema)

@@ -22,6 +22,7 @@ function renderBotRow(input = 'alpha') {
   const botRowSource = sourceBetween('function BotRow(', '// ── model picker')
   const ensured = []
   const opened = []
+  const saved = []
   const warmed = []
   let liveConnectionId = 'local'
   const atom = value => ({
@@ -41,13 +42,26 @@ function renderBotRow(input = 'alpha') {
     ROSTER_KEY: ['hermes-bots', 'roster'],
     $botMeta: atom({}),
     $botUnread: atom({}),
+    $focusedBotOwner: atom({ connectionId: 'local', profile: 'default' }),
+    $focusedBotProfile: atom('default'),
+    $groupChatWorkspace: atom(null),
     $lastRoster: atom([]),
     $selectedBot: atom('default'),
     botAppearance: () => ({ shape: 'round', color: '#000', image: null }),
+    botConnectionRoute: value => value.route || null,
+    backendTargetProfile: (route, fallback) => route?.targetProfile || route?.profile || fallback,
+    botMetaKey: value => value.sourceScoped
+      ? `${value.route?.connectionId || value.connectionId}::${value.name}`
+      : value.name,
     botGroups: () => [],
     botHandle: value => value,
     botOpenGeneration: 0,
-    botRosterMeta: (_bot, metaByName) => metaByName?.[_bot.name] ?? null,
+    botRosterMeta: (_bot, metaByName) => {
+      const key = _bot.sourceScoped
+        ? `${_bot.route?.connectionId || _bot.connectionId}::${_bot.name}`
+        : _bot.name
+      return metaByName?.[key] ?? null
+    },
     cn: (...values) => values.filter(Boolean).join(' '),
     createCanonicalChat: async () => null,
     displayName: bot => bot.name,
@@ -56,6 +70,7 @@ function renderBotRow(input = 'alpha') {
     // #49 session-aware-row helpers referenced inside BotRow.
     previewKind: () => ({ fromBot: false, sender: null }),
     generatedSessionTitle: () => null,
+    focusedRosterOwner: owner => ({ connectionId: owner.connectionId, name: owner.profile }),
     isActiveRosterBot: () => false,
     isBackfilledFacePng: () => false,
     botSelectionKey: value => value.sourceScoped ? `${value.connectionId}::${value.name}` : value.name,
@@ -88,9 +103,18 @@ function renderBotRow(input = 'alpha') {
     jsx: node,
     jsxs: node,
     onEdit: () => undefined,
+    persistBotMetaSnapshot: () => Promise.resolve(),
     queryClient: { invalidateQueries: () => undefined },
     relativeTime: () => 'now',
-    saveBotMeta: () => undefined,
+    requestForBot: async (_bot, method) => method === 'profiles.list'
+      ? {
+          profiles: [{
+            name: _bot.route?.targetProfile || _bot.name,
+            ui_meta: { 'hermes-bots': { pinned: true } }
+          }]
+        }
+      : {},
+    saveBotMeta: (_bot, patch) => saved.push([_bot, patch]),
     showsHandle: () => false,
     stripPreviewMarkdown: text => String(text || ''),
     useValue: store => store.get()
@@ -101,7 +125,7 @@ function renderBotRow(input = 'alpha') {
   const tree = context.BotRow({ bot, onEdit: context.onEdit })
   const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
 
-  return { ensured, opened, row, warmed }
+  return { ensured, opened, row, saved, tree, warmed }
 }
 
 test('regression: rendering BotsPane does not prewarm the entire roster', () => {
@@ -124,6 +148,30 @@ test('behavior: pointer entry prewarms only the hovered bot', () => {
   assert.equal(typeof row.props.onPointerEnter, 'function')
   row.props.onPointerEnter()
   assert.deepEqual(warmed, ['alpha'])
+})
+
+test('behavior: context-menu pin mutation hydrates a non-identity alias before toggling', async () => {
+  const bot = {
+    connectionId: 'remote-a',
+    name: 'worker',
+    remoteSource: true,
+    sourceScoped: true,
+    route: {
+      connectionId: 'remote-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    }
+  }
+  const { saved, tree } = renderBotRow(bot)
+  const menuItems = tree.props.children[1].props.children
+
+  menuItems[0].props.onSelect()
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0][0], bot)
+  assert.deepEqual(JSON.parse(JSON.stringify(saved[0][1])), { pinned: false })
 })
 
 test('behavior: a remote Connections row opens through its captured route without activation authority', async () => {
@@ -174,6 +222,9 @@ test('behavior: remote default never opens the same-name local chat', async () =
     ROSTER_KEY: ['hermes-bots', 'roster'],
     $botMeta: atom({ default: { chat: 'this-device-chat' } }),
     $botUnread: atom({}),
+    $focusedBotOwner: atom({ connectionId: 'mac-mini', profile: 'default' }),
+    $focusedBotProfile: atom('default'),
+    $groupChatWorkspace: atom(null),
     $lastRoster: atom([]),
     $selectedBot: atom('default'),
     botAppearance: () => ({ shape: 'round', color: '#000', image: null }),
@@ -188,6 +239,7 @@ test('behavior: remote default never opens the same-name local chat', async () =
     haptic: () => undefined,
     previewKind: () => ({ fromBot: false, sender: null }),
     generatedSessionTitle: () => null,
+    focusedRosterOwner: owner => ({ connectionId: owner.connectionId, name: owner.profile }),
     isActiveRosterBot: () => false,
     isBackfilledFacePng: () => false,
     botSelectionKey: value => value.sourceScoped ? `${value.connectionId}::${value.name}` : value.name,

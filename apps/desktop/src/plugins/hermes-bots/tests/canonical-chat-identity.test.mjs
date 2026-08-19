@@ -20,6 +20,7 @@ function loadOpenPath({ openSession, request }) {
       }
     },
     saveBotMeta: (name, patch) => saved.push({ name, patch: JSON.parse(JSON.stringify(patch)) }),
+    backendTargetProfile: (route, fallback) => route?.targetProfile || route?.profile || fallback,
     botOwner: name => ({ bot: { name }, key: name, name, route: null }),
     requestForBot: (_bot, method, params) => context.host.request(method, params),
     $hideBotChats: { get: () => false },
@@ -113,7 +114,8 @@ test('pin: preferred_session present opens the resolved session and keeps the pi
       profile: 'ops',
       intent: 'main',
       awaitHydration: true,
-      expectHistory: true
+      expectHistory: true,
+      keepAllProfilesScope: false
     }
   }])
   assert.equal(runtime.saved.length, 0, 'a live pin must not be rewritten')
@@ -278,6 +280,23 @@ function loadHelpers() {
   vm.runInNewContext(code, context)
   return context
 }
+
+test('preferredSessionIds: source-scoped aliases key pins by backend targetProfile', () => {
+  const collect = (meta, route) => JSON.parse(
+    JSON.stringify(loadHelpers().__preferredSessionIds(meta, route))
+  )
+  const route = {
+    connectionId: 'remote-a',
+    mode: 'remote',
+    profile: 'worker',
+    targetProfile: 'backend-worker'
+  }
+
+  assert.deepEqual(
+    collect({ 'remote-a::worker': { chat: 'pin-worker' } }, route),
+    { 'backend-worker': 'pin-worker' }
+  )
+})
 
 test('preferredSessionIds: collects only live pins', () => {
   // vm-realm objects fail assert.deepEqual prototype checks — compare via JSON.

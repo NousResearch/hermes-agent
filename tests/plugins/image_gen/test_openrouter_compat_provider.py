@@ -95,6 +95,17 @@ class TestProviderClass:
             # Default must be an image-output model id (provider/model form).
             assert "/" in DEFAULT_MODEL and "image" in DEFAULT_MODEL
 
+    def test_default_model_ignores_runtime_overrides(self, monkeypatch):
+        """Catalog defaults must not inherit another provider's saved model."""
+        from plugins.image_gen.openrouter import DEFAULT_MODEL
+
+        monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "custom/provider-image-model")
+        stale = {"model": "gpt-image-2-medium"}
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=stale):
+            provider = _openrouter()
+            assert provider.default_model() == DEFAULT_MODEL
+            assert provider._resolve_model() == "custom/provider-image-model"
+
 
     def test_model_env_override(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "black-forest-labs/flux.2-pro")
@@ -116,6 +127,80 @@ class TestProviderClass:
             assert _openrouter()._resolve_model_chain("google/gemini-3-pro-image") == [
                 "google/gemini-3-pro-image"
             ]
+
+
+# ---------------------------------------------------------------------------
+# Live model catalog
+# ---------------------------------------------------------------------------
+
+
+def _mock_models_response(entries):
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {"data": entries}
+    return resp
+
+
+class TestLiveCatalog:
+    def test_live_catalog_lists_all_image_output_models(self):
+        """Every image-output model on the endpoint is selectable — including
+        ones released after this code shipped."""
+        entries = [
+            {
+                "id": "openai/gpt-5.4-image-2",
+                "name": "GPT-5.4 Image 2",
+                "architecture": {"output_modalities": ["image"], "input_modalities": ["text", "image"]},
+            },
+            {
+                "id": "some-lab/brand-new-image-model",
+                "name": "Brand New",
+                "architecture": {"output_modalities": ["image", "text"], "input_modalities": ["text"]},
+            },
+            {
+                "id": "openai/gpt-5.4",  # text-only: excluded
+                "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+            },
+            {
+                "id": "openrouter/auto",  # router pseudo-model: excluded
+                "architecture": {"output_modalities": ["image", "text"], "input_modalities": ["text"]},
+            },
+        ]
+        provider = _openrouter()
+        with patch(_RUNTIME, return_value=_runtime_ok()), patch(
+            "requests.get", return_value=_mock_models_response(entries)
+        ):
+            models = provider.list_models()
+        ids = [m["id"] for m in models]
+        assert "openai/gpt-5.4-image-2" in ids
+        assert "some-lab/brand-new-image-model" in ids
+        assert "openai/gpt-5.4" not in ids
+        assert "openrouter/auto" not in ids
+        # Default chain models sort first.
+        assert ids[0] == "openai/gpt-5.4-image-2"
+
+    def test_live_failure_falls_back_to_static_chain(self):
+        provider = _openrouter()
+        with patch(_RUNTIME, side_effect=RuntimeError("no creds")):
+            models = provider.list_models()
+        from plugins.image_gen.openrouter import DEFAULT_MODEL, _FALLBACK_MODEL
+
+        assert [m["id"] for m in models] == [DEFAULT_MODEL, _FALLBACK_MODEL]
+
+    def test_live_catalog_is_cached(self):
+        provider = _openrouter()
+        entries = [
+            {
+                "id": "openai/gpt-5.4-image-2",
+                "architecture": {"output_modalities": ["image"], "input_modalities": ["text"]},
+            }
+        ]
+        with patch(_RUNTIME, return_value=_runtime_ok()), patch(
+            "requests.get", return_value=_mock_models_response(entries)
+        ) as mock_get:
+            provider.list_models()
+            provider.list_models()
+        assert mock_get.call_count == 1
 
 
 # ---------------------------------------------------------------------------

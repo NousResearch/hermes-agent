@@ -306,6 +306,7 @@ import {
   glassActive,
   glassSupportedOn,
   normalizeState as normalizeTranslucency,
+  translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
   windowBackingOptions,
   windowOpacityFor
@@ -402,6 +403,9 @@ const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 // Glass: macOS vibrancy, or Windows 11 22H2+ system backdrop. Computed once
 // so the renderer, the persisted default, and every chat window agree.
 const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
+// Clear rides setOpacity, a documented no-op on Linux, so neither mode works
+// there and Settings drops the row entirely.
+const TRANSLUCENCY_SUPPORTED = translucencySupportedOn(process.platform)
 const APP_ROOT = app.getAppPath()
 
 // Device-local preference: block F12 from opening DevTools.
@@ -14104,6 +14108,13 @@ app.on('before-quit', () => {
     translucencyWriteTimer = null
     writePersistedTranslucency(translucencyState)
   }
+})
+
+// Answered synchronously so preload can publish the verdict before the
+// renderer's first script — see the note there on why it cannot decide this
+// itself. Registered at module scope, which runs long before any window.
+ipcMain.on('hermes:translucency:support', event => {
+  event.returnValue = { glass: GLASS_SUPPORTED, translucency: TRANSLUCENCY_SUPPORTED }
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {

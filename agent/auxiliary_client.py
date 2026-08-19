@@ -3289,9 +3289,17 @@ def _set_relay_auxiliary_route(
     context["api_mode"] = str(api_mode or "chat_completions")
     context["route_callback"] = route_callback
     runtime = main_runtime or {}
+    runtime_base = str(runtime.get("base_url") or "")
+    try:
+        runtime_base, _ = _extract_url_query_params(runtime_base)
+    except Exception:
+        runtime_base = runtime_base.split("?", 1)[0]
+    # Stored query-stripped even though the only reader today compares
+    # hostnames — a future logger of this context must not be able to leak
+    # credentials some proxies carry as ?key=... (#72636).
     context["main_runtime"] = {
         "provider": str(runtime.get("provider") or ""),
-        "base_url": str(runtime.get("base_url") or ""),
+        "base_url": runtime_base,
     }
 
 

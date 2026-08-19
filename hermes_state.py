@@ -4955,10 +4955,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         drop: there is no transcript to lose, and the gateway mints a fresh
         session on the next inbound message either way.
 
-        ``bulk prune``/``archive`` cannot reach these rows: their shared
-        selector is pinned to ``ended_at IS NOT NULL`` so that a live session
-        is never picked, which permanently excludes every never-closed row.
-        Hence a separate, narrower selector rather than another filter flag.
+        Ordinary bulk prune cannot reach these rows because destructive prune
+        is pinned to ``ended_at IS NOT NULL``. Archive may select them, but it
+        only soft-hides rows and cannot perform this cleanup. Hence a separate,
+        narrower destructive selector rather than another prune filter flag.
 
         ``pinned`` and ``archived`` rows are excluded — both are explicit
         user intent to keep the row around.
@@ -11820,25 +11820,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 older_than_days * 86400
             )
 
-    def list_prune_candidates(
+    def _list_session_candidates(
         self,
         older_than_days: Optional[float] = None,
         source: str = None,
+        *,
+        include_unended: bool,
         **filters,
     ) -> List[Dict[str, Any]]:
-        """Return the sessions a matching :meth:`prune_sessions` /
-        :meth:`archive_sessions` call would touch, without modifying anything.
+        """Return sessions matching a lifecycle-aware filter, read-only.
 
-        Backs ``--dry-run`` and pre-confirmation counts. Accepts the same
-        keyword filters as :meth:`_prune_filter_where` (unknown names raise
-        ``TypeError`` there). Rows are ordered oldest-first and carry
-        ``id, source, title, model, started_at, last_active, ended_at,
-        message_count, archived``. ``older_than_days`` is an inactivity
-        threshold: it uses the latest message timestamp, falling back to
-        ``started_at`` for sessions without messages.
+        ``include_unended`` is reserved for reversible archive selection.
+        Destructive prune and filtered export keep the ended-session guard.
         """
         self._apply_prune_age_filter(older_than_days, filters)
         where, params = self._prune_filter_where(source=source, **filters)
+        if include_unended:
+            ended_guard = "s.ended_at IS NOT NULL"
+            if not where.startswith(ended_guard):
+                raise RuntimeError(
+                    "prune filter lost its ended-session safety guard"
+                )
+            where = (
+                "(s.ended_at IS NOT NULL OR s.ended_at IS NULL)"
+                + where[len(ended_guard):]
+            )
         with self._lock:
             cursor = self._conn.execute(
                 f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
@@ -11879,6 +11885,40 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             return int(cursor.fetchone()[0])
 
+    def list_prune_candidates(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        **filters,
+    ) -> List[Dict[str, Any]]:
+        """Return ended sessions matching a prune/export filter, without writes.
+
+        Backs destructive prune previews and filtered export. Rows are ordered
+        oldest-first and carry ``id, source, title, model, started_at,
+        last_active, ended_at, message_count, archived``.
+        """
+        return self._list_session_candidates(
+            older_than_days=older_than_days,
+            source=source,
+            include_unended=False,
+            **filters,
+        )
+
+    def list_archive_candidates(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        **filters,
+    ) -> List[Dict[str, Any]]:
+        """Return ended and unended sessions matching a reversible archive."""
+        filters.setdefault("archived", False)
+        return self._list_session_candidates(
+            older_than_days=older_than_days,
+            source=source,
+            include_unended=True,
+            **filters,
+        )
+
     def archive_sessions(
         self,
         older_than_days: Optional[float] = None,
@@ -11892,13 +11932,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         each match's compression lineage is archived as a unit (an unarchived
         compression root would otherwise resurrect the conversation in
         Desktop's projected list). Nothing is deleted; messages and transcript
-        files are untouched. Returns the number of sessions matched.
+        files are untouched. Unlike destructive prune, archive selection
+        includes unended sessions. Returns the number of sessions matched.
 
         ``archived`` defaults to ``False`` here (only select rows not yet
         archived) so repeat runs are idempotent no-ops.
         """
-        filters.setdefault("archived", False)
-        rows = self.list_prune_candidates(
+        rows = self.list_archive_candidates(
             older_than_days=older_than_days, source=source, **filters
         )
         for row in rows:
@@ -11914,9 +11954,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         message timestamp (else ``started_at``) — i.e. real recency, not
         creation time — so a session
         created long ago but active yesterday is spared, while an old
-        abandoned one (even a still-open one) is swept. Unlike
-        :meth:`archive_sessions`, this method can also archive unended
-        sessions.
+        abandoned one (even a still-open one) is swept.
 
         Guards:
           * ``pinned = 0`` when ``exclude_pinned`` (the Desktop "keep" flag).

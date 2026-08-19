@@ -879,9 +879,9 @@ def cmd_sessions(args, sessions_parser=None):
             print(f"Session '{args.session_id}' not found.")
 
     elif action == "prune" and getattr(args, "never_active", False):
-        # Separate branch on purpose: the shared prune/archive selector is
-        # pinned to `ended_at IS NOT NULL`, so never-closed rows sit outside
-        # it by construction and cannot be expressed as one more filter.
+        # Separate destructive branch: ordinary prune is pinned to ended rows,
+        # while archive can select unended rows but only soft-hides them.
+        # Deleting this exact unused shape needs its own narrow selector.
         _prune_never_active_keyed(db, args)
 
     elif action in ("prune", "archive"):
@@ -927,7 +927,7 @@ def cmd_sessions(args, sessions_parser=None):
             v for k, v in filters.items() if k != "older_than_days"
         ):
             print(
-                "Refusing to archive every ended session: pass at least one "
+                "Refusing to archive every session: pass at least one "
                 "filter (e.g. --newer-than 5h, --source cli, --title codex)."
             )
             return
@@ -941,7 +941,12 @@ def cmd_sessions(args, sessions_parser=None):
         else:
             filters["archived"] = False
 
-        candidates = db.list_prune_candidates(**filters)
+        list_candidates = (
+            db.list_archive_candidates
+            if action == "archive"
+            else db.list_prune_candidates
+        )
+        candidates = list_candidates(**filters)
         # Archive expands each selected row to its compression lineage, which
         # can include open continuations; a direct-open count would therefore
         # describe the eventual archive effect inaccurately.
@@ -970,12 +975,16 @@ def cmd_sessions(args, sessions_parser=None):
             f"oldest activity {format_epoch(_oldest)}, "
             f"newest activity {format_epoch(_newest)}"
         )
+        _lifecycle = ""
+        if action == "archive":
+            _unended = sum(s.get("ended_at") is None for s in candidates)
+            _lifecycle = f"; {_unended} unended, {len(candidates) - _unended} ended"
 
         if args.dry_run or not args.yes:
             shown = candidates if args.dry_run else candidates[:15]
             print(
                 f"{len(candidates)} session(s) match "
-                f"({describe_filters(filters)}; {_span}):"
+                f"({describe_filters(filters)}{_lifecycle}; {_span}):"
             )
             for s in shown:
                 title = (s.get("title") or "")[:36]

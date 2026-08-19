@@ -49,3 +49,30 @@ def test_unarchiving_compression_tip_unarchives_projected_root(db):
     assert db.get_session("root")["archived"] == 0
     assert db.get_session("tip")["archived"] == 0
     assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True)] == ["tip"]
+
+
+def test_bulk_archive_matches_unended_title_and_preserves_title(db):
+    db.create_session("open", source="cli")
+    db.set_session_title("open", "Purple Elephant Test")
+
+    assert db.list_prune_candidates(title_like="Purple Elephant") == []
+    assert [
+        row["id"]
+        for row in db.list_archive_candidates(title_like="Purple Elephant")
+    ] == ["open"]
+    assert db.prune_sessions(
+        older_than_days=None, title_like="Purple Elephant"
+    ) == 0
+    with pytest.raises(TypeError):
+        db.prune_sessions(
+            older_than_days=None,
+            title_like="Purple Elephant",
+            include_unended=True,
+        )
+
+    assert db.archive_sessions(title_like="Purple Elephant") == 1
+
+    session = db.get_session("open")
+    assert session["ended_at"] is None
+    assert session["archived"] == 1
+    assert session["title"] == "Purple Elephant Test"

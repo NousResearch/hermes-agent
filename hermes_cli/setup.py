@@ -3297,6 +3297,15 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
             set_bundled_skills_opt_out(True)
         except Exception as exc:
             logger.debug("blank-slate skill opt-out error: %s", exc)
+        # Blank Slate never visits setup_gateway() (messaging stays
+        # unconfigured), so unlike the other setup paths it would otherwise
+        # never install/start the gateway service. A platform-less gateway is
+        # a supported mode (cron scheduler keeps running, adapters come up
+        # automatically once tokens are added later — e.g. via `hermes
+        # config set` or the dashboard), so install it now rather than leaving
+        # cron jobs registered with nothing running them.
+        from hermes_cli.gateway import ensure_gateway_service
+        ensure_gateway_service(context="setup")
         print()
         print_success("Blank Slate setup complete — minimal agent ready.")
         print_info("Enable anything later, on demand:")
@@ -3382,6 +3391,12 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
     print()
     if prompt_yes_no("Connect a messaging platform (Telegram, Discord, …)?", default=False):
         setup_gateway(config)
+    else:
+        # Messaging skipped — still install/start the gateway service so cron
+        # jobs run and platforms come alive as soon as tokens are added later
+        # (e.g. via `hermes import` from another machine).
+        from hermes_cli.gateway import ensure_gateway_service
+        ensure_gateway_service(context="setup")
 
     save_config(config)
 

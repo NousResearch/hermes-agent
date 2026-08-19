@@ -102,6 +102,12 @@ class TestBlankSlateFork:
         opted_out = {"value": None}
         monkeypatch.setattr("tools.skills_sync.set_bundled_skills_opt_out",
                             lambda enabled: opted_out.__setitem__("value", enabled))
+        calls = []
+        import hermes_cli.gateway as gateway_mod
+        monkeypatch.setattr(
+            gateway_mod, "ensure_gateway_service",
+            lambda **kw: calls.append(kw) or True,
+        )
 
         cfg = {}
         s._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
@@ -112,3 +118,105 @@ class TestBlankSlateFork:
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
 
+    def test_finish_now_installs_gateway_service(self, monkeypatch, tmp_path):
+        """Regression: the "most minimal" Blank Slate exit never visits
+        setup_gateway() (messaging stays unconfigured), so — unlike Quick
+        Setup's and the migrated-config path's messaging-skip branches,
+        fixed alongside it in the same commit — it never installed the
+        gateway service either. Cron jobs added later (e.g. via the
+        dashboard or `hermes cron add`, without ever running `hermes
+        import`/`hermes setup gateway`) would silently never fire.
+        """
+        import hermes_cli.setup as s
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(s, "prompt_choice", lambda *a, **k: 0)
+        monkeypatch.setattr(
+            "tools.skills_sync.set_bundled_skills_opt_out", lambda enabled: None
+        )
+        calls = []
+        import hermes_cli.gateway as gateway_mod
+        monkeypatch.setattr(
+            gateway_mod, "ensure_gateway_service",
+            lambda **kw: calls.append(kw) or True,
+        )
+
+        cfg = {}
+        s._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
+
+        assert calls and calls[0].get("context") == "setup"
+
+
+class TestBlankSlateWalkthroughGateway:
+    """The walkthrough's messaging step: gateway service install on decline."""
+
+    def _patch_common(self, monkeypatch):
+        import hermes_cli.setup as s
+        monkeypatch.setattr(s, "save_config", lambda cfg: None)
+        monkeypatch.setattr(s, "_print_setup_summary", lambda cfg, home: None)
+        monkeypatch.setattr(s, "print_header", lambda *a, **k: None)
+        monkeypatch.setattr(s, "print_info", lambda *a, **k: None)
+        monkeypatch.setattr(s, "print_success", lambda *a, **k: None)
+        monkeypatch.setattr(s, "print_warning", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "tools.skills_sync.set_bundled_skills_opt_out", lambda enabled: None
+        )
+
+    def test_declining_messaging_installs_gateway_service(self, monkeypatch, tmp_path):
+        """Regression: declining every walkthrough step (skills, tools,
+        plugins, MCP, messaging — the "no" default for all five) must still
+        install the gateway service, the same way Quick Setup's and the
+        migrated-config path's messaging-skip branches already do (fixed in
+        the same commit that introduced ensure_gateway_service()). Before
+        this fix, the walkthrough's `if ...: setup_gateway(config)` had no
+        `else` — declining messaging silently left cron jobs/platforms added
+        later with no process to run them.
+        """
+        import hermes_cli.setup as s
+        self._patch_common(monkeypatch)
+        # Decline skill seeding, tool selector, plugin review, MCP add, and
+        # messaging — in that call order.
+        monkeypatch.setattr(s, "prompt_yes_no", lambda *a, **k: False)
+        setup_gateway_calls = []
+        monkeypatch.setattr(
+            s, "setup_gateway", lambda cfg: setup_gateway_calls.append(cfg)
+        )
+        ensure_calls = []
+        import hermes_cli.gateway as gateway_mod
+        monkeypatch.setattr(
+            gateway_mod, "ensure_gateway_service",
+            lambda **kw: ensure_calls.append(kw) or True,
+        )
+
+        cfg = {}
+        s._blank_slate_walkthrough(cfg, tmp_path)
+
+        assert not setup_gateway_calls
+        assert ensure_calls and ensure_calls[0].get("context") == "setup"
+
+    def test_accepting_messaging_does_not_double_install(self, monkeypatch, tmp_path):
+        """The complementary path: accepting messaging routes through
+        setup_gateway() (which installs the service itself), so the
+        walkthrough must not also call ensure_gateway_service() directly —
+        that would be redundant, not wrong, but pins the intended shape.
+        """
+        import hermes_cli.setup as s
+        self._patch_common(monkeypatch)
+        # Every prompt: decline skills/tools/plugins/MCP, accept messaging.
+        answers = iter([False, False, False, False, True])
+        monkeypatch.setattr(s, "prompt_yes_no", lambda *a, **k: next(answers))
+        setup_gateway_calls = []
+        monkeypatch.setattr(
+            s, "setup_gateway", lambda cfg: setup_gateway_calls.append(cfg)
+        )
+        ensure_calls = []
+        import hermes_cli.gateway as gateway_mod
+        monkeypatch.setattr(
+            gateway_mod, "ensure_gateway_service",
+            lambda **kw: ensure_calls.append(kw) or True,
+        )
+
+        cfg = {}
+        s._blank_slate_walkthrough(cfg, tmp_path)
+
+        assert setup_gateway_calls == [cfg]
+        assert not ensure_calls

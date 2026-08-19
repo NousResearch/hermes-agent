@@ -1695,6 +1695,43 @@ class TestBedrockStreamLivenessWatchdog:
         assert response.choices[0].message.content == "hi"
         assert agent._consecutive_stale_streams == 0
 
+    def test_midcall_escalation_raises_even_when_probe_window_elapsed(
+        self, monkeypatch
+    ):
+        """The mid-call escalation must keep raising unconditionally
+        (allow_probe=False, #89587): if the half-open probe let it return,
+        the un-abortable Bedrock worker would keep polling instead of the
+        call ending with the breaker error."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        import threading as _t
+        import time as _time
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.5")
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "1")
+
+        agent = self._make_bedrock_agent()
+        agent._consecutive_stale_streams = 0  # entry guard passes cleanly
+        agent._stale_probe_after = _time.monotonic() - 10.0  # window elapsed
+        release = _t.Event()
+
+        client = MagicMock()
+        client.converse_stream.return_value = _BlockingEventStream(release)
+
+        try:
+            with patch(
+                "agent.bedrock_adapter._get_bedrock_runtime_client",
+                return_value=client,
+            ):
+                # The in-call watchdog bumps the streak to the giveup=1
+                # threshold; the mid-call check must raise the breaker error,
+                # never treat the elapsed window as a probe opportunity.
+                with pytest.raises(RuntimeError, match="consecutive stale attempts"):
+                    agent._interruptible_streaming_api_call(
+                        {"modelId": agent.model, "messages": []}
+                    )
+        finally:
+            release.set()
+
 
 class TestBedrockReasoningStaleFloor:
     """The Bedrock inference-profile id -> reasoning stale-timeout floor

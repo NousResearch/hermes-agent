@@ -272,6 +272,72 @@ def test_oneshot_writes_the_warning_to_the_real_stderr(monkeypatch, capsys):
     assert "glm-5.2 via zai" in captured.err
 
 
+def test_nonexistent_requested_model_still_names_it_in_the_warning(
+    monkeypatch, capsys
+):
+    """Requesting a model that does not exist may not answer quietly either.
+
+    The 2026-08-17 reproduction included ``openai/gpt-5.6-sol`` — a model id
+    that does not exist — which was answered by glm-5.2/zai with no signal.
+    Whatever the reason a request cannot be honored (unreachable provider,
+    bad id, exhausted quota), the fallback notice must name the id exactly as
+    typed, so a pipeline pinning a model can see the pin was not honored.
+    """
+    from hermes_cli import oneshot
+
+    def _fake_run_agent(prompt, **kwargs):
+        result = {
+            "final_response": "pong",
+            "model": "glm-5.2",
+            "provider": "zai",
+            "completed": True,
+        }
+        oneshot._annotate_requested_route(
+            _FakeAgent("openai/gpt-5.6-sol", "openrouter", True), result
+        )
+        return "pong", result
+
+    monkeypatch.setattr(oneshot, "_run_agent", _fake_run_agent)
+    monkeypatch.setattr(oneshot, "declare_stateless_channel", lambda *a, **k: None)
+
+    rc = oneshot.run_oneshot(
+        "ping", model="openai/gpt-5.6-sol", provider="openrouter"
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 0  # a fallback that answered is not an error...
+    assert captured.out == "pong\n"  # ...but stdout stays machine-readable
+    # and the nonexistent id is named verbatim on the real stderr.
+    assert "openai/gpt-5.6-sol via openrouter" in captured.err
+    assert "glm-5.2 via zai" in captured.err
+
+
+def test_provider_without_credentials_fails_loudly(monkeypatch, capsys):
+    """No credentials must never become a quiet answer from an unrelated model.
+
+    When there is no fallback chain to absorb the failure, the run must exit
+    non-zero with an explicit error — the same loud contract as the fallback
+    warning, on the branch where nothing answered at all.
+    """
+    from hermes_cli import oneshot
+
+    def _fake_run_agent(prompt, **kwargs):
+        raise RuntimeError(
+            "openrouter: AuthenticationError: no API key configured"
+        )
+
+    monkeypatch.setattr(oneshot, "_run_agent", _fake_run_agent)
+    monkeypatch.setattr(oneshot, "declare_stateless_channel", lambda *a, **k: None)
+
+    rc = oneshot.run_oneshot("ping", model="glm-5.3", provider="openrouter")
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert captured.out == ""  # no answer at all — never an unrelated model
+    assert "agent failed" in captured.err
+    assert "AuthenticationError" in captured.err
+
+
 def test_oneshot_usage_file_records_request_and_delivery(tmp_path, monkeypatch):
     """Pipelines get the audit in machine-readable form."""
     from hermes_cli import oneshot

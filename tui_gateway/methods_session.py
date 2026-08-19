@@ -552,11 +552,23 @@ def _(rid, params: dict) -> dict:
                 payload["status"] = "streaming"
             return payload
 
+        def _reuse_live_response(sid: str, session: dict) -> dict:
+            # The helper owns the resume lock because slow-path claim races can
+            # discover a live winner and return it after releasing their own lock.
+            # Keeping the client-gone check and transport rebind in one critical
+            # section makes grace expiry atomic across every reuse path.
+            with _session_resume_lock:
+                if _sessions.get(sid) is not session:
+                    return _err(rid, 4007, "session no longer live; retry resume")
+                if session.get("_client_gone_interrupt_requested"):
+                    return _err(rid, 4009, "session disconnect interrupt settling")
+                return _ok(rid, _reuse_live_payload(sid, session))
+
         # Fast path: if the session is already live, reuse it under the lock.
         with _session_resume_lock:
             live = _find_live_session_by_key(target)
-            if live is not None:
-                return _ok(rid, _reuse_live_payload(*live))
+        if live is not None:
+            return _reuse_live_response(*live)
 
         # Lazy/watch resume: register the live session WITHOUT building an agent.
         # Used by the desktop's subagent windows — the child runs inside the
@@ -597,7 +609,7 @@ def _(rid, params: dict) -> dict:
                 lazy=True,
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
-                return _ok(rid, _reuse_live_payload(*live))
+                return _reuse_live_response(*live)
             # A delegated child mid-run emits no session events of its own — report
             # its liveness from the relay registry so the window shows a busy turn.
             child_running = _child_run_active(target)
@@ -668,7 +680,7 @@ def _(rid, params: dict) -> dict:
             record["resume_hydrating"] = True
             record["resume_message_count"] = int(found.get("message_count") or 0)
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
-                return _ok(rid, _reuse_live_payload(*live))
+                return _reuse_live_response(*live)
 
             _schedule_resume_hydration(sid, target, db, close_db=owns_db)
             # The hydration worker now owns a profile-scoped handle and closes it
@@ -761,7 +773,7 @@ def _(rid, params: dict) -> dict:
                 resume_runtime_overrides=overrides or None,
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
-                return _ok(rid, _reuse_live_payload(*live))
+                return _reuse_live_response(*live)
 
             _schedule_agent_build(sid)
             _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
@@ -871,17 +883,7 @@ def _(rid, params: dict) -> dict:
                     pass
                 if lease is not None:
                     lease.release()
-                other_sid, other_session = live
-                payload = _live_session_payload(
-                    other_sid,
-                    other_session,
-                    cols=cols,
-                    touch=True,
-                    transport=current_transport() or _stdio_transport,
-                    omit_messages=omit_messages,
-                )
-                payload["resumed"] = target
-                return _ok(rid, payload)
+                return _reuse_live_response(*live)
             try:
                 init_home_token = (
                     set_hermes_home_override(str(profile_home))
@@ -3250,67 +3252,15 @@ def _(rid, params: dict) -> dict:
         return err
     if _session_uses_compute_host(session):
         sid = str(params.get("session_id") or "")
-        if session.get("running"):
-            try:
-                _get_compute_host_supervisor().interrupt(sid, request_id=f"interrupt-{rid}")
-            except Exception as exc:
-                return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
-        with session["history_lock"]:
-            session["_turn_cancel_requested"] = True
-            session["queued_prompt"] = None
-            session.pop("queued_prompts", None)
-            session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-        _clear_pending(sid)
         try:
-            from tools.approval import resolve_gateway_approval
-
-            resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
-        except Exception:
-            pass
+            _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
+        except Exception as exc:
+            return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
         return _ok(rid, {"status": "interrupted", "turn_isolation": True})
     session, err = _sess(params, rid)
     if err:
         return err
-    # Safety net: if the turn's run thread is already gone but `running` stayed
-    # stuck (a crash/desync that skipped the run loop's `finally`), force-clear it
-    # so the session can't be permanently bricked at 4009 "session busy" — every
-    # send/restore/resume would otherwise reject until a full backend restart.
-    # Always tell the agent to interrupt when the session claims a run is active:
-    # stale flags are cleared below, and fresh turns clear the interrupt flag at
-    # entry. This keeps a stale/missing thread handle from making Stop a no-op.
-    run_thread = session.get("_run_thread")
-    run_thread_alive = run_thread is not None and run_thread.is_alive()
-    should_interrupt = bool(session.get("running"))
-    with session["history_lock"]:
-        session["_turn_cancel_requested"] = True
-        session["queued_prompt"] = None
-        session.pop("queued_prompts", None)
-        session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-    if should_interrupt:
-        from agent.interrupt_compat import request_hard_interrupt
-
-        request_hard_interrupt(session["agent"])
-    if not run_thread_alive:
-        with session["history_lock"]:
-            if session.get("running"):
-                session["running"] = False
-                _clear_inflight_turn(session)
-
-    # Stop = stop the TURN (cooperative interrupt above also kills the in-flight
-    # foreground subprocess). Background processes the agent started (dev servers,
-    # watchers) are intentionally left running — kill those individually with the
-    # "x" on the task row (process.kill). Don't reap them here.
-    # Scope the pending-prompt release to THIS session.  A global
-    # _clear_pending() would collaterally cancel clarify/sudo/secret
-    # prompts on unrelated sessions sharing the same tui_gateway
-    # process, silently resolving them to empty strings.
-    _clear_pending(params.get("session_id", ""))
-    try:
-        from tools.approval import resolve_gateway_approval
-
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
-    except Exception:
-        pass
+    _interrupt_session_turn(str(params.get("session_id") or ""), session)
     return _ok(rid, {"status": "interrupted"})
 
 

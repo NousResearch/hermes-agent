@@ -177,8 +177,8 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 # ``session.create`` (new sid + a fresh _SlashWorker via _deferred_build) and
 # never reattaches the OLD sid, so the old session's slash-worker subprocess
 # lingers forever — one leaked python process per refresh (#38591 fallout).
-# After this grace window, an orphaned (transport-detached, not-running) WS
-# session is reaped: its _SlashWorker is closed and the session finalized.
+# After this grace window, an orphaned WS session is interrupted if it is still
+# running, then reaped once the normal turn-finalization path settles.
 # Set to 0 to disable (park forever, pre-fix behaviour).
 try:
     _ws_orphan_reap_grace = float(
@@ -187,6 +187,7 @@ try:
 except (ValueError, TypeError):
     _ws_orphan_reap_grace = 20.0
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
+_WS_ORPHAN_INTERRUPT_REAP_POLL_S = 1.0
 _TURN_SETTLE_BEFORE_CLOSE_SECONDS = 5.0
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
@@ -1050,6 +1051,15 @@ def _close_session_by_id(
     return _teardown_popped_session(session, end_reason=end_reason)
 
 
+def _ws_session_is_detached(session: dict | None) -> bool:
+    """True if a live session is still bound to the disconnected-WS sentinel."""
+    return bool(
+        session
+        and not session.get("_finalized")
+        and session.get("transport") is _detached_ws_transport
+    )
+
+
 def _ws_session_is_orphaned(session: dict | None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
 
@@ -1057,11 +1067,61 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     ``_detached_ws_transport``. A session left on that transport (and not
     mid-turn) is genuinely orphaned and safe to reap.
     """
-    if not session or session.get("_finalized"):
-        return False
-    if session.get("running"):
-        return False
-    return session.get("transport") is _detached_ws_transport
+    return bool(
+        _ws_session_is_detached(session)
+        and session is not None
+        and not session.get("running")
+    )
+
+
+def _interrupt_session_turn(
+    sid: str, session: dict, *, request_id: str | None = None
+) -> bool:
+    """Apply the shared ``session.interrupt`` contract to one claimed session.
+
+    Returns whether the interrupt used the compute-host control channel. The WS
+    orphan reaper calls this same helper after its reconnect grace expires, so a
+    dead client gets the same partial-history and queued-prompt semantics as an
+    explicit user interrupt.
+    """
+    use_compute_host = _session_uses_compute_host(session)
+    should_interrupt = bool(session.get("running"))
+    run_thread_alive = False
+
+    if use_compute_host:
+        if should_interrupt:
+            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
+    else:
+        run_thread = session.get("_run_thread")
+        run_thread_alive = run_thread is not None and run_thread.is_alive()
+
+    with session["history_lock"]:
+        session["_turn_cancel_requested"] = True
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        session["_queued_prompt_generation"] = int(
+            session.get("_queued_prompt_generation", 0)
+        ) + 1
+
+    if not use_compute_host:
+        if should_interrupt:
+            from agent.interrupt_compat import request_hard_interrupt
+
+            request_hard_interrupt(session.get("agent"))
+        if not run_thread_alive:
+            with session["history_lock"]:
+                if session.get("running"):
+                    session["running"] = False
+                    _clear_inflight_turn(session)
+
+    _clear_pending(sid)
+    try:
+        from tools.approval import resolve_gateway_approval
+
+        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+    except Exception:
+        pass
+    return use_compute_host
 
 
 def _session_owns_durable_lifecycle(session_id: str | None) -> bool:
@@ -1139,7 +1199,7 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
         return True
 
 
-def _schedule_ws_orphan_reap(sid: str) -> None:
+def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned.
 
     Called from the WS-disconnect path. The grace window lets a transient
@@ -1160,34 +1220,60 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         # mutual exclusion against _init_session / _close_session_by_id, which
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
         # ordering is always resume_lock -> sessions_lock, so nesting is safe.
-        reschedule = False
+        reschedule_delay = None
+        interrupt_session = None
         session = None
         with _session_resume_lock:
             current = _sessions.get(sid)
-            # Mid-turn detached sessions are not yet orphaned (_running
-            # short-circuits _ws_session_is_orphaned). If we return here
-            # the single Timer is gone and the session is immortal until
-            # the 6h TTL — which also skips running (#85578). Reschedule
-            # like the active-delegation branch below.
-            if (
-                current
-                and not current.get("_finalized")
-                and current.get("running")
-                and current.get("transport") is _detached_ws_transport
-            ):
-                reschedule = True
-            elif not _ws_session_is_orphaned(current):
+            if current is None or not _ws_session_is_detached(current):
                 return
-            elif _session_has_active_delegations(sid, current):
-                reschedule = True
+            if _session_has_active_delegations(sid, current):
+                reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
+            elif current.get("running"):
+                # Mid-turn detached sessions must never drop the single
+                # Timer (#85578): after the reconnect grace the turn is
+                # interrupted once, then the reap keeps polling until the
+                # normal turn-finalization path settles.
+                if not current.get("_client_gone_interrupt_requested"):
+                    current["_client_gone_interrupt_requested"] = True
+                    interrupt_session = current
+                reschedule_delay = _WS_ORPHAN_INTERRUPT_REAP_POLL_S
             else:
                 session = _pop_session_by_id(sid)
-        if reschedule:
-            _schedule_ws_orphan_reap(sid)
+
+        if interrupt_session is not None:
+            try:
+                isolated = _interrupt_session_turn(
+                    sid,
+                    interrupt_session,
+                    request_id=f"client-gone-{sid}",
+                )
+                logger.info(
+                    "client_gone sid=%s action=interrupt turn_isolation=%s",
+                    sid,
+                    isolated,
+                )
+            except Exception:
+                logger.exception("client_gone interrupt failed sid=%s", sid)
+                with _sessions_lock:
+                    if _sessions.get(sid) is interrupt_session:
+                        interrupt_session.pop(
+                            "_client_gone_interrupt_requested", None
+                        )
+
+        if reschedule_delay is not None:
+            _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay)
             return
+        if session is not None and session.get(
+            "_client_gone_interrupt_requested"
+        ):
+            logger.info("client_gone sid=%s action=reap", sid)
         _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
-    timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
+    timer = threading.Timer(
+        _WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s),
+        _reap,
+    )
     timer.daemon = True
     timer.start()
 
@@ -1221,6 +1307,7 @@ def _close_sessions_for_transport(
             # _ws_session_is_orphaned recognizes them and the grace-reap can
             # actually fire; a standalone `hermes --tui` keeps real _stdio.
             session["transport"] = _detached_ws_transport
+            session.pop("_client_gone_interrupt_requested", None)
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)

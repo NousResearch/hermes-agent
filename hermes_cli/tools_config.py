@@ -31,7 +31,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
-from tools.tool_backend_helpers import fal_key_is_configured
+from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -3823,39 +3823,55 @@ def _is_provider_active(
             image_cfg = config.get("image_gen", {})
             if isinstance(image_cfg, dict):
                 configured_provider = image_cfg.get("provider")
-                if configured_provider not in {None, "", "fal"}:
+                if configured_provider not in {None, "", "fal", NOUS_MANAGED_PROVIDER}:
                     return False
-                if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
+                if (
+                    configured_provider != NOUS_MANAGED_PROVIDER
+                    and image_cfg.get("use_gateway") is not None
+                    and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
+                ):
                     return False
             return feature.managed_by_nous
         if managed_feature == "video_gen":
             video_cfg = config.get("video_gen", {})
             if isinstance(video_cfg, dict):
                 configured_provider = video_cfg.get("provider")
-                if configured_provider not in {None, "", "fal"}:
+                if configured_provider not in {None, "", "fal", NOUS_MANAGED_PROVIDER}:
                     return False
-                if video_cfg.get("use_gateway") is not None and not is_truthy_value(video_cfg.get("use_gateway"), default=False):
+                if (
+                    configured_provider != NOUS_MANAGED_PROVIDER
+                    and video_cfg.get("use_gateway") is not None
+                    and not is_truthy_value(video_cfg.get("use_gateway"), default=False)
+                ):
                     return False
             return feature.managed_by_nous
         if provider.get("tts_provider"):
             return (
                 feature.managed_by_nous
-                and cfg_get(config, "tts", "provider") == provider["tts_provider"]
+                and cfg_get(config, "tts", "provider")
+                in {provider["tts_provider"], NOUS_MANAGED_PROVIDER}
             )
         if provider.get("stt_provider"):
             return (
                 feature.managed_by_nous
-                and cfg_get(config, "stt", "provider") == provider["stt_provider"]
+                and cfg_get(config, "stt", "provider")
+                in {provider["stt_provider"], NOUS_MANAGED_PROVIDER}
             )
         if "browser_provider" in provider:
             # Browser Use mode is a driver on top of the provider (it attaches
             # to the provider's CDP endpoint), so the provider row stays
             # active alongside the Browser Use row.
             current = cfg_get(config, "browser", "cloud_provider")
-            return feature.managed_by_nous and provider["browser_provider"] == current
+            return feature.managed_by_nous and current in {
+                provider["browser_provider"],
+                NOUS_MANAGED_PROVIDER,
+            }
         if provider.get("web_backend"):
             current = cfg_get(config, "web", "backend")
-            return feature.managed_by_nous and current == provider["web_backend"]
+            return feature.managed_by_nous and current in {
+                provider["web_backend"],
+                NOUS_MANAGED_PROVIDER,
+            }
         return feature.managed_by_nous
 
     if provider.get("tts_provider"):
@@ -4168,20 +4184,19 @@ def _configure_xai_imagine_storage(section_name: str, config: dict) -> None:
 def _select_plugin_image_gen_provider(plugin_name: str, config: dict, *, use_gateway: bool = False) -> None:
     """Persist a plugin-backed image generation provider selection.
 
-    ``use_gateway`` mirrors :func:`_select_plugin_video_gen_provider`: a
-    provider picked through the Nous-managed flow must keep routing through
-    the gateway. Hardcoding ``False`` here silently flipped Nous-managed FAL
-    picks onto the user's personal FAL_KEY — _write_provider_config sets
-    ``image_gen.use_gateway = True`` for a managed pick, and this function
-    runs AFTER it, so the hardcoded value clobbered the managed flag.
+    ``use_gateway=True`` marks a provider picked through the Nous-managed
+    flow: the stored selection becomes ``image_gen.provider: nous`` (the
+    single provider string the runtime switches on). BYOK picks store the
+    plugin name. Any legacy ``use_gateway`` key is removed so old-config
+    read-time shims cannot override the fresh selection.
     """
     img_cfg = config.setdefault("image_gen", {})
     if not isinstance(img_cfg, dict):
         img_cfg = {}
         config["image_gen"] = img_cfg
-    img_cfg["provider"] = plugin_name
-    img_cfg["use_gateway"] = use_gateway
-    _print_success(f"  image_gen.provider set to: {plugin_name}")
+    img_cfg["provider"] = NOUS_MANAGED_PROVIDER if use_gateway else plugin_name
+    img_cfg.pop("use_gateway", None)
+    _print_success(f"  image_gen.provider set to: {img_cfg['provider']}")
     _configure_imagegen_model_for_plugin(plugin_name, config)
     if plugin_name == "xai":
         _configure_xai_imagine_storage("image_gen", config)
@@ -4321,14 +4336,19 @@ def _configure_stt_model(stt_provider: str, config: dict) -> None:
 
 
 def _select_plugin_video_gen_provider(plugin_name: str, config: dict, *, use_gateway: bool = False) -> None:
-    """Persist a plugin-backed video generation provider selection."""
+    """Persist a plugin-backed video generation provider selection.
+
+    Mirrors :func:`_select_plugin_image_gen_provider`: managed picks store
+    ``video_gen.provider: nous``; BYOK picks store the plugin name; any
+    legacy ``use_gateway`` key is removed.
+    """
     vid_cfg = config.setdefault("video_gen", {})
     if not isinstance(vid_cfg, dict):
         vid_cfg = {}
         config["video_gen"] = vid_cfg
-    vid_cfg["provider"] = plugin_name
-    vid_cfg["use_gateway"] = use_gateway
-    _print_success(f"  video_gen.provider set to: {plugin_name}")
+    vid_cfg["provider"] = NOUS_MANAGED_PROVIDER if use_gateway else plugin_name
+    vid_cfg.pop("use_gateway", None)
+    _print_success(f"  video_gen.provider set to: {vid_cfg['provider']}")
     _configure_videogen_model_for_plugin(plugin_name, config)
     if plugin_name == "xai":
         _configure_xai_imagine_storage("video_gen", config)
@@ -4339,32 +4359,45 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
 
     This is the pure, non-interactive core of :func:`_configure_provider` —
     it writes ``tts.provider`` / ``browser.cloud_provider`` / ``web.backend``
-    and the ``use_gateway`` flags based on the provider's markers, but does
-    NOT prompt for env vars, run post-setup hooks, gate on Nous auth, or run
-    interactive model pickers. Both the CLI configurator and the desktop GUI
-    ``PUT .../provider`` endpoint call through here so there is one code path.
+    based on the provider's markers, but does NOT prompt for env vars, run
+    post-setup hooks, gate on Nous auth, or run interactive model pickers.
+    Both the CLI configurator and the desktop GUI ``PUT .../provider``
+    endpoint call through here so there is one code path.
+
+    Selection model: every row writes exactly ONE provider string per
+    category. Managed "Nous Subscription" rows write ``nous``; BYOK rows
+    write the vendor name. ``use_gateway`` is no longer written — a fresh
+    pick removes any legacy key from the touched section so the read-time
+    legacy shim (use_gateway: true ⇒ nous) cannot override the new choice.
     """
+    def _set_selection(section_key: str, name_key: str, vendor_value) -> None:
+        section = config.setdefault(section_key, {})
+        if not isinstance(section, dict):
+            section = {}
+            config[section_key] = section
+        section[name_key] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else vendor_value
+        )
+        section.pop("use_gateway", None)
+
     # Set TTS provider in config if applicable
     if provider.get("tts_provider"):
-        tts_cfg = config.setdefault("tts", {})
-        tts_cfg["provider"] = provider["tts_provider"]
-        tts_cfg["use_gateway"] = bool(managed_feature)
+        _set_selection("tts", "provider", provider["tts_provider"])
 
     # Set STT provider in config if applicable
     if provider.get("stt_provider"):
-        stt_cfg = config.setdefault("stt", {})
-        stt_cfg["provider"] = provider["stt_provider"]
-        stt_cfg["use_gateway"] = bool(managed_feature)
+        _set_selection("stt", "provider", provider["stt_provider"])
 
     # Set browser cloud provider in config if applicable
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
         browser_cfg = config.setdefault("browser", {})
-        if bp:
-            browser_cfg["cloud_provider"] = bp
-        # Browser Use mode (browser.backend) composes with the provider —
-        # switching providers keeps the driver choice intact.
-        browser_cfg["use_gateway"] = bool(managed_feature)
+        if bp or managed_feature:
+            # Browser Use mode (browser.backend) composes with the provider —
+            # switching providers keeps the driver choice intact.
+            _set_selection("browser", "cloud_provider", bp)
+        else:
+            browser_cfg.pop("use_gateway", None)
 
     if provider.get("browser_backend"):
         browser_cfg = config.setdefault("browser", {})
@@ -4372,28 +4405,51 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
-        web_cfg = config.setdefault("web", {})
-        web_cfg["backend"] = provider["web_backend"]
-        web_cfg["use_gateway"] = bool(managed_feature)
+        _set_selection("web", "backend", provider["web_backend"])
 
     # Set computer_use backend in config if applicable
     if provider.get("computer_use_backend"):
         cu_cfg = config.setdefault("computer_use", {})
         cu_cfg["backend"] = provider["computer_use_backend"]
 
-    # For tools without a specific config key (e.g. image_gen), still
-    # track use_gateway so the runtime knows the user's intent.
+    # Managed rows for categories without a marker handled above (e.g. the
+    # image_gen/video_gen "Nous Subscription" rows carry only
+    # managed_nous_feature) still persist the "nous" selection.
     if managed_feature and managed_feature not in {"web", "tts", "stt", "browser"}:
-        config.setdefault(managed_feature, {})["use_gateway"] = True
+        section = config.setdefault(managed_feature, {})
+        if isinstance(section, dict):
+            section["provider"] = NOUS_MANAGED_PROVIDER
+            section.pop("use_gateway", None)
     elif not managed_feature:
-        # User picked a non-gateway provider — find which category this
-        # belongs to and clear use_gateway if it was previously set.
-        for cat_key, cat in TOOL_CATEGORIES.items():
-            if provider in cat.get("providers", []):
-                section = config.get(cat_key)
-                if isinstance(section, dict) and section.get("use_gateway"):
-                    section["use_gateway"] = False
-                break
+        # User picked a non-gateway provider — clear any stale legacy
+        # use_gateway key on the category so the read-time shim cannot
+        # override the fresh selection. Resolve the category from the
+        # provider's own markers first (plugin-injected rows are NOT in
+        # TOOL_CATEGORIES' hardcoded provider lists and previously skipped
+        # this clear), then fall back to the category-membership walk.
+        marker_sections = {
+            "tts_provider": "tts",
+            "stt_provider": "stt",
+            "browser_provider": "browser",
+            "web_backend": "web",
+            "image_gen_plugin_name": "image_gen",
+            "imagegen_backend": "image_gen",
+            "video_gen_plugin_name": "video_gen",
+        }
+        cleared = False
+        for marker, section_key in marker_sections.items():
+            if provider.get(marker) or marker in provider:
+                section = config.get(section_key)
+                if isinstance(section, dict):
+                    section.pop("use_gateway", None)
+                cleared = True
+        if not cleared:
+            for cat_key, cat in TOOL_CATEGORIES.items():
+                if provider in cat.get("providers", []):
+                    section = config.get(cat_key)
+                    if isinstance(section, dict):
+                        section.pop("use_gateway", None)
+                    break
 
 
 def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
@@ -4425,15 +4481,17 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
     # Plugin-registered image/video gen backends record the provider name in
     # their own config section. Write that here (without the interactive
     # model picker the CLI runs afterwards — model choice is a separate GUI
-    # flow).
+    # flow). Managed picks store the "nous" selection.
     plugin_name = provider.get("image_gen_plugin_name")
     if plugin_name:
         img_cfg = config.setdefault("image_gen", {})
         if not isinstance(img_cfg, dict):
             img_cfg = {}
             config["image_gen"] = img_cfg
-        img_cfg["provider"] = plugin_name
-        img_cfg["use_gateway"] = bool(managed_feature)
+        img_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else plugin_name
+        )
+        img_cfg.pop("use_gateway", None)
 
     video_plugin = provider.get("video_gen_plugin_name")
     if video_plugin:
@@ -4441,15 +4499,22 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
         if not isinstance(vid_cfg, dict):
             vid_cfg = {}
             config["video_gen"] = vid_cfg
-        vid_cfg["provider"] = video_plugin
-        vid_cfg["use_gateway"] = bool(managed_feature)
+        vid_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else video_plugin
+        )
+        vid_cfg.pop("use_gateway", None)
 
-    # In-tree FAL imagegen backend: keep image_gen.provider on the legacy
-    # path (mirrors _configure_provider).
-    if provider.get("imagegen_backend"):
+    # In-tree FAL imagegen backend (BYOK): always persist the explicit
+    # ``image_gen.provider: fal`` selection — historically this row could
+    # leave the provider key unset, making a deliberate BYOK pick
+    # indistinguishable from a never-configured install.
+    if provider.get("imagegen_backend") and not managed_feature:
         img_cfg = config.setdefault("image_gen", {})
-        if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
-            img_cfg["provider"] = "fal"
+        if not isinstance(img_cfg, dict):
+            img_cfg = {}
+            config["image_gen"] = img_cfg
+        img_cfg["provider"] = "fal"
+        img_cfg.pop("use_gateway", None)
 
 
 def _configure_provider(
@@ -4503,8 +4568,10 @@ def _configure_provider(
     # Set TTS provider in config if applicable
     if provider.get("tts_provider"):
         tts_cfg = config.setdefault("tts", {})
-        tts_cfg["provider"] = provider["tts_provider"]
-        tts_cfg["use_gateway"] = bool(managed_feature)
+        tts_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else provider["tts_provider"]
+        )
+        tts_cfg.pop("use_gateway", None)
 
     # Set STT provider in config if applicable
     if provider.get("stt_provider"):
@@ -4552,13 +4619,15 @@ def _configure_provider(
         backend = provider.get("imagegen_backend")
         if backend:
             _configure_imagegen_model(backend, config)
-            # In-tree FAL is the only non-plugin backend today. Keep
-            # image_gen.provider clear so the dispatch shim falls through
-            # to the legacy FAL path.
+            # In-tree FAL is the only non-plugin backend today. Persist the
+            # explicit selection: "nous" for a managed row, "fal" for BYOK.
             img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
-                img_cfg["provider"] = "fal"
-        # STT providers prompt for model selection after provider pick
+            if isinstance(img_cfg, dict):
+                img_cfg["provider"] = (
+                    NOUS_MANAGED_PROVIDER if managed_feature else "fal"
+                )
+                img_cfg.pop("use_gateway", None)
+        # STT providers prompt for model selection after backend pick
         # (skipped for managed rows — the gateway pins the model).
         if provider.get("stt_provider") and not managed_feature:
             _configure_stt_model(provider["stt_provider"], config)
@@ -4636,8 +4705,11 @@ def _configure_provider(
         if backend:
             _configure_imagegen_model(backend, config)
             img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
-                img_cfg["provider"] = "fal"
+            if isinstance(img_cfg, dict):
+                img_cfg["provider"] = (
+                    NOUS_MANAGED_PROVIDER if managed_feature else "fal"
+                )
+                img_cfg.pop("use_gateway", None)
         # STT providers prompt for model selection after env vars are in.
         if provider.get("stt_provider") and not managed_feature:
             _configure_stt_model(provider["stt_provider"], config)
@@ -5091,14 +5163,14 @@ def _reconfigure_provider(
             if backend == "fal":
                 img_cfg = config.setdefault("image_gen", {})
                 if isinstance(img_cfg, dict):
-                    img_cfg["provider"] = "fal"
                     # A managed (Nous Subscription) row also carries
-                    # imagegen_backend="fal" — the model picker runs AFTER
-                    # _write_provider_config set use_gateway=True, so an
-                    # unconditional False here silently flipped managed
-                    # picks onto the user's personal FAL_KEY (same class
-                    # as fe63353cb, which fixed the plugin-provider path).
-                    img_cfg["use_gateway"] = bool(managed_feature)
+                    # imagegen_backend="fal" — store the "nous" selection
+                    # for it, "fal" for BYOK, and drop any legacy
+                    # use_gateway key.
+                    img_cfg["provider"] = (
+                        NOUS_MANAGED_PROVIDER if managed_feature else "fal"
+                    )
+                    img_cfg.pop("use_gateway", None)
         # STT providers prompt for model selection on reconfig too.
         if provider.get("stt_provider") and not managed_feature:
             _configure_stt_model(provider["stt_provider"], config)
@@ -5140,10 +5212,12 @@ def _reconfigure_provider(
         if backend == "fal":
             img_cfg = config.setdefault("image_gen", {})
             if isinstance(img_cfg, dict):
-                img_cfg["provider"] = "fal"
                 # Same managed-row guard as the no-env-vars branch above:
                 # never clobber a Nous-managed pick back onto direct keys.
-                img_cfg["use_gateway"] = bool(managed_feature)
+                img_cfg["provider"] = (
+                    NOUS_MANAGED_PROVIDER if managed_feature else "fal"
+                )
+                img_cfg.pop("use_gateway", None)
 
     # STT providers prompt for model selection on reconfig too.
     if provider.get("stt_provider") and not managed_feature:

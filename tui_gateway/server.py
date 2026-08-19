@@ -10399,7 +10399,7 @@ _desktop_ui_wired = False
 
 
 def _wire_desktop_ui() -> None:
-    """Bridge desktop-only tools (open_preview, focus_pane) to renderer events.
+    """Bridge desktop-only tools (open_preview, close_preview, focus_pane) to renderer events.
 
     Idempotent. The tool hands back the turn's ``HERMES_UI_SESSION_ID`` as
     ``sid`` so the event routes to the window that asked (``_emit`` /

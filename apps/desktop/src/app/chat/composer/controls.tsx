@@ -7,26 +7,18 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $hudMode } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
+import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
 import type { ChatBarState, VoiceStatus } from './types'
+import { VoiceMenu } from './voice-menu'
 
-export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
-export const GHOST_ICON_BTN = cn(
-  ICON_BTN,
-  'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-)
-// Send/voice-conversation primary: solid foreground-on-background circle
-// (reads as black-on-white in light mode, white-on-black in dark mode) to
-// match the reference composer's high-contrast CTA. Keeps the pill itself
-// neutral and lets the action visually dominate the row.
-export const PRIMARY_ICON_BTN = cn(
-  'size-(--composer-control-primary-size,var(--composer-control-size)) shrink-0 rounded-full p-0',
-  'bg-foreground text-background hover:bg-foreground/90',
-  'disabled:bg-foreground/30 disabled:text-background disabled:opacity-100'
-)
+// Re-exported: `context-menu.tsx` and other row neighbours have always reached
+// for these here, and the row is where they read as belonging.
+export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 
 interface ConversationProps {
   active: boolean
@@ -70,6 +62,7 @@ export function ComposerControls({
 }) {
   const { t } = useI18n()
   const c = t.composer
+  const hudMode = useStore($hudMode)
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -84,9 +77,27 @@ export function ComposerControls({
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
-      <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
-      <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
-      <WakeWordButton disabled={disabled} />
+      {/* The HUD is a Spotlight bar a few hundred pixels wide, so the four
+          separate voice toggles fold into one menu there and leave the row to
+          the input. The docked composer has the width and keeps them inline —
+          same controls, same state, different budget. */}
+      {hudMode ? (
+        <VoiceMenu
+          autoSpeak={autoSpeak}
+          disabled={disabled}
+          onDictate={onDictate}
+          onStartConversation={conversation.onStart}
+          onToggleAutoSpeak={onToggleAutoSpeak}
+          state={state}
+          voiceStatus={voiceStatus}
+        />
+      ) : (
+        <>
+          <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
+          <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
+          <WakeWordButton disabled={disabled} />
+        </>
+      )}
       {showQueueButton ? (
         <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />}>
           <Button
@@ -272,7 +283,7 @@ function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disa
         className={cn(
           GHOST_ICON_BTN,
           'p-0',
-          active && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
+          active && ACTIVE_ICON_BTN
         )}
         disabled={disabled}
         onClick={() => {
@@ -321,7 +332,7 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
         className={cn(
           GHOST_ICON_BTN,
           'p-0',
-          wake.listening && !pausedForVoice && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
+          wake.listening && !pausedForVoice && ACTIVE_ICON_BTN
         )}
         disabled={disabled || pausedForVoice || wake.pending}
         onClick={() => {
@@ -365,7 +376,7 @@ function DictationButton({
           GHOST_ICON_BTN,
           'p-0',
           'data-[active=true]:bg-accent data-[active=true]:text-foreground',
-          status === 'recording' && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary',
+          status === 'recording' && ACTIVE_ICON_BTN,
           status === 'transcribing' && 'bg-primary/10 text-primary'
         )}
         data-active={active}

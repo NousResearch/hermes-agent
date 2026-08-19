@@ -23,6 +23,33 @@ npm install
 The Hermes plugin's `hermes photon setup` command runs `npm install`
 here automatically.
 
+## Inbound attachment handles
+
+Inbound attachment bytes never enter NDJSON and are never cached to plaintext
+disk by the Photon adapter. The normalized event contains the existing
+metadata plus a random 48-character opaque `handle`. The sidecar holds a copy
+of the bytes in memory with fixed limits: 20 MiB per item, 64 MiB total, 64
+items, and a five-minute TTL. Capacity and read failures emit metadata without
+a handle and never include provider error text.
+
+An authenticated `GET /attachment/<handle>` returns the raw bytes once with
+`Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. The exact path
+accepts no query string or suffix. Consumption is atomic: concurrent or replay
+requests receive the same content-free 404 as expired and unknown handles.
+Buffers are zeroed after response completion, on expiry, and on shutdown.
+
+The Python adapter preserves the handle in `MessageEvent.raw_message` but does
+not fetch it or create a media cache file. A downstream secure consumer must
+authorize the sender and redeem the handle within the TTL before the attachment
+becomes model-ready.
+
+Handle-bearing events also carry a random `deliveryId`. The sidecar retains the
+event until the adapter posts `/inbound-ack` after sender authorization, secure
+handle acceptance, and successful message processing. A dropped connection
+replays the same delivery without redeeming the handle twice. The queue is
+bounded to 128 events with a five-minute TTL and wipes attachment buffers when
+an event expires or the process shuts down.
+
 ## Run standalone
 
 For debugging:

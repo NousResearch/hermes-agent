@@ -24,6 +24,7 @@ mcp = false
 python-olm = false
 nemo-relay = false
 huggingface-hub = false
+parallel-web = false
 
 [manifest]
 overrides = [
@@ -1895,7 +1896,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", marker = "extra == 'otlp'", specifier = "==1.39.1" },
     { name = "openwakeword", marker = "extra == 'wake'", specifier = "==0.6.0" },
     { name = "packaging", specifier = "==26.0" },
-    { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
+    { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==1.3.0" },
     { name = "pathspec", specifier = "==1.1.1" },
     { name = "pillow", specifier = "==12.3.0" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
@@ -3088,7 +3089,7 @@ wheels = [
 
 [[package]]
 name = "parallel-web"
-version = "0.4.2"
+version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -3098,9 +3099,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/50/fb9b28a679e01682006b5259abff96de3d16e114e9447a7793fec31715de/parallel_web-0.4.2.tar.gz", hash = "sha256:599b5a8f387dc35c7dc8c81e372eadf6958a40acacea58bf170dfc663c003da7", size = 140026, upload-time = "2026-03-09T22:24:35.448Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a3/76/ac6596ce1ec2f105e2288d53e022f3cda65600e8c03970b3a6c248bce604/parallel_web-1.3.0.tar.gz", hash = "sha256:a0aaa45535ac907b0eb94f636f6a0c142f8b1658add0510f7dd9a26e8a81b4ce", size = 161808, upload-time = "2026-08-12T21:45:02.211Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/3e/2218fa29637781b8e7ac35a928108ff2614ddd40879389d3af2caa725af5/parallel_web-0.4.2-py3-none-any.whl", hash = "sha256:aa3a4a9aecc08972c5ce9303271d4917903373dff4dd277d9a3e30f9cff53346", size = 144012, upload-time = "2026-03-09T22:24:33.979Z" },
+    { url = "https://files.pythonhosted.org/packages/67/35/e753a70f15300f93dae065b5348016fce13f29f5cf5263919d8b33128af1/parallel_web-1.3.0-py3-none-any.whl", hash = "sha256:dc7e93ee500e6773141e8de2e04ad468a39a21cefafa2aff1d833c6e5566690d", size = 175849, upload-time = "2026-08-12T21:45:00.821Z" },
 ]
 
 [[package]]

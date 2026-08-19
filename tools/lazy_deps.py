@@ -117,7 +117,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
-    "search.parallel": ("parallel-web==0.4.2",),
+    "search.parallel": ("parallel-web==1.3.0",),
 
     # ─── Monitoring ─────────────────────────────────────────────────────────
     # OTLP gateway monitoring export. Lazily installed on first use of

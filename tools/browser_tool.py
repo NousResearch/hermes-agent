@@ -50,6 +50,8 @@ Usage:
 """
 
 import atexit
+from contextlib import contextmanager
+import errno
 import functools
 import json
 import logging
@@ -2481,6 +2483,90 @@ def _resolve_npx_bin() -> Optional[str]:
     return None
 
 
+def _agent_browser_npx_lock_path(env: dict[str, str]) -> Path:
+    """Return a lock path shared by every process using the same npm cache."""
+    configured = env.get("NPM_CONFIG_CACHE") or env.get("npm_config_cache")
+    if configured:
+        cache_dir = Path(os.path.expandvars(configured)).expanduser()
+    elif os.name == "nt":
+        local_appdata = env.get("LOCALAPPDATA") or os.environ.get("LOCALAPPDATA")
+        base = local_appdata or env.get("HOME") or str(Path.home())
+        cache_dir = Path(base).expanduser() / "npm-cache"
+    else:
+        home = env.get("HOME") or str(Path.home())
+        cache_dir = Path(home).expanduser() / ".npm"
+    return cache_dir / ".hermes-agent-browser-warmup.lock"
+
+
+@contextmanager
+def _agent_browser_npx_cache_lock(env: dict[str, str]):
+    """Serialize npm's first-write path across processes sharing its cache.
+
+    Concurrent cold ``npx`` invocations mutate the same ``_npx/<hash>`` tree
+    and can race on npm's package-directory rename with ``ENOTEMPTY``.  The
+    lock lives inside the selected npm cache rather than ``HERMES_HOME`` so
+    separate Hermes profiles that share ``NPM_CONFIG_CACHE`` also serialize.
+    If the lock cannot be acquired, yield ``False`` and let the best-effort
+    warm-up fail closed instead of recreating the race.
+    """
+    path = _agent_browser_npx_lock_path(env)
+    handle = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a+b")
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            # LK_LOCK itself gives up after roughly ten one-second retries.
+            # A legitimate cold npx warm-up can outlive that window, so use
+            # the non-blocking mode and keep waiting on contention, matching
+            # POSIX flock(LOCK_EX) semantics instead of falling through to a
+            # second concurrent npm writer.
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                        raise
+                    time.sleep(0.1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        finally:
+            handle.close()
+
+
 def _find_agent_browser(*, validate: bool = True) -> str:
     """
     Find the agent-browser CLI executable.
@@ -2568,6 +2654,13 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     if npx_path:
         if not validate:
             return NPX_AGENT_BROWSER_SENTINEL
+        # A cold shared npm cache is not concurrency-safe: parallel npx
+        # processes can race while renaming the same package directory and one
+        # exits with ENOTEMPTY.  Warm under the cache-scoped cross-process lock
+        # before exposing the sentinel to browser workers.  The helper is
+        # best-effort; preserve the historical npx fallback if the registry is
+        # temporarily unavailable.
+        warm_agent_browser_npx_cache()
         _cached_agent_browser = NPX_AGENT_BROWSER_SENTINEL
         _agent_browser_resolved = True
         return _cached_agent_browser
@@ -2664,40 +2757,12 @@ def _kill_process_tree(proc: "subprocess.Popen") -> None:
             return
 
 
-def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
-    """Best-effort pre-fetch of the agent-browser npm package via npx.
-
-    agent-browser is no longer a root package.json dependency (#43564) —
-    it resolves lazily via ``npx agent-browser`` instead, which keeps it
-    out of the npm workspace install graph entirely (nothing to prune it
-    anymore) but means the first real invocation in a session would
-    otherwise pay npx's registry-lookup/fetch cost. Calling this during
-    ``hermes update`` (or ``hermes doctor --fix``) warms npx's own cache
-    ahead of time, restoring the "available before any session starts"
-    property agent-browser had while it was an eager root dependency —
-    without re-entangling it with the workspace graph.
-
-    Runs a credential-scrubbed, PATH-propagated environment matching every
-    other agent-browser subprocess spawn (see ``_build_browser_env``) —
-    this used to inherit the full parent environment, including every
-    provider/gateway credential Hermes holds, while running registry-fetched
-    npm code on every ``hermes update`` (the GHSA-m4m8-xjp4-5rmm class of
-    risk ``_build_browser_env`` exists specifically to prevent). Runs in its
-    own process group and kills the *whole* group — not just the top-level
-    npx PID — on timeout, since a surviving descendant can otherwise hold a
-    capture pipe open past the nominal deadline (see ``_kill_process_tree``).
-
-    Fire-and-forget: never raises, always safe to call opportunistically.
-    Returns True only if npx actually ran successfully (npx unavailable,
-    a timeout, or a nonzero exit all return False silently).
-    """
-    npx_bin = _resolve_npx_bin()
-    if not npx_bin:
-        return False
-
-    env = _build_browser_env()
-    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
-
+def _run_agent_browser_npx_warmup(
+    npx_bin: str,
+    env: dict[str, str],
+    timeout: float,
+) -> bool:
+    """Run one bounded npx cache warm-up; caller owns cross-process locking."""
     popen_kwargs: dict = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
@@ -2742,6 +2807,46 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     except Exception:
         _kill_process_tree(proc)
         return False
+
+
+def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
+    """Best-effort pre-fetch of the agent-browser npm package via npx.
+
+    agent-browser is no longer a root package.json dependency (#43564) —
+    it resolves lazily via ``npx agent-browser`` instead, which keeps it
+    out of the npm workspace install graph entirely (nothing to prune it
+    anymore) but means the first real invocation in a session would
+    otherwise pay npx's registry-lookup/fetch cost. Calling this during
+    ``hermes update`` (or ``hermes doctor --fix``) warms npx's own cache
+    ahead of time, restoring the "available before any session starts"
+    property agent-browser had while it was an eager root dependency —
+    without re-entangling it with the workspace graph.
+
+    Runs a credential-scrubbed, PATH-propagated environment matching every
+    other agent-browser subprocess spawn (see ``_build_browser_env``) —
+    this used to inherit the full parent environment, including every
+    provider/gateway credential Hermes holds, while running registry-fetched
+    npm code on every ``hermes update`` (the GHSA-m4m8-xjp4-5rmm class of
+    risk ``_build_browser_env`` exists specifically to prevent). Runs in its
+    own process group and kills the *whole* group — not just the top-level
+    npx PID — on timeout, since a surviving descendant can otherwise hold a
+    capture pipe open past the nominal deadline (see ``_kill_process_tree``).
+
+    Fire-and-forget: never raises, always safe to call opportunistically.
+    Returns True only if npx actually ran successfully (npx unavailable,
+    a timeout, or a nonzero exit all return False silently).
+    """
+    npx_bin = _resolve_npx_bin()
+    if not npx_bin:
+        return False
+
+    env = _build_browser_env()
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+
+    with _agent_browser_npx_cache_lock(env) as lock_acquired:
+        if not lock_acquired:
+            return False
+        return _run_agent_browser_npx_warmup(npx_bin, env, timeout)
 
 
 def _extract_screenshot_path_from_text(text: str) -> Optional[str]:

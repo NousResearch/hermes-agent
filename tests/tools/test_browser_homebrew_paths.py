@@ -229,6 +229,35 @@ class TestFindAgentBrowser:
 
         assert result == "npx agent-browser"
 
+    def test_npx_fallback_validate_true_warms_before_caching_sentinel(self):
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser":
+                return None
+            if cmd == "npx":
+                return "/usr/bin/npx"
+            return None
+
+        original_path_exists = Path.exists
+
+        def mock_path_exists(self):
+            if "node_modules" in str(self) and "agent-browser" in str(self):
+                return False
+            return original_path_exists(self)
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", return_value=False), \
+             patch.object(Path, "exists", mock_path_exists), \
+             patch("tools.browser_tool.node_tool_runnable", return_value=True), \
+             patch("tools.browser_tool.warm_agent_browser_npx_cache", return_value=True) as warm, \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser(validate=True)
+
+        assert result == "npx agent-browser"
+        warm.assert_called_once_with()
+
 
 class TestAgentBrowserCandidatePresent:
     """Direct unit tests for the validate=False candidate check used by every

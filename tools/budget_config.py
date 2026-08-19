@@ -37,32 +37,27 @@ MCP_TOOL_PREFIX: str = "mcp_"
 
 
 def _configured_mcp_result_size() -> int:
-    """Read ``tool_budget.mcp_result_size_chars`` from the active config.yaml.
+    """Read ``tool_budget.mcp_result_size_chars`` from the active config.
 
-    Reads ``$HERMES_HOME/config.yaml`` (falling back to ``~/.hermes/config.yaml``
-    when HERMES_HOME is unset) so the value is hermetically testable. Fully
-    guarded: any error, missing file, missing key, or non-positive value
-    returns the built-in default. The ``tool_budget:`` block name is shared
-    with the wider configurable-caps proposal (#80508) so the two can merge
+    Goes through :func:`hermes_cli.config.load_config_readonly` (the
+    sanctioned read path — raw config.yaml parsing outside owner modules
+    is guarded by tests/hermes_cli/test_config_read_guard.py). Fully
+    guarded: any error, missing key, or non-positive value returns the
+    built-in default. The ``tool_budget:`` block name is shared with the
+    wider configurable-caps proposal (#80508) so the two can merge
     without a key rename.
     """
-    import os
-
     try:
-        import yaml
+        from hermes_cli.config import load_config_readonly
 
-        home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-        path = os.path.join(home, "config.yaml")
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8") as fh:
-                data = yaml.safe_load(fh) or {}
-            block = data.get("tool_budget")
-            if isinstance(block, dict):
-                raw = block.get("mcp_result_size_chars")
-                if raw is not None:
-                    value = int(raw)
-                    if value > 0:
-                        return value
+        data = load_config_readonly()
+        block = data.get("tool_budget") if isinstance(data, dict) else None
+        if isinstance(block, dict):
+            raw = block.get("mcp_result_size_chars")
+            if raw is not None:
+                value = int(raw)
+                if value > 0:
+                    return value
     except Exception:
         pass
     return DEFAULT_MCP_RESULT_SIZE_CHARS

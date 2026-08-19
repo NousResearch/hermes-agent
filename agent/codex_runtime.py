@@ -16,15 +16,146 @@ compatibility.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
-from types import SimpleNamespace
-from typing import Any, Callable, Dict, List
+from types import MappingProxyType, SimpleNamespace
+from typing import Any, Callable, Dict, List, Mapping
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 logger = logging.getLogger(__name__)
+
+_OBLIGATION_TOOL_ALIASES = frozenset(
+    {
+        "list_email_obligations",
+        "get_email_obligation",
+        "get_email_obligation_monitor_status",
+    }
+)
+_OBLIGATION_SERVER_NAME = "law-firm-ops"
+
+
+def _configured_mcp_dynamic_tools(
+    agent,
+) -> tuple[
+    list[dict[str, Any]], Mapping[str, str], bool, frozenset[str], Mapping[str, frozenset[str]]
+]:
+    """Project registered MCP schemas as safe aliases and their targets.
+
+    ``agent.tools`` may be the tool-search bridge surface, so resolve the raw
+    catalog under the exact session policy first.  The registered-name map is
+    the extra provenance check: a registry/native tool that merely resembles
+    an MCP name never crosses this boundary.
+    """
+    empty_result = ([], MappingProxyType({}), False, frozenset(), MappingProxyType({}))
+    enabled_toolsets = getattr(agent, "enabled_toolsets", None)
+    try:
+        from model_tools import get_tool_definitions
+        from tools.mcp_tool import _mcp_tool_server_names, mcp_prefixed_tool_name
+
+        registered = dict(_mcp_tool_server_names)
+        raw_tools = (
+            list(getattr(agent, "tools", ()) or ())
+            if enabled_toolsets == []
+            else get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            ) or []
+        )
+    except Exception:
+        return empty_result
+
+    mcp_only = enabled_toolsets == [] or enabled_toolsets is not None and all(
+        isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and isinstance(tool["function"].get("name"), str)
+        and tool["function"]["name"] in registered
+        for tool in raw_tools
+    )
+    dynamic_tools: list[dict[str, Any]] = []
+    aliases: dict[str, str] = {}
+    origin_session_targets: set[str] = set()
+    hidden_arguments: dict[str, frozenset[str]] = {}
+    seen: set[str] = set()
+    for tool in raw_tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        parameters = function.get("parameters")
+        if (
+            not isinstance(name, str)
+            or not isinstance(parameters, dict)
+        ):
+            continue
+        if name not in registered:
+            continue
+        if name in seen:
+            continue
+        server_name = registered[name]
+        if not isinstance(server_name, str):
+            return empty_result
+        prefix = mcp_prefixed_tool_name(server_name, "")
+        alias = name.removeprefix(prefix)
+        if (
+            not alias
+            or alias.startswith("mcp__")
+            or mcp_prefixed_tool_name(server_name, alias) != name
+            or alias in aliases
+        ):
+            return empty_result
+        seen.add(name)
+        aliases[alias] = name
+        input_schema = parameters
+        properties = parameters.get("properties")
+        hidden_fields: set[str] = set()
+        if (
+            server_name == _OBLIGATION_SERVER_NAME
+            and
+            alias in _OBLIGATION_TOOL_ALIASES
+            and isinstance(properties, dict)
+            and "origin_session_id" in properties
+        ):
+            origin_session_targets.add(name)
+            hidden_fields.add("origin_session_id")
+        if (
+            server_name == _OBLIGATION_SERVER_NAME
+            and alias == "list_email_obligations"
+        ):
+            hidden_fields.update({"limit", "offset"})
+        if hidden_fields:
+            hidden_arguments[name] = frozenset(hidden_fields)
+            input_schema = copy.deepcopy(parameters)
+            properties = input_schema.get("properties")
+            if isinstance(properties, dict):
+                for field in hidden_fields:
+                    properties.pop(field, None)
+            required = input_schema.get("required")
+            if isinstance(required, list):
+                input_schema["required"] = [
+                    field
+                    for field in required
+                    if field not in hidden_fields
+                ]
+        dynamic_tools.append(
+            {
+                "type": "function",
+                "name": alias,
+                "description": str(function.get("description") or ""),
+                "inputSchema": input_schema,
+            }
+        )
+    return (
+        dynamic_tools,
+        MappingProxyType(aliases),
+        mcp_only,
+        frozenset(origin_session_targets),
+        MappingProxyType(hidden_arguments),
+    )
 
 
 def _codex_request_failure_details(error: BaseException) -> tuple[int | None, str]:
@@ -739,7 +870,52 @@ def run_codex_app_server_turn(
         # users see no live tool-progress or interim commentary while
         # codex_app_server is running — only the final answer (#33200).
         # Supersedes the narrower item/started-only bridge from #38835.
-        agent._codex_session = CodexAppServerSession(
+        restricted = getattr(agent, "enabled_toolsets", None) == []
+        if restricted:
+            (
+                dynamic_tools,
+                dynamic_tool_targets,
+                _restrict_native_tools,
+                origin_session_targets,
+                hidden_dynamic_arguments,
+            ) = _configured_mcp_dynamic_tools(agent)
+        else:
+            dynamic_tools, dynamic_tool_targets, origin_session_targets, hidden_dynamic_arguments = [], {}, frozenset(), {}
+        allowed_dynamic_tools = frozenset(dynamic_tool_targets.values())
+
+        def dispatch_dynamic_tool(
+            tool_name: str, arguments: dict[str, Any], call_id: str
+        ) -> Any:
+            # The session validates the name and argument shape before this
+            # callback. Keep the dispatcher scoped to the same exact snapshot.
+            import model_tools
+
+            registered_name = dynamic_tool_targets.get(tool_name)
+            if registered_name is None:
+                raise ValueError("unknown Codex dynamic tool")
+            if any(
+                field in arguments
+                for field in hidden_dynamic_arguments.get(registered_name, ())
+            ):
+                raise ValueError("model-supplied hidden dynamic tool argument is not allowed")
+            trusted_session_id = getattr(agent, "session_id", "") or ""
+            if registered_name in origin_session_targets:
+                if not isinstance(trusted_session_id, str) or not trusted_session_id.strip():
+                    raise ValueError("missing trusted Hermes session id")
+                arguments = {**arguments, "origin_session_id": trusted_session_id}
+
+            return model_tools.handle_function_call(
+                registered_name,
+                arguments,
+                effective_task_id,
+                tool_call_id=call_id,
+                session_id=trusted_session_id,
+                enabled_tools=sorted(allowed_dynamic_tools),
+                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+            )
+
+        session_kwargs = dict(
             cwd=cwd,
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
@@ -748,6 +924,14 @@ def run_codex_app_server_turn(
             ),
             on_event=make_codex_app_server_event_bridge(agent),
         )
+        if restricted:
+            session_kwargs.update(
+                developer_instructions=getattr(agent, "_cached_system_prompt", None),
+                dynamic_tools=dynamic_tools,
+                dynamic_tool_handler=dispatch_dynamic_tool,
+                restrict_native_tools=True,
+            )
+        agent._codex_session = CodexAppServerSession(**session_kwargs)
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early

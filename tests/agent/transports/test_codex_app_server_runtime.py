@@ -110,6 +110,103 @@ class TestCodexAppServerModule:
         assert "boom" in str(err)
         assert "-32600" in str(err)
 
+from types import MappingProxyType, SimpleNamespace
+
+from agent.codex_runtime import _configured_mcp_dynamic_tools
+
+
+class TestConfiguredMcpDynamicTools:
+    def test_legal_profile_snapshot_hides_trusted_origin_field(self, monkeypatch):
+        from tools import mcp_tool
+
+        name = "mcp__law_firm_ops__list_email_obligations"
+        monkeypatch.setattr(mcp_tool, "_mcp_tool_server_names", {name: "law-firm-ops"})
+        tools, targets, restricted, origins, hidden = _configured_mcp_dynamic_tools(
+            SimpleNamespace(
+                enabled_toolsets=[],
+                disabled_toolsets=None,
+                tools=[{"function": {"name": name, "parameters": {
+                    "type": "object",
+                    "properties": {"view": {"type": "string"}, "origin_session_id": {"type": "string"}},
+                    "required": ["view", "origin_session_id"],
+                }}}],
+            )
+        )
+        assert tools == [{"type": "function", "name": "list_email_obligations", "description": "", "inputSchema": {
+            "type": "object", "properties": {"view": {"type": "string"}}, "required": ["view"],
+        }}]
+        assert dict(targets) == {"list_email_obligations": name}
+        assert restricted is True
+        assert origins == frozenset({name})
+        assert hidden == {name: frozenset({"origin_session_id", "limit", "offset"})}
+
+
+def test_unrelated_profile_keeps_legacy_codex_session_constructor(monkeypatch):
+    from agent import codex_runtime
+
+    captured = {}
+
+    class StopAfterConstruction:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop")
+
+    monkeypatch.setattr(
+        "agent.transports.codex_app_server_session.CodexAppServerSession",
+        StopAfterConstruction,
+    )
+    agent = SimpleNamespace(enabled_toolsets=["other"], _codex_session=None)
+    with pytest.raises(RuntimeError, match="stop"):
+        codex_runtime.run_codex_app_server_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[],
+            effective_task_id="task",
+        )
+    assert "developer_instructions" not in captured
+    assert "dynamic_tools" not in captured
+    assert "dynamic_tool_handler" not in captured
+    assert "restrict_native_tools" not in captured
+
+
+def test_hidden_dynamic_arguments_cannot_bypass_projected_schema(monkeypatch):
+    from agent import codex_runtime
+
+    captured = {}
+    target = "mcp__law_firm_ops__list_email_obligations"
+
+    class StopAfterConstruction:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop")
+
+    monkeypatch.setattr(
+        "agent.transports.codex_app_server_session.CodexAppServerSession",
+        StopAfterConstruction,
+    )
+    monkeypatch.setattr(
+        codex_runtime,
+        "_configured_mcp_dynamic_tools",
+        lambda _agent: (
+            [{"type": "function", "name": "list_email_obligations", "inputSchema": {}}],
+            MappingProxyType({"list_email_obligations": target}),
+            True,
+            frozenset({target}),
+            MappingProxyType({target: frozenset({"origin_session_id", "limit", "offset"})}),
+        ),
+    )
+    with pytest.raises(RuntimeError, match="stop"):
+        codex_runtime.run_codex_app_server_turn(
+            SimpleNamespace(enabled_toolsets=[], _codex_session=None),
+            user_message="hi", original_user_message="hi", messages=[], effective_task_id="task",
+        )
+    for field in ("origin_session_id", "limit", "offset"):
+        with pytest.raises(ValueError, match="hidden dynamic"):
+            captured["dynamic_tool_handler"]("list_email_obligations", {field: 1}, "call")
+
+
+
 
 class TestSpawnEnvIsolation:
     """The codex spawn must NOT rewrite HOME — codex's shell tool spawns
@@ -339,4 +436,3 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
-

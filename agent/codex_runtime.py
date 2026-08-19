@@ -1334,10 +1334,10 @@ def _sanitize_consumer_codex_request(
     )
     if not is_consumer_codex:
         return sanitized
-    dropped = False
+    dropped_from: list[str] = []
     if "prompt_cache_retention" in sanitized:
         sanitized.pop("prompt_cache_retention")
-        dropped = True
+        dropped_from.append("top-level")
     # The OpenAI SDK merges ``extra_body`` into the outgoing JSON body, so a
     # nested ``extra_body.prompt_cache_retention`` reaches the endpoint just
     # like the top-level field would. Copy before editing — the caller's
@@ -1350,12 +1350,13 @@ def _sanitize_consumer_codex_request(
             sanitized["extra_body"] = extra_body
         else:
             sanitized.pop("extra_body")
-        dropped = True
-    if dropped:
+        dropped_from.append("extra_body")
+    if dropped_from:
         logger.warning(
             "Dropped unsupported prompt_cache_retention at consumer Codex "
-            "wire boundary (model=%s).",
+            "wire boundary (model=%s, via %s).",
             sanitized.get("model", getattr(agent, "model", "unknown")),
+            ", ".join(dropped_from),
         )
     return sanitized
 

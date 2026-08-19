@@ -590,18 +590,6 @@ def test_run_codex_stream_strips_relay_added_retention_at_consumer_wire(
     )
 
 
-def test_consumer_codex_wire_guard_preserves_compatible_endpoint_retention():
-    from agent.codex_runtime import _sanitize_consumer_codex_request
-
-    agent = SimpleNamespace(_is_codex_backend=lambda: False)
-    request = {"model": "openai.gpt-5.5", "prompt_cache_retention": "24h"}
-
-    sanitized = _sanitize_consumer_codex_request(agent, request)
-
-    assert sanitized["prompt_cache_retention"] == "24h"
-    assert sanitized is not request
-
-
 def test_consumer_codex_wire_guard_strips_nested_extra_body_retention(caplog):
     """The SDK merges ``extra_body`` into the JSON body, so a nested
     ``extra_body.prompt_cache_retention`` reaches the endpoint exactly like the
@@ -716,6 +704,9 @@ def test_wire_guard_scopes_retention_drop_by_real_endpoint(
     # disturb the prompt-cache key, on any endpoint.
     assert sanitized["prompt_cache_key"] == "cache-key-sentinel"
     assert request["prompt_cache_retention"] == "24h"
+    # The caller mutates the result (stream_kwargs["stream"] = True), so the
+    # guard must return a fresh mapping on EVERY path, including no-drop ones.
+    assert sanitized is not request
 
 
 def test_run_codex_stream_returns_collected_items_when_stream_ends_without_terminal(monkeypatch):

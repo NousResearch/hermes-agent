@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { useStore } from '@nanostores/react'
 import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
 
 import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat/fixed-row-window'
@@ -598,7 +599,10 @@ export function FileDiffPanel({
 
   // Resolve the file the diff touches to an absolute path (relative paths are
   // project-relative, resolved against the session cwd) so the header row can
-  // open the current file with the OS default app.
+  // open the current file with the OS default app. Subscribing to the cwd
+  // store (not a bare .get()) keeps the memo fresh when the session cwd
+  // changes while the diff path stays constant.
+  const currentCwd = useStore($currentCwd)
   const absolutePath = React.useMemo(() => {
     if (!path) {
       return null
@@ -606,9 +610,8 @@ export function FileDiffPanel({
     if (path.startsWith('/')) {
       return path
     }
-    const cwd = $currentCwd.get()
-    return cwd ? `${cwd.replace(/\/$/, '')}/${path}` : null
-  }, [path])
+    return currentCwd ? `${currentCwd.replace(/\/$/, '')}/${path}` : null
+  }, [path, currentCwd])
 
   const lineChunks = React.useMemo(() => chunkLines(lines, PREVIEW_CHUNK_LINES), [lines])
 
@@ -662,11 +665,14 @@ export function FileDiffPanel({
   // full-Shiki-of-every-line freeze on large diffs). With `showLineNumbers` a
   // VS Code-style gutter (new number for context/adds, old for removals) sits in
   // a left column; the scroller owns scroll so the overview ruler (an absolute
-  // sibling) stays viewport-fixed.
+  // sibling) stays viewport-fixed. The file header (when present) sits above
+  // the scroller in normal flow, so the scroller is a flex child rather than
+  // absolutely positioned — otherwise the header would be covered.
   return (
-    <div className={cn(DIFF_BOX_CLASS, 'relative overflow-hidden', className)} data-slot="file-diff-panel">
+    <div className={cn(DIFF_BOX_CLASS, 'relative flex flex-col overflow-hidden', className)} data-slot="file-diff-panel">
+      {absolutePath && <DiffFileHeader path={path ?? ''} absolutePath={absolutePath} />}
       <div
-        className={cn('absolute inset-0 overflow-auto', showLineNumbers && 'pr-2.5')}
+        className={cn('relative min-h-0 flex-1 overflow-auto', showLineNumbers && 'pr-2.5')}
         onScroll={onScroll}
         ref={scrollerRef}
       >
@@ -723,17 +729,17 @@ function DiffFileHeader({ absolutePath, path }: { absolutePath: string; path: st
 
   return (
     <div className="border-b border-(--ui-stroke-tertiary) bg-muted/25 px-2.5 py-1.5">
-      <a
-        className="ref wrap-anywhere inline-flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-secondary) transition-colors hover:text-foreground"
-        href="#"
+      <button
+        className="ref wrap-anywhere inline-flex cursor-pointer items-center gap-1.5 text-left text-[0.75rem] text-(--ui-text-secondary) transition-colors hover:text-foreground"
         onClick={open}
-        title={`打开 ${path}`}
+        title={`Open ${path}`}
+        type="button"
       >
         <span aria-hidden className="shrink-0">
           📄
         </span>
         <span className="truncate">{path}</span>
-      </a>
+      </button>
     </div>
   )
 }

@@ -23,7 +23,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations
+from tools.file_operations import ExecuteResult, ShellFileOperations
 from tools.tool_output_limits import get_max_line_length
 
 
@@ -70,6 +70,32 @@ def test_normal_multiline_read_unchanged(tmp_path, ops):
     result = ops.read_file(str(p))
     assert result.error is None
     assert result.content.startswith("1|alpha\n2|beta\n3|gamma")
+
+
+@pytest.mark.parametrize("method_name", ["read_file", "read_file_raw", "read_file_bytes"])
+def test_size_probe_access_failure_is_not_reported_as_missing(
+    monkeypatch, ops, method_name
+):
+    """A TCC/cloud open denial must preserve its actionable diagnostic."""
+    diagnostic = "bash: /cloud/file.txt: Operation not permitted"
+    monkeypatch.setattr(
+        ops,
+        "_exec",
+        lambda *_args, **_kwargs: ExecuteResult(stdout=diagnostic, exit_code=1),
+    )
+
+    result = getattr(ops, method_name)("/cloud/file.txt")
+
+    assert "filesystem access failed" in result.error
+    assert "Operation not permitted" in result.error
+    assert "not found" not in result.error.lower()
+
+
+def test_size_probe_does_not_suppress_open_diagnostics(ops):
+    command = ops._size_probe_cmd("/cloud/file.txt")
+
+    assert "wc -c <" in command
+    assert "2>/dev/null" not in command
 
 
 def test_no_trailing_newline_preserved(tmp_path, ops):

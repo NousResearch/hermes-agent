@@ -1336,7 +1336,7 @@ class ShellFileOperations(FileOperations):
         """
         arg = self._escape_shell_arg(path)
         return (
-            f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
+            f"if [ -f {arg} ]; then wc -c < {arg}; "
             f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
             f"else exit 1; fi"
         )
@@ -1457,6 +1457,24 @@ class ShellFileOperations(FileOperations):
             hint=" ".join(hint_parts),
         )
 
+    @staticmethod
+    def _size_probe_failure(path: str, result: ExecuteResult) -> Optional[ReadResult]:
+        """Preserve an open/access diagnostic from a failed size probe.
+
+        A missing path produces no probe output and should continue through
+        the unicode/similar-file path. A real filesystem denial is actionable
+        and must not be rewritten as "not found".
+        """
+        diagnostic = _strip_terminal_fence_leaks(result.stdout).strip()
+        if not diagnostic:
+            return None
+        return ReadResult(
+            error=(
+                f"Cannot read '{path}': filesystem access failed — "
+                f"{diagnostic}"
+            )
+        )
+
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
@@ -1478,6 +1496,15 @@ class ShellFileOperations(FileOperations):
         stat_result = self._exec(self._size_probe_cmd(path))
 
         if stat_result.exit_code != 0:
+            # A cloud placeholder or TCC-protected file can pass ``[ -f ]``
+            # while the subsequent open fails (for example, macOS reports
+            # ``Operation not permitted`` for a dataless iCloud file).  Do not
+            # erase that diagnostic and misreport the path as missing: doing so
+            # sends the caller into unicode/similar-file retries even though the
+            # exact path is correct.
+            probe_failure = self._size_probe_failure(path, stat_result)
+            if probe_failure is not None:
+                return probe_failure
             # File not found. Before failing, try unicode-equivalent
             # spellings — NFC/NFD, narrow no-break space, curly quotes
             # render identically in a terminal, so the model retyping a
@@ -1762,6 +1789,9 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
         stat_result = self._exec(self._size_probe_cmd(path))
         if stat_result.exit_code != 0:
+            probe_failure = self._size_probe_failure(path, stat_result)
+            if probe_failure is not None:
+                return probe_failure
             return self._suggest_similar_files(path)
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         if stat_output.strip() == NOT_REGULAR_SENTINEL:
@@ -1804,6 +1834,9 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
         stat_result = self._exec(self._size_probe_cmd(path))
         if stat_result.exit_code != 0:
+            probe_failure = self._size_probe_failure(path, stat_result)
+            if probe_failure is not None:
+                return probe_failure
             return ReadResult(error=f"File not found: {path}")
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         if stat_output.strip() == NOT_REGULAR_SENTINEL:

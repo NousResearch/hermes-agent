@@ -76,24 +76,38 @@ def test_enabled_still_suppresses_non_compression_noise(
     assert _prepare_gateway_status_message(platform, "warn", message) is None
 
 
-@pytest.mark.parametrize("enabled", [True, False], ids=["enabled", "default"])
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
-def test_compaction_completion_notice_reaches_chat(monkeypatch, platform, enabled):
-    """The #69546 'compacted' lifecycle edge is deliverable on chat surfaces.
-
-    COMPACTION_DONE_STATUS already flows through the status callback on
-    compaction completion and is not matched by the noise regex — the opt-in
-    gate must not change that in either mode, so users who enable
-    progress_notices see the completion stat notice paired with the start.
-    """
-    monkeypatch.setattr(
-        gateway_run,
-        "_load_gateway_config",
-        lambda: {"compression": {"progress_notices": enabled}},
-    )
+def test_compaction_completion_notice_gated_like_its_paired_start(
+    progress_notices_enabled, platform
+):
+    """The #69546 'compacted' completion notice is deliverable on chat
+    surfaces once progress_notices is enabled — paired with its start
+    notice under the SAME opt-in gate (website/docs/user-guide/
+    configuration.md explicitly lists "the 'Context compaction complete'
+    notice" among what progress_notices: true opts into)."""
     assert (
         _prepare_gateway_status_message(platform, "compacted", COMPACTION_DONE_STATUS)
         == COMPACTION_DONE_STATUS
+    )
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_compaction_completion_notice_suppressed_by_default_like_its_start(
+    progress_notices_default, platform
+):
+    """Regression: COMPACTION_DONE_STATUS must be suppressed by default,
+    the same as the "Compacting context…" start notice it pairs with.
+
+    Before this fix, the completion notice reached chat unconditionally
+    regardless of progress_notices (a distinct event_type="compacted"
+    exemption bypassed the opt-in gate entirely) — while the paired start
+    notice stayed suppressed by default. Users saw a lone, contextless
+    "✓ Context compaction complete" bubble with no preceding indication
+    anything had happened, on every default-configuration gateway.
+    """
+    assert (
+        _prepare_gateway_status_message(platform, "compacted", COMPACTION_DONE_STATUS)
+        is None
     )
 
 

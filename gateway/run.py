@@ -49,6 +49,7 @@ from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union,
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_compression import (
+    COMPACTION_DONE_STATUS,
     COMPACTION_STATUS,
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -129,6 +130,11 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
     r"|skipping\s+concurrent\s+compression"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
+    # Paired terminal edge for the line above (COMPACTION_DONE_STATUS,
+    # agent/conversation_compression.py) — without this, a suppressed start
+    # left a stray, contextless "done" bubble as the only visible trace of
+    # a routine compaction.
+    r"|context\s+compaction\s+complete"
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     r"|preflight\s+compression"
     r"|pre[- ]api\s+compression"
@@ -337,6 +343,7 @@ _COMPRESSION_PROGRESS_STATUS_RE = re.compile(
         _status_template_to_regex(_template)
         for _template in (
             COMPACTION_STATUS,
+            COMPACTION_DONE_STATUS,
             PRE_API_COMPRESSION_STATUS_TEMPLATE,
             PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
             IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -829,6 +836,17 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
+    # event_type == "compacted" (agent/conversation_compression.py::
+    # _emit_compaction_done) carries COMPACTION_DONE_STATUS, the paired
+    # terminal edge of the routine "Compacting context…" start notice this
+    # same opt-in gate suppresses by default. It must be gated identically —
+    # per website/docs/user-guide/configuration.md's documented contract
+    # ("...and the 'Context compaction complete' notice" is explicitly
+    # listed among what progress_notices: true opts into) — or a suppressed
+    # start leaves a stray, contextless "done" bubble as the only visible
+    # trace of a routine compaction. No special-casing by event_type here;
+    # the noise-regex/opt-in-gate membership check below already recognizes
+    # this text as a routine compression status.
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The

@@ -55,6 +55,11 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "speed": "~5-10s",
         "strengths": "Fast, high-quality",
     },
+    "grok-imagine-image-2.0": {
+        "display": "Grok Imagine Image 2.0",
+        "speed": "~10-20s",
+        "strengths": "Typography/layout-aware; legible small text; strongest quality.",
+    },
     "grok-imagine-image-quality": {
         "display": "Grok Imagine Image (Quality)",
         "speed": "~10-20s",
@@ -63,6 +68,95 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 }
 
 DEFAULT_MODEL = "grok-imagine-image"
+
+# Live catalog cache: (models_dict, fetched_monotonic). xAI's
+# ``/image-generation-models`` endpoint is the source of truth so newly
+# released Imagine models appear in the picker without a code change;
+# the static ``_MODELS`` table is the offline fallback and supplies curated
+# speed/strengths text for the models we know about.
+_LIVE_CACHE: Optional[Tuple[Dict[str, Dict[str, Any]], float]] = None
+_LIVE_CACHE_TTL = 300.0
+_LIVE_TIMEOUT = 10.0
+
+
+def _fetch_live_models() -> Dict[str, Dict[str, Any]]:
+    """Fetch image models from xAI's ``/image-generation-models`` endpoint.
+
+    Returns ``{model_id: {"input_modalities": [...], "aliases": [...]}}``.
+    Raises on any failure — callers treat that as "use the static table".
+    """
+    creds = resolve_xai_http_credentials()
+    api_key = str(creds.get("api_key") or "").strip()
+    if not api_key:
+        raise RuntimeError("no xAI credentials")
+    base_url = str(creds.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
+    response = requests.get(
+        f"{base_url}/image-generation-models",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": hermes_xai_user_agent(),
+        },
+        timeout=_LIVE_TIMEOUT,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    entries = payload.get("models") or payload.get("data") or []
+    out: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id") or entry.get("name")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        out[model_id.strip()] = {
+            "input_modalities": entry.get("input_modalities") or [],
+            "aliases": entry.get("aliases") or [],
+        }
+    return out
+
+
+def _live_models() -> Dict[str, Dict[str, Any]]:
+    """Cached live catalog (``{}`` when unreachable)."""
+    global _LIVE_CACHE
+    import time
+
+    if _LIVE_CACHE is not None and time.monotonic() - _LIVE_CACHE[1] < _LIVE_CACHE_TTL:
+        return _LIVE_CACHE[0]
+    try:
+        live = _fetch_live_models()
+    except Exception as exc:  # noqa: BLE001 - offline/unauth → static fallback
+        logger.debug("xAI live image model catalog unavailable: %s", exc)
+        live = {}
+    _LIVE_CACHE = (live, time.monotonic())
+    return live
+
+
+def _catalog() -> Dict[str, Dict[str, Any]]:
+    """Merged model catalog: live endpoint IDs + curated static metadata.
+
+    Known models keep their curated display/speed/strengths; models xAI
+    ships after this file was written still show up (with generic metadata)
+    so users can pick them the day they launch. Static table alone when the
+    API is unreachable.
+    """
+    live = _live_models()
+    if not live:
+        return dict(_MODELS)
+    merged: Dict[str, Dict[str, Any]] = {}
+    for model_id in live:
+        meta = _MODELS.get(model_id)
+        if meta is None:
+            meta = {
+                "display": model_id,
+                "speed": "",
+                "strengths": "New xAI Imagine model (from live xAI catalog)",
+            }
+        merged[model_id] = dict(meta)
+        merged[model_id]["input_modalities"] = live[model_id].get("input_modalities") or []
+    # Keep curated entries that the live list may momentarily omit.
+    for model_id, meta in _MODELS.items():
+        merged.setdefault(model_id, dict(meta))
+    return merged
 
 # xAI aspect ratios (more options than FAL/OpenAI)
 _XAI_ASPECT_RATIOS = {
@@ -101,17 +195,41 @@ def _load_xai_config() -> Dict[str, Any]:
 
 
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which model to use and return ``(model_id, meta)``."""
+    """Decide which model to use and return ``(model_id, meta)``.
+
+    Overrides are validated against the merged live+static catalog, so a
+    newly released xAI model can be selected the day it appears in the
+    live catalog — no code change required.
+    """
+    catalog = _catalog()
     env_override = os.environ.get("XAI_IMAGE_MODEL")
-    if env_override and env_override in _MODELS:
-        return env_override, _MODELS[env_override]
+    if env_override and env_override in catalog:
+        return env_override, catalog[env_override]
 
     cfg = _load_xai_config()
     candidate = cfg.get("model") if isinstance(cfg.get("model"), str) else None
-    if candidate and candidate in _MODELS:
-        return candidate, _MODELS[candidate]
+    if candidate and candidate in catalog:
+        return candidate, catalog[candidate]
 
-    return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
+    return DEFAULT_MODEL, catalog.get(DEFAULT_MODEL, _MODELS[DEFAULT_MODEL])
+
+
+def _resolve_edit_model() -> str:
+    """Model for ``/v1/images/edits`` requests.
+
+    An explicitly selected model (env or config) that accepts image input
+    is honored for edits; otherwise fall back to the quality model, which
+    xAI documents as the edit-capable baseline.
+    """
+    catalog = _catalog()
+    explicit = os.environ.get("XAI_IMAGE_MODEL") or (
+        _load_xai_config().get("model") if isinstance(_load_xai_config().get("model"), str) else None
+    )
+    if explicit and explicit in catalog:
+        modalities = catalog[explicit].get("input_modalities") or []
+        if "image" in modalities:
+            return explicit
+    return "grok-imagine-image-quality"
 
 
 def _resolve_resolution() -> str:
@@ -179,7 +297,7 @@ class XAIImageGenProvider(ImageGenProvider):
                 "speed": meta.get("speed", ""),
                 "strengths": meta.get("strengths", ""),
             }
-            for model_id, meta in _MODELS.items()
+            for model_id, meta in _catalog().items()
         ]
 
     def get_setup_schema(self) -> Dict[str, Any]:
@@ -296,10 +414,12 @@ class XAIImageGenProvider(ImageGenProvider):
         storage_cfg = read_xai_imagine_storage_config("image_gen")
 
         if is_edit:
-            # Editing requires the quality model per xAI docs. The source
-            # image may be a public URL or a base64 data URI; local file paths
-            # are converted to a data URI here.
-            edit_model = "grok-imagine-image-quality"
+            # Editing needs an image-input-capable model. An explicit user
+            # selection that accepts image input (e.g. grok-imagine-image-2.0)
+            # is honored; otherwise the documented quality baseline is used.
+            # The source image may be a public URL or a base64 data URI;
+            # local file paths are converted to a data URI here.
+            edit_model = _resolve_edit_model()
             try:
                 image_fields = [_xai_image_field(source) for source in source_images]
             except Exception as exc:

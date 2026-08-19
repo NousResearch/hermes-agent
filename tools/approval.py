@@ -2894,8 +2894,8 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     return has_reinterpretable and bool(_REINTERPRETED_ARGUMENT_RE.search(command))
 
 
-def _command_matches_permanent_allowlist(command: str) -> bool:
-    """Return True when command_allowlist contains this command or a glob.
+def _matching_permanent_allowlist_entry(command: str) -> str | None:
+    """Return the command_allowlist entry matching *command*, or None.
 
     Permanent approvals historically store dangerous-pattern keys such as
     ``recursive delete``. Manual entries in ``command_allowlist`` are command
@@ -2903,9 +2903,9 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
     """
     command = (command or "").strip()
     if not command:
-        return False
+        return None
     if _has_allowlist_shell_operator(command):
-        return False
+        return None
 
     with _lock:
         patterns = tuple(_permanent_approved)
@@ -2917,10 +2917,32 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
         if not pattern:
             continue
         if command == pattern:
-            return True
+            return pattern
         if any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(command, pattern):
-            return True
-    return False
+            return pattern
+    return None
+
+
+def _command_matches_permanent_allowlist(command: str) -> bool:
+    """Return True when command_allowlist contains this command or a glob."""
+    return _matching_permanent_allowlist_entry(command) is not None
+
+
+def _approval_scope(session_key: str, pattern_key: str) -> str | None:
+    """Return how *pattern_key* was pre-approved: 'permanent', 'session', or None.
+
+    Provenance companion to :func:`is_approved` — used to tell the agent and
+    the user WHY a flagged action ran without a prompt (port of the approval
+    provenance surfaced in Kilo-Org/kilocode#12728 / #12995).
+    """
+    aliases = _approval_key_aliases(pattern_key)
+    with _lock:
+        if any(alias in _permanent_approved for alias in aliases):
+            return "permanent"
+        session_approvals = _session_approved.get(session_key, set())
+        if any(alias in session_approvals for alias in aliases):
+            return "session"
+    return None
 
 
 
@@ -3473,8 +3495,10 @@ def _run_approval_gate(
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
-        return {"approved": True, "message": None}
+    _scope = _approval_scope(session_key, pattern_key)
+    if _scope is not None:
+        return {"approved": True, "message": None,
+                "pre_approved": _scope, "description": description}
 
     approval_callback = _resolve_cli_approval_callback(approval_callback)
 
@@ -3759,8 +3783,11 @@ def check_dangerous_command(command: str, env_type: str,
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
-    if _command_matches_permanent_allowlist(command):
-        return {"approved": True, "message": None}
+    _allowlist_entry = _matching_permanent_allowlist_entry(command)
+    if _allowlist_entry is not None:
+        return {"approved": True, "message": None,
+                "pre_approved": "allowlist",
+                "pre_approved_rule": _allowlist_entry}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
@@ -4393,8 +4420,11 @@ def check_all_command_guards(command: str, env_type: str,
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
-    if _command_matches_permanent_allowlist(command):
-        return {"approved": True, "message": None}
+    _allowlist_entry = _matching_permanent_allowlist_entry(command)
+    if _allowlist_entry is not None:
+        return {"approved": True, "message": None,
+                "pre_approved": "allowlist",
+                "pre_approved_rule": _allowlist_entry}
 
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli = _is_interactive_cli()
@@ -4599,6 +4629,9 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
+    # Provenance for warnings suppressed by an earlier approval:
+    # (description, scope) where scope is 'session' or 'permanent'.
+    pre_approved_hits: list[tuple[str, str]] = []
 
     session_key = get_current_session_key()
 
@@ -4611,15 +4644,32 @@ def check_all_command_guards(command: str, env_type: str,
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"
         tirith_desc = _format_tirith_description(tirith_result)
-        if not is_approved(session_key, tirith_key):
+        _tirith_scope = _approval_scope(session_key, tirith_key)
+        if _tirith_scope is None:
             warnings.append((tirith_key, tirith_desc, True))
+        else:
+            pre_approved_hits.append((tirith_desc, _tirith_scope))
 
     if is_dangerous:
-        if not is_approved(session_key, pattern_key):
+        _pattern_scope = _approval_scope(session_key, pattern_key)
+        if _pattern_scope is None:
             warnings.append((pattern_key, description, False))
+        else:
+            pre_approved_hits.append((description, _pattern_scope))
 
     # Nothing to warn about
     if not warnings:
+        if pre_approved_hits:
+            # Flagged, but a prior user decision covers every finding —
+            # surface WHY it ran without a prompt (Kilo #12728/#12995 port).
+            _scopes = {scope for _, scope in pre_approved_hits}
+            _scope = "permanent" if "permanent" in _scopes else "session"
+            return {
+                "approved": True,
+                "message": None,
+                "pre_approved": _scope,
+                "description": "; ".join(desc for desc, _ in pre_approved_hits),
+            }
         return {"approved": True, "message": None}
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
@@ -5094,8 +5144,10 @@ def check_execute_code_guard(code: str, env_type: str,
     # Check session/permanent approval — same gate as check_all_command_guards.
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts the user (#39275).
-    if is_approved(session_key, pattern_key):
-        return {"approved": True, "message": None}
+    _scope = _approval_scope(session_key, pattern_key)
+    if _scope is not None:
+        return {"approved": True, "message": None,
+                "pre_approved": _scope, "description": description}
 
     # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
     # suppresses the redundant whole-script prompt; the per-call terminal()

@@ -3047,6 +3047,31 @@ def terminal_tool(
             elif approval.get("smart_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
+            elif approval.get("pre_approved"):
+                # Provenance for silent auto-approvals (port of Kilo
+                # #12728/#12995): say WHY a flagged command ran without a
+                # prompt so an auto-approved run is explained instead of
+                # looking like a bypass.
+                _scope = approval.get("pre_approved")
+                desc = approval.get("description", "flagged as dangerous")
+                if _scope == "allowlist":
+                    _rule = approval.get("pre_approved_rule", "")
+                    _rule_part = f" (matched `{_rule}`)" if _rule else ""
+                    approval_note = (
+                        "Command was auto-approved by the command_allowlist "
+                        f"in config.yaml{_rule_part}."
+                    )
+                elif _scope == "permanent":
+                    approval_note = (
+                        f"Command was flagged ({desc}) and auto-approved by a "
+                        "permanent allowlist entry the user saved earlier "
+                        "('always' approval)."
+                    )
+                elif _scope == "session":
+                    approval_note = (
+                        f"Command was flagged ({desc}) and auto-approved by an "
+                        "earlier 'approve for session' decision in this session."
+                    )
 
         # Prepare command for execution
         pty_disabled_reason = None

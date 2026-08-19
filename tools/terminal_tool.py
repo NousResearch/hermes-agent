@@ -3572,7 +3572,11 @@ def terminal_tool(
                     try:
                         Path(spill_file_path).unlink()
                     except OSError:
-                        pass
+                        logger.warning(
+                            "Failed to remove unredacted spill file %s — "
+                            "raw output may persist on disk",
+                            spill_file_path,
+                        )
             try:
                 from agent.verification_evidence import record_terminal_result
 

@@ -130,7 +130,39 @@ _SUBCHAT_NOT_FOUND_MESSAGES = [
 ]
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Bad Request: PEER_ID_INVALID",
+        "Bad Request: group chat was migrated to a supergroup chat",
+    ],
+)
+@pytest.mark.asyncio
+async def test_peer_invalid_and_migrated_chat_mark_target_dead(isolate, message):
+    # Previously unclassified ("unknown"), so the dead-target path never
+    # short-circuited retries against a permanently-unreachable chat_id — #56225.
+    adapter = RaisingAdapter(message)
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:101")
+
+    res = await router.deliver("hi", [target])
+    assert res["telegram:101"]["success"] is False
+    assert router.dead_targets.is_dead("telegram", "101") is True
+
+
 class TestNotFoundBlastRadius:
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Bad Request: PEER_ID_INVALID",
+            "Bad Request: group chat was migrated to a supergroup chat",
+        ],
+    )
+    def test_is_chat_level_not_found_peer_invalid_and_migrated(self, message):
+        from gateway.platforms.base import is_chat_level_not_found
+
+        assert is_chat_level_not_found(error_text=message) is True
 
     @pytest.mark.parametrize("message", _SUBCHAT_NOT_FOUND_MESSAGES)
     def test_is_chat_level_not_found_subchat(self, message):

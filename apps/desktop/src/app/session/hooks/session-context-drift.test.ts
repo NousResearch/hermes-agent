@@ -27,6 +27,33 @@ describe('routeTargetFromToken', () => {
 })
 
 describe('sessionContextDrift', () => {
+  it('keeps a pinned atomic-submit session through drift, then restores normal drift behavior', () => {
+    const pinned = new Set(['sess-b'])
+
+    expect(
+      sessionContextDrift({
+        nowRouteToken: routeToken(sessionRoute(SESS_B)),
+        nowSelectedStoredId: SESS_B,
+        pinnedStoredSessionIds: pinned,
+        startRouteToken: routeToken(sessionRoute(SESS_A)),
+        startSelectedStoredId: SESS_A,
+        submitTargetStoredId: null
+      })
+    ).toBeNull()
+
+    pinned.delete(SESS_B)
+    expect(
+      sessionContextDrift({
+        nowRouteToken: routeToken(sessionRoute(SESS_B)),
+        nowSelectedStoredId: SESS_B,
+        pinnedStoredSessionIds: pinned,
+        startRouteToken: routeToken(sessionRoute(SESS_A)),
+        startSelectedStoredId: SESS_A,
+        submitTargetStoredId: null
+      })
+    ).toBe('route:sess-a->sess-b')
+  })
+
   it('does not drift on search/hash-only route churn', () => {
     const reason = sessionContextDrift({
       startRouteToken: routeToken(sessionRoute(SESS_A)),

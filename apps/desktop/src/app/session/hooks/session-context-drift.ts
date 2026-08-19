@@ -56,7 +56,13 @@ interface SessionContextDriftArgs {
    * session that has ever compressed.
    */
   submitTargetComposerScope?: string | null
+  /** Stored ids being re-homed by an atomic submit (#85590). */
+  pinnedStoredSessionIds?: ReadonlySet<string>
 }
+
+// A short-lived pin marks the session being re-homed by atomic quick submit;
+// keeping it here lets every drift caller share the same narrow exception (#85590).
+export const activePinnedStoredSessionIds = new Set<string>()
 
 /**
  * Decide whether the session context genuinely changed under an in-flight
@@ -77,8 +83,10 @@ export function sessionContextDrift({
   nowSelectedStoredId,
   submitTargetStoredId,
   composerScope,
-  submitTargetComposerScope
+  submitTargetComposerScope,
+  pinnedStoredSessionIds: pinnedIds
 }: SessionContextDriftArgs): string | null {
+  const activePins = pinnedIds ?? activePinnedStoredSessionIds
   // Composer prong: the composer's loaded scope disagrees with the resolved
   // submit target. Not a start/now comparison like the two prongs below — the
   // composer only hands us one snapshot per submit — but it belongs in the
@@ -97,7 +105,12 @@ export function sessionContextDrift({
   // (navigated to settings / a non-chat overlay route) or a search/hash-only
   // change (same target) is not drift, and neither is landing on the submit's
   // own target.
-  if (targetNow !== targetStart && targetNow !== null && targetNow !== submitTargetStoredId) {
+  if (
+    targetNow !== targetStart &&
+    targetNow !== null &&
+    targetNow !== submitTargetStoredId &&
+    !(targetNow !== '__new__' && activePins.has(targetNow))
+  ) {
     return `route:${targetStart}->${targetNow}`
   }
 
@@ -107,7 +120,8 @@ export function sessionContextDrift({
   if (
     nowSelectedStoredId !== null &&
     nowSelectedStoredId !== startSelectedStoredId &&
-    nowSelectedStoredId !== submitTargetStoredId
+    nowSelectedStoredId !== submitTargetStoredId &&
+    !activePins.has(nowSelectedStoredId)
   ) {
     return `selection:${startSelectedStoredId}->${nowSelectedStoredId}`
   }

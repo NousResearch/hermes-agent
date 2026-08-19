@@ -5,6 +5,7 @@ import {
   QUICK_TARGET_CURRENT,
   QUICK_TARGET_NEW,
   type QuickEntrySessionOption,
+  type QuickEntrySubmitResult,
   setQuickEntrySubmitHandler
 } from '@/store/quick-entry'
 import { $gatewayState, $sessions } from '@/store/session'
@@ -12,8 +13,8 @@ import { sessionTileDelegate } from '@/store/session-states'
 import { isAuxiliaryWindow } from '@/store/windows'
 
 interface QuickEntryBridgeParams {
-  startFreshSessionDraft: () => void
   submitText: (text: string) => Promise<unknown> | unknown
+  submitTextToNewSession: (text: string) => Promise<{ runtimeSessionId: string; sessionId: string }>
 }
 
 // The picker is a capture aid, not a session browser — a handful of recent
@@ -50,23 +51,33 @@ function sessionOptions(): QuickEntrySessionOption[] {
  * secondary session window must not also claim the global capture channel, or
  * one keystroke would send N prompts.
  */
-export function useQuickEntryBridge({ startFreshSessionDraft, submitText }: QuickEntryBridgeParams): void {
+export function useQuickEntryBridge({
+  submitText,
+  submitTextToNewSession
+}: QuickEntryBridgeParams): void {
   const submitTextRef = useRef(submitText)
   submitTextRef.current = submitText
-  const startFreshRef = useRef(startFreshSessionDraft)
-  startFreshRef.current = startFreshSessionDraft
+  const submitNewRef = useRef(submitTextToNewSession)
+  submitNewRef.current = submitTextToNewSession
 
   useEffect(() => {
     if (isAuxiliaryWindow()) {
       return
     }
 
-    setQuickEntrySubmitHandler(({ target, text }) => {
+    setQuickEntrySubmitHandler(async ({ correlationId, target, text }) => {
+      const ack = (result: QuickEntrySubmitResult) =>
+        window.hermesDesktop?.quickEntry.ackSubmit(correlationId, result)
+
       if (target === QUICK_TARGET_NEW) {
-        // Same as the user clicking New Chat and typing: fresh draft, then the
-        // normal submit creates the backend session.
-        startFreshRef.current()
-        void submitTextRef.current(text)
+        // Create and submit as one route-neutral operation so drift cannot
+        // orphan the new session (#85590).
+        try {
+          const created = await submitNewRef.current(text)
+          ack({ ok: true, runtimeSessionId: created.runtimeSessionId, sessionId: created.sessionId })
+        } catch (error) {
+          ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })
+        }
 
         return
       }
@@ -77,17 +88,32 @@ export function useQuickEntryBridge({ startFreshSessionDraft, submitText }: Quic
         const delegate = sessionTileDelegate()
 
         if (delegate) {
-          void delegate
-            .resumeTile(target)
-            .then(runtimeId => delegate.submitToSession(runtimeId, text))
-            // A dead/undeliverable target must not swallow the prompt.
-            .catch(() => void submitTextRef.current(text))
+          try {
+            const runtimeId = await delegate.resumeTile(target)
+            await delegate.submitToSession(runtimeId, text)
+            ack({ ok: true })
+          } catch (error) {
+            ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })
+          }
 
           return
         }
+
+        ack({
+          code: 'submit-unavailable',
+          message: 'The selected session submit path is unavailable.',
+          ok: false,
+          retryable: true
+        })
+        return
       }
 
-      void submitTextRef.current(text)
+      try {
+        await submitTextRef.current(text)
+        ack({ ok: true })
+      } catch (error) {
+        ack({ code: 'submit-failed', message: error instanceof Error ? error.message : String(error), ok: false, retryable: true })
+      }
     })
 
     const dispose = initQuickEntryBridge()

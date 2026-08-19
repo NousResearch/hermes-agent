@@ -8226,11 +8226,31 @@ class AIAgent:
             function_result,
             failed=failed,
         )
+        # Identical-call loop breaker (agent.stall_guards): notice-only, no
+        # blocking. Observed on the RAW result (before the loop-warning suffix
+        # below, whose embedded count changes per call and would defeat
+        # result-identity matching). Appended here — at result construction,
+        # before the tool message is built — so it is cache-safe (tool results
+        # are append-only; nothing already sent to the provider is mutated).
+        stall_notice = None
+        if self._stall_guards_enabled():
+            try:
+                stall_notice = self._tool_guardrails.observe_identical_call(
+                    tool_name, function_args, function_result,
+                )
+            except Exception as exc:
+                logger.debug("stall-guard identical-call observation failed: %s", exc)
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
+        if stall_notice:
+            function_result = (function_result or "") + "\n\n" + stall_notice
         return function_result
+
+    def _stall_guards_enabled(self) -> bool:
+        """Config gate for the runtime anti-stall guards (agent.stall_guards)."""
+        return bool(getattr(self, "_stall_guards", True))
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)

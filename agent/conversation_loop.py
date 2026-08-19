@@ -7931,10 +7931,28 @@ def run_conversation(
 
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,
+                    trailing_continue_intent,
                 )
 
                 _ack_mode = intent_ack_continuation_mode(agent)
-                if (
+                # Said-continue-but-stopped guard (agent.stall_guards): the
+                # model ended the turn with no tool calls but its short reply
+                # TAILS with an announced next action ("Let me now…",
+                # "I will now…"). Unlike the intent-ack detector below, this
+                # fires mid-task too (after tool results), which is exactly
+                # where eval traces show the stall. It reuses the SAME bounded
+                # continuation path and counter (max 2 per turn), so the
+                # alternation-safe interim-assistant + user-nudge mechanism —
+                # not a new parallel one — carries the recovery.
+                _stall_continue_intent = (
+                    bool(getattr(agent, "_stall_guards", True))
+                    and agent.valid_tool_names
+                    and codex_ack_continuations < 2
+                    and trailing_continue_intent(
+                        agent._strip_think_blocks(final_response or "")
+                    )
+                )
+                if _stall_continue_intent or (
                     _ack_mode != "off"
                     and agent.valid_tool_names
                     and codex_ack_continuations < 2
@@ -7945,6 +7963,12 @@ def run_conversation(
                         require_workspace=(_ack_mode == "codex_only"),
                     )
                 ):
+                    if _stall_continue_intent:
+                        logger.info(
+                            "Stall guard: turn ending on trailing continue-"
+                            "intent with no tool calls — re-prompting to act "
+                            "(%d/2)", codex_ack_continuations + 1,
+                        )
                     codex_ack_continuations += 1
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
                     append_message(messages, interim_msg)

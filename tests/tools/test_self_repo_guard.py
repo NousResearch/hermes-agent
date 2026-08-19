@@ -43,6 +43,11 @@ class TestBlocksMutationsInSourceRepo:
             "clean -fd",
             "cherry-pick abc123",
             "revert HEAD",
+            "apply patch.diff",
+            "apply --whitespace=fix patch.diff",
+            "am mbox.patch",
+            "am --abort",
+            "am --skip",
         ],
     )
     def test_cwd_inside_repo(self, repo, sub):
@@ -177,6 +182,11 @@ class TestAllowsSafeCommands:
             "git fetch origin main",
             "git worktree add /tmp/wt feature-branch",
             "git push fork feature-branch",
+            "git apply --check patch.diff",
+            "git apply --stat patch.diff",
+            "git apply --numstat patch.diff",
+            "git apply --summary patch.diff",
+            "git am --show-current-patch",
             "ls -la",
             "grep -rn checkout tools/",
         ],

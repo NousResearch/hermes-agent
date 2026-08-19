@@ -248,6 +248,151 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
           );
 
+        # ── Declarative named profiles (Home Manager) ────────────────────
+        home-manager-profiles =
+          let
+            evaluated = inputs.home-manager.lib.homeManagerConfiguration {
+              pkgs = inputs.nixpkgs.legacyPackages.x86_64-linux;
+              modules = [
+                inputs.self.homeManagerModules.default
+                {
+                  home = {
+                    username = "hermes-check";
+                    homeDirectory = "/home/hermes-check";
+                    stateVersion = "24.11";
+                  };
+                  services.hermes-agent = {
+                    enable = true;
+                    profiles = {
+                      coder = {
+                        gateway.enable = true;
+                        settings.model.default = "test/coder";
+                        environment.PROFILE_KIND = "coder";
+                        hermesHomeFiles."SOUL.md" = "coder soul";
+                      };
+                      research = {
+                        settings.model.default = "test/research";
+                        workingDirectory = "/home/hermes-check/research-workspace";
+                      };
+                    };
+                  };
+                }
+              ];
+            };
+            darwinCfg = (inputs.home-manager.lib.homeManagerConfiguration {
+              pkgs = inputs.nixpkgs.legacyPackages.aarch64-darwin;
+              modules = [
+                inputs.self.homeManagerModules.default
+                {
+                  home = {
+                    username = "hermes-check";
+                    homeDirectory = "/Users/hermes-check";
+                    stateVersion = "24.11";
+                  };
+                  services.hermes-agent = {
+                    enable = true;
+                    profiles.coder.gateway.enable = true;
+                  };
+                }
+              ];
+            }).config;
+            cfg = evaluated.config;
+            profiles = cfg.services.hermes-agent.profiles;
+            activation = cfg.home.activation.hermesAgentSetup.data;
+            units = lib.filterAttrs (n: _: lib.hasPrefix "hermes-agent-" n) cfg.systemd.user.services;
+            coderUnit = units.hermes-agent-coder;
+            coderEnv = lib.concatStringsSep " " coderUnit.Service.Environment;
+            darwinAgent = darwinCfg.launchd.agents.hermes-agent-coder;
+
+            failures =
+              lib.optional (
+                profiles.coder.settings.model.default != "test/coder"
+              ) "coder profile settings were not evaluated independently"
+              ++ lib.optional (
+                profiles.research.settings.model.default != "test/research"
+              ) "research profile settings were not evaluated independently"
+              ++ lib.optional (
+                lib.attrNames units != [ "hermes-agent-coder" ]
+              ) "only profiles with gateway.enable should create a service: ${toString (lib.attrNames units)}"
+              ++ lib.optional (
+                !lib.hasInfix "/home/hermes-check/.hermes/profiles/coder" coderEnv
+              ) "profile gateway must use the named profile HERMES_HOME: ${coderEnv}"
+              ++ lib.optional (
+                !lib.hasInfix "/home/hermes-check/.hermes/profiles/coder/config.yaml" activation
+              ) "activation must configure the coder profile"
+              ++ lib.optional (
+                !lib.hasInfix "/home/hermes-check/.hermes/profiles/research/config.yaml" activation
+              ) "activation must configure the research profile"
+              ++ lib.optional (
+                darwinAgent.config.Label != "org.nix-community.home.hermes-agent-coder"
+              ) "Darwin profile gateway must use a stable launchd label"
+              ++ lib.optional (
+                darwinAgent.config.EnvironmentVariables.HERMES_HOME != "/Users/hermes-check/.hermes/profiles/coder"
+              ) "Darwin profile gateway must use the named profile HERMES_HOME"
+              ++ lib.optional (
+                cfg.home.sessionVariables.HERMES_HOME or null != "/home/hermes-check/.hermes"
+              ) "named profiles must not change the interactive default HERMES_HOME";
+          in
+          pkgs.runCommand "hermes-home-manager-profiles" { } (
+            if failures != [ ] then
+              throw "Home Manager profile check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: Home Manager declaratively configures independent named profiles"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
+        # ── Named profile paths stay inside profiles/ ────────────────────
+        profile-names-are-safe =
+          let
+            accepts =
+              name:
+              let
+                cfg = (evalHomeModule {
+                  enable = true;
+                  profiles.${name} = { };
+                }).config;
+                probe = builtins.tryEval (lib.all (a: a.assertion) cfg.assertions);
+              in
+              probe.success && probe.value;
+
+            cases = [
+              {
+                name = "canonical profile name";
+                ok = accepts "coder_2";
+              }
+              {
+                name = "path traversal is refused";
+                ok = !(accepts "../escape");
+              }
+              {
+                name = "the virtual default profile name is refused";
+                ok = !(accepts "default");
+              }
+              {
+                name = "mixed-case directory names are refused";
+                ok = !(accepts "Coder");
+              }
+              {
+                name = "names longer than 64 characters are refused";
+                ok = !(accepts "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+              }
+            ];
+            failed = lib.filter (c: !c.ok) cases;
+          in
+          pkgs.runCommand "hermes-profile-names-are-safe" { } (
+            if failed != [ ] then
+              throw "Profile name rule failed:\n${lib.concatMapStringsSep "\n" (c: "  - ${c.name}") failed}"
+            else
+              ''
+                ${lib.concatMapStringsSep "\n" (c: ''echo "PASS: ${c.name}"'') cases}
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
         # ── Workspace files need a chosen directory ──────────────────────
         # `documents` goes into workingDirectory. The default of that option
         # is bad, and it is different on each module, so the modules refuse
@@ -421,15 +566,127 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 }).config.system.build.toplevel.drvPath
                 true
             );
+            profileContainerConflict = builtins.tryEval (
+              lib.deepSeq
+                (evalNixosModule {
+                  enable = true;
+                  container.enable = true;
+                  profiles.coder.gateway.enable = true;
+                }).config.system.build.toplevel.drvPath
+                true
+            );
           in
           pkgs.runCommand "hermes-nixos-module" { } (
             if failures != [ ] then
               throw "NixOS module check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
             else if containerConflict.success then
               throw "NixOS module check failed:\n  - an assertion must reject backend.mode with container.enable"
+            else if profileContainerConflict.success then
+              throw "NixOS module check failed:\n  - an assertion must reject named profile gateways with container.enable"
             else
               ''
                 echo "PASS: nixos module evaluates (${toString (lib.length names)} units)"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
+        # ── Declarative named profiles (NixOS) ───────────────────────────
+        nixos-profiles =
+          let
+            evaluated = evalNixosModule {
+              enable = true;
+              profiles = {
+                coder = {
+                  gateway.enable = true;
+                  settings.model.default = "test/coder";
+                  environment.PROFILE_KIND = "coder";
+                  environmentFiles = [ "/run/secrets/coder-env" ];
+                  authFile = pkgs.writeText "coder-auth" "{}";
+                  hermesHomeFiles."SOUL.md" = "coder soul";
+                };
+                research = {
+                  settings.model.default = "test/research";
+                  configFile = pkgs.writeText "research-config" "model: test/research";
+                  workingDirectory = "/srv/hermes-research";
+                };
+              };
+            };
+            containerCfg = (evalNixosModule {
+              enable = true;
+              container.enable = true;
+              profiles.coder = { };
+            }).config;
+            cfg = evaluated.config;
+            profiles = cfg.services.hermes-agent.profiles;
+            units = lib.filterAttrs (n: _: lib.hasPrefix "hermes-agent-" n) cfg.systemd.services;
+            coderUnit = units.hermes-agent-coder;
+            activation = cfg.system.activationScripts."hermes-agent-setup".text;
+            containerActivation = containerCfg.system.activationScripts."hermes-agent-setup".text;
+
+            failures =
+              lib.optional (
+                profiles.coder.settings.model.default != "test/coder"
+              ) "coder profile settings were not evaluated independently"
+              ++ lib.optional (
+                profiles.research.settings.model.default != "test/research"
+              ) "research profile settings were not evaluated independently"
+              ++ lib.optional (
+                lib.attrNames units != [ "hermes-agent-coder" ]
+              ) "only profiles with gateway.enable should create a service: ${toString (lib.attrNames units)}"
+              ++ lib.optional (
+                coderUnit.environment.HERMES_HOME != "/var/lib/hermes/.hermes/profiles/coder"
+              ) "profile gateway must use the named profile HERMES_HOME"
+              ++ lib.optional (
+                !lib.hasInfix "/var/lib/hermes/.hermes/profiles/coder/config.yaml" activation
+              ) "activation must configure the coder profile"
+              ++ lib.optional (
+                !lib.hasInfix "/var/lib/hermes/.hermes/profiles/research/config.yaml" activation
+              ) "activation must configure the research profile"
+              ++ lib.optional (
+                !lib.hasInfix "systemd-tmpfiles --create /nix/store/" activation
+              ) "activation must safely provision profile homes and external working directories before unprivileged setup"
+              ++ lib.optional (
+                !(lib.elem "d /srv/hermes-research 2770 hermes hermes - -" cfg.systemd.tmpfiles.rules)
+              ) "the external profile working directory must have an explicit tmpfiles ownership rule"
+              ++ lib.optional (
+                !lib.hasInfix "runuser -u hermes -g hermes -- mkdir -p /var/lib/hermes/.hermes/profiles/coder" activation
+              ) "activation must create the coder profile home as the unprivileged service user"
+              ++ lib.optional (
+                !lib.hasInfix "runuser -u hermes -g hermes -- chmod 0640 /var/lib/hermes/.hermes/profiles/coder/config.yaml" activation
+              ) "activation must manage generated profile config as the unprivileged service user"
+              ++ lib.optional (
+                !lib.hasInfix "/run/hermes-agent-profile-env.XXXXXX" activation
+              ) "activation must stage root-readable profile environment files outside user-writable state"
+              ++ lib.optional (
+                !lib.hasInfix "/dev/stdin /var/lib/hermes/.hermes/profiles/coder/.env < \"$_hermes_profile_env\"" activation
+              ) "activation must install the staged profile environment as the unprivileged service user"
+              ++ lib.optional (
+                !lib.hasInfix "/dev/stdin /var/lib/hermes/.hermes/profiles/coder/auth.json < /nix/store/" activation
+              ) "activation must install profile auth through stdin as the unprivileged service user"
+              ++ lib.optional (
+                !lib.hasInfix "/dev/stdin /var/lib/hermes/.hermes/profiles/research/config.yaml < /nix/store/" activation
+              ) "activation must install an external profile config through stdin as the unprivileged service user"
+              ++ lib.optional (
+                !lib.hasInfix "/var/lib/hermes/.hermes/profiles/coder/.container-mode" containerActivation
+              ) "container activation must route host CLI calls for named profiles into the managed container"
+              ++ lib.optional (
+                !lib.hasInfix "hermes-profile-coder-container-launcher" containerActivation
+                || !lib.hasInfix "/var/lib/hermes/.hermes/profiles/coder/.container-launcher" containerActivation
+                || !lib.hasInfix "hermes-profile-coder-container-mode" containerActivation
+              ) "container activation must restore the stripped coder profile selector through a profile-specific launcher"
+              ++ lib.optional (
+                cfg.environment.variables.HERMES_HOME or null != null
+              ) "named profiles must not export a system-wide HERMES_HOME unless addToSystemPackages is enabled";
+          in
+          pkgs.runCommand "hermes-nixos-profiles" { } (
+            if failures != [ ] then
+              throw "NixOS profile check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                ${pkgs.bash}/bin/bash -n ${pkgs.writeText "hermes-nixos-profiles-activation" activation}
+                ${pkgs.bash}/bin/bash -n ${pkgs.writeText "hermes-nixos-container-profiles-activation" containerActivation}
+                echo "PASS: NixOS declaratively configures independent named profiles"
                 mkdir -p $out
                 echo "ok" > $out/result
               ''

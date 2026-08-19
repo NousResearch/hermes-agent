@@ -55,20 +55,85 @@
 
       inherit (pkgs.stdenv.hostPlatform) isDarwin isLinux;
 
-      processEnvironment = common.processEnvironment {
-        inherit (cfg) hermesHome;
-        # The CLI reads this value and names it when it refuses a
-        # configuration change.
-        managedSystem = "home-manager";
-      };
-      unitPath = lib.makeBinPath (common.processPath { inherit pkgs cfg; });
+      profileHome = name: "${cfg.hermesHome}/profiles/${name}";
+      profileCfg =
+        profile:
+        profile
+        // {
+          inherit (cfg)
+            package
+            extraDependencyGroups
+            extraPackages
+            extraPythonPackages
+            ;
+          settings = lib.recursiveUpdate profile.settings (
+            lib.optionalAttrs (profile.mcpServers != { }) {
+              mcp_servers = common.mcpServersToConfig profile.mcpServers;
+            }
+          );
+        };
+      profileType = lib.types.submodule (
+        { name, ... }:
+        {
+          options = common.profileOptions {
+            defaultPackage = hermes-agent;
+            defaultPackageText = lib.literalExpression "config.services.hermes-agent.package";
+            defaultWorkingDirectory = "${profileHome name}/workspace";
+            defaultWorkingDirectoryText = lib.literalExpression ''"config.services.hermes-agent.hermesHome/profiles/${name}/workspace"'';
+          };
+        }
+      );
+
+      profileStateScripts = lib.mapAttrsToList (
+        name: profile:
+        common.mkStateScript {
+          inherit pkgs;
+          cfg = profileCfg profile;
+          hermesHome = profileHome name;
+          inherit (profile) workingDirectory;
+          run = "$DRY_RUN_CMD ";
+          stateDirs = common.stateSubdirs;
+          managedSystem = "home-manager";
+          modes = {
+            config = "0600";
+            env = "0600";
+            managed = "0600";
+            auth = "0600";
+            document = "0600";
+          };
+        }
+      ) cfg.profiles;
+
+      profilePluginAssertions = lib.concatLists (
+        lib.mapAttrsToList (
+          name: profile:
+          common.pluginNameAssertions {
+            cfg = profile;
+            optionPath = "services.hermes-agent.profiles.${name}";
+          }
+        ) cfg.profiles
+      );
 
       # The systemd unit that the gateway and the backend both start from.
       mkUnit =
         {
           description,
           argv,
+          agentCfg ? cfg,
+          hermesHome ? cfg.hermesHome,
         }:
+        let
+          environment = common.processEnvironment {
+            inherit hermesHome;
+            managedSystem = "home-manager";
+          };
+          path = lib.makeBinPath (
+            common.processPath {
+              inherit pkgs;
+              cfg = agentCfg;
+            }
+          );
+        in
         {
           Unit = {
             Description = description;
@@ -80,13 +145,13 @@
           Install.WantedBy = [ "default.target" ];
           Service = {
             Type = "simple";
-            Environment = (lib.mapAttrsToList (k: v: "${k}=${v}") processEnvironment) ++ [
-              "PATH=${unitPath}"
+            Environment = (lib.mapAttrsToList (k: v: "${k}=${v}") environment) ++ [
+              "PATH=${path}"
             ];
             ExecStart = lib.escapeShellArgs argv;
-            WorkingDirectory = cfg.workingDirectory;
-            Restart = cfg.restart;
-            RestartSec = cfg.restartSec;
+            WorkingDirectory = agentCfg.workingDirectory;
+            Restart = agentCfg.restart;
+            RestartSec = agentCfg.restartSec;
             # This state has one user. Keep it private. The NixOS module uses
             # 0007 to share the state with a UNIX group.
             UMask = "0077";
@@ -96,26 +161,43 @@
         };
 
       mkAgent =
-        { argv, logName }:
+        {
+          argv,
+          logName,
+          agentCfg ? cfg,
+          hermesHome ? cfg.hermesHome,
+        }:
+        let
+          environment = common.processEnvironment {
+            inherit hermesHome;
+            managedSystem = "home-manager";
+          };
+          path = lib.makeBinPath (
+            common.processPath {
+              inherit pkgs;
+              cfg = agentCfg;
+            }
+          );
+        in
         {
           enable = true;
           config = {
             Label = "org.nix-community.home.${logName}";
             ProgramArguments = argv;
-            EnvironmentVariables = processEnvironment // {
-              PATH = "${unitPath}:/usr/bin:/bin:/usr/sbin:/sbin";
+            EnvironmentVariables = environment // {
+              PATH = "${path}:/usr/bin:/bin:/usr/sbin:/sbin";
             };
-            WorkingDirectory = cfg.workingDirectory;
+            WorkingDirectory = agentCfg.workingDirectory;
             RunAtLoad = true;
             KeepAlive =
-              if cfg.restart == "always" then
+              if agentCfg.restart == "always" then
                 true
               else
                 {
                   SuccessfulExit = false;
                   Crashed = true;
                 };
-            ThrottleInterval = cfg.restartSec;
+            ThrottleInterval = agentCfg.restartSec;
             StandardOutPath = "${config.home.homeDirectory}/Library/Logs/${logName}.log";
             StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/${logName}.err.log";
             ProcessType = "Background";
@@ -165,6 +247,16 @@
             '';
           };
 
+          profiles = lib.mkOption {
+            type = lib.types.attrsOf profileType;
+            default = { };
+            description = ''
+              Declaratively managed named Hermes profiles. Each attribute
+              creates an independent HERMES_HOME under
+              hermesHome/profiles/<name>. Use `hermes -p <name>` to select it.
+            '';
+          };
+
           gateway.enable = lib.mkEnableOption "the messaging gateway service (Telegram, Discord, Slack, ...)";
         };
 
@@ -181,6 +273,11 @@
               common.pluginNameAssertions {
                 inherit cfg;
                 optionPath = "services.hermes-agent";
+              }
+              ++ profilePluginAssertions
+              ++ common.profileNameAssertions {
+                profiles = cfg.profiles;
+                optionPath = "services.hermes-agent.profiles";
               }
               ++ common.workspaceFilesAssertions {
                 inherit cfg;
@@ -223,6 +320,8 @@
                       document = "0600";
                     };
                   }
+                  + "\n"
+                  + lib.concatStringsSep "\n" profileStateScripts
                 );
           }
 
@@ -232,6 +331,21 @@
               description = "Hermes Agent Gateway";
               argv = common.gatewayArgv cfg;
             };
+          })
+
+          (lib.mkIf isLinux {
+            systemd.user.services = lib.mapAttrs' (
+              name: profile:
+              let
+                agentCfg = profileCfg profile;
+              in
+              lib.nameValuePair "hermes-agent-${name}" (mkUnit {
+                description = "Hermes Agent Gateway (${name} profile)";
+                argv = common.gatewayArgv agentCfg;
+                inherit agentCfg;
+                hermesHome = profileHome name;
+              })
+            ) (lib.filterAttrs (_name: profile: profile.gateway.enable) cfg.profiles);
           })
 
           (lib.mkIf (isLinux && cfg.backend.mode != "none") {
@@ -247,6 +361,21 @@
               argv = common.gatewayArgv cfg;
               logName = "hermes-agent";
             };
+          })
+
+          (lib.mkIf isDarwin {
+            launchd.agents = lib.mapAttrs' (
+              name: profile:
+              let
+                agentCfg = profileCfg profile;
+                logName = "hermes-agent-${name}";
+              in
+              lib.nameValuePair logName (mkAgent {
+                argv = common.gatewayArgv agentCfg;
+                inherit agentCfg logName;
+                hermesHome = profileHome name;
+              })
+            ) (lib.filterAttrs (_name: profile: profile.gateway.enable) cfg.profiles);
           })
 
           (lib.mkIf (isDarwin && cfg.backend.mode != "none") {

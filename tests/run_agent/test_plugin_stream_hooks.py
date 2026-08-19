@@ -262,6 +262,60 @@ def test_stream_lifecycle_plugin_hooks_are_queued(monkeypatch):
     assert end_call[1]["error"] is None
 
 
+def test_stream_end_plugin_hook_carries_usage(monkeypatch):
+    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+
+    shutdown_plugin_stream_hook_dispatcher()
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"on_stream_end": [lambda **kwargs: calls.append(kwargs)]}),
+    )
+
+    agent = _agent()
+    agent.session_prompt_tokens = 1200
+    agent.session_completion_tokens = 300
+    agent.session_total_tokens = 1500
+    agent.session_reasoning_tokens = 45
+    agent.session_api_calls = 3
+    agent.context_compressor.last_prompt_tokens = 900
+    agent.context_compressor.context_length = 128000
+    agent._emit_stream_end(final_text="done", finished=True, error=None)
+    _wait_for(lambda: len(calls) == 1)
+    shutdown_plugin_stream_hook_dispatcher()
+
+    usage = calls[0]["usage"]
+    assert usage["prompt_tokens"] == 1200
+    assert usage["completion_tokens"] == 300
+    assert usage["total_tokens"] == 1500
+    assert usage["reasoning_tokens"] == 45
+    assert usage["api_calls"] == 3
+    assert usage["last_prompt_tokens"] == 900
+    assert usage["context_length"] == 128000
+
+
+def test_stream_end_usage_survives_missing_counters(monkeypatch):
+    """A partially initialized agent must yield zeroed usage, never a raise."""
+    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+
+    shutdown_plugin_stream_hook_dispatcher()
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"on_stream_end": [lambda **kwargs: calls.append(kwargs)]}),
+    )
+
+    agent = _agent()
+    agent.context_compressor = None
+    agent._emit_stream_end(final_text="", finished=False, error="boom")
+    _wait_for(lambda: len(calls) == 1)
+    shutdown_plugin_stream_hook_dispatcher()
+
+    usage = calls[0]["usage"]
+    assert usage["last_prompt_tokens"] == 0
+    assert usage["context_length"] == 0
+
+
 @patch("run_agent.AIAgent._create_request_openai_client")
 @patch("run_agent.AIAgent._close_request_openai_client")
 def test_chat_completion_stream_emits_lifecycle_hooks(_mock_close, mock_create, monkeypatch):

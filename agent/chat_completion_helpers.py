@@ -2904,6 +2904,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # and every Hermes-internal underscore-prefixed scaffolding key.
             for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
                 api_msg.pop(schema_foreign, None)
+            # ``name`` on a tool result is outside the Chat Completions schema
+            # (aki.io: "contains item with unknown key name"), but is valid on
+            # user/assistant messages — so the removal is role-qualified, same
+            # as ChatCompletionsTransport.convert_messages().
+            if api_msg.get("role") == "tool":
+                api_msg.pop("name", None)
             # api_content (the persist-what-you-send sidecar) carries the
             # exact bytes every main-loop call sent for this message —
             # substitute it before dropping the key (Hermes bookkeeping,

@@ -140,6 +140,29 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
 
+    def test_convert_messages_strips_name_on_tool_results_only(self, transport):
+        """``name`` is carried over from the tool call onto the tool result
+        for readability, but the Chat Completions schema has no ``name`` on
+        ``role: tool`` (only on the long-removed ``role: function``). Strict
+        providers (aki.io) reject the whole payload with 'contains item with
+        unknown key name', which breaks every tool call in the session.
+        ``name`` on user/assistant messages is schema-valid and must survive,
+        so the removal is role-qualified.
+        """
+        msgs = [
+            {"role": "user", "content": "hi", "name": "sylvain"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok",
+             "name": "execute_code"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "name" not in result[1]
+        assert result[1]["content"] == "ok"
+        assert result[1]["tool_call_id"] == "call_1"
+        # Schema-valid on non-tool roles — untouched.
+        assert result[0]["name"] == "sylvain"
+        # Original list untouched (copy-on-write contract)
+        assert msgs[1]["name"] == "execute_code"
+
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
         returned by identity (preserves the deepcopy-on-demand contract)."""

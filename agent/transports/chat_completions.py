@@ -266,6 +266,13 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - ``name`` on tool-result messages — carried over from the tool call
+          for readability, but the Chat Completions schema has no ``name``
+          field on ``role: tool`` (only on ``role: function``, long removed).
+          Strict providers (aki.io) reject any payload containing it with
+          ``contains item with unknown key name``. Stripped on ``role: tool``
+          only; ``name`` on user/assistant messages stays, it is schema-valid
+          there.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -291,6 +298,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or (msg.get("role") == "tool" and "name" in msg)
             ):
                 needs_sanitize = True
                 break
@@ -370,6 +378,11 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
                 out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+
+            # ``name`` is schema-valid on user/assistant messages, so the
+            # removal is role-qualified: only tool results carry it illegally.
+            if msg.get("role") == "tool" and "name" in msg:
+                mutable_msg().pop("name", None)
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).

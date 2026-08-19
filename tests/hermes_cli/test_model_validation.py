@@ -278,6 +278,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "muse-spark-1.2") == "codex_responses"
         # Zen serves the standard Muse Spark variant on /v1/responses too.
         assert opencode_model_api_mode("opencode-zen", "muse-spark-1.2") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/muse-spark-1.2") == "codex_responses"
 
 
 class TestNormalizeOpencodeBaseUrl:

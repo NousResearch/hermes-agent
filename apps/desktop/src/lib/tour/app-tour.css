@@ -1,0 +1,72 @@
+/* Theme bridge for the APP surface's tour popovers: driver.js ships a fixed
+   light palette, so repaint it with the app's own tokens and it follows every
+   theme (including custom skins) for free. Scoped to driver.js's classes.
+
+   The preview surface keeps the stock look on purpose — it renders inside a
+   guest page where these variables don't exist. */
+
+.driver-popover {
+  background-color: var(--color-popover);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-nous);
+  color: var(--color-popover-foreground);
+  font-family: var(--font-sans);
+}
+
+.driver-popover-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.driver-popover-description {
+  color: var(--color-muted-foreground);
+  font-size: 0.8125rem;
+}
+
+.driver-popover-progress-text {
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+}
+
+.driver-popover-close-btn {
+  color: var(--color-muted-foreground);
+}
+
+.driver-popover-close-btn:hover,
+.driver-popover-close-btn:focus {
+  color: var(--color-foreground);
+}
+
+.driver-popover-footer-btn {
+  background-color: var(--color-secondary);
+  border-color: var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-secondary-foreground);
+  font-family: var(--font-sans);
+  text-shadow: none;
+}
+
+.driver-popover-footer-btn:hover,
+.driver-popover-footer-btn:focus {
+  background-color: var(--color-accent);
+  color: var(--color-accent-foreground);
+}
+
+/* Each arrow variant paints exactly one border edge; the rest are transparent. */
+.driver-popover-arrow-side-left {
+  border-left-color: var(--color-popover);
+}
+
+.driver-popover-arrow-side-right {
+  border-right-color: var(--color-popover);
+}
+
+.driver-popover-arrow-side-top {
+  border-top-color: var(--color-popover);
+}
+
+.driver-popover-arrow-side-bottom {
+  border-bottom-color: var(--color-popover);
+}

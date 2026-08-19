@@ -59,7 +59,22 @@ interface Secondary {
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
+  /**
+   * Epoch-ms deadline while an activation (prepare/ensure) is mid-dial. The
+   * live-work pruner must not dispose an entry the user is switching to: a
+   * switch target is not yet the active key, has no live sessions and holds
+   * no request lease, so during a cold pool spawn (~3s) every prune recompute
+   * saw it as idle garbage and disposed it mid-dial — the root of the dead
+   * profile clicks in #89622. Cleared when the activation settles; bounded so
+   * an orphaned lease self-heals.
+   */
+  activationLeaseUntil: number
 }
+
+// How long a mid-dial activation holds its prune lease: covers a cold pool
+// backend spawn + socket connect with margin, while still letting a leaked
+// lease expire quickly enough for the reaper to reclaim the entry.
+const ACTIVATION_LEASE_MS = 30_000
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -432,7 +447,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnectAttempt: 0,
     reconnecting: false,
     retained: false,
-    wantOpen: true
+    wantOpen: true,
+    activationLeaseUntil: 0
   }
 
   // Events keep carrying the bare profile — session routing is profile-keyed
@@ -690,6 +706,11 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
   entry.retained = true
   entry.wantOpen = true
+  // Lease the entry against the live-work pruner for the whole dial: the
+  // switch target is not yet active and has no live sessions, so a prune
+  // recompute firing mid-spawn would otherwise dispose it and this
+  // activation would fail (#89622).
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
@@ -701,6 +722,9 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
       scheduleReconnect(entry)
     }
   }
+
+  // The activation is settling either way — release the prune lease.
+  entry.activationLeaseUntil = 0
 
   // A source edit/remove may dispose this entry while its dial is still in
   // flight. Only the still-registered, still-owned activation may publish.
@@ -748,6 +772,9 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 
   entry.retained = true
   entry.wantOpen = true
+  // Lease the entry against the live-work pruner for the whole dial — the
+  // profile-door twin of the agent path's lease above (#89622).
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
@@ -759,6 +786,9 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
       scheduleReconnect(entry)
     }
   }
+
+  // The activation is settling either way — release the prune lease.
+  entry.activationLeaseUntil = 0
 
   if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
     publishActiveConnection(entry.connection)
@@ -862,12 +892,20 @@ function restoreActiveToPrimaryIfEvicted(): void {
 // bare profile name kept gateway B's 'default' socket alive off gateway A's
 // 'default' activity (and vice versa) — cross-connection attribution.
 export function pruneSecondaryGateways(keep: Set<string>): void {
+  const now = Date.now()
+
   for (const [key, entry] of [...g.secondaries]) {
     if (
       key === g.activeKey ||
       keep.has(key) ||
       (!entry.connectionId && keep.has(entry.profile)) ||
-      entry.activeRequests > 0
+      entry.activeRequests > 0 ||
+      // Mid-dial activation target: the profile being switched TO is not yet
+      // active and has no live work, so without this lease any recompute
+      // during its cold spawn disposed the entry and the click died silently
+      // (#89622). Number guard: dev-HMR entries predate the field. Bounded:
+      // an orphaned lease expires on its own.
+      (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now)
     ) {
       continue
     }

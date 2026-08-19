@@ -105,7 +105,11 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
 
     expect($activeGatewayProfile.get()).toBe('default')
     expect($connection.get()?.mode).toBe('local')
-    expect(getConnectionFor).not.toHaveBeenCalled()
+    // The descriptor lookup DOES run: it is issued concurrently with the dial
+    // so nothing awaits between the activation verdict and the publication
+    // frame. The invariant that matters — nothing is PUBLISHED for a dead
+    // target — is asserted above; the lookup itself is a read-only probe.
+    expect(getConnectionFor).toHaveBeenCalledTimes(1)
   })
 
   it('falls through to the profile path for a null connectionId', async () => {

@@ -20,6 +20,7 @@ import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
   $newChatProfile,
+  $profiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
   normalizeProfileKey
@@ -62,7 +63,6 @@ import {
   setResumeExhaustedSessionId,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
-  setSessions,
   setSessionStartedAt,
   setTurnStartedAt,
   setWorkspaceCwdOwner,
@@ -95,6 +95,8 @@ import {
   type BranchMessage,
   chatMessageArraysEquivalent,
   dedupeInflightUserAgainstTranscript,
+  dropListedSession,
+  findListedSession,
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
@@ -105,6 +107,7 @@ import {
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
+  restoreListedSession,
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -1713,7 +1716,21 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const removed = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const listed = findListedSession(storedSessionId)
+      const removed = listed?.session
+      const stampedProfile = removed?.profile?.trim()
+      const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
+      // Listed profile-less row + multiple profiles + unresolved owner:
+      // never fall through to the primary backend (fake already_absent).
+      if (
+        listed &&
+        !stampedProfile &&
+        !profile?.trim() &&
+        $profiles.get().filter(item => item.name.trim()).length > 1
+      ) {
+        notifyError(new Error('Session ownership could not be resolved'), copy.deleteFailed)
+        return
+      }
       const wasSelected = selectedStoredSessionId === storedSessionId
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
@@ -1723,7 +1740,7 @@ export function useSessionActions({
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
       const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
 
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      dropListedSession(storedSessionId)
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
       // row in lockstep. Pin the tombstone against the projects.tree prune while
@@ -1743,12 +1760,12 @@ export function useSessionActions({
           await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId, removed?.profile)
+        await deleteSession(storedSessionId, profile)
         // A deleted session's cached tail must not resurrect on a recycled id.
         dropTranscriptTail(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll
         // back, and a rolled-back row must keep its watermark/marker.
-        forgetSessionUnread(removedIds, removed?.profile)
+        forgetSessionUnread(removedIds, profile)
         clearQueuedPrompts(storedSessionId)
 
         if (closingRuntimeId) {
@@ -1768,7 +1785,7 @@ export function useSessionActions({
         }
       } catch (err) {
         if (removed) {
-          setSessions(prev => [removed, ...prev])
+          restoreListedSession(removed, listed?.slice)
         }
 
         untombstoneSessions(removedIds)
@@ -1778,7 +1795,7 @@ export function useSessionActions({
           setFreshDraftReady(false)
           setSelectedStoredSessionId(storedSessionId)
           selectedStoredSessionIdRef.current = storedSessionId
-          const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+          const stored = findListedSession(storedSessionId)?.session
 
           if (stored) {
             applyStoredUsage(stored)
@@ -1819,7 +1836,19 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const listed = findListedSession(storedSessionId)
+      const archived = listed?.session
+      const stampedProfile = archived?.profile?.trim()
+      const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
+      if (
+        listed &&
+        !stampedProfile &&
+        !profile?.trim() &&
+        $profiles.get().filter(item => item.name.trim()).length > 1
+      ) {
+        notifyError(new Error('Session ownership could not be resolved'), copy.archiveFailed)
+        return
+      }
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -1827,8 +1856,8 @@ export function useSessionActions({
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
       const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
 
-      // Soft-hide: drop from the sidebar immediately, keep the data.
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      // Soft-hide: drop from every sidebar slice immediately, keep the data.
+      dropListedSession(storedSessionId)
       tombstoneSessions(archivedIds)
       beginSessionMutation(archivedIds)
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
@@ -1838,10 +1867,10 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, archived?.profile)
+        await setSessionArchived(storedSessionId, true, profile)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
-        forgetSessionUnread(archivedIds, archived?.profile)
+        forgetSessionUnread(archivedIds, profile)
         // An archived session is hidden from the sidebar; its tile must go too.
         const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)
@@ -1855,7 +1884,7 @@ export function useSessionActions({
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
-          setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
+          restoreListedSession(archived, listed?.slice)
         }
 
         untombstoneSessions(archivedIds)

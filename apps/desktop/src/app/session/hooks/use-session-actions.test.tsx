@@ -7,39 +7,47 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import {
+  deleteSession,
   getAllSessionMessages,
   getLatestSessionMessages,
   getSession,
   type SessionInfo,
-  type SessionResumeResponse
+  type SessionResumeResponse,
+  setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
-import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
+import { $pinnedSessionIds } from '@/store/layout'
+import { $activeGatewayProfile, $newChatProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
+import { $projectScope, $projectTree, $removedSessionIds, $sessionMutationsInFlight, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
+  $cronSessions,
   $currentCwd,
   $currentFastMode,
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
   $messages,
+  $messagingSessions,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessions,
   $turnStartedAt,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
+  setCronSessions,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentProvider,
   setCurrentReasoningEffort,
   setMessages,
+  setMessagingSessions,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
@@ -47,6 +55,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -82,7 +91,11 @@ const RUNTIME_SESSION_ID = 'rt-new-001'
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  | 'archiveSession'
+  | 'createBackendSessionForSend'
+  | 'removeSession'
+  | 'selectSidebarItem'
+  | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -2539,5 +2552,235 @@ describe('selectSidebarItem', () => {
     expect(navigate).toHaveBeenCalledWith('/skills', undefined)
     expect(noteActiveTreeGroup).toHaveBeenCalledWith(null)
     expect(revealTreePane).toHaveBeenCalledWith('workspace')
+  })
+})
+
+const mockDeleteSession = vi.mocked(deleteSession)
+const mockGetSession = vi.mocked(getSession)
+const mockSetSessionArchived = vi.mocked(setSessionArchived)
+const profiles = (...names: string[]) => names.map(name => ({ name }) as never)
+
+describe('removeSession / archiveSession profile routing (#78836)', () => {
+  beforeEach(() => {
+    setSessions([])
+    setMessagingSessions([])
+    setCronSessions([])
+    $profiles.set(profiles('default', 'winefox'))
+    $activeGatewayProfile.set('default')
+    $pinnedSessionIds.set([])
+    $removedSessionIds.set(new Set())
+    $sessionMutationsInFlight.set(new Set())
+    $sessionSeenCounts.set({})
+    $unreadFinishedMarkers.set({})
+    mockDeleteSession.mockReset()
+    mockGetSession.mockReset()
+    mockSetSessionArchived.mockReset()
+  })
+
+  afterEach(() => {
+    cleanup()
+    setSessions([])
+    setMessagingSessions([])
+    setCronSessions([])
+    $profiles.set([])
+    $activeGatewayProfile.set('default')
+    $pinnedSessionIds.set([])
+    $removedSessionIds.set(new Set())
+    $sessionMutationsInFlight.set(new Set())
+    $sessionSeenCounts.set({})
+    $unreadFinishedMarkers.set({})
+  })
+
+  async function readyActions() {
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={vi.fn(async () => ({}) as never)} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    return handle!
+  }
+
+  it('DELETEs a stamped messaging session against its owning profile', async () => {
+    mockDeleteSession.mockResolvedValue({ ok: true })
+    setMessagingSessions([
+      storedSession({ id: 'tg-winefox-1', profile: 'winefox', source: 'telegram', title: 'TG chat' })
+    ])
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession('tg-winefox-1')
+    })
+
+    expect(mockDeleteSession).toHaveBeenCalledWith('tg-winefox-1', 'winefox')
+    expect($messagingSessions.get()).toEqual([])
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('resolves a profile-less messaging DELETE before drop, without leaking into recents', async () => {
+    $sessionSeenCounts.set({
+      winefox: { 'tg-1': 4 },
+      default: { 'desk-keep': 2 }
+    })
+    $unreadFinishedMarkers.set({
+      winefox: ['tg-1'],
+      default: ['desk-keep']
+    })
+    setMessagingSessions([storedSession({ id: 'tg-1', source: 'telegram', title: 'QQ/TG' })])
+    mockGetSession.mockImplementation(async (id: string, profile?: null | string) => {
+      expect($messagingSessions.get().some(session => session.id === 'tg-1')).toBe(true)
+
+      if (!profile) {
+        throw new Error('404: Session not found')
+      }
+
+      if (profile === 'winefox') {
+        return storedSession({ id, profile: 'winefox', source: 'telegram' })
+      }
+
+      throw new Error('404: Session not found')
+    })
+    mockDeleteSession.mockResolvedValue({ ok: true })
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession('tg-1')
+    })
+
+    expect(mockGetSession).toHaveBeenCalled()
+    expect(mockDeleteSession).toHaveBeenCalledWith('tg-1', 'winefox')
+    expect($messagingSessions.get()).toEqual([])
+    expect($sessions.get()).toEqual([])
+    expect($sessionSeenCounts.get().winefox?.['tg-1']).toBeUndefined()
+    expect($sessionSeenCounts.get().default?.['desk-keep']).toBe(2)
+    expect($unreadFinishedMarkers.get().winefox ?? []).not.toContain('tg-1')
+    expect($unreadFinishedMarkers.get().default).toEqual(['desk-keep'])
+  })
+
+  it('restores a failed DELETE to the messaging slice, not recents', async () => {
+    const row = storedSession({ id: 'tg-roll', profile: 'winefox', source: 'telegram' })
+    setMessagingSessions([row])
+    $pinnedSessionIds.set(['tg-roll'])
+    mockDeleteSession.mockRejectedValue(new Error('backend down'))
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession('tg-roll')
+    })
+
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['tg-roll'])
+    expect($sessions.get()).toEqual([])
+    expect($pinnedSessionIds.get()).toEqual(['tg-roll'])
+    expect($removedSessionIds.get().has('tg-roll')).toBe(false)
+    expect($sessionMutationsInFlight.get().has('tg-roll')).toBe(false)
+  })
+
+  it('archives a messaging row against its owning profile', async () => {
+    mockSetSessionArchived.mockResolvedValue({ ok: true })
+    setMessagingSessions([storedSession({ id: 'tg-arch', profile: 'winefox', source: 'telegram' })])
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.archiveSession('tg-arch')
+    })
+
+    expect(mockSetSessionArchived).toHaveBeenCalledWith('tg-arch', true, 'winefox')
+    expect($messagingSessions.get()).toEqual([])
+  })
+
+  it('restores a failed archive to the messaging slice', async () => {
+    setMessagingSessions([storedSession({ id: 'tg-arch-fail', profile: 'winefox', source: 'telegram' })])
+    mockSetSessionArchived.mockRejectedValue(new Error('archive failed'))
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.archiveSession('tg-arch-fail')
+    })
+
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['tg-arch-fail'])
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('still DELETEs a desktop-native session with its listed profile', async () => {
+    mockDeleteSession.mockResolvedValue({ ok: true })
+    setSessions([storedSession({ id: 'desk-1', profile: 'default', source: 'desktop' })])
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession('desk-1')
+    })
+
+    expect(mockDeleteSession).toHaveBeenCalledWith('desk-1', 'default')
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('does not restore a failed cron DELETE into recents', async () => {
+    setCronSessions([storedSession({ id: 'cron-1', profile: 'winefox', source: 'cron' })])
+    mockDeleteSession.mockRejectedValue(new Error('cron delete failed'))
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession('cron-1')
+    })
+
+    expect($cronSessions.get().map(session => session.id)).toEqual(['cron-1'])
+    expect($sessions.get()).toEqual([])
+    expect($messagingSessions.get()).toEqual([])
+  })
+
+  it('restores a dual-listed messaging row to messaging, not recents', async () => {
+    const row = storedSession({ id: 'tg-dual', profile: 'winefox', source: 'telegram' })
+    setMessagingSessions([row])
+    setSessions([row])
+    mockDeleteSession.mockRejectedValue(new Error('backend down'))
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession('tg-dual')
+    })
+
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['tg-dual'])
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('fails closed when a listed profile-less messaging DELETE cannot resolve an owner', async () => {
+    const row = storedSession({ id: 'tg-unresolved', source: 'telegram', title: 'QQ/TG' })
+    setMessagingSessions([row])
+    $pinnedSessionIds.set(['tg-unresolved'])
+    $sessionSeenCounts.set({
+      winefox: { 'tg-unresolved': 3 },
+      default: { 'desk-keep': 1 }
+    })
+    $unreadFinishedMarkers.set({
+      winefox: ['tg-unresolved'],
+      default: ['desk-keep']
+    })
+    mockGetSession.mockRejectedValue(new Error('404: Session not found'))
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession('tg-unresolved')
+    })
+
+    expect(mockDeleteSession).not.toHaveBeenCalled()
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['tg-unresolved'])
+    expect($sessions.get()).toEqual([])
+    expect($pinnedSessionIds.get()).toEqual(['tg-unresolved'])
+    expect($sessionSeenCounts.get().winefox?.['tg-unresolved']).toBe(3)
+    expect($unreadFinishedMarkers.get().winefox).toEqual(['tg-unresolved'])
+    expect($removedSessionIds.get().has('tg-unresolved')).toBe(false)
+    expect($sessionMutationsInFlight.get().has('tg-unresolved')).toBe(false)
+  })
+
+  it('fails closed when a listed profile-less messaging archive cannot resolve an owner', async () => {
+    setMessagingSessions([storedSession({ id: 'tg-arch-unresolved', source: 'telegram' })])
+    mockGetSession.mockRejectedValue(new Error('404: Session not found'))
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.archiveSession('tg-arch-unresolved')
+    })
+
+    expect(mockSetSessionArchived).not.toHaveBeenCalled()
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['tg-arch-unresolved'])
+    expect($sessions.get()).toEqual([])
   })
 })

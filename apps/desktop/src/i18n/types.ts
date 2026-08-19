@@ -98,6 +98,9 @@ export interface Translations {
     revealInSidebar: string
     copyPath: string
     copyRelativePath: string
+    download: string
+    downloadSaved: string
+    downloadFailed: string
     rename: string
     delete: string
     renameTitle: string

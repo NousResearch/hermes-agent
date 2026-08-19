@@ -4,6 +4,18 @@
 Stage 1: LLM-generated drafts → review/approve
 Stage 2: AI images/videos for approved drafts → publish
 """
+import sys
+from pathlib import Path
+
+# Ensure the repository root is importable so the execute path can reach
+# ``agent.*`` (image_gen_registry) and ``tools.*`` when this script is run
+# directly with only ``PYTHONPATH=content_engine``.  The gateway / in-process
+# runner already has the repo root on sys.path; this makes the standalone CLI
+# invocation work too.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import sqlite3
 import json
 import os

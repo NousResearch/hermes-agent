@@ -116,6 +116,14 @@ class TestMessageEventIsCommand:
         event = MessageEvent(text="@image:/tmp/foo.png\n\nwhat is this?")
         assert event.is_command() is False
 
+    def test_slash_command_with_invisible_boundaries(self):
+        event = MessageEvent(text="\u2060 \n/deny\u2060\n")
+        assert event.is_command() is True
+
+    def test_invisible_boundaries_do_not_bypass_gateway_control(self):
+        event = MessageEvent(text="\u2060/new", allow_gateway_control=False)
+        assert event.is_command() is False
+
 
 class TestMessageEventGetCommand:
     def test_simple_command(self):
@@ -134,6 +142,9 @@ class TestMessageEventGetCommand:
         """get_command() must parse the command name even when prefixed with a Desktop media ref."""
         event = MessageEvent(text="@image:/tmp/foo.png\n\n/moa something interesting")
         assert event.get_command() == "moa"
+    def test_command_with_invisible_boundaries(self):
+        event = MessageEvent(text="\ufeff\u2060\n /MODEL gpt-5\u2060")
+        assert event.get_command() == "model"
 
 
 class TestMessageEventGetCommandArgs:
@@ -145,6 +156,9 @@ class TestMessageEventGetCommandArgs:
         """@url: tokens in the middle of command args must NOT be stripped."""
         event = MessageEvent(text="/status check @url:https://example.com")
         assert event.get_command_args() == "check @url:https://example.com"
+    def test_command_args_with_invisible_boundaries(self):
+        event = MessageEvent(text="\u2060\n/steer follow up after tool\u2060\n")
+        assert event.get_command_args() == "follow up after tool"
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ support.
 
 import json
 import logging
+import threading
 from typing import Any, Dict, List, Optional, Union
 
 from hermes_state_common import _RESET_END_REASONS
@@ -343,6 +344,91 @@ def _shape_message(
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
 
 
+# Heal state for _open_cross_profile_session_db, mirroring
+# hermes_cli.web_server._open_session_db_at_path's contract — NOT shared
+# with it: the dashboard and agent are separate OS processes in normal
+# operation, so there is no process memory to coordinate a single registry
+# through. Each side owns its own bootstrap-lock/heal-exhausted state.
+_cross_profile_db_bootstrap_lock = threading.Lock()
+_cross_profile_db_heal_exhausted: set = set()
+_cross_profile_db_heal_warned: set = set()
+
+
+def _open_cross_profile_session_db(db_path):
+    """Open another profile's ``state.db`` read-only, healing a stale schema.
+
+    Read-only opens skip SessionDB's column-reconciliation path by design —
+    a read-only handle must never take a write lock against a possibly-live
+    store. A profile whose store predates a schema addition (e.g. one
+    untouched since the last ``hermes update``) then raises "no such
+    column"/"no such table" on any query touching the new shape. Mirrors
+    ``hermes_cli.web_server._open_session_db_at_path``'s probe-then-one-time-
+    writable-reopen heal (derived from SCHEMA_SQL, so any future column
+    addition is covered automatically) so cross-profile session reads here —
+    ``session_search(profile=...)`` and the ``@session:<profile>/<id>`` link
+    fallback scan — get the same guarantee dashboard reads already do.
+    """
+    import sqlite3
+
+    from hermes_state import SessionDB, is_malformed_db_error
+    from hermes_state_schema import schema_read_probe_statements
+
+    def _needs_bootstrap() -> bool:
+        try:
+            return db_path.stat().st_size == 0
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+
+    if _needs_bootstrap():
+        with _cross_profile_db_bootstrap_lock:
+            if _needs_bootstrap():
+                SessionDB(db_path=db_path, read_only=False).close()
+
+    def _open_probed():
+        db = SessionDB(db_path=db_path, read_only=True)
+        conn = getattr(db, "_conn", None)
+        if conn is not None and str(db_path) not in _cross_profile_db_heal_exhausted:
+            try:
+                for statement in schema_read_probe_statements():
+                    conn.execute(statement).fetchone()
+            except BaseException:
+                db.close()
+                raise
+        return db
+
+    try:
+        return _open_probed()
+    except sqlite3.DatabaseError as exc:
+        message = str(exc).lower()
+        stale_schema = "no such table" in message or "no such column" in message
+        if not stale_schema and not is_malformed_db_error(exc):
+            raise
+        SessionDB(db_path=db_path, read_only=False).close()
+        try:
+            return _open_probed()
+        except sqlite3.DatabaseError as still_stale:
+            message = str(still_stale).lower()
+            if "no such table" not in message and "no such column" not in message:
+                raise
+            # The writable open succeeded but the store is STILL behind the
+            # probe: reconciliation cannot fix this one. Serve reads without
+            # the probe (queries touching the broken part will still fail,
+            # everything else works) and stop paying the writable init per
+            # call.
+            _cross_profile_db_heal_exhausted.add(str(db_path))
+            if str(db_path) not in _cross_profile_db_heal_warned:
+                _cross_profile_db_heal_warned.add(str(db_path))
+                logging.getLogger(__name__).warning(
+                    "state.db at %s is missing schema that a writable "
+                    "reconcile could not add (%s); session_search reads "
+                    "may partially fail until the store is repaired",
+                    db_path, still_stale,
+                )
+            return _open_probed()
+
+
 def _resolve_profile_db(profile: str):
     """Open another profile's ``state.db`` read-only, or None for the current one.
 
@@ -356,14 +442,13 @@ def _resolve_profile_db(profile: str):
         return None
 
     from hermes_cli import profiles as profiles_mod
-    from hermes_state import SessionDB
 
     canon = profiles_mod.normalize_profile_name(profile)
     profiles_mod.validate_profile_name(canon)
     if not profiles_mod.profile_exists(canon):
         raise ValueError(f"profile '{canon}' does not exist")
 
-    return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+    return _open_cross_profile_session_db(profiles_mod.get_profile_dir(canon) / "state.db")
 
 
 def _session_link(session_id: str, profile: str = None) -> str:
@@ -401,7 +486,6 @@ def _locate_session_db(session_id: str):
 
     try:
         from hermes_cli import profiles as profiles_mod
-        from hermes_state import SessionDB
     except Exception:
         return None, None
 
@@ -419,7 +503,7 @@ def _locate_session_db(session_id: str):
             continue
         seen.add(key)
         try:
-            pdb = SessionDB(db_path=db_path, read_only=True)
+            pdb = _open_cross_profile_session_db(db_path)
         except Exception:
             continue
         try:

@@ -10,6 +10,7 @@ All run zero LLM calls.
 """
 import inspect
 import json
+import sqlite3
 import time
 
 import pytest
@@ -20,6 +21,7 @@ from tools.session_search_tool import (
     _format_timestamp,
     _is_compacted_message,
     _is_compression_ended,
+    _open_cross_profile_session_db,
     _resolve_to_parent,
     _session_link,
     session_search,
@@ -538,6 +540,140 @@ class TestCrossProfileRead:
             assert result["success"] is True, kwargs
             assert result["mode"] == "read"
             assert result["session_id"] == "s_other"
+
+
+class TestCrossProfileStaleSchemaHeal:
+    """A profile's state.db that predates a schema addition (untouched since
+    the last `hermes update`) must still be readable cross-profile --
+    dashboard reads get this via hermes_cli.web_server's probe-then-heal;
+    session_search's cross-profile paths (profile= browse, bare-id locate
+    scan) previously bypassed it entirely and hard-failed on ANY column
+    SCHEMA_SQL has added since that profile's store was created."""
+
+    def _stale_db(self, tmp_path, session_id="stale-session"):
+        home = tmp_path / f"{session_id}_home"
+        home.mkdir()
+        db_path = home / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session(session_id, source="cli")
+            seed.append_message(session_id, role="user", content="hi")
+        finally:
+            seed.close()
+
+        legacy = sqlite3.connect(str(db_path))
+        try:
+            legacy.execute("ALTER TABLE sessions DROP COLUMN last_activity_at")
+            legacy.commit()
+        finally:
+            legacy.close()
+        return home, db_path
+
+    def test_browse_shape_heals_stale_schema_in_other_profile(
+        self, db, tmp_path, monkeypatch
+    ):
+        """BROWSE mode (session_search(profile=...), no query) reaches
+        list_sessions_rich, which selects sessions.last_activity_at -- the
+        exact column whose absence originally broke the dashboard sidebar
+        (#72424 aftermath). Before this fix, a stale other-profile store
+        made every browse of it fail with "no such column"."""
+        from hermes_cli import profiles as profiles_mod
+
+        home, _db_path = self._stale_db(tmp_path, "browse-stale")
+        monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+        monkeypatch.setattr(profiles_mod, "validate_profile_name", lambda n: None)
+        monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: True)
+        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
+
+        result = json.loads(session_search(profile="asdf", db=db))
+
+        assert result["success"] is True, result
+        assert result["results"][0]["session_id"] == "browse-stale"
+
+    def test_locate_scan_heals_stale_schema_in_other_profile(
+        self, db, tmp_path, monkeypatch
+    ):
+        """The bare-id cross-profile locate scan (_locate_session_db) opens
+        every profile's store read-only too -- same heal contract applies
+        for defense-in-depth. get_session/get_messages happen not to select
+        sessions.last_activity_at specifically, so this exact column drop
+        doesn't reproduce a crash on THIS call chain the way it does on
+        the browse path below -- this pins the wiring (same heal helper,
+        same failure-tolerant open) against a future column that does."""
+        from collections import namedtuple
+        from hermes_cli import profiles as profiles_mod
+
+        home, _db_path = self._stale_db(tmp_path, "locate-stale")
+        Info = namedtuple("Info", "name path")
+        monkeypatch.setattr(
+            profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home"
+        )
+        monkeypatch.setattr(
+            profiles_mod, "list_profiles", lambda: [Info("stale-owner", home)]
+        )
+
+        result = json.loads(session_search(session_id="locate-stale", db=db))
+
+        assert result["success"] is True, result
+        assert result["profile"] == "stale-owner"
+
+    def test_open_cross_profile_session_db_heals_and_memoizes_exhaustion(
+        self, tmp_path, monkeypatch
+    ):
+        """Direct unit coverage of the heal helper's give-up path, mirroring
+        hermes_cli.web_server's own test for _open_session_db_at_path: a
+        probe failure reconciliation cannot fix must not retry the writable
+        open on every subsequent call for that store."""
+        import tools.session_search_tool as sst
+
+        db_path = tmp_path / "unfixable" / "state.db"
+        db_path.parent.mkdir()
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("unfixable", source="cli")
+        finally:
+            seed.close()
+
+        monkeypatch.setattr(sst, "_cross_profile_db_heal_exhausted", set())
+        monkeypatch.setattr(sst, "_cross_profile_db_heal_warned", set())
+
+        import hermes_state_schema
+
+        monkeypatch.setattr(
+            hermes_state_schema,
+            "schema_read_probe_statements",
+            lambda: (
+                'SELECT "sessions"."not_a_real_column" FROM "sessions" LIMIT 0',
+            ),
+        )
+
+        writable_opens = []
+        original_init = SessionDB.__init__
+
+        def counting_init(self, *args, **kwargs):
+            if not kwargs.get("read_only", False):
+                writable_opens.append(1)
+            return original_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(SessionDB, "__init__", counting_init)
+
+        # First open: probe fails -> one writable heal -> re-probe fails ->
+        # exhausted. Still returns a usable read-only handle.
+        db1 = _open_cross_profile_session_db(db_path)
+        try:
+            assert db1.get_session("unfixable") is not None
+        finally:
+            db1.close()
+        assert len(writable_opens) == 1
+        assert str(db_path) in sst._cross_profile_db_heal_exhausted
+
+        # Second open: probe skipped, no further writable opens.
+        db2 = _open_cross_profile_session_db(db_path)
+        try:
+            assert db2.get_session("unfixable") is not None
+        finally:
+            db2.close()
+        assert len(writable_opens) == 1
 
 
 # =========================================================================

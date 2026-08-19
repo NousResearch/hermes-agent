@@ -25,7 +25,7 @@ test('BotRow keys the highlight off the focused profile, not the socket home', (
   const row = source.slice(rowStart, rowStart + 2000)
 
   assert.match(row, /const focusedProfile = useValue\(\$focusedBotProfile\)/)
-  assert.match(row, /const isActive = !bot\.remoteSource && bot\.name === focusedProfile/)
+  assert.match(row, /const isActive = !activeGroup && !bot\.remoteSource && bot\.name === focusedProfile/)
 })
 
 test('BotRow keeps turn-busy (work mood) a socket fact', () => {

@@ -134,8 +134,12 @@ def _resolve_pi_bin() -> str:
 
 
 def _resolve_acp_command(kwargs_command: str | None) -> str:
-    # When wired through the copilot-acp plumbing, the command may be
-    # ``pi`` or ``pi-acp``; either way we drive pi natively.
+    # An explicitly passed command that exists on disk wins (lets callers
+    # and tests pin the exact binary). Bare names (``pi`` / ``pi-acp`` from
+    # the copilot-acp plumbing) resolve through env so HERMES_PI_BIN still
+    # overrides; we drive pi natively either way.
+    if kwargs_command and Path(kwargs_command).exists():
+        return kwargs_command
     return _resolve_pi_bin()
 
 

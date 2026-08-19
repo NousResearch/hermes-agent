@@ -90,16 +90,27 @@ function linkifyProseChunk(chunk: string, cwd?: string): string {
 
 /** Resolve a relative path (`./`, `../`, plain segments) against `cwd`. */
 function resolveRelativePath(cwd: string, rel: string): string {
+  const isAbsolute = cwd.startsWith('/')
   const stack = cwd.split('/')
   for (const segment of rel.split('/')) {
     if (segment === '' || segment === '.') {
       continue
     }
     if (segment === '..') {
-      stack.pop()
+      // Clamp at the filesystem root: `../../..` against a shallow cwd must
+      // not pop past the root and produce a path relative to the app's own
+      // cwd. `Math.max(0, ...)` keeps the stack non-empty.
+      stack.splice(Math.max(0, stack.length - 1), 1)
     } else {
       stack.push(segment)
     }
   }
-  return stack.join('/')
+  let joined = stack.join('/')
+  // Preserve the leading root slash for absolute cwds (split('/') on
+  // '/repo' yields ['', 'repo'], and popping past 'repo' must not drop the
+  // root marker).
+  if (isAbsolute && !joined.startsWith('/')) {
+    joined = '/' + joined
+  }
+  return joined
 }

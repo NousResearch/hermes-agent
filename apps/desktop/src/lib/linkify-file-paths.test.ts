@@ -58,6 +58,14 @@ describe('linkifyFilePaths', () => {
     )
   })
 
+  it('clamps ../ past the cwd root instead of escaping it', () => {
+    // `../../..` against a shallow cwd must not pop past the root and produce
+    // a path relative to the app's own cwd — it clamps at the filesystem root.
+    expect(linkifyFilePaths('../../../etc/hosts.md', '/repo')).toContain(
+      '[../../../etc/hosts.md](#media:%2Fetc%2Fhosts.md)'
+    )
+  })
+
   it('does not link relative paths without cwd, and skips URL path segments', () => {
     expect(linkifyFilePaths('docs/guide.md')).toBe('docs/guide.md')
     expect(linkifyFilePaths('见 https://github.com/user/repo/file.md', '/repo')).toBe(

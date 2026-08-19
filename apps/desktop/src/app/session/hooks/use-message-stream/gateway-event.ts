@@ -49,7 +49,7 @@ import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
-import { revealDesktopPane } from '@/store/pane-focus'
+import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -1461,6 +1461,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // offer, don't hijack).
         if (isActiveEvent) {
           revealDesktopPane(payload?.pane ?? '')
+        }
+      } else if (event.type === 'layout.apply') {
+        // Agent applied a layout preset via the desktop-gated apply_layout
+        // tool. Same contract as pane.reveal: active session only, and the
+        // preset resolves against the SAME layouts registry the picker reads,
+        // so core, plugin, and user presets are all addressable.
+        if (isActiveEvent) {
+          applyDesktopLayoutPreset(typeof payload?.preset === 'string' ? payload.preset : '')
         }
       } else if (event.type === 'message.reaction') {
         // The agent reacted to a message via the desktop-gated

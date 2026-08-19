@@ -116,6 +116,8 @@ export type GatewayEventPayload = {
   kind?: string
   // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
   pane?: string
+  // layout.apply (agent applying a layout preset via the apply_layout tool)
+  preset?: string
   // message.reaction (agent reacting via the react_to_message tool) — the
   // durable messages.id, that row's full reaction list after the write, and
   // the row's role so a live (not-yet-round-tripped) message can be matched.

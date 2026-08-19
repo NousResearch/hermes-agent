@@ -23,13 +23,17 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
-| **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
-| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | Paid |
+| **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless free tier (rate-limited) · 1 000 searches/mo with key |
+| **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless free tier (rate-limited) · paid with key |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
+
+:::info Works out of the box — keyless free tier
+A fresh install with **no web credentials at all** still gets working `web_search` and `web_extract`: Hermes falls back to Parallel's and Exa's public anonymous endpoints (rate-limited free tiers, Parallel first). No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For reliable, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
+:::
 
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.
@@ -360,6 +364,9 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `SEARXNG_URL` | searxng |
 | `BRAVE_SEARCH_API_KEY` | brave-free |
 | `ddgs` package importable | ddgs |
+| *(nothing set at all)* | parallel → exa keyless free tier |
+
+**Keyless free tier:** when *no* credential above is present, Hermes falls back to Parallel's public anonymous endpoint (then Exa's) so web tools work on a fresh install with zero setup. These free tiers are rate-limited by the vendors (Exa's per-IP limit is fairly tight); on throttling, the tool returns an error suggesting the matching API key. Set `web.keyless_fallback: false` to turn this tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 

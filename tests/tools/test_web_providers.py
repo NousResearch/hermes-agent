@@ -193,8 +193,13 @@ class TestUnconfiguredErrorEnvelopeParity:
     def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
         """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
         — matching main's ``tool_error()`` envelope, not a per-result shape.
+
+        Keyless fallback (Parallel/Exa free tiers) is disabled here: with it
+        on, a zero-credential install routes to the keyless tier instead of
+        erroring (covered in test_web_keyless_fallback.py).
         """
         from tools import web_tools
+        from agent import web_search_registry
 
         self._clear_web_creds(monkeypatch)
         # Reset firecrawl client cache so the unconfigured state is re-evaluated
@@ -202,6 +207,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: False)
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"

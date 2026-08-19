@@ -166,6 +166,17 @@ _LEGACY_PREFERENCE = (
     "ddgs",
 )
 
+# Keyless free-tier walk — strictly LAST-resort, tried only after the
+# availability-filtered legacy walk finds nothing (i.e. the user has zero
+# web credentials and no importable ddgs). These providers expose public
+# anonymous MCP endpoints (see plugins/web/keyless_mcp.py); order favors
+# Parallel, whose free tier has proven more permissive than Exa's per-IP
+# rate limit. Disable the tier with ``web.keyless_fallback: false``.
+_KEYLESS_PREFERENCE = (
+    "parallel",
+    "exa",
+)
+
 
 def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearchProvider]:
     """Resolve the active provider for a capability ("search" | "extract").
@@ -254,7 +265,37 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
         ):
             return provider
 
+    # 4. Keyless free-tier walk — the user has NO credentialed/importable
+    #    backend at all. Fall back to providers that can serve anonymously
+    #    (public MCP free tiers), unless disabled via
+    #    ``web.keyless_fallback: false``. This tier never pre-empts a keyed
+    #    setup: it is only reachable when the legacy walk found nothing.
+    if _keyless_tier_enabled():
+        for name in _KEYLESS_PREFERENCE:
+            provider = snapshot.get(name)
+            if provider is None or not _capable(provider):
+                continue
+            try:
+                if provider.is_keyless_available():
+                    return provider
+            except Exception as exc:  # noqa: BLE001 — buggy provider skipped
+                logger.debug(
+                    "provider %s.is_keyless_available() raised %s", name, exc
+                )
+
     return None
+
+
+def _keyless_tier_enabled() -> bool:
+    """Read ``web.keyless_fallback`` from config.yaml (default: enabled)."""
+    try:
+        from hermes_cli.config import load_config
+
+        web_cfg = load_config().get("web") or {}
+        return bool(web_cfg.get("keyless_fallback", True))
+    except Exception as exc:  # noqa: BLE001 — config layer optional
+        logger.debug("keyless_fallback config read failed: %s", exc)
+        return True
 
 
 def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Optional[str] = None) -> Optional[str]:

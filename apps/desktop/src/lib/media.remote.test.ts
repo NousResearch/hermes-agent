@@ -10,9 +10,27 @@ import {
   isRemoteGateway,
   mediaExternalUrl,
   mediaGatewayStreamUrl,
+  mediaName,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
+
+describe('mediaName', () => {
+  it('keeps non-ASCII basenames on Windows drive paths (#84361)', () => {
+    expect(mediaName('D:/Users/licat/Desktop/迷妃湖路段_payload.json')).toBe(
+      '迷妃湖路段_payload.json'
+    )
+    expect(mediaName('C:\\tmp\\报告.pdf')).toBe('报告.pdf')
+  })
+
+  it('keeps non-ASCII basenames on POSIX paths', () => {
+    expect(mediaName('/tmp/迷妃湖路段_payload.json')).toBe('迷妃湖路段_payload.json')
+  })
+
+  it('decodes percent-encoded file URL path segments', () => {
+    expect(mediaName('file:///tmp/%E6%8A%A5%E5%91%8A.pdf')).toBe('报告.pdf')
+  })
+})
 
 describe('isRemoteGateway', () => {
   afterEach(() => {
@@ -59,6 +77,16 @@ describe('mediaExternalUrl', () => {
     $connection.set({ mode: 'local' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
     expect(mediaExternalUrl('file:///tmp/a.png')).toBe('file:///tmp/a.png')
+  })
+
+  it('escapes URL-structural characters in local file URLs (#84361)', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('/tmp/Report #2.pdf')).toBe('file:///tmp/Report %232.pdf')
+    expect(mediaExternalUrl('/tmp/a?b.pdf')).toBe('file:///tmp/a%3Fb.pdf')
+    expect(mediaExternalUrl('/tmp/100%.pdf')).toBe('file:///tmp/100%25.pdf')
+    // Spaces and home-relative paths stay literal for the main process.
+    expect(mediaExternalUrl('/tmp/a b.pdf')).toBe('file:///tmp/a b.pdf')
+    expect(mediaExternalUrl('~/docs/a.pdf')).toBe('file://~/docs/a.pdf')
   })
 
   it('rewrites gateway-local paths to an authenticated download URL', () => {

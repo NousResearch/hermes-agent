@@ -406,6 +406,19 @@ describe('renderMediaTags', () => {
     expect(renderMediaTags('MEDIA:/tmp/demo.mp4')).toBe('[Video: demo.mp4](#media:%2Ftmp%2Fdemo.mp4)')
   })
 
+  it('does not absorb trailing markdown emphasis or prose punctuation (#84361)', () => {
+    expect(renderMediaTags('**MEDIA:/tmp/a.pdf**')).toBe('**[File: a.pdf](#media:%2Ftmp%2Fa.pdf)**')
+    expect(renderMediaTags('see MEDIA:/tmp/a.pdf, then')).toBe(
+      'see [File: a.pdf](#media:%2Ftmp%2Fa.pdf), then'
+    )
+    expect(renderMediaTags('open MEDIA:/tmp/a.pdf.')).toBe('open [File: a.pdf](#media:%2Ftmp%2Fa.pdf).')
+  })
+
+  it('keeps balanced path parentheses while dropping wrapper closers', () => {
+    expect(renderMediaTags('MEDIA:/tmp/(a).png')).toBe('[Image: (a).png](#media:%2Ftmp%2F(a).png)')
+    expect(renderMediaTags('(MEDIA:/tmp/a.png)')).toBe('([Image: a.png](#media:%2Ftmp%2Fa.png))')
+  })
+
   it('renders streamed assistant media once the tag is complete', () => {
     const parts = appendAssistantTextPart(appendAssistantTextPart([], 'ok\nMEDIA:'), '/tmp/voice.mp3')
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })

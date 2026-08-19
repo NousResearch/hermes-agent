@@ -208,6 +208,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { imageContextMenuItems } from './image-context-menu'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { absolutizeProtocolRelativeUrl, looksLikeLocalFilesystemPath } from './local-filesystem-path'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
@@ -1519,11 +1520,49 @@ function loadWindowUrl(win, url, label) {
   win.loadURL(url).catch(error => rememberLog(`${label} failed to load: ${describeCrashReason(error)}`))
 }
 
+function openLocalFilesystemPath(localPath) {
+  void shell
+    .openPath(localPath)
+    .then(error => {
+      if (!error) {
+        return
+      }
+
+      // Include the path so "Failed to open path" is diagnosable (#84361).
+      rememberLog(`[file] openPath failed: ${error}; path=${localPath}; revealing in folder instead`)
+
+      try {
+        shell.showItemInFolder(localPath)
+      } catch (revealError) {
+        rememberLog(`[file] showItemInFolder failed: ${revealError.message}; path=${localPath}`)
+      }
+    })
+    .catch(error => rememberLog(`[file] openPath rejected: ${error.message}; path=${localPath}`))
+
+  return true
+}
+
 function openExternalUrl(rawUrl) {
-  const raw = String(rawUrl || '').trim()
+  const raw = absolutizeProtocolRelativeUrl(String(rawUrl || '').trim())
 
   if (!raw) {
     return false
+  }
+
+  // Bare local paths (incl. Windows drive letters and `~/…`) are not valid
+  // absolute URLs; open them via shell.openPath instead of failing closed
+  // (#84361 / #80946).
+  if (looksLikeLocalFilesystemPath(raw)) {
+    let localPath
+
+    try {
+      localPath = resolveRequestedPathForIpc(expandUserPath(raw), { purpose: 'Open external file' })
+    } catch (error) {
+      rememberLog(`[file] openPath resolve failed: ${error.message || error}; path=${raw}`)
+      return false
+    }
+
+    return openLocalFilesystemPath(localPath)
   }
 
   let parsed
@@ -1544,28 +1583,12 @@ function openExternalUrl(rawUrl) {
 
     try {
       localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open external file' })
-    } catch {
+    } catch (error) {
+      rememberLog(`[file] openPath resolve failed: ${error.message || error}; url=${raw}`)
       return false
     }
 
-    void shell
-      .openPath(localPath)
-      .then(error => {
-        if (!error) {
-          return
-        }
-
-        rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
-
-        try {
-          shell.showItemInFolder(localPath)
-        } catch (revealError) {
-          rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
-        }
-      })
-      .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
-
-    return true
+    return openLocalFilesystemPath(localPath)
   }
 
   if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {

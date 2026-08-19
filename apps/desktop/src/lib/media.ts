@@ -56,10 +56,22 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
+  // Windows drive paths (`D:/…`, `C:\…`) are valid URL schemes to WHATWG, so
+  // `new URL` never throws and `pathname` is percent-encoded. Split the
+  // filesystem string instead so non-ASCII labels stay readable (#84361).
+  if (/^(?:[a-zA-Z]:[\\/]|\\\\|\/|~\/)/.test(path) || !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path)) {
+    return path.split(/[\\/]/).filter(Boolean).pop() || path
+  }
+
   try {
     const url = new URL(path)
+    const segment = url.pathname.split('/').filter(Boolean).pop() || path
 
-    return url.pathname.split('/').filter(Boolean).pop() || path
+    try {
+      return decodeURIComponent(segment)
+    } catch {
+      return segment
+    }
   } catch {
     return path.split(/[\\/]/).filter(Boolean).pop() || path
   }
@@ -109,6 +121,20 @@ export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
   return resolveMediaDisplaySrc(path)
 }
 
+// Escape only URL-structural characters in a filesystem path so `new URL`
+// does not treat `#` / `?` as fragment/query (or a raw `%` as a bad escape).
+// Spaces and non-ASCII stay literal; Windows drive letters and `~/…` stay
+// intact for the main process to expand (#84361).
+export function pathToLocalFileUrl(path: string): string {
+  if (/^file:/i.test(path)) {
+    return path
+  }
+
+  const escaped = path.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F')
+
+  return `file://${escaped}`
+}
+
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
@@ -127,7 +153,7 @@ export function mediaExternalUrl(path: string): string {
     }
   }
 
-  return /^file:/i.test(path) ? path : `file://${path}`
+  return pathToLocalFileUrl(path)
 }
 
 // Remote gateway audio/video is proxied by the Electron main process. OAuth

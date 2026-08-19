@@ -281,6 +281,7 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
             kwargs["default_headers"] = merged
     except Exception:
         pass
+    _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain
     # fallback). The OpenAI SDK's own default (max_retries=2 → up to 3
@@ -1222,19 +1223,31 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
-def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
-    """Headers required to avoid Cloudflare 403s on chatgpt.com/backend-api/codex.
+def _is_official_codex_base_url(base_url: str) -> bool:
+    """Identify OpenAI's Codex endpoint without matching custom proxies."""
+    try:
+        parsed = urlparse(base_url)
+        path = parsed.path.rstrip("/")
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "chatgpt.com"
+            and parsed.port in (None, 443)
+            and (path == "/backend-api/codex" or path.startswith("/backend-api/codex/"))
+        )
+    except (TypeError, ValueError):
+        return False
 
-    The Cloudflare layer in front of the Codex endpoint whitelists a small set of
-    first-party originators (``codex_cli_rs``, ``codex_vscode``, ``codex_sdk_ts``,
-    anything starting with ``Codex``). Requests from non-residential IPs (VPS,
-    server-hosted agents) that don't advertise an allowed originator are served
-    a 403 with ``cf-mitigated: challenge`` regardless of auth correctness.
 
-    We pin ``originator: codex_cli_rs`` to match the upstream codex-rs CLI, set
-    ``User-Agent`` to a codex_cli_rs-shaped string (beats SDK fingerprinting),
-    and extract ``ChatGPT-Account-ID`` (canonical casing, from codex-rs
-    ``auth.rs``) out of the OAuth JWT's ``chatgpt_account_id`` claim.
+def _codex_cloudflare_headers(
+    access_token: str, *, base_url: str = _CODEX_AUX_BASE_URL,
+) -> Dict[str, str]:
+    """Identity and account headers for chatgpt.com/backend-api/codex.
+
+    OpenAI requires third-party harnesses to identify themselves. Requests to
+    the official endpoint always send Hermes' originator and version. Custom
+    endpoints retain the existing compatibility identity. In either case,
+    preserve ``ChatGPT-Account-ID`` from the OAuth JWT's
+    ``chatgpt_account_id`` claim.
 
     Malformed tokens are tolerated — we drop the account-ID header rather than
     raise, so a bad token still surfaces as an auth error (401) instead of a
@@ -1244,6 +1257,13 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
         "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
         "originator": "codex_cli_rs",
     }
+    if _is_official_codex_base_url(base_url):
+        from hermes_cli import __version__
+
+        headers.update({
+            "User-Agent": f"HermesAgent/{__version__}",
+            "originator": "hermes-agent",
+        })
     if not isinstance(access_token, str) or not access_token.strip():
         return headers
     try:
@@ -1259,6 +1279,22 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     except Exception:
         pass
     return headers
+
+
+def _apply_required_codex_headers(
+    client_kwargs: Dict[str, Any], *, access_token: str, base_url: str,
+) -> None:
+    """Keep required Codex identity after user/provider header overrides."""
+    if not _is_official_codex_base_url(base_url):
+        return
+    required = _codex_cloudflare_headers(access_token, base_url=base_url)
+    required_names = {name.lower() for name in required}
+    existing = client_kwargs.get("default_headers") or {}
+    client_kwargs["default_headers"] = {
+        **{name: value for name, value in existing.items()
+           if str(name).lower() not in required_names},
+        **required,
+    }
 
 
 # Hosts that expose BOTH an Anthropic-style ``…/anthropic`` path and a sibling
@@ -3804,7 +3840,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     real_client = _create_openai_client(
         api_key=codex_token,
         base_url=base_url,
-        default_headers=_codex_cloudflare_headers(codex_token),
+        default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
     )
     return CodexAuxiliaryClient(real_client, model), model
 
@@ -6201,6 +6237,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
         async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
+    elif _is_official_codex_base_url(sync_base_url):
+        async_kwargs["default_headers"] = _codex_cloudflare_headers(
+            sync_client.api_key, base_url=sync_base_url,
+        )
     elif base_url_host_matches(sync_base_url, "x.ai"):
         from tools.xai_http import hermes_xai_default_headers
 
@@ -6222,6 +6262,9 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
+    _apply_required_codex_headers(
+        async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url,
+    )
     async_kwargs = {
         **_openai_http_client_kwargs(sync_base_url, async_mode=True),
         **async_kwargs,

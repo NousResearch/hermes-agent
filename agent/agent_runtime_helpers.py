@@ -2664,7 +2664,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             client_kwargs["default_headers"] = existing
     except Exception:
         _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
-
     # OpenCode Free: the tier is served ANONYMOUSLY — any bearer the relay
     # doesn't recognize (including placeholders) is a 401. Route every
     # opencode-free client through the shared keyless header policy: an
@@ -2676,6 +2675,16 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         _existing = dict(client_kwargs.get("default_headers") or {})
         _existing.update(opencode_zen_free_headers())
         client_kwargs["default_headers"] = _existing
+
+    # All primary construction and recovery paths must identify Hermes to the
+    # official Codex endpoint, including snapshots with custom header overrides.
+    from agent.auxiliary_client import _apply_required_codex_headers
+
+    _apply_required_codex_headers(
+        client_kwargs,
+        access_token=client_kwargs.get("api_key", ""),
+        base_url=str(client_kwargs.get("base_url", "")),
+    )
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)

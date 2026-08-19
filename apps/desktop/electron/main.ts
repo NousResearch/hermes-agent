@@ -3779,16 +3779,20 @@ async function handOffWindowsBootstrapRecovery(reason) {
   const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
   const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
 
-  // Choose the gentle in-place --update when ANY real-install signal is present,
-  // not just the `hermes.exe` console-script shim. That shim is generated at the
-  // END of venv setup and is absent in exactly the interrupted/quarantined states
-  // this recovery exists to heal — gating on it alone forced the destructive
-  // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
-  // and the bootstrap-complete marker are present earlier and are better signals.
-  const haveRealInstall =
-    fileExists(venvPython) || fileExists(venvHermes) || fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
-
-  const updaterArgs = chooseUpdaterArgs(haveRealInstall, branch)
+  // The updater invokes the venv's Hermes launcher, which in turn requires the
+  // venv interpreter. A bootstrap-complete marker proves only that setup once
+  // finished; it can outlive a manually removed or quarantined venv. Sending a
+  // marker-only install through --update dead-ends at "Could not find the hermes
+  // CLI" instead of rebuilding the runtime, so only a runnable pair gets the
+  // gentle update path. Partial or missing runtimes go through full repair.
+  const updaterArgs = chooseUpdaterArgs(
+    {
+      hasBootstrapMarker: fileExists(path.join(updateRoot, '.hermes-bootstrap-complete')),
+      hasVenvHermes: fileExists(venvHermes),
+      hasVenvPython: fileExists(venvPython)
+    },
+    branch
+  )
 
   await releaseBackendLockForUpdate(updateRoot)
 

@@ -2062,6 +2062,7 @@ export interface Translations {
       openPr: string
       ghMissing: string
       agentShip: string
+      agentShipUnavailable: string
       agentShipPrompt: string
       newBranch: string
       branchOffFrom: (base: string) => string

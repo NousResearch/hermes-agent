@@ -1264,7 +1264,7 @@ export function ChatBar({
                   // A tile's rail reviews ITS worktree: pin the pane's scope to
                   // this surface's cwd. Main keeps the classic follow-the-
                   // active-session scope (null).
-                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null))}
+                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null), scope.target)}
                   onOpenWorktree={openInWorktree}
                   onSwitchBranch={handleSwitchBranch}
                   repoPath={cwd}

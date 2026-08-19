@@ -2036,6 +2036,7 @@ export const zhHant = defineLocale({
       openPr: '開啟 PR',
       ghMissing: '安裝 GitHub CLI (gh) 並登入後可開啟 PR',
       agentShip: '讓 Hermes 提交並開 PR',
+      agentShipUnavailable: '擁有這些變更的對話目前不在畫面上。',
       agentShipPrompt: '檢查目前的變更，使用清晰的約定式提交訊息提交，推送分支，並開啟一個拉取請求。',
       newBranch: '新增分支',
       branchOffFrom: base => `從 ${base} 建立新分支`,

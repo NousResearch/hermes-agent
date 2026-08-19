@@ -59,3 +59,50 @@ def test_empty_buffer_does_not_seed(monkeypatch):
     s = _Stub()
     s._handle_prompt_compose_command("/prompt")
     assert s._pending_agent_seed is None
+
+
+def test_editor_failure_never_falls_back_to_shell(monkeypatch):
+    """An editor the argv path cannot run must not retry through the shell.
+
+    The old fallback re-invoked `$EDITOR` via `shell=True` with the editor
+    string unquoted, so a malicious or malformed EDITOR value executed as
+    shell code. Now a failed editor simply cancels the compose.
+    """
+    import subprocess as _sp
+
+    calls = []
+
+    def _record(args, **kwargs):
+        calls.append((args, kwargs))
+        raise OSError("editor not runnable")
+
+    monkeypatch.setattr(_sp, "call", _record)
+    monkeypatch.setenv("EDITOR", "nonexistent-editor; touch /tmp/pwned")
+    assert _Stub()._compose_in_editor("") == ""
+    assert calls, "argv invocation should have been attempted"
+    for _, kwargs in calls:
+        assert kwargs.get("shell") is not True
+
+
+def test_nonzero_editor_exit_cancels_even_with_buffer_content(monkeypatch):
+    """A non-zero editor exit must cancel the compose, not read the buffer.
+
+    The buffer at that point may hold seeded or partially typed text
+    (editor crashed before saving, or the user quit via :cq), and sending
+    it as the prompt would ship text the user never approved. The fake
+    editor below writes to the buffer AND exits non-zero, which must
+    still cancel.
+    """
+    import subprocess as _sp
+
+    def _failing_editor(args, **kwargs):
+        # Mutate the temp buffer, then report a :cq-style failure.
+        with open(args[-1], "a", encoding="utf-8") as fh:
+            fh.write("typed but abandoned\n")
+        return 3
+
+    monkeypatch.setattr(_sp, "call", _failing_editor)
+    assert _Stub()._compose_in_editor("seed text from the command line") == ""
+    s = _Stub()
+    s._handle_prompt_compose_command("/prompt draft this")
+    assert s._pending_agent_seed is None

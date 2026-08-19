@@ -537,6 +537,71 @@ def _build_xai_agent_with_slash_enum_tool(monkeypatch):
 
 
 
+def test_run_codex_stream_strips_relay_added_retention_at_consumer_wire(
+    monkeypatch,
+    caplog,
+):
+    """A Relay-added unsupported field cannot reach consumer ChatGPT Codex."""
+    from agent import relay_llm
+
+    agent = _build_agent(monkeypatch)
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            )
+        ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+    original = _codex_request_kwargs()
+    relay_request_body = relay_llm._relay_request_body(
+        original,
+        {"api_mode": "codex_responses"},
+    )
+    relayed = relay_llm._provider_request(
+        original,
+        SimpleNamespace(
+            content={
+                **relay_request_body,
+                "prompt_cache_retention": "24h",
+            },
+            headers={},
+        ),
+        relay_request_body=relay_request_body,
+        codec_baseline_body=dict(relay_request_body),
+        metadata={"api_mode": "codex_responses"},
+    )
+    assert relayed["prompt_cache_retention"] == "24h"
+
+    with caplog.at_level("WARNING", logger="agent.codex_runtime"):
+        agent._run_codex_stream(relayed)
+
+    assert "prompt_cache_retention" not in captured
+    assert any(
+        "Dropped unsupported prompt_cache_retention at consumer Codex wire boundary"
+        in record.message
+        for record in caplog.records
+    )
+
+
+def test_consumer_codex_wire_guard_preserves_compatible_endpoint_retention():
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    agent = SimpleNamespace(_is_codex_backend=lambda: False)
+    request = {"model": "openai.gpt-5.5", "prompt_cache_retention": "24h"}
+
+    sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert sanitized["prompt_cache_retention"] == "24h"
+    assert sanitized is not request
+
+
 def test_run_codex_stream_returns_collected_items_when_stream_ends_without_terminal(monkeypatch):
     """The event-driven path tolerates streams that end without a terminal frame.
 

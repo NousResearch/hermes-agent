@@ -1,6 +1,7 @@
 """Tests for tools/skills_tool.py — skill discovery and viewing."""
 
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -250,6 +251,55 @@ class TestFindAllSkills:
 
         assert [s["name"] for s in skills] == ["knowledge-brain"]
         assert skills[0]["category"] == "linked"
+
+    def test_read_failure_is_skipped_with_warning(self, tmp_path, caplog):
+        _make_skill(tmp_path, "good-skill")
+        bad_skill_dir = _make_skill(tmp_path, "bad-skill")
+        bad_skill_file = bad_skill_dir / "SKILL.md"
+        original_read_text = type(bad_skill_file).read_text
+
+        def fake_read_text(path, *args, **kwargs):
+            if path == bad_skill_file:
+                raise PermissionError("read denied")
+            return original_read_text(path, *args, **kwargs)
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(type(bad_skill_file), "read_text", fake_read_text),
+            caplog.at_level(logging.WARNING, logger="tools.skills_tool"),
+        ):
+            skills = _find_all_skills()
+
+        assert [s["name"] for s in skills] == ["good-skill"]
+        assert any(
+            "Failed to read skill file" in record.message
+            and str(bad_skill_file) in record.message
+            for record in caplog.records
+        )
+
+    def test_parse_failure_is_skipped_with_warning(self, tmp_path, caplog):
+        _make_skill(tmp_path, "good-skill")
+        _make_skill(tmp_path, "bad-skill")
+        original_parse_frontmatter = skills_tool_module._parse_frontmatter
+
+        def fake_parse_frontmatter(content):
+            if "name: bad-skill" in content:
+                raise ValueError("frontmatter exploded")
+            return original_parse_frontmatter(content)
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._parse_frontmatter", fake_parse_frontmatter),
+            caplog.at_level(logging.WARNING, logger="tools.skills_tool"),
+        ):
+            skills = _find_all_skills()
+
+        assert [s["name"] for s in skills] == ["good-skill"]
+        assert any(
+            "failed to parse" in record.message
+            and "bad-skill" in record.message
+            for record in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------

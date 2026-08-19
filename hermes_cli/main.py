@@ -8980,19 +8980,15 @@ def _quarantine_running_hermes_exe(
 
     1. Retry up to ``max_attempts`` times with exponential backoff
        (100/250/500/1000 ms). Handles the AV-scanner case.
-    2. If all retries fail, schedule the .exe for replacement on next
-       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
-       lets uv create a fresh shim at the original path (Windows will keep
-       the old file's content under a new name until the reboot), so the
-       update can complete; the user just needs to reboot to fully unload
-       the stale image.
-    3. Print a clear warning naming the most likely culprit (running
-       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
+    2. If all retries fail, print a clear warning naming the most likely
+       culprit (running Hermes Desktop / gateway / REPL).
+
+    The updater's own launcher is no longer one of those culprits: an update
+    started from ``hermes.exe`` re-runs itself under the venv Python before
+    reaching here (``_reexec_update_off_windows_shim``).
 
     Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement. Pairs
-    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
-    are already deferred and roll-back is meaningless.
+    back if the install itself fails before uv writes a replacement.
     """
     moved: list[tuple[Path, Path]] = []
     if not _is_windows():
@@ -9028,27 +9024,13 @@ def _quarantine_running_hermes_exe(
         if last_exc is None:
             continue
 
-        # All in-process renames failed. Try MoveFileEx with
-        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This succeeds in the
-        # exact case where the inline rename failed (another process holds
-        # the handle without share-delete), at the cost of requiring a
-        # reboot to fully reclaim the old .exe.
-        scheduled = _schedule_replace_on_reboot(shim, target)
-        if scheduled:
-            print(
-                f"  ⚠ {shim.name} is locked by another process; scheduled "
-                f"replacement on next reboot."
-            )
-            print(
-                "    The new shim was written at the same path, but a "
-                "reboot is needed to fully unload the old one."
-            )
-            # Do NOT append to ``moved``: we don't want roll-back to undo a
-            # reboot-deferred operation.
-            continue
-
-        # Truly couldn't budge the .exe. Print an actionable warning and let
-        # uv try its luck — sometimes uv's own retry handling pulls through.
+        # Every rename failed. Deferring one to next boot via
+        # MOVEFILE_DELAY_UNTIL_REBOOT used to be the fallback here, but it
+        # cannot help: it needs elevation we don't have, and when it does
+        # land it frees nothing for the install running right now while
+        # queueing an operation that will move a later, freshly repaired shim
+        # aside at next boot. Report and let uv try its luck instead —
+        # sometimes its own retry handling pulls through.
         print(
             f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
             f"another process is holding it open)."
@@ -9061,39 +9043,78 @@ def _quarantine_running_hermes_exe(
     return moved
 
 
-def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
-    """Schedule ``shim`` -> ``quarantine_target`` via PendingFileRenameOperations.
+_PENDING_RENAME_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager"
+_PENDING_RENAME_VALUE = "PendingFileRenameOperations"
 
-    Uses Win32 ``MoveFileExW`` with ``MOVEFILE_REPLACE_EXISTING |
-    MOVEFILE_DELAY_UNTIL_REBOOT``. The OS persists the rename in
-    ``HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\
-    PendingFileRenameOperations`` and applies it before any user-mode code
-    runs on next boot — at which point no process can hold the .exe.
 
-    Returns ``True`` if the schedule call succeeded, ``False`` otherwise
-    (non-Windows, ctypes failure, lack of privilege, etc.). Never raises.
+def _filter_pending_shim_renames(
+    entries: list[str], shims: list[Path]
+) -> tuple[list[str], int]:
+    """Drop shim-quarantine pairs from a PendingFileRenameOperations value.
+
+    The value is a flat REG_MULTI_SZ of (source, target) pairs, and other
+    installers share it, so only pairs matching our own
+    ``<shim>`` -> ``<shim>.old.<stamp>`` naming are removed. Returns the
+    entries to keep and how many pairs were dropped.
+    """
+    import ntpath
+
+    def _norm(value: str) -> str:
+        path = str(value).lstrip("!")
+        if path.startswith("\\??\\"):
+            path = path[4:]
+        return ntpath.normcase(ntpath.normpath(path))
+
+    shim_paths = {_norm(str(shim)) for shim in shims}
+    kept: list[str] = []
+    removed = 0
+    for index in range(0, len(entries) - 1, 2):
+        source, target = entries[index], entries[index + 1]
+        source_norm = _norm(source)
+        if source_norm in shim_paths and _norm(target).startswith(f"{source_norm}.old."):
+            removed += 1
+        else:
+            kept.extend((source, target))
+    if len(entries) % 2:
+        kept.append(entries[-1])
+    return kept, removed
+
+
+def _cleanup_pending_shim_renames(scripts_dir: Path) -> int:
+    """Drop reboot renames older Hermes versions queued for our shims.
+
+    Hermes used to fall back to ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``
+    when the quarantine rename failed. Those entries outlive the update that
+    queued them, so at the next boot they move away whatever now sits at the
+    shim path — including a shim a later repair just wrote. Needs elevation
+    to remove (same as it needed to create); a no-op otherwise.
     """
     if not _is_windows():
-        return False
+        return 0
     try:
-        import ctypes
-        from ctypes import wintypes
+        import winreg
 
-        MOVEFILE_REPLACE_EXISTING = 0x1
-        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
-
-        MoveFileExW = ctypes.windll.kernel32.MoveFileExW
-        MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
-        MoveFileExW.restype = wintypes.BOOL
-
-        ok = MoveFileExW(
-            str(shim),
-            str(quarantine_target),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT,
-        )
-        return bool(ok)
-    except Exception:
-        return False
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            _PENDING_RENAME_KEY,
+            0,
+            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
+        ) as key:
+            entries, value_type = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
+            if value_type != winreg.REG_MULTI_SZ or not isinstance(entries, list):
+                return 0
+            kept, removed = _filter_pending_shim_renames(
+                entries, _hermes_exe_shims(scripts_dir)
+            )
+            if not removed:
+                return 0
+            if kept:
+                winreg.SetValueEx(key, _PENDING_RENAME_VALUE, 0, winreg.REG_MULTI_SZ, kept)
+            else:
+                winreg.DeleteValue(key, _PENDING_RENAME_VALUE)
+            return removed
+    except (OSError, ValueError):
+        return 0
 
 
 def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
@@ -9146,7 +9167,7 @@ def _run_quarantined_install(
 
 
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
-    """Sweep ``hermes.exe.old.*`` left by prior updates.
+    """Sweep ``hermes.exe.old.*`` and stale reboot renames left by prior updates.
 
     Called early on every hermes invocation. The .old files are unlocked once
     their owning process exited, so deletion succeeds the next run. Silent
@@ -9158,6 +9179,7 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
         scripts_dir = _venv_scripts_dir()
     if scripts_dir is None:
         return
+    _cleanup_pending_shim_renames(scripts_dir)
     try:
         for stale in scripts_dir.glob("*.exe.old.*"):
             try:

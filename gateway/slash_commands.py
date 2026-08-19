@@ -5126,6 +5126,16 @@ class GatewaySlashCommandsMixin:
                         "reasoning_details": msg.get("reasoning_details"),
                         "codex_reasoning_items": msg.get("codex_reasoning_items"),
                         "codex_message_items": msg.get("codex_message_items"),
+                        # Timeline markers (model_switch, personality_switch,
+                        # auto_continue, …) ride as role=user; dropping the tag
+                        # here re-plants them as bare user turns after a
+                        # restart, corrupting the truncate ordinal address
+                        # space the same way #82756 did (see 327f7efab8, which
+                        # closed this same gap in session.branch and
+                        # _persist_branch_seed but missed this third,
+                        # structurally identical history-copy site).
+                        "display_kind": msg.get("display_kind"),
+                        "display_metadata": msg.get("display_metadata"),
                         # Keep the api_content sidecar so the branch's first turn
                         # replays the parent's exact wire bytes (warm provider
                         # prompt cache) instead of a full cold prefill.

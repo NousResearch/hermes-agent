@@ -1393,6 +1393,16 @@ class CLICommandsMixin:
                         "reasoning_details": msg.get("reasoning_details"),
                         "codex_reasoning_items": msg.get("codex_reasoning_items"),
                         "codex_message_items": msg.get("codex_message_items"),
+                        # Timeline markers (model_switch, personality_switch,
+                        # auto_continue, …) ride as role=user; dropping the tag
+                        # here re-plants them as bare user turns after a
+                        # restart/resume. is_user_originated_turn() (#80622,
+                        # agent/context_compressor.py) treats a missing
+                        # display_kind as a genuine human ask — /retry, /undo,
+                        # active-turn selection and this CLI's own resumed-
+                        # history message count all rely on that distinction.
+                        "display_kind": msg.get("display_kind"),
+                        "display_metadata": msg.get("display_metadata"),
                         # Keep the api_content sidecar so the branch's first turn
                         # replays the parent's exact wire bytes (warm provider
                         # prompt cache) instead of a full cold prefill.

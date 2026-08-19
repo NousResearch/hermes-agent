@@ -232,3 +232,44 @@ class TestBranchPreservesReasoningFields:
         assert assistant["reasoning_details"] == REASONING_DETAILS
         assert assistant["codex_reasoning_items"] == CODEX_REASONING_ITEMS
         assert assistant["codex_message_items"] == CODEX_MESSAGE_ITEMS
+
+
+class TestBranchPreservesDisplayKind:
+    """The copy loop must carry display_kind/display_metadata across.
+
+    Timeline markers (model_switch, personality_switch, auto_continue, ...)
+    ride as role=user rows. Dropping display_kind during the branch copy
+    re-plants them as bare user turns: is_user_originated_turn() (#80622,
+    agent/context_compressor.py) treats a missing display_kind as a genuine
+    human ask, so /retry, /undo, active-turn selection, and this CLI's own
+    resumed-history message count would all misclassify the marker after a
+    branch. Same bug class 327f7efab8 closed for session.branch and
+    _persist_branch_seed; this is the CLI's independent third copy site.
+    """
+
+    def test_display_kind_survives_branch(self, cli_instance, session_db):
+        from cli import HermesCLI
+
+        cli_instance.conversation_history = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there."},
+            {
+                "role": "user",
+                "content": "[System: personality changed]",
+                "display_kind": "personality_switch",
+                "display_metadata": {"personality": "sage"},
+            },
+        ]
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        messages = session_db.get_messages_as_conversation(cli_instance.session_id)
+        marker = next(
+            (m for m in messages if m.get("display_kind") == "personality_switch"),
+            None,
+        )
+        assert marker is not None, (
+            "branch dropped display_kind: the marker re-entered the "
+            "conversation as a phantom user turn"
+        )
+        assert marker["display_metadata"] == {"personality": "sage"}

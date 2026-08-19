@@ -2,6 +2,7 @@ import { Box, Text, useInput, wrapAnsi } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import { isMac } from '../lib/platform.js'
+import { clarifyBatchRevisitState } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
@@ -158,9 +159,16 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   const [active, setActive] = useState(Math.max(0, firstUnanswered))
 
   const moveActive = (delta: number) => {
-    setActive(a => (a + delta + batch.length) % batch.length)
-    setSel(0)
-    setCustom('')
+    const next = (active + delta + batch.length) % batch.length
+    const question = batch[next]
+    // Re-visit restore, same model as the CLI panel: a choice answer puts
+    // the cursor back on its row; a typed answer lands on Other with the
+    // text staged so Enter edits it instead of retyping.
+    const restored = clarifyBatchRevisitState(question?.choices ?? [], question ? answers[question.qid] : undefined)
+
+    setActive(next)
+    setSel(restored.sel)
+    setCustom(restored.custom)
     setTyping(false)
   }
 

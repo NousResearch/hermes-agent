@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatAbandonedClarify, formatAbandonedClarifyBatch, stripTrailingPasteNewlines } from './text.js'
+import { clarifyBatchRevisitState, formatAbandonedClarify, formatAbandonedClarifyBatch, stripTrailingPasteNewlines } from './text.js'
 
 describe('stripTrailingPasteNewlines', () => {
   it('removes trailing newline runs from pasted text', () => {
@@ -72,5 +72,24 @@ describe('formatAbandonedClarifyBatch', () => {
     const out = formatAbandonedClarifyBatch([{ qid: 'q0', question: 'One?' }], { q0: '' }, 'cancelled')
 
     expect(out).toContain('· One? (no answer)')
+  })
+})
+
+describe('clarifyBatchRevisitState', () => {
+  it('restores the cursor onto a choice answer', () => {
+    expect(clarifyBatchRevisitState(['red', 'blue'], 'blue')).toEqual({ custom: '', sel: 1 })
+  })
+
+  it('stages a typed answer on the Other row for editing', () => {
+    expect(clarifyBatchRevisitState(['red', 'blue'], 'chartreuse')).toEqual({ custom: 'chartreuse', sel: 2 })
+  })
+
+  it('stages a typed answer for an open-ended question (no choices)', () => {
+    expect(clarifyBatchRevisitState([], 'free text')).toEqual({ custom: 'free text', sel: 0 })
+  })
+
+  it('resets cleanly for unanswered and empty answers', () => {
+    expect(clarifyBatchRevisitState(['red'], undefined)).toEqual({ custom: '', sel: 0 })
+    expect(clarifyBatchRevisitState(['red'], '')).toEqual({ custom: '', sel: 0 })
   })
 })

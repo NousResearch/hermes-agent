@@ -463,6 +463,7 @@ const AgentsOverlayPane = memo(function AgentsOverlayPane() {
       gw={gw}
       initialHistoryIndex={overlay.agentsInitialHistoryIndex}
       onClose={() => patchOverlayState({ agents: false, agentsInitialHistoryIndex: 0 })}
+      sessionId={ui.sid}
       t={ui.theme}
     />
   )

@@ -143,6 +143,43 @@ describe('GlyphSpinner', () => {
     expect(status.querySelector('.glyph-spinner')?.getAttribute('aria-hidden')).toBe('true')
   })
 
+  it('pauses on request while staying mounted', () => {
+    // For a caller that keeps the spinner in the tree through a fade-out
+    // (ChatSwapOverlay) and does not want it animating once the wait is over.
+    const { rerender } = render(<GlyphSpinner paused spinner="braille" />)
+    const viewport = () => screen.getByRole('status', { name: 'Loading' }).querySelector('.glyph-spinner')
+
+    expect(viewport()?.getAttribute('data-paused')).toBe('true')
+
+    rerender(<GlyphSpinner paused={false} spinner="braille" />)
+
+    expect(viewport()?.hasAttribute('data-paused')).toBe(false)
+  })
+
+  it('travels an absolute length, so the animation can be composited', () => {
+    // A percentage translate resolves against the strip's own box, which makes
+    // the animation layout-dependent and Chromium refuses to composite it:
+    // instrumentation recorded compositeFailed on 184/184 records while the
+    // keyframes used translateY(-100%). This guards the regression back to it,
+    // which is invisible in jsdom and subtle on screen.
+    const css = readFileSync(resolve(process.cwd(), 'src/components/ui/glyph-spinner.css'), 'utf8')
+    const keyframes = css.slice(css.indexOf('@keyframes glyph-spinner-advance'))
+
+    expect(keyframes).not.toMatch(/translateY\(\s*-?\d+%/)
+    expect(keyframes).toContain('var(--glyph-spinner-frame-height)')
+    expect(css).toContain('will-change: transform')
+  })
+
+  it('keeps the decorative strip out of text selection', () => {
+    // These sit inside [data-selectable-text] subtrees; without this a
+    // transcript copy would pick up all N glyphs of every spinner.
+    const css = readFileSync(resolve(process.cwd(), 'src/components/ui/glyph-spinner.css'), 'utf8')
+
+    expect(css.slice(css.indexOf('.glyph-spinner {'), css.indexOf('.glyph-spinner__strip'))).toContain(
+      'user-select: none'
+    )
+  })
+
   it('is wired into the global renderer-animation pause rule', () => {
     // Window blur / minimize / document-hidden suspension now comes from this
     // rule rather than from a per-spinner pause controller. Dropping the class

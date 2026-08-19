@@ -23,20 +23,36 @@
  */
 
 .glyph-spinner {
+  /* Single source of truth for the frame metric: the clip viewport, each frame
+     box, and the keyframe travel all derive from this, so they cannot drift
+     apart. `em` resolves against the element it is used on, and font-size is
+     uniform across this subtree — nothing below .glyph-spinner declares one —
+     so the strip's `em` and the frame's `em` are the same length. */
+  --glyph-spinner-frame-height: 1em;
+
   display: block;
-  height: 1em;
+  height: var(--glyph-spinner-frame-height);
   overflow: hidden;
   line-height: 1;
+  /* Decorative and aria-hidden, so it must not land in a transcript copy.
+     These spinners sit inside [data-selectable-text] subtrees (tool/delegate,
+     tool/fallback), where the strip would otherwise contribute all N glyphs to
+     a selection where the old one-character implementation contributed one. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .glyph-spinner__strip {
   display: block;
   animation: glyph-spinner-advance var(--glyph-spinner-duration) steps(var(--glyph-spinner-frames)) infinite;
+  /* Promote to a compositor layer. Without it, trace instrumentation recorded
+     a non-zero compositeFailed on every animation record. */
+  will-change: transform;
 }
 
 .glyph-spinner__frame {
   display: block;
-  height: 1em;
+  height: var(--glyph-spinner-frame-height);
   line-height: 1;
 }
 
@@ -50,12 +66,19 @@
   animation-play-state: paused;
 }
 
+/* The travel MUST be an absolute length, never a percentage. A percentage
+   translate resolves against the strip's own box, so Chromium treats the
+   animation as layout-dependent and refuses to composite it — trace
+   instrumentation showed compositeFailed set on 184/184 records (codes
+   131072 / 131104) with translateY(-100%), while a sibling transform
+   animation using an absolute length composited clean. N frames x the frame
+   height is the same distance, computed rather than box-relative. */
 @keyframes glyph-spinner-advance {
   from {
     transform: translateY(0);
   }
 
   to {
-    transform: translateY(-100%);
+    transform: translateY(calc(var(--glyph-spinner-frames) * -1 * var(--glyph-spinner-frame-height)));
   }
 }

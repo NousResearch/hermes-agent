@@ -33,6 +33,10 @@ const FRAMES_BY_NAME: Record<SpinnerName, NormalisedSpinner> = (() => {
 interface GlyphSpinnerProps {
   ariaLabel?: string
   className?: string
+  /** Freeze the animation while the spinner stays mounted — for a caller that
+   *  keeps it in the tree through a fade-out and does not want it animating
+   *  once it is no longer the thing being waited on. */
+  paused?: boolean
   spinner?: SpinnerName
 }
 
@@ -53,7 +57,12 @@ interface GlyphSpinnerProps {
  * clipping viewport is centred inside it by the same `items-center` that used
  * to centre the single glyph.
  */
-export function GlyphSpinner({ ariaLabel = 'Loading', className, spinner = 'braille' }: GlyphSpinnerProps) {
+export function GlyphSpinner({
+  ariaLabel = 'Loading',
+  className,
+  paused = false,
+  spinner = 'braille'
+}: GlyphSpinnerProps) {
   const spin = FRAMES_BY_NAME[spinner] ?? FRAMES_BY_NAME.braille!
   // Pause when this surface is a hidden (kept-alive) tab: N mounted tabs each
   // animating burns CPU for pixels nobody can see. Window blur / minimize /
@@ -73,7 +82,7 @@ export function GlyphSpinner({ ariaLabel = 'Loading', className, spinner = 'brai
           The frames are decorative, and this is a live region — the old
           implementation rewrote its text ~12x/second, which would announce a
           new glyph on every tick. */}
-      <span aria-hidden="true" className="glyph-spinner" data-paused={visible ? undefined : 'true'}>
+      <span aria-hidden="true" className="glyph-spinner" data-paused={paused || !visible ? 'true' : undefined}>
         <span
           className="glyph-spinner__strip"
           style={

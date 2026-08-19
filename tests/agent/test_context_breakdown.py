@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_breakdown import compute_session_context_breakdown
+from agent.context_breakdown import _chars_to_tokens, compute_session_context_breakdown
 
 
 def _make_agent(
@@ -32,12 +32,13 @@ def _make_agent(
 
 
 def test_breakdown_includes_major_categories():
-    stable = (
-        "base guidance\n"
-        "<available_skills>\n  demo:\n    - hello: hi\n</available_skills>"
-    )
+    # Skills index lives in the volatile tier (#37117), not stable.
+    stable = "base guidance"
     context = "# Project Context\nFollow AGENTS.md"
-    volatile = "Current time: now"
+    volatile = (
+        "<available_skills>\n  demo:\n    - hello: hi\n</available_skills>\n\n"
+        "Current time: now"
+    )
     history = [{"role": "user", "content": "hello there"}]
     agent, parts = _make_agent(stable=stable, context=context, volatile=volatile)
 
@@ -48,6 +49,59 @@ def test_breakdown_includes_major_categories():
     assert {"system_prompt", "tool_definitions", "rules", "skills", "mcp", "subagent_definitions", "conversation"} <= ids
     assert data["context_max"] == 200_000
     assert data["estimated_total"] > 0
+
+
+def test_skills_index_falls_back_to_stable_for_legacy_sessions():
+    """A session whose cached system prompt predates #37117 (skills still in
+    the stable tier) must still attribute a "skills" category."""
+    stable = (
+        "base guidance\n"
+        "<available_skills>\n  demo:\n    - hello: hi\n</available_skills>"
+    )
+    volatile = "Current time: now"
+    agent, parts = _make_agent(stable=stable, volatile=volatile)
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, [])
+
+    ids = {item["id"] for item in data["categories"]}
+    assert "skills" in ids
+
+
+def test_skills_index_not_double_counted_in_system_prompt():
+    """The skills block must be attributed only to the "skills" category,
+    not also folded into "system_prompt" via the volatile tail."""
+    skills_block = "<available_skills>\n  demo:\n    - hello: hi\n</available_skills>"
+    stable = "base guidance"
+    remainder = "Current time: now"
+    volatile = f"{skills_block}\n\n{remainder}"
+    agent, parts = _make_agent(stable=stable, volatile=volatile)
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, [])
+
+    by_id = {item["id"]: item["tokens"] for item in data["categories"]}
+    expected_system_prompt = _chars_to_tokens(
+        "\n\n".join((stable, remainder))
+    )
+    assert by_id["system_prompt"] == expected_system_prompt
+    assert by_id["skills"] == _chars_to_tokens(skills_block)
+
+
+def test_context_details_finds_skills_in_volatile_tier():
+    """compute_context_details() (the /context all per-skill listing) must
+    also look in the volatile tier, not just stable."""
+    from agent.context_breakdown import compute_context_details
+
+    stable = "base guidance"
+    volatile = "<available_skills>\n  demo:\n    - hello: hi\n</available_skills>"
+    agent, parts = _make_agent(stable=stable, volatile=volatile)
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        details = compute_context_details(agent)
+
+    names = {entry["name"] for entry in details["skills"]}
+    assert names == {"hello"}
 
 
 

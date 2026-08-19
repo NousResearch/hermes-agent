@@ -7790,6 +7790,17 @@ class AIAgent:
         """
         return bool(getattr(self, "_reasoning_echo_flag", False))
 
+    @staticmethod
+    def _read_reasoning_echo_from_config() -> bool:
+        """Read ``model.reasoning_echo`` from config; False on any error."""
+        try:
+            from hermes_cli.config import load_config_readonly
+            return bool(
+                (load_config_readonly().get("model") or {}).get("reasoning_echo")
+            )
+        except Exception:
+            return False
+
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
 

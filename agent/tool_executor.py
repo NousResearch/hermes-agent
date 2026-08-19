@@ -126,7 +126,7 @@ def _authorization_gate_lock_timeout() -> float:
     try:
         from tools.approval import human_wait_ceiling
 
-        return human_wait_ceiling()
+        return min(human_wait_ceiling(), _AUTHORIZATION_GATE_LOCK_TIMEOUT_S)
     except Exception:
         return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
 

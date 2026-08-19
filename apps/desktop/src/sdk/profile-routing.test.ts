@@ -471,6 +471,57 @@ describe('profile-aware plugin session opens', () => {
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 
+  it('retries a Bot Chat hydration timeout once without ever arming the Retry surface (#89617)', async () => {
+    $activeGatewayProfile.set('hyoseob')
+
+    // First attempt: leave the surface unhealthy so the hydration wait below
+    // times out, exactly like a profile backend still waking up. Second
+    // attempt: the backend is warm now — hydrate immediately. Queued as two
+    // one-shots (not a standing mockImplementation) so this doesn't leak into
+    // later tests via the shared afterEach's vi.clearAllMocks(), which clears
+    // call history but not a standing implementation.
+    vi.mocked(openSessionCore).mockImplementationOnce(() => undefined).mockImplementationOnce(() => {
+      setMockAtom($selectedStoredSessionId, 'waking-bot-chat')
+      setMockAtom($activeSessionId, 'runtime-waking')
+      setMockAtom($messages, [{ id: 'history-waking', parts: [], role: 'assistant' }] as never)
+    })
+
+    await host.openSession('waking-bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1,
+      retryHydrationTimeoutOnce: true
+    })
+
+    expect(openSessionCore).toHaveBeenCalledTimes(2)
+    // The overlay in apps/desktop/src/app/chat/index.tsx is gated purely on
+    // this atom equalling the routed session id — if it were ever set here,
+    // the user would land on "Couldn't load this session" even though the
+    // retry above succeeded underneath, since only a manual resumeSession()
+    // call clears it for the currently-routed session.
+    expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('still arms the Retry surface when a retried Bot Chat hydration times out twice', async () => {
+    $activeGatewayProfile.set('hyoseob')
+
+    await expect(
+      host.openSession('stranded-bot-chat', {
+        profile: 'hyoseob',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 1,
+        retryHydrationTimeoutOnce: true
+      })
+    ).rejects.toThrow(/timed out loading/i)
+
+    expect(openSessionCore).toHaveBeenCalledTimes(2)
+    expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('stranded-bot-chat')
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
   it('lets the latest rapid bot selection win and cancels the older hydration wait', async () => {
     vi.mocked(ensureGatewayProfile).mockImplementation(async (target: null | string | undefined) => {
       $activeGatewayProfile.set(target || 'default')

@@ -226,6 +226,12 @@ interface PluginOpenSessionOptions {
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
   profile?: null | string
+  /** A cold profile backend can lose the hydration-timeout race once and still
+   *  be fine on a second try. When set, a hydration timeout is retried
+   *  internally before it reaches the caller or arms the core stranded-session
+   *  overlay ($resumeExhaustedSessionId) — a caller-side retry can't do this
+   *  itself because only this SDK layer sees $resumeExhaustedSessionId. */
+  retryHydrationTimeoutOnce?: boolean
 }
 
 function waitForFocusedSessionHydration({
@@ -567,6 +573,11 @@ export const host = {
     // is a gateway problem, a slow transcript is a backend-warmup one.
     let wakePhase: 'activation' | 'hydration' = 'activation'
 
+    // Bounded to 2 attempts (never more): a cold profile backend can lose the
+    // hydration-timeout race once and still be fine moments later, but this is
+    // a caller-opt-in retry of the SAME wait, not a backoff loop.
+    const maxAttempts = options.awaitHydration && options.retryHydrationTimeoutOnce ? 2 : 1
+
     try {
       if (profile && profile !== $activeGatewayProfile.get()) {
         // Bounded only on the hydration contract, which is where a budget and a
@@ -595,47 +606,76 @@ export const host = {
         $gatewaySwapTarget.set(targetProfile)
       }
 
-      openSession(
-          storedSessionId,
-          (to: string, opts?: { replace?: boolean }) => {
-            const target = to.startsWith('#') ? to : `#${to}`
+      // Only the HYDRATION half retries. Activation already failed its own
+      // bounded wait above, and a wedged dial does not get better by dialling
+      // again inside the same wake — that is the Retry surface's job.
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          openSession(
+            storedSessionId,
+            (to: string, opts?: { replace?: boolean }) => {
+              const target = to.startsWith('#') ? to : `#${to}`
 
-            if (opts?.replace) {
-              window.location.replace(target)
-            } else {
-              window.location.hash = target
-            }
-          },
-          options.intent ?? 'in-place'
-        )
+              if (opts?.replace) {
+                window.location.replace(target)
+              } else {
+                window.location.hash = target
+              }
+            },
+            options.intent ?? 'in-place'
+          )
 
-      // Judge the main surface AFTER the open: on a cold start the persisted
-      // route can already point at this session while selection has not
-      // settled, so a pre-open "already selected" precondition skips the
-      // resume exactly when it is needed (#89206 — blank Bot Chat with the
-      // roster preview intact). The surface is healthy only when this stored
-      // session is selected, a runtime is bound, and the expected transcript
-      // is present; anything less gets an explicit sequenced resume request.
-      // The route-resume effect only honors the request while the route
-      // points at this session, and consumes it alongside any resume the
-      // navigation itself triggers, so a redundant request is a no-op.
-      const surfaceHealthy =
-        $selectedStoredSessionId.get() === storedSessionId &&
-        Boolean($activeSessionId.get()) &&
-        (!expectHistory || $messages.get().length > 0)
+          // Judge the main surface AFTER the open: on a cold start the persisted
+          // route can already point at this session while selection has not
+          // settled, so a pre-open "already selected" precondition skips the
+          // resume exactly when it is needed (#89206 — blank Bot Chat with the
+          // roster preview intact). The surface is healthy only when this stored
+          // session is selected, a runtime is bound, and the expected transcript
+          // is present; anything less gets an explicit sequenced resume request.
+          // The route-resume effect only honors the request while the route
+          // points at this session, and consumes it alongside any resume the
+          // navigation itself triggers, so a redundant request is a no-op.
+          const surfaceHealthy =
+            $selectedStoredSessionId.get() === storedSessionId &&
+            Boolean($activeSessionId.get()) &&
+            (!expectHistory || $messages.get().length > 0)
 
-      if (options.awaitHydration && !surfaceHealthy) {
-        requestSessionResume(storedSessionId)
-      }
+          if (options.awaitHydration && !surfaceHealthy) {
+            requestSessionResume(storedSessionId)
+          }
 
-      if (options.awaitHydration) {
-        await waitForFocusedSessionHydration({
-          expectHistory,
-          generation,
-          profile: targetProfile,
-          storedSessionId,
-          timeoutMs: hydrationTimeoutMs
-        })
+          if (options.awaitHydration) {
+            await waitForFocusedSessionHydration({
+              expectHistory,
+              generation,
+              profile: targetProfile,
+              storedSessionId,
+              timeoutMs: hydrationTimeoutMs
+            })
+          }
+
+          break
+        } catch (error) {
+          const retryable =
+            options.awaitHydration &&
+            generation === openSessionGeneration &&
+            attempt < maxAttempts &&
+            error instanceof Error &&
+            error.message.startsWith('Timed out loading ')
+
+          if (!retryable) {
+            throw error
+          }
+
+          // Logged per attempt so a support bundle shows the retry happened at
+          // all; the terminal failure is reported once by the catch below.
+          console.warn('[bot-wake] hydration timed out, retrying', {
+            attempt,
+            hydrationWaitMs: Date.now() - profileActiveAt,
+            profile: targetProfile,
+            storedSessionId
+          })
+        }
       }
     } catch (error) {
       if (
@@ -647,6 +687,7 @@ export const host = {
         const timedOutAt = Date.now()
 
         console.warn('[bot-wake] hydration timed out', {
+          attempts: wakePhase === 'hydration' ? maxAttempts : 1,
           hydrationWaitMs: wakePhase === 'hydration' ? timedOutAt - profileActiveAt : 0,
           phase: wakePhase,
           profile: targetProfile,

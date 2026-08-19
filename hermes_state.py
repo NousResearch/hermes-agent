@@ -11693,11 +11693,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         min_tool_calls: Optional[int] = None,
         max_tool_calls: Optional[int] = None,
     ) -> Tuple[str, list]:
-        """Build attribute filters for bulk prune/archive selection.
+        """Build the shared WHERE clause for bulk prune/archive selection.
 
-        All filters AND together. Session lifecycle eligibility is added by the
-        caller: destructive prune and filtered export require an ended session,
-        while reversible archive may include unended sessions.
+        All filters AND together. Only ended sessions are ever candidates
+        (``ended_at IS NOT NULL``) so a live session is never selected.
         ``archived`` is a tri-state: ``None`` = both, ``True`` = only
         archived rows, ``False`` = only unarchived rows.
 
@@ -11712,7 +11711,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         The clause references the ``s`` table alias — callers must select
         ``FROM sessions s``.
         """
-        clauses = []
+        clauses = ["s.ended_at IS NOT NULL"]
         params: list = []
         if last_active_before is not None:
             clauses.append(
@@ -11885,6 +11884,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"SELECT COUNT(*) FROM sessions s WHERE {open_where}", params
             )
             return int(cursor.fetchone()[0])
+
     def list_prune_candidates(
         self,
         older_than_days: Optional[float] = None,
@@ -11918,6 +11918,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_unended=True,
             **filters,
         )
+
     def archive_sessions(
         self,
         older_than_days: Optional[float] = None,

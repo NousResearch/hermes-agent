@@ -34,10 +34,10 @@ import {
   type TranslucencyState,
   translucencySupportedOn,
   vibrancyFor,
-  WINDOWS_BACKGROUND_MATERIALS,
-  WINDOWS_GLASS_MIN_BUILD,
   windowBackingOptions,
-  windowOpacityFor
+  windowOpacityFor,
+  WINDOWS_BACKGROUND_MATERIALS,
+  WINDOWS_GLASS_MIN_BUILD
 } from './translucency'
 
 /** The linear ramp the curve replaced. Endpoints must still agree with it. */

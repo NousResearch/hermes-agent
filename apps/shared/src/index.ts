@@ -71,9 +71,9 @@ export {
   GLASS_SCOPES,
   glassActive,
   type GlassMaterial,
-  type GlassScope,
   glassMaterialForPicker,
   glassMaterialsFor,
+  type GlassScope,
   glassSupportedOn,
   glassSurfaceKeep,
   normalizeMaterial,
@@ -89,10 +89,10 @@ export {
   type TranslucencyState,
   translucencySupportedOn,
   vibrancyFor,
+  windowOpacityFor,
   WINDOWS_BACKGROUND_MATERIALS,
   WINDOWS_GLASS_MIN_BUILD,
-  type WindowsBackgroundMaterial,
-  windowOpacityFor
+  type WindowsBackgroundMaterial
 } from './translucency'
 export {
   buildHermesWebSocketUrl,

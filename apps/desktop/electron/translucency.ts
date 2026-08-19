@@ -37,10 +37,10 @@ export {
   type TranslucencyState,
   translucencySupportedOn,
   vibrancyFor,
+  windowOpacityFor,
   WINDOWS_BACKGROUND_MATERIALS,
   WINDOWS_GLASS_MIN_BUILD,
-  type WindowsBackgroundMaterial,
-  windowOpacityFor
+  type WindowsBackgroundMaterial
 } from '../../shared/src/translucency'
 
 /**

@@ -3111,10 +3111,11 @@ def get_model_context_length(
         entry = metadata.get(model)
         if entry:
             or_ctx = entry.get("context_length")
-            # Guard against the known OpenRouter Kimi-family 32k underreport
-            # (same class the hardcoded overrides exist to mitigate).
+            # Guard against the known OpenRouter Kimi/MiniMax-family 32k
+            # underreport (same class the hardcoded overrides exist to
+            # mitigate) — mirrors the step-6 fallback's guard below.
             if isinstance(or_ctx, int) and or_ctx > 0 and not (
-                or_ctx == 32768 and _model_name_suggests_kimi(model)
+                or_ctx == 32768 and _model_name_suggests_stale_32k_underreport(model)
             ):
                 return or_ctx
 

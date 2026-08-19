@@ -884,6 +884,23 @@ class TestGetModelContextLength:
         result = get_model_context_length("MiniMax-M2.7")
         assert result == 204800
 
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_openrouter_provider_32k_underreport_for_minimax_falls_through_to_default(
+        self, mock_fetch, mock_models_dev
+    ):
+        """The effective_provider=='openrouter' branch must reject stale 32K for
+        MiniMax too, not just Kimi — same guard as the unknown-provider fallback."""
+        mock_fetch.return_value = {
+            "minimaxai/minimax-m2": {"context_length": 32768}
+        }
+        result = get_model_context_length(
+            "minimaxai/minimax-m2",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert result == 204800
+
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
     def test_non_minimax_32k_cache_is_still_respected(self, mock_models_dev, mock_fetch, tmp_path):

@@ -1621,7 +1621,9 @@ Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing
 
 action='run' fires the job immediately in the BACKGROUND (like delegate_task): the call returns at once with a handle and the job's outcome re-enters the conversation as a new message when it finishes. Do not wait or poll after triggering a run — just continue. Optionally pass 'prompt' with action='run' to inject transient per-run context (appended to the job's stored prompt for that single fire only, never persisted).
 
-To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
+For run/pause/resume, job_id accepts either the job's ID or its exact name (case-insensitive). Pass the exact name directly and let the server resolve it. Do not call action='list' first just to check; if the name is not found or is ambiguous, the tool reports that and you can list jobs then.
+
+For action='remove', first call action='list' to find and verify the job ID, then call action='remove' with that ID. Never guess an ID when deleting a job.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
 If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
@@ -1641,7 +1643,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for update/pause/resume/remove/run. Accepts a job ID or exact name (case-insensitive)."
             },
             "prompt": {
                 "type": "string",

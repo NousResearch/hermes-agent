@@ -16867,6 +16867,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
 
+        # Telegram topic-mode DMs can arrive with a stripped/General thread id.
+        # Canonicalize ordinary external messages before the FIRST
+        # session-keyed control lookup below so update/clarify/approval state
+        # and an already-running topic turn are all observed under the same key.
+        # Slash commands deliberately keep their raw inbound source here:
+        # handlers such as /topic need to inspect the lane Telegram actually
+        # supplied. Commands that ultimately become agent turns, plus internal
+        # and strictly routed events, retain the late recovery pass after command
+        # handling and adapter-level routing metadata validation.
+        _source_canonicalized_early = False
+        _inbound_command = event.get_command()
+        if (
+            not is_internal
+            and not _inbound_command
+            and source.platform == Platform.TELEGRAM
+        ):
+            canonical_source = await asyncio.to_thread(
+                self._normalize_source_for_session_key,
+                source,
+            )
+            if canonical_source is not source:
+                logger.info(
+                    "telegram topic recovery: chat=%s user=%s %r -> %s",
+                    source.chat_id,
+                    source.user_id,
+                    source.thread_id,
+                    canonical_source.thread_id,
+                )
+                source = canonical_source
+                event.source = canonical_source
+            _source_canonicalized_early = True
+
+        _quick_key = self._session_key_for_source(source)
+
         # Global emergency stop (`hermes pause`): give new turns a brief
         # paused notice instead of starting an agent run. Internal events
         # (background-process completions from IN-FLIGHT work) bypass the
@@ -16946,7 +16980,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # IMPORTANT: recognized slash commands must bypass this interception.
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
-        _quick_key = self._session_key_for_source(source)
         allow_gateway_control = event.allow_gateway_control
         _up_state = self._peek_session_state(_quick_key)
         if (
@@ -18132,13 +18165,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
-        # Telegram topic-mode DMs can arrive with a stripped/General thread id.
-        # Commands and active-turn controls above intentionally retain their
-        # existing inbound-source semantics. Canonicalize ordinary new turns
-        # here, before lobby/stale inspection, session claim, agent dispatch,
-        # and completion callback registration all consume the routing key.
+        # Preserve the established late recovery path for internal/strictly
+        # routed events and slash commands that intentionally retained their raw
+        # inbound context through command handling but ultimately become agent
+        # turns (skills, /learn, /init, and similar fall-through commands).
         canonical_source = source
-        if source.platform == Platform.TELEGRAM:
+        if (
+            source.platform == Platform.TELEGRAM
+            and not _source_canonicalized_early
+        ):
             canonical_source = await asyncio.to_thread(
                 self._normalize_source_for_session_key,
                 source,

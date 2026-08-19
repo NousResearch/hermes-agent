@@ -1,5 +1,6 @@
 """Real-ingress regression for stale notices in Telegram DM topic mode."""
 
+import dataclasses
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -173,3 +174,78 @@ async def test_topic_recovered_ingress_uses_canonical_clock_entry(
         canonical_key, "stale_override_last_completed_at"
     )
     assert completed_at > time.time() - 10
+
+
+@pytest.mark.asyncio
+async def test_topic_recovered_busy_ingress_preserves_original_active_agent(
+    tmp_path, monkeypatch
+):
+    """A stripped topic follow-up must enter the canonical busy path."""
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="e2e-test-token")
+        },
+        sessions_dir=hermes_home / "sessions",
+    )
+    store = SessionStore(config.sessions_dir, config)
+    canonical_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="topic-chat",
+        chat_type="dm",
+        user_id="topic-user",
+        user_name="topic user",
+        thread_id="42",
+    )
+    canonical_entry = store.get_or_create_session(canonical_source)
+    canonical_key = canonical_entry.session_key
+    raw_source = dataclasses.replace(canonical_source, thread_id=None)
+
+    db = store._db
+    db.enable_telegram_topic_mode(chat_id="topic-chat", user_id="topic-user")
+    db.bind_telegram_topic(
+        chat_id="topic-chat",
+        thread_id="42",
+        user_id="topic-user",
+        session_key=canonical_key,
+        session_id=canonical_entry.session_id,
+    )
+
+    class ActiveAgent:
+        def __init__(self):
+            self.steered = []
+
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+        def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    runner = _runner_with_store(config, store, db)
+    runner._busy_input_mode = "steer"
+    active_agent = ActiveAgent()
+    active_state = runner._session_state(canonical_key)
+    active_state.turn.agent = active_agent
+    active_state.turn.started_ts = time.time() - 10
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("canonical busy follow-up dispatched a second turn")
+    )
+    original_claim = runner._claim_active_session_slot
+    runner._claim_active_session_slot = MagicMock(wraps=original_claim)
+
+    event = MessageEvent(
+        text="steer the active topic turn",
+        message_id="busy-follow-up",
+        source=raw_source,
+    )
+    result = await runner._handle_message(event)
+
+    assert result is None
+    assert event.source.thread_id == "42"
+    assert active_agent.steered == ["steer the active topic turn"]
+    runner._claim_active_session_slot.assert_not_called()
+    runner._handle_message_with_agent.assert_not_awaited()
+    assert runner._peek_session_state(canonical_key).turn.agent is active_agent

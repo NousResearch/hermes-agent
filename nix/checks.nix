@@ -647,6 +647,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 !lib.hasInfix "systemd-tmpfiles --create /nix/store/" activation
               ) "activation must safely provision profile homes and external working directories before unprivileged setup"
               ++ lib.optional (
+                !(lib.elem "d /var/lib/hermes/.hermes/profiles 2770 hermes hermes - -" cfg.systemd.tmpfiles.rules)
+              ) "the shared profiles parent must have an explicit tmpfiles ownership rule"
+              ++ lib.optional (
                 !(lib.elem "d /srv/hermes-research 2770 hermes hermes - -" cfg.systemd.tmpfiles.rules)
               ) "the external profile working directory must have an explicit tmpfiles ownership rule"
               ++ lib.optional (

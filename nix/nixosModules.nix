@@ -257,16 +257,21 @@
       profileHome = name: "${hermesHome}/profiles/${name}";
       runAsProfileUser =
         "${pkgs.util-linux}/bin/runuser -u ${lib.escapeShellArg cfg.user} -g ${lib.escapeShellArg cfg.group} -- ";
-      profileTmpfilesRules = lib.concatLists (
-        lib.mapAttrsToList (
-          name: profile:
-          [
-            "d ${profileHome name} 2770 ${cfg.user} ${cfg.group} - -"
-            "d ${profile.workingDirectory} 2770 ${cfg.user} ${cfg.group} - -"
-          ]
-          ++ map (d: "d ${profileHome name}/${d} 2770 ${cfg.user} ${cfg.group} - -") common.stateSubdirs
-        ) cfg.profiles
-      );
+      # Declare the shared parent explicitly. Otherwise tmpfiles creates it as
+      # root while its parent is service-owned, then refuses that unsafe owner
+      # transition when canonicalizing any profile path on later activations.
+      profileTmpfilesRules =
+        lib.optional (cfg.profiles != { }) "d ${hermesHome}/profiles 2770 ${cfg.user} ${cfg.group} - -"
+        ++ lib.concatLists (
+          lib.mapAttrsToList (
+            name: profile:
+            [
+              "d ${profileHome name} 2770 ${cfg.user} ${cfg.group} - -"
+              "d ${profile.workingDirectory} 2770 ${cfg.user} ${cfg.group} - -"
+            ]
+            ++ map (d: "d ${profileHome name}/${d} 2770 ${cfg.user} ${cfg.group} - -") common.stateSubdirs
+          ) cfg.profiles
+        );
       profileTmpfilesConfig = pkgs.writeText "hermes-profile-tmpfiles.conf" (
         lib.concatStringsSep "\n" profileTmpfilesRules + "\n"
       );

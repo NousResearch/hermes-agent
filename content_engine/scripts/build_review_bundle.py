@@ -375,11 +375,27 @@ def _article_items(records: list[dict], max_width: int = 800, quality: int = 80)
 
 
 def _pending_article_items(max_width: int = 800, quality: int = 80) -> tuple[dict[str, list[dict]], list[str]]:
+    """Render recorded pending articles and diagnose broken durable pointers.
+
+    Blog-managed approvals are blog-only. X/Twitter and LinkedIn articles are
+    owned by their dedicated managers (#x-twitter-manager, #linkedin-manager)
+    and are deliberately NOT part of the #blog-management review bundle.
+    """
     database.init_db()
     migration = database.migrate_article_approvals(X_BUNDLES)
-    groups, diagnostics = _article_items(
-        database.list_article_approvals(status="pending"), max_width, quality
-    )
+    groups = {X_GROUP: [], LINKEDIN_GROUP: []}
+    diagnostics: list[str] = []
+    for record in database.list_article_approvals(status="pending"):
+        platform = str(record.get("platform", "")).lower()
+        if platform in {"twitter", "x", "linkedin"}:
+            # Owned by dedicated social managers; never surfaced here.
+            continue
+        bundle = Path(record["bundle_path"])
+        article_path = bundle / "article.md"
+        if not article_path.is_file():
+            diagnostics.append(f"missing bundle for article {record['article_id']}: {bundle}")
+            continue
+        groups[X_GROUP].append(_render_article_pane(record, bundle, X_GROUP, max_width, quality))
     diagnostics.extend(
         f"article draft has no matching bundle: {article_id}"
         for article_id in migration["missing_bundles"]
@@ -421,7 +437,9 @@ def _summary_pane(sections: list[tuple[str, list[dict]]], indexed: list[tuple[in
     nx = counts.get(X_GROUP, 0)
     nlinkedin = counts.get(LINKEDIN_GROUP, 0)
     nideas = counts.get(IDEAS_GROUP, 0)
-    total = nblog + nx + nlinkedin
+    # X/Twitter and LinkedIn are owned by their dedicated managers and are
+    # deliberately excluded from this blog-only review surface.
+    total = nblog + nideas
 
     rows = []
     for idx, it in indexed:
@@ -446,9 +464,9 @@ def _summary_pane(sections: list[tuple[str, list[dict]]], indexed: list[tuple[in
     idea_line = f" + {nideas} idea concepts" if nideas else ""
     return (
         f"<h1>Pending Review</h1>"
-        f'<p class="deck">{today} · {nblog} blog posts + {nx} X/Twitter articles + {nlinkedin} LinkedIn articles awaiting review{idea_line} '
+        f'<p class="deck">{today} · {nblog} blog posts awaiting review{idea_line} '
         f"(total {total})</p>"
-        f"{_meta_dl(Blog=nblog, **{'X/Twitter': nx, 'LinkedIn': nlinkedin, 'Ideas': nideas}, Total=total)}"
+        f"{_meta_dl(Blog=nblog, Ideas=nideas, Total=total)}"
         f"{table}"
         f'<p class="source">Approve: <code>!approve &lt;slug&gt;</code> · '
         f"Reject: <code>!reject &lt;slug&gt;</code> · Idea: <code>!approve-idea &lt;id&gt;</code> · "
@@ -580,16 +598,13 @@ def build() -> list[str]:
 def main() -> None:
     blog_n = len(_pending_tracker_entries())
     outputs = build()
-    pending_articles = database.list_article_approvals(status="pending")
-    x_n = sum(str(row.get("platform", "")).lower() in {"x", "twitter"} for row in pending_articles)
-    linkedin_n = sum(str(row.get("platform", "")).lower() == "linkedin" for row in pending_articles)
     nideas = len(idea_cards())
     if not outputs:
         print("[SILENT]")
         return
     print(
-        f"{blog_n} blog posts + {x_n} X/Twitter articles + {linkedin_n} LinkedIn articles awaiting review "
-        f"+ {nideas} idea concepts (total {blog_n + x_n + linkedin_n})"
+        f"{blog_n} blog posts + {nideas} idea concepts awaiting review "
+        f"(total {blog_n + nideas})"
     )
     for path in outputs:
         print(f"MEDIA:{path}")

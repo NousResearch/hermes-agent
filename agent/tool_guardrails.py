@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -77,6 +78,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    tool_cycle_warn_repeats: int = 2
+    tool_cycle_block_repeats: int = 4
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: "LoopCapConfig" = field(default_factory=lambda: LoopCapConfig())
@@ -122,8 +125,56 @@ class ToolCallGuardrailConfig:
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
             ),
+            tool_cycle_warn_repeats=_positive_int(
+                warn_after.get("tool_cycle", data.get("tool_cycle_warn_repeats")),
+                defaults.tool_cycle_warn_repeats,
+            ),
+            tool_cycle_block_repeats=_positive_int(
+                hard_stop_after.get("tool_cycle", data.get("tool_cycle_block_repeats")),
+                defaults.tool_cycle_block_repeats,
+            ),
             loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")),
         )
+
+
+# Alternating-cycle detector bounds. The window matches the deque the
+# controller keeps per turn; periods above _CYCLE_MAX_PERIOD cannot complete
+# tool_cycle_block_repeats repetitions inside the window, so scanning further
+# would never fire.
+_CYCLE_WINDOW = 25
+_CYCLE_MAX_PERIOD = 8
+
+
+def detect_signature_cycle(
+    history: "list[ToolCallSignature]",
+    *,
+    min_repeats: int,
+) -> tuple[int, int] | None:
+    """Find an alternating tool-call cycle at the tail of ``history``.
+
+    Returns ``(period, repeats)`` for the smallest period ``p`` in
+    [2, _CYCLE_MAX_PERIOD] whose block repeats at least ``min_repeats`` times
+    at the tail, or ``None``. The block must contain >= 2 distinct signatures:
+    period-1 loops (same call repeated) are the domain of the exact-failure
+    and idempotent-no-progress guards, and a mono-signature sequence would
+    otherwise fire here at every period.
+    """
+    n = len(history)
+    for period in range(2, _CYCLE_MAX_PERIOD + 1):
+        if period * min_repeats > n:
+            break
+        block = history[n - period : n]
+        if len(set(block)) < 2:
+            continue
+        repeats = 1
+        while (
+            period * (repeats + 1) <= n
+            and history[n - period * (repeats + 1) : n - period * repeats] == block
+        ):
+            repeats += 1
+        if repeats >= min_repeats:
+            return period, repeats
+    return None
 
 
 # Default session-wide caps, matching Claude Code's v2.1.212 runaway-loop
@@ -282,6 +333,10 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
+        # Executed-call signatures, in order, for the alternating-cycle
+        # detector (loop_tool_cycle). Only after_call appends: a call blocked
+        # in before_call never ran, so it must not extend the pattern.
+        self._call_history: deque[ToolCallSignature] = deque(maxlen=_CYCLE_WINDOW)
         # Per-turn runaway-loop cap counters. Reset every turn (this method
         # runs at the start of each run_conversation), so the caps bound a
         # single agent loop rather than accumulating across the session.
@@ -307,6 +362,29 @@ class ToolCallGuardrailController:
 
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
+        cycle = detect_signature_cycle(
+            list(self._call_history) + [signature],
+            min_repeats=self.config.tool_cycle_block_repeats,
+        )
+        if cycle is not None:
+            period, repeats = cycle
+            decision = ToolGuardrailDecision(
+                action="block",
+                code="loop_tool_cycle",
+                message=(
+                    f"Blocked {tool_name}: the last calls repeat the same "
+                    f"{period}-call cycle {repeats} times with identical "
+                    "arguments. None of these repetitions changed the "
+                    "situation. Break the cycle: change the arguments, pick a "
+                    "different tool, or report what is actually blocking you."
+                ),
+                tool_name=tool_name,
+                count=repeats,
+                signature=signature,
+            )
+            self._halt_decision = decision
+            return decision
 
         exact_count = self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -357,6 +435,41 @@ class ToolCallGuardrailController:
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
+        # Record every executed call, then let the specific guards speak
+        # first; the cycle warning only fills an otherwise-plain "allow" so a
+        # single call never stacks two warnings.
+        self._call_history.append(signature)
+        decision = self._after_call_core(tool_name, result, signature, failed=failed)
+        if decision.action == "allow" and self.config.warnings_enabled:
+            cycle = detect_signature_cycle(
+                list(self._call_history),
+                min_repeats=self.config.tool_cycle_warn_repeats,
+            )
+            if cycle is not None:
+                period, repeats = cycle
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="loop_tool_cycle_warning",
+                    message=(
+                        f"The last calls repeat the same {period}-call cycle "
+                        f"{repeats} times with identical arguments. This looks "
+                        "like an alternating tool loop; change the arguments or "
+                        "approach instead of going around again."
+                    ),
+                    tool_name=tool_name,
+                    count=repeats,
+                    signature=signature,
+                )
+        return decision
+
+    def _after_call_core(
+        self,
+        tool_name: str,
+        result: str | None,
+        signature: ToolCallSignature,
+        *,
+        failed: bool | None = None,
+    ) -> ToolGuardrailDecision:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
 

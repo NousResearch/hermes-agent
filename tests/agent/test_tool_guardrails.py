@@ -120,15 +120,29 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
 
 
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
+    # Scope of the idempotent no-progress guard: mutating/unknown tools never
+    # get its warnings or blocks, however aggressive the thresholds. The
+    # alternating pattern DOES surface the (never-blocking) tool-cycle warning
+    # from the second full repetition — that detector keys on call signatures,
+    # not results, and covers exactly this shape.
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
     )
 
-    for _ in range(3):
-        assert controller.before_call("write_file", {"path": "/tmp/x", "content": "x"}).action == "allow"
-        assert controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False).action == "allow"
-        assert controller.before_call("custom_tool", {"x": 1}).action == "allow"
-        assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
+    for iteration in range(3):
+        for tool, args in (
+            ("write_file", {"path": "/tmp/x", "content": "x"}),
+            ("custom_tool", {"x": 1}),
+        ):
+            assert controller.before_call(tool, args).action == "allow"
+            decision = controller.after_call(tool, args, "ok", failed=False)
+            assert decision.allows_execution
+            assert "no_progress" not in decision.code
+            expect_cycle = iteration >= 1 and tool == "custom_tool" or iteration >= 2
+            if expect_cycle:
+                assert decision.code == "loop_tool_cycle_warning"
+            else:
+                assert decision.action == "allow"
 
 
 

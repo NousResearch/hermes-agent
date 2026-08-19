@@ -121,6 +121,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
 
         if (!target) {
           closeRightRail()
+
           return
         }
 

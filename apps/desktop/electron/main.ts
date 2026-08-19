@@ -12292,9 +12292,22 @@ ipcMain.handle('hermes:hud:vibrancy', (_event, on) => {
 // rectangle is a faded-out band over whatever the user is actually working in.
 // `forward` keeps mousemove flowing so the renderer can re-arm when the cursor
 // reaches the bar.
+//
+// Linux caveat (Aug 2026): `forward: true` is macOS/Windows only — on Linux the
+// window becomes permanently click-through when ignored (the cursor poll feed
+// in hud-cursor.ts uses webContents zoomFactor, which mismatches KDE fractional
+// DPI scaling, so the hit-test never lands on the bar and the HUD stays
+// unclickable: no clicks, no long-press composer drag). Keep the HUD window
+// solid on Linux so pointer events always arrive. Trade-off: clicks on the
+// transparent band no longer fall through to the app behind — acceptable, the
+// bar is thin.
 ipcMain.on('hermes:hud:ignore-mouse', (_event, ignore) => {
   if (hudWindow && !hudWindow.isDestroyed()) {
-    hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+    if (process.platform === 'linux') {
+      hudWindow.setIgnoreMouseEvents(false)
+    } else {
+      hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+    }
   }
 })
 

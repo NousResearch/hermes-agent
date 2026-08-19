@@ -172,21 +172,6 @@ const AssistantMessageBody: FC<AssistantMessageProps> = ({ onBranchInNewChat, on
   // stable across the 30 Hz delta stream, so this adds no per-token renders).
   const turnDurationS = useAuiState(s => s.message.metadata?.custom?.durationS as number | undefined)
 
-  // Preview targets only materialize once the turn completes — while running
-  // the selector returns '' (stable), so per-token flushes skip the regex
-  // scan and the re-render it would cause.
-  const completedText = useAuiState(s =>
-    s.message.status?.type === 'running' ? '' : messageContentText(s.message.content)
-  )
-
-  const previewTargets = useMemo(() => {
-    if (!completedText || !/(https?:\/\/|file:\/\/)/i.test(completedText)) {
-      return []
-    }
-
-    return pickPrimaryPreviewTarget(extractPreviewTargets(completedText))
-  }, [completedText])
-
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
 
   // useEnterAnimation consults `enabled` ONLY when its callback ref fires,
@@ -219,13 +204,7 @@ const AssistantMessageBody: FC<AssistantMessageProps> = ({ onBranchInNewChat, on
         {/* Todos render in the composer status stack now, not inline. */}
         {MESSAGE_PARTS}
         <AssistantStatusSlot />
-        {previewTargets.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {previewTargets.map(target => (
-              <PreviewAttachment key={target} source="explicit-link" target={target} />
-            ))}
-          </div>
-        )}
+        <AssistantPreviewEmbeds />
         <MessagePrimitive.Error>
           <ErrorPrimitive.Root
             className="mt-1.5 flex items-start gap-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
@@ -300,6 +279,53 @@ const AssistantStatusSlot: FC = () => {
   }
 
   return <TurnActivityIndicator />
+}
+
+/**
+ * PERF leaf: owns the settled-text selector that feeds the link previews.
+ *
+ * This was the last status-dependent read at the message root, and the most
+ * expensive one: the selector flips between '' while running and the full
+ * `messageContentText(content)` join once settled, so every running <-> settled
+ * transition re-ran the join for the whole message AND re-rendered the root.
+ * At stream breadth N that is N joins plus N root re-renders per flip. Reading
+ * it here confines both to this leaf, which renders nothing at all in the
+ * common case.
+ *
+ * The streaming-side optimization is unchanged and still the point of the ''
+ * branch: preview targets only materialize once the turn completes, so while
+ * running the selector returns a stable '' and per-token flushes skip the
+ * regex scan and the re-render it would cause.
+ *
+ * Renders exactly what the root used to render at this position — the same
+ * wrapper div with the same classes, or nothing when there are no targets —
+ * so the DOM is byte-identical either way. A component boundary adds no node
+ * of its own, so unlike StreamingMarker this needs no placement care.
+ */
+const AssistantPreviewEmbeds: FC = () => {
+  const completedText = useAuiState(s =>
+    s.message.status?.type === 'running' ? '' : messageContentText(s.message.content)
+  )
+
+  const previewTargets = useMemo(() => {
+    if (!completedText || !/(https?:\/\/|file:\/\/)/i.test(completedText)) {
+      return []
+    }
+
+    return pickPrimaryPreviewTarget(extractPreviewTargets(completedText))
+  }, [completedText])
+
+  if (previewTargets.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {previewTargets.map(target => (
+        <PreviewAttachment key={target} source="explicit-link" target={target} />
+      ))}
+    </div>
+  )
 }
 
 /**

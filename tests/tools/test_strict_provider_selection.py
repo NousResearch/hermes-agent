@@ -66,11 +66,14 @@ class TestReadSelection:
         with self._with_raw({"web": {"backend": ""}}):
             assert tbh.read_selection("web") is None
 
-    def test_seeded_stt_local_is_no_selection(self):
-        """Legacy DEFAULT_CONFIG seeded stt.provider: local on every
-        install; that value alone must be treated as never-configured."""
+    def test_raw_stt_local_is_a_selection(self):
+        """A raw config.yaml ``stt.provider: local`` is a genuine pick: the
+        DEFAULT_CONFIG seed never reached disk (save_config strips schema
+        defaults), and the current picker's Local Whisper row writes exactly
+        this shape (provider only, legacy use_gateway popped). Treating it
+        as no-selection would silently discard the user's choice."""
         with self._with_raw({"stt": {"provider": "local"}}):
-            assert tbh.read_selection("stt") is None
+            assert tbh.read_selection("stt") == "local"
 
     def test_stt_local_with_use_gateway_key_is_a_selection(self):
         """A picker-written stt section (use_gateway key present) means

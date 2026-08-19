@@ -5084,22 +5084,33 @@ def _reconfigure_provider(
             )
             return
 
+    # Selection model (mirrors _write_provider_config): every row writes ONE
+    # provider string per category — "nous" for managed rows, the vendor name
+    # for BYOK rows — and drops any legacy use_gateway key so the read-time
+    # shim (use_gateway: true ⇒ nous) cannot override the fresh pick.
     if provider.get("tts_provider"):
         tts_cfg = config.setdefault("tts", {})
-        tts_cfg["provider"] = provider["tts_provider"]
-        tts_cfg["use_gateway"] = bool(managed_feature)
+        tts_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else provider["tts_provider"]
+        )
+        tts_cfg.pop("use_gateway", None)
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
 
     if provider.get("stt_provider"):
         stt_cfg = config.setdefault("stt", {})
-        stt_cfg["provider"] = provider["stt_provider"]
-        stt_cfg["use_gateway"] = bool(managed_feature)
+        stt_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else provider["stt_provider"]
+        )
+        stt_cfg.pop("use_gateway", None)
         _print_success(f"  STT provider set to: {provider['stt_provider']}")
 
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
         browser_cfg = config.setdefault("browser", {})
-        if bp == "local":
+        if managed_feature:
+            browser_cfg["cloud_provider"] = NOUS_MANAGED_PROVIDER
+            _print_success(f"  Browser cloud provider set to: {bp or 'nous'}")
+        elif bp == "local":
             browser_cfg["cloud_provider"] = "local"
             _print_success("  Browser set to local mode")
         elif bp:
@@ -5107,7 +5118,7 @@ def _reconfigure_provider(
             _print_success(f"  Browser cloud provider set to: {bp}")
         # Browser Use mode (browser.backend) composes with the provider —
         # switching providers keeps the driver choice intact.
-        browser_cfg["use_gateway"] = bool(managed_feature)
+        browser_cfg.pop("use_gateway", None)
 
     if provider.get("browser_backend"):
         browser_cfg = config.setdefault("browser", {})
@@ -5117,8 +5128,10 @@ def _reconfigure_provider(
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         web_cfg = config.setdefault("web", {})
-        web_cfg["backend"] = provider["web_backend"]
-        web_cfg["use_gateway"] = bool(managed_feature)
+        web_cfg["backend"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else provider["web_backend"]
+        )
+        web_cfg.pop("use_gateway", None)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     # Set computer_use backend in config if applicable
@@ -5132,13 +5145,14 @@ def _reconfigure_provider(
         if not isinstance(section, dict):
             section = {}
             config[managed_feature] = section
-        section["use_gateway"] = True
+        section["provider"] = NOUS_MANAGED_PROVIDER
+        section.pop("use_gateway", None)
     elif not managed_feature:
         for cat_key, cat in TOOL_CATEGORIES.items():
             if provider in cat.get("providers", []):
                 section = config.get(cat_key)
-                if isinstance(section, dict) and section.get("use_gateway"):
-                    section["use_gateway"] = False
+                if isinstance(section, dict):
+                    section.pop("use_gateway", None)
                 break
 
     if not env_vars:

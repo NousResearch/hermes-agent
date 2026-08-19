@@ -361,13 +361,13 @@ def read_selection(section: str) -> str | None:
     if "use_gateway" in raw and is_truthy_value(raw.get("use_gateway"), default=False):
         return NOUS_MANAGED_PROVIDER
 
-    # Migration shim: DEFAULT_CONFIG historically seeded ``stt.provider:
-    # local`` on every install, so that exact value with no picker-written
-    # use_gateway key is ambiguous. Treat it as never-configured — the
-    # autodetect ladder prefers local first anyway, and hard-pinning would
-    # error every seeded install that lacks faster-whisper.
-    if section == "stt" and name == "local" and "use_gateway" not in raw:
-        return None
+    # NOTE on the legacy DEFAULT_CONFIG ``stt.provider: local`` seed: it never
+    # reached the raw config.yaml (``save_config`` strips schema defaults),
+    # and the old picker's Local Whisper row always wrote ``use_gateway:
+    # False`` beside it. A raw ``local`` here therefore IS a user selection —
+    # hand-written or picker-written — and is honored like any other vendor
+    # name. The seeded-value ambiguity only exists in DEFAULT_CONFIG-merged
+    # views, which this function never reads.
 
     if name:
         return name

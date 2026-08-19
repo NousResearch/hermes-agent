@@ -475,16 +475,11 @@ def get_nous_subscription_features(
     image_selected = _selected_provider(image_gen_cfg)
     video_selected = _selected_provider(video_gen_cfg)
 
-    # Same seeded-value shim as tools.tool_backend_helpers.read_selection:
-    # legacy DEFAULT_CONFIG seeded ``stt.provider: local`` on every install,
-    # so that exact value with no picker-written use_gateway key is treated
-    # as never-configured.
-    if (
-        stt_selected == "local"
-        and isinstance(stt_cfg, dict)
-        and "use_gateway" not in stt_cfg
-    ):
-        stt_selected = None
+    # Lockstep with tools.tool_backend_helpers.read_selection: these are
+    # merged-config sections, so the legacy DEFAULT_CONFIG-seeded
+    # ``stt.provider: local`` COULD appear here without a user pick on old
+    # versions. Current DEFAULT_CONFIG no longer seeds it, so a merged
+    # ``local`` implies the raw file holds it — a genuine selection.
 
     # Managed selection flags (replace the legacy use_gateway reads —
     # use_gateway is now interpreted only inside _selected_provider).

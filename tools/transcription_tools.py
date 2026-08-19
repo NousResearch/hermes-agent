@@ -1034,9 +1034,10 @@ def _get_provider(stt_config: dict) -> str:
     if explicit and provider == "local":
         # Legacy DEFAULT_CONFIG seeded ``stt.provider: local`` on every
         # install, so a merged-config "local" is not proof of a user pick.
-        # ``read_selection`` reads the raw config.yaml and applies the
-        # seeded-value migration shim; when the raw file holds no stt
-        # selection, take the autodetect branch (which prefers local first
+        # ``read_selection`` reads the raw config.yaml: when the raw file
+        # holds an stt selection (picker- or hand-written ``local``) it is
+        # honored; when the merged "local" came only from a legacy default
+        # merge, take the autodetect branch (which prefers local first
         # anyway, so a genuine local user is unaffected when it's available).
         try:
             from tools.tool_backend_helpers import read_selection

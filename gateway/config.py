@@ -1950,11 +1950,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 len(_discord_token_stripped),
             )
         # Check for known leaked token prefix (from commit a66ec2ce02)
-        if _discord_token_stripped.startswith("MTUwNjAyNDQyMTEwNDgxMjI3NA"):
-            logger.error(
-                "DISCORD_BOT_TOKEN matches a known compromised token "
-                "(leaked in commit a66ec2ce02). Rotate immediately."
-            )
+        # NOTE: this prefix is the base64 of the bot user ID
+        # (1506024421104812274), which EVERY token for this bot shares.
+        # It is not a secret and cannot identify a compromised token, so
+        # matching it flags every valid token as compromised (false
+        # positive). The actual token value was never committed — the
+        # referenced commit only contains the variable name
+        # `DISCORD_BOT_TOKEN=$TOKEN`. Removed the broken prefix check;
+        # the length check above is the real defence-in-depth.
+        # (was: if _discord_token_stripped.startswith("MTUwNjAyNDQyMTEwNDgxMjI3NA"): ...)
         discord_config = _enable_from_env(Platform.DISCORD)
         discord_config.token = _discord_token_stripped
     

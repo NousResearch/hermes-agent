@@ -372,9 +372,12 @@ mcp_servers:
     oauth:
       client_metadata_url: "https://example.com/my-cimd.json"  # self-hosted document
       cimd: false                                              # force DCR
+      user_agent: "My-MCP-Client/1.0"                          # token-request User-Agent
 ```
 
 `client_metadata_url` must be an HTTPS URL with a path (no bare origin, no fragment, no userinfo, no `.`/`..` segments) that returns `200` and `Content-Type: application/json` with **no redirect** — authorization servers are forbidden from following redirects when fetching it. Hermes still pins its callback to the same `27890`–`27894` range, so a self-hosted document must declare all ten loopback URIs (`http://127.0.0.1:<port>/callback` and `http://localhost:<port>/callback` for each port), and its `client_id` must be its own URL.
+
+`user_agent` replaces the HTTP library's default `User-Agent` on **token-endpoint requests only** (authorization-code exchange and refresh) — some authorization servers and WAFs reject the default `python-httpx/...` value there. It never applies to MCP traffic or OAuth discovery, and no other token-request headers are configurable. Empty or null values are ignored.
 
 ## Add to Hermes link
 

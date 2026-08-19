@@ -134,6 +134,7 @@ def _make_hermes_provider_class() -> Optional[type]:
             *args: Any,
             server_name: str = "",
             preregistered: bool = False,
+            token_user_agent: "str | None" = None,
             **kwargs: Any,
         ):
             super().__init__(*args, **kwargs)
@@ -145,6 +146,15 @@ def _make_hermes_provider_class() -> Optional[type]:
             # registration can't help. Only auto-heal dynamically-registered
             # clients. See _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
+            # oauth.user_agent — stamped onto token-endpoint requests only;
+            # some authorization servers/WAFs reject httpx's default (#75576).
+            self._hermes_token_user_agent = token_user_agent
+
+        def _stamp_token_user_agent(self, request):
+            ua = getattr(self, "_hermes_token_user_agent", None)
+            if ua:
+                request.headers["User-Agent"] = ua
+            return request
 
         def _coerce_client_secret_post(self) -> None:
             """Use client_secret_post when dynamic registration returned a secret.
@@ -171,11 +181,13 @@ def _make_hermes_provider_class() -> Optional[type]:
 
         async def _exchange_token_authorization_code(self, *args: Any, **kwargs: Any):
             self._coerce_client_secret_post()
-            return await super()._exchange_token_authorization_code(*args, **kwargs)
+            request = await super()._exchange_token_authorization_code(*args, **kwargs)
+            return self._stamp_token_user_agent(request)
 
         async def _refresh_token(self):
             self._coerce_client_secret_post()
-            return await super()._refresh_token()
+            request = await super()._refresh_token()
+            return self._stamp_token_user_agent(request)
 
         async def _handle_token_response(self, response):
             """Accept any 2xx token response and avoid leaking token bodies in errors."""
@@ -643,6 +655,7 @@ class MCPOAuthManager:
             _make_callback_waiter,
             _make_redirect_handler,
             cimd_provider_kwargs,
+            token_request_user_agent,
         )
 
         if not _OAUTH_AVAILABLE:
@@ -692,6 +705,7 @@ class MCPOAuthManager:
             storage=storage,
             redirect_handler=redirect_handler,
             callback_handler=callback_handler,
+            token_user_agent=token_request_user_agent(cfg),
             **cimd_provider_kwargs(cfg),
         )
 

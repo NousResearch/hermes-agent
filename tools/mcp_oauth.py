@@ -1179,7 +1179,21 @@ def _get_hermes_oauth_provider_class() -> type | None:
         request, causing Supabase to reject the exchange and the browser to show
         the authorization page again. Coerce the in-memory client info right before
         token/refresh requests as well as persisting the fixed shape in storage.
+
+        ``token_user_agent`` (from ``oauth.user_agent``) is stamped onto the
+        token-endpoint requests the SDK builds — some authorization servers
+        and WAFs reject httpx's default User-Agent there (#75576).
         """
+
+        def __init__(self, *args: Any, token_user_agent: "str | None" = None, **kwargs: Any):
+            super().__init__(*args, **kwargs)
+            self._hermes_token_user_agent = token_user_agent
+
+        def _stamp_token_user_agent(self, request):
+            ua = getattr(self, "_hermes_token_user_agent", None)
+            if ua:
+                request.headers["User-Agent"] = ua
+            return request
 
         def _coerce_client_secret_post(self) -> None:
             info = getattr(self.context, "client_info", None)
@@ -1194,11 +1208,13 @@ def _get_hermes_oauth_provider_class() -> type | None:
 
         async def _exchange_token_authorization_code(self, *args: Any, **kwargs: Any):
             self._coerce_client_secret_post()
-            return await super()._exchange_token_authorization_code(*args, **kwargs)
+            request = await super()._exchange_token_authorization_code(*args, **kwargs)
+            return self._stamp_token_user_agent(request)
 
         async def _refresh_token(self):
             self._coerce_client_secret_post()
-            return await super()._refresh_token()
+            request = await super()._refresh_token()
+            return self._stamp_token_user_agent(request)
 
         async def _handle_token_response(self, response):
             """Accept any 2xx token response and avoid leaking token bodies in errors."""
@@ -1497,6 +1513,25 @@ def cimd_provider_kwargs(cfg: dict) -> dict[str, Any]:
     """
     url = cfg.get("_cimd_url")
     return {"client_metadata_url": url} if url else {}
+
+
+def token_request_user_agent(cfg: dict) -> str | None:
+    """The configured ``oauth.user_agent`` for token-endpoint requests, or None.
+
+    Some authorization servers and network protection layers (WAFs) reject
+    the default python-httpx User-Agent on the token endpoint. The value is
+    opt-in and per-server; anything that is not a non-empty string is
+    treated as unset so a null/empty YAML value never sends a blank header.
+    Applied ONLY to authorization-code exchange and refresh-token requests —
+    never to MCP traffic or discovery, and no other headers are configurable
+    (arbitrary token headers risk secrets landing in config.yaml).
+    """
+    ua = cfg.get("user_agent")
+    if isinstance(ua, str):
+        ua = ua.strip()
+        if ua:
+            return ua
+    return None
 
 
 def _configure_callback_port(
@@ -1916,5 +1951,6 @@ def build_oauth_auth(
         # `oauth.timeout` is applied inside the callback waiter above, which is
         # where the browser round-trip is actually awaited.
         callback_handler=callback_handler,
+        token_user_agent=token_request_user_agent(cfg),
         **cimd_provider_kwargs(cfg),
     )

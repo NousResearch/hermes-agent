@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -2485,7 +2486,60 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
+    if agent.provider == "pi-rpc" or str(client_kwargs.get("base_url", "")).startswith("pi://"):
+        # First-class pi delegation: drive pi's native JSONL RPC directly.
+        # Unlike ACP, the native protocol exposes extension_ui_request, so
+        # delegated pi agents can ask the parent questions and receive real
+        # free-text answers.
+        from agent.copilot_acp_client import _resolve_command
+        from agent.pi_rpc_client import PI_RPC_MARKER_BASE_URL, PiRPCClient
+
+        _pi_cmd = str(
+            client_kwargs.get("acp_command")
+            or client_kwargs.get("command")
+            or os.getenv("HERMES_PI_BIN", "").strip()
+            or "pi"
+        ).strip()
+        if Path(_pi_cmd).name in ("pi", "pi-acp") or not _pi_cmd:
+            client_kwargs.pop("base_url", None)
+            client_kwargs.pop("acp_command", None)
+            client_kwargs.pop("command", None)
+            client = PiRPCClient(**client_kwargs, base_url=PI_RPC_MARKER_BASE_URL)
+            _ra().logger.info(
+                "Pi RPC client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                agent._client_log_context(),
+            )
+            return client
+        raise RuntimeError(
+            f"pi-rpc provider requires the pi binary (got command '{_pi_cmd}'). "
+            "Install pi or set HERMES_PI_BIN."
+        )
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
+        # When the ACP transport is actually pi (directly or via the pi-acp
+        # bridge), drive pi's native JSONL RPC instead. Unlike ACP, the
+        # native protocol exposes extension_ui_request, so delegated pi
+        # agents can ask the parent questions and receive real answers.
+        from agent.copilot_acp_client import _resolve_command
+
+        _acp_cmd = str(
+            client_kwargs.get("acp_command")
+            or client_kwargs.get("command")
+            or _resolve_command()
+        ).strip()
+        if Path(_acp_cmd).name in ("pi", "pi-acp"):
+            from agent.pi_rpc_client import PI_RPC_MARKER_BASE_URL, PiRPCClient
+
+            client_kwargs.pop("base_url", None)
+            client = PiRPCClient(**client_kwargs, base_url=PI_RPC_MARKER_BASE_URL)
+            _ra().logger.info(
+                "Pi RPC client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                agent._client_log_context(),
+            )
+            return client
         from agent.copilot_acp_client import CopilotACPClient
 
         client = CopilotACPClient(**client_kwargs)

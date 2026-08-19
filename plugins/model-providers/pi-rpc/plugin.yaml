@@ -1,0 +1,5 @@
+name: pi-rpc-provider
+kind: model-provider
+version: 1.0.0
+description: Pi coding agent via native JSONL RPC
+author: local

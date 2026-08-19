@@ -6919,6 +6919,18 @@ def resolve_provider_client(
             or _read_main_model_for_aux(),
             provider,
         )
+        if provider == "pi-rpc":
+            from agent.pi_rpc_client import PI_RPC_MARKER_BASE_URL, PiRPCClient
+
+            client = PiRPCClient(
+                api_key=str(creds.get("api_key", "")).strip() or "pi-rpc",
+                base_url=PI_RPC_MARKER_BASE_URL,
+                command=str(creds.get("command", "")).strip() or None,
+                args=list(creds.get("args") or []),
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
         if provider == "copilot-acp":
             api_key = str(creds.get("api_key", "")).strip()
             base_url = str(creds.get("base_url", "")).strip()

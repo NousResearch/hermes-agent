@@ -1198,6 +1198,96 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+_SKILL_FRONTMATTER_NAME = re.compile(
+    r"^name:\s*[\"']?([A-Za-z0-9][A-Za-z0-9._-]*)",
+    re.MULTILINE,
+)
+
+
+def _add_skill_md_names(path: Path, names: set[str]) -> None:
+    names.add(path.parent.name)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")[:2000]
+    except OSError:
+        return
+    match = _SKILL_FRONTMATTER_NAME.search(text)
+    if match:
+        names.add(match.group(1))
+
+
+def _collect_skill_names(
+    root: Path, names: set[str], seen: Optional[set[Path]] = None
+) -> None:
+    """Walk a skills tree, following directory symlinks, collecting names."""
+    visited = seen if seen is not None else set()
+    try:
+        resolved = root.resolve()
+    except OSError:
+        return
+    if resolved in visited:
+        return
+    visited.add(resolved)
+    if resolved.is_file() and resolved.name == "SKILL.md":
+        _add_skill_md_names(resolved, names)
+        return
+    if not resolved.is_dir():
+        return
+    skill_md = resolved / "SKILL.md"
+    if skill_md.is_file():
+        _add_skill_md_names(skill_md, names)
+        return
+    try:
+        children = list(resolved.iterdir())
+    except OSError:
+        return
+    for child in children:
+        _collect_skill_names(child, names, visited)
+
+
+def _assignee_skill_catalog(assignee: Optional[str]) -> Optional[set[str]]:
+    """Skill names the assignee profile can ``--skills`` load, or None if unknown.
+
+    ``None`` means we cannot see a profile directory, so the pin list is left
+    alone (review-dispatch tests and not-yet-created assignees). An existing
+    profile with no ``skills/`` tree is an empty catalog — every pin is dropped.
+    """
+    if not assignee:
+        return None
+    try:
+        from hermes_cli.profiles import get_profile_dir
+
+        home = get_profile_dir(assignee)
+    except Exception:
+        return None
+    if not home.is_dir():
+        return None
+    names: set[str] = set()
+    skills_root = home / "skills"
+    if skills_root.exists():
+        _collect_skill_names(skills_root, names)
+    return names
+
+
+def _filter_skills_for_assignee(
+    assignee: Optional[str], skills: list[str]
+) -> tuple[list[str], list[str]]:
+    """Split *skills* into (kept, dropped) against the assignee catalog.
+
+    When the catalog cannot be resolved, every name is kept.
+    """
+    catalog = _assignee_skill_catalog(assignee)
+    if catalog is None:
+        return list(skills), []
+    kept: list[str] = []
+    dropped: list[str] = []
+    for name in skills:
+        if name in catalog:
+            kept.append(name)
+        else:
+            dropped.append(name)
+    return kept, dropped
+
+
 def _resolve_project_link(
     conn: sqlite3.Connection, project_id: Optional[str], project_source_task_id: Optional[str],
     workspace_kind: str, workspace_path: Optional[str],
@@ -1392,6 +1482,14 @@ def create_task(
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
+    dropped_skills: list[str] = []
+    if skills_list:
+        skills_list, dropped_skills = _filter_skills_for_assignee(
+            assignee, skills_list
+        )
+        if not skills_list:
+            skills_list = None
+
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
     if idempotency_key:
@@ -1467,6 +1565,7 @@ def create_task(
                         "branch_name": branch_name,
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
+                        "dropped_skills": list(dropped_skills) or None,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,

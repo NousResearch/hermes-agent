@@ -2754,8 +2754,20 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
         "--accept-hooks",
     ]
     # One `--skills X` pair per name: easier to read in `ps` and avoids quoting
-    # ambiguity if a skill name contains unusual chars.
-    for sk in task.skills or ():
+    # ambiguity if a skill name contains unusual chars. Names the assignee
+    # cannot load are dropped with a warning instead of crashing the worker on
+    # boot (cards created before create-time filtering, or via the CLI).
+    spawn_skills, dropped_spawn_skills = _kb._filter_skills_for_assignee(
+        task.assignee, list(task.skills or [])
+    )
+    if dropped_spawn_skills:
+        _kb._log.warning(
+            "Dropping unknown skills for assignee %s on task %s: %s",
+            task.assignee,
+            task.id,
+            ", ".join(dropped_spawn_skills),
+        )
+    for sk in spawn_skills:
         if sk:
             cmd.extend(["--skills", sk])
     if task.model_override:

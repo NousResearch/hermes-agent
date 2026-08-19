@@ -1210,7 +1210,11 @@ def _probe_remote_backend(env_type: str) -> str | None:
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
-        from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
+        from tools.terminal_tool import (  # type: ignore
+            _create_environment,
+            _get_env_config,
+            _resolve_task_host_cwd,
+        )
     except Exception as e:
         logger.debug("Backend probe unavailable (import failed): %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
@@ -1262,6 +1266,15 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
             }
 
+        # host_cwd must route through _resolve_task_host_cwd (the single
+        # owner of the cwd-mount policy, tools/terminal_tool.py) rather than
+        # reading config["host_cwd"] directly. Under per-session docker
+        # isolation, that raw value is the process-global TERMINAL_CWD — a
+        # launch artifact that outlives the session that set it — and this
+        # probe's fixed "prompt-backend-probe" task_id has no registered
+        # session workspace, so the resolver correctly returns None (no
+        # mount) instead of leaking a stale/previous session's directory
+        # into this probe's container.
         env = _create_environment(
             env_type=env_type,
             image=image,
@@ -1270,7 +1283,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
             ssh_config=ssh_config,
             container_config=container_config,
             task_id="prompt-backend-probe",
-            host_cwd=config.get("host_cwd"),
+            host_cwd=_resolve_task_host_cwd(config, "prompt-backend-probe"),
         )
         # Single-line POSIX probe — works on any Unixy backend. Wrapped in
         # `2>/dev/null` so a missing binary doesn't pollute the output.

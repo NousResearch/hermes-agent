@@ -873,6 +873,52 @@ class TestEnvironmentHints:
 
 
 
+    def test_probe_remote_backend_routes_host_cwd_through_resolver(self, monkeypatch, tmp_path):
+        """Regression: the probe's own host_cwd must go through
+        _resolve_task_host_cwd (tools/terminal_tool.py) — the single owner of
+        the cwd-mount policy, per its own docstring — not read
+        config["host_cwd"] directly.
+
+        Under per-session docker isolation (container_persistent: false), the
+        raw config["host_cwd"] is the process-global TERMINAL_CWD-derived
+        value — a launch artifact that outlives whatever session set it. This
+        probe always passes the fixed task_id "prompt-backend-probe", which
+        has no registered session workspace, so the resolver must return None
+        (no mount) instead of leaking a stale/previous session's directory
+        into the probe's container. e95e13783b fixed this exact leak at four
+        other _create_environment call sites but missed this one.
+        """
+        import agent.prompt_builder as _pb
+
+        stale_dir = tmp_path / "previous-session-workspace"
+        stale_dir.mkdir()
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+        monkeypatch.setenv("TERMINAL_CWD", str(stale_dir))
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+        _pb._clear_backend_probe_cache()
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {"returncode": 0, "output": "os=Linux\nhome=/root\ncwd=/workspace\nuser=root\n"}
+
+        created = {}
+
+        def _fake_create_environment(*, host_cwd=None, **kwargs):
+            created["host_cwd"] = host_cwd
+            return _FakeEnv()
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
+
+        line = _pb._probe_remote_backend("docker")
+        assert line is not None
+        assert created["host_cwd"] is None, (
+            "the probe leaked the process-global/stale host_cwd into its "
+            f"container mount instead of refusing it under isolation: {created['host_cwd']!r}"
+        )
+
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
         import agent.prompt_builder as _pb

@@ -1019,6 +1019,40 @@ print(json.dumps({
             DIRECT_SANDBOX_TOOLS | DEFERRED_BRIDGE_TOOLS,
         )
 
+    def test_registry_explicit_empty_scope_keeps_only_direct_helpers(self):
+        from tools.registry import registry
+
+        resolved = _resolve_sandbox_tools([], allow_deferred_bridges=True)
+        schema = build_execute_code_schema(resolved)
+        for name in DIRECT_SANDBOX_TOOLS:
+            self.assertIn(f"{name}(", schema["description"])
+        for name in DEFERRED_BRIDGE_TOOLS:
+            self.assertNotIn(f"{name}(", schema["description"])
+
+        names = sorted(DIRECT_SANDBOX_TOOLS | DEFERRED_BRIDGE_TOOLS)
+        code = (
+            "import json, hermes_tools\n"
+            f"names = {names!r}\n"
+            "print(json.dumps({name: hasattr(hermes_tools, name) for name in names}))"
+        )
+        result = json.loads(
+            registry.dispatch(
+                "execute_code",
+                {"code": code},
+                task_id="test-explicit-empty-scope",
+                enabled_tools=[],
+                allow_deferred_bridges=True,
+            )
+        )
+
+        self.assertEqual(result["status"], "success", result)
+        self.assertIsInstance(result["output"], str)
+        runtime_surface = json.loads(result["output"])
+        for name in DIRECT_SANDBOX_TOOLS:
+            self.assertTrue(runtime_surface[name])
+        for name in DEFERRED_BRIDGE_TOOLS:
+            self.assertFalse(runtime_surface[name])
+
     def test_bridge_session_keeps_direct_umbrella_stubs(self):
         """Deferred bridge scope must not remove execute_code's direct helpers."""
         code = """

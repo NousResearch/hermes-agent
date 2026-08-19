@@ -1175,7 +1175,11 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
         logger.debug("Docker orphan reaper raised: %s", e)
 
 
-def _profile_state_key(task_id: Optional[str]) -> str:
+def _profile_state_key(
+    task_id: Optional[str],
+    *,
+    profile_home: Optional[str] = None,
+) -> str:
     """Key mutable terminal session state by routed profile when multiplexed."""
     key = str(task_id or "default")
     from agent.secret_scope import is_multiplex_active
@@ -1183,9 +1187,13 @@ def _profile_state_key(task_id: Optional[str]) -> str:
     if not is_multiplex_active():
         return key
 
-    from hermes_constants import get_hermes_home
+    if profile_home is None:
+        from hermes_constants import get_hermes_home
 
-    home = str(get_hermes_home().expanduser().resolve())
+        home_path = get_hermes_home()
+    else:
+        home_path = Path(profile_home)
+    home = str(home_path.expanduser().resolve())
     namespace = hashlib.sha256(home.encode("utf-8")).hexdigest()[:16]
     return f"mpx-profile:{namespace}:{key}"
 
@@ -1251,10 +1259,17 @@ def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
         return _session_cwd.get(state_key)
 
 
-def clear_session_cwd(session_key: str) -> None:
+def clear_session_cwd(
+    session_key: str,
+    *,
+    profile_home: Optional[str] = None,
+) -> None:
     """Drop a session's cwd record (session teardown)."""
     with _session_cwd_lock:
-        _session_cwd.pop(_profile_state_key(session_key), None)
+        _session_cwd.pop(
+            _profile_state_key(session_key, profile_home=profile_home),
+            None,
+        )
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -1298,16 +1313,21 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
             env.cwd = new_cwd
 
 
-def clear_task_env_overrides(task_id: str):
+def clear_task_env_overrides(
+    task_id: str,
+    *,
+    profile_home: Optional[str] = None,
+):
     """
     Clear environment overrides for a task after rollout completes.
 
     Called during cleanup to avoid stale entries accumulating.
     """
-    _task_env_overrides.pop(_profile_state_key(task_id), None)
-    clear_session_cwd(task_id)
+    state_key = _profile_state_key(task_id, profile_home=profile_home)
+    _task_env_overrides.pop(state_key, None)
+    clear_session_cwd(task_id, profile_home=profile_home)
     with _container_alias_lock:
-        _container_aliases.pop(_profile_state_key(task_id), None)
+        _container_aliases.pop(state_key, None)
 
 
 # Subagent → parent container aliasing.  delegate_task children get their own
@@ -1335,14 +1355,20 @@ def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) 
         )
 
 
-def _resolve_container_alias(task_id: str) -> str:
+def _resolve_container_alias(
+    task_id: str,
+    *,
+    profile_home: Optional[str] = None,
+) -> str:
     """Follow the child→parent alias chain (cycle-safe) for *task_id*."""
     seen = set()
     key = task_id
     with _container_alias_lock:
         while key not in seen:
             seen.add(key)
-            parent = _container_aliases.get(_profile_state_key(key))
+            parent = _container_aliases.get(
+                _profile_state_key(key, profile_home=profile_home)
+            )
             if parent is None:
                 break
             key = parent
@@ -2625,14 +2651,17 @@ def cleanup_vm(
     only the orphan reaper at next startup reclaims them.
     """
     owner_home = profile_home or _profile_home_key()
-    canonical_task_id = _resolve_container_alias(task_id)
+    canonical_task_id = _resolve_container_alias(
+        task_id,
+        profile_home=owner_home,
+    )
     if canonical_task_id != task_id:
         # Delegated children share the parent's sandbox. Closing a child agent
         # must drop only the child's ownership and session records; tearing down
         # the aliased environment here would destroy the parent's workspace.
         with _env_lock:
             _task_environment_keys.pop((owner_home, task_id), None)
-        clear_task_env_overrides(task_id)
+        clear_task_env_overrides(task_id, profile_home=owner_home)
         return
 
     keys: set[str] = set()
@@ -2641,7 +2670,13 @@ def cleanup_vm(
         if task_id in _active_environments:
             keys.add(task_id)
 
-    if not keys and profile_home is None:
+    can_resolve_fallback = profile_home is None
+    if not can_resolve_fallback:
+        ambient_home = Path(_profile_home_key()).expanduser().resolve()
+        explicit_home = Path(owner_home).expanduser().resolve()
+        can_resolve_fallback = ambient_home == explicit_home
+
+    if not keys and can_resolve_fallback:
         resolved_task_id = _resolve_container_task_id(task_id)
         with _env_lock:
             env_key = _environment_lookup_key(resolved_task_id, task_id)
@@ -2695,7 +2730,7 @@ def cleanup_vm(
                             )
                 _retire_creation_lock(cache_key)
         finally:
-            clear_task_env_overrides(task_id)
+            clear_task_env_overrides(task_id, profile_home=owner_home)
 
 
 def _atexit_cleanup():

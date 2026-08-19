@@ -755,7 +755,7 @@ class TestAgentCacheIdleResume:
         # ``run_agent`` at import time, not ``tools.terminal_tool.cleanup_vm``
         # directly — so patch the ``run_agent`` reference.
         original_vm = _ra.cleanup_vm
-        _ra.cleanup_vm = lambda tid: vm_calls.append(tid)
+        _ra.cleanup_vm = lambda tid, **_kwargs: vm_calls.append(tid)
         try:
             agent_a.release_clients()   # cache eviction
             agent_b.close()              # session expiry
@@ -802,13 +802,48 @@ class TestAgentCacheIdleResume:
 
         cleanup_homes = []
         original_vm = _ra.cleanup_vm
-        _ra.cleanup_vm = lambda _tid: cleanup_homes.append(str(get_hermes_home()))
+        _ra.cleanup_vm = lambda _tid, **_kwargs: cleanup_homes.append(
+            str(get_hermes_home())
+        )
         try:
             agent.close()
         finally:
             _ra.cleanup_vm = original_vm
 
         assert cleanup_homes == [str(profile_home)]
+
+    def test_close_still_cleans_terminal_when_profile_scope_setup_fails(
+        self,
+        monkeypatch,
+    ):
+        import hermes_constants
+        import run_agent as _ra
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        setattr(agent, "session_id", "cleanup-session")
+        setattr(agent, "_terminal_profile_home", "/invalid/profile")
+        setattr(agent, "_active_children_lock", threading.Lock())
+        setattr(agent, "_active_children", set())
+        setattr(agent, "client", None)
+
+        cleanup_calls = []
+
+        def fail_scope_setup(_profile_home):
+            raise RuntimeError("profile scope unavailable")
+
+        monkeypatch.setattr(hermes_constants, "set_hermes_home_override", fail_scope_setup)
+        monkeypatch.setattr(
+            _ra,
+            "cleanup_vm",
+            lambda task_id, **kwargs: cleanup_calls.append((task_id, kwargs)),
+        )
+
+        agent.close()
+
+        assert cleanup_calls == [
+            ("cleanup-session", {"profile_home": "/invalid/profile"}),
+        ]
 
     def test_close_releases_active_children_before_parent_terminal_cleanup(self):
         import run_agent as _ra

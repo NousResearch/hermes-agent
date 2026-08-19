@@ -4531,23 +4531,38 @@ class AIAgent:
         except Exception:
             pass
 
-        # 2. Clean terminal sandbox environments
+        # 2. Clean terminal sandbox environments. Profile scope restoration is
+        # best effort: a scope setup failure must not skip sandbox teardown.
+        terminal_profile_home = getattr(self, "_terminal_profile_home", None)
+        scope_token = None
+        reset_profile_scope = None
         try:
             from hermes_constants import (
                 reset_hermes_home_override,
                 set_hermes_home_override,
             )
 
-            token = set_hermes_home_override(
-                getattr(self, "_terminal_profile_home", None),
+            scope_token = set_hermes_home_override(
+                terminal_profile_home,
             )
-            try:
-                for terminal_task_id in terminal_task_ids:
-                    cleanup_vm(terminal_task_id)
-            finally:
-                reset_hermes_home_override(token)
+            reset_profile_scope = reset_hermes_home_override
         except Exception:
             pass
+
+        try:
+            for terminal_task_id in terminal_task_ids:
+                cleanup_vm(
+                    terminal_task_id,
+                    profile_home=terminal_profile_home,
+                )
+        except Exception:
+            pass
+        finally:
+            if scope_token is not None and reset_profile_scope is not None:
+                try:
+                    reset_profile_scope(scope_token)
+                except Exception:
+                    pass
 
         # 3. Clean browser daemon sessions
         try:

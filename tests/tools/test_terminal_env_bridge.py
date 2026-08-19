@@ -866,6 +866,113 @@ def test_cleanup_vm_retires_all_profile_session_namespace_versions(
         assert "mpx:new:default" not in file_tools._file_ops_cache
 
 
+def test_cleanup_vm_resolves_child_alias_in_explicit_owner_profile(tmp_path):
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    homes = [tmp_path / "profile-a", tmp_path / "profile-b"]
+    for home in homes:
+        home.mkdir()
+
+    secret_scope.set_multiplex_active(True)
+    try:
+        for home, parent in zip(homes, ("parent-a", "parent-b")):
+            token = set_hermes_home_override(home)
+            try:
+                terminal_tool.register_container_alias("shared-child", parent)
+            finally:
+                reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(homes[1])
+        try:
+            terminal_tool.cleanup_vm(
+                "shared-child",
+                profile_home=str(homes[0]),
+            )
+            assert terminal_tool._resolve_container_alias("shared-child") == "parent-b"
+        finally:
+            reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(homes[0])
+        try:
+            assert terminal_tool._resolve_container_alias("shared-child") == "shared-child"
+        finally:
+            reset_hermes_home_override(token)
+    finally:
+        with terminal_tool._container_alias_lock:
+            terminal_tool._container_aliases.clear()
+
+
+def test_explicit_profile_cleanup_waits_for_inflight_environment_publish(
+    tmp_path,
+):
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    cleaned = Event()
+    creator_has_lock = Event()
+    permit_register = Event()
+
+    class FakeEnvironment:
+        def cleanup(self):
+            cleaned.set()
+
+    secret_scope.set_multiplex_active(True)
+    token = set_hermes_home_override(home)
+    try:
+        config = terminal_tool._get_env_config(
+            {"terminal": {"backend": "local"}}
+        )
+        env_key = terminal_tool._resolve_container_task_id("race-session")
+
+        def creator():
+            with terminal_tool._task_creation_lock(env_key):
+                creator_has_lock.set()
+                permit_register.wait(timeout=2)
+                terminal_tool._register_active_environment(
+                    env_key,
+                    FakeEnvironment(),
+                    config,
+                    "race-session",
+                )
+
+        def release_after_cleanup_waits():
+            for _ in range(100):
+                with terminal_tool._creation_locks_lock:
+                    if terminal_tool._creation_lock_users.get(env_key) == 2:
+                        permit_register.set()
+                        return
+                permit_register.wait(0.005)
+            permit_register.set()
+
+        creator_thread = Thread(target=creator)
+        creator_thread.start()
+        assert creator_has_lock.wait(timeout=2)
+        release_thread = Thread(target=release_after_cleanup_waits)
+        release_thread.start()
+
+        terminal_tool.cleanup_vm(
+            "race-session",
+            profile_home=str(home),
+        )
+
+        creator_thread.join(timeout=2)
+        release_thread.join(timeout=2)
+        assert not creator_thread.is_alive()
+        assert not release_thread.is_alive()
+        assert cleaned.is_set()
+        with terminal_tool._env_lock:
+            assert env_key not in terminal_tool._active_environments
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_cleanup_inactive_envs_uses_each_environment_lifetime(monkeypatch):
     cleaned = []
 

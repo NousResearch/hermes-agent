@@ -144,9 +144,9 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
         },
         {
             "name": "generate-image",
-            "description": "Generate one private native-Codex image via the content engine",
+            "description": "Generate one private native-Codex image via the content engine. Optional extended style menu: style=...|blend=slug1+slug2",
             "options": [
-                _opt("args", "prompt=...|style=...|stage-root=...|job-id=...|backend=codex|aspect-ratio=landscape"),
+                _opt("args", "prompt=...|style=...|stage-root=...|job-id=...|backend=codex|aspect-ratio=landscape|blend=slug1+slug2"),
             ],
         },
     ]

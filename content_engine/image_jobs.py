@@ -50,6 +50,12 @@ class PreparedImageRequest:
     style_id: str
     backend: str
     references: tuple[ReferenceRequest, ...]
+    # Optional extended style menu: neutral trait fragment resolved from the
+    # ~9,000-style registry (single style or deterministic blend). Never
+    # contains protected names or SREF; purely additive to the existing
+    # style/layout resolution.
+    registry_traits: str | None = None
+    registry_slugs: tuple[str, ...] = ()
 
 
 def _style_key(value: str) -> str:
@@ -169,11 +175,19 @@ def prepare_image_request(
     style: str,
     backend: str = "codex",
     references: Iterable[str] = (),
+    blend: Iterable[str] = (),
 ) -> PreparedImageRequest:
     """Validate a request without selecting or invoking a generator.
 
     ``codex`` is the explicit policy default. ``local`` is available only when
     chosen by the caller. No unsupported provider can silently become a fallback.
+
+    ``blend`` (optional) is the extended style menu: two or more registry
+    slugs are deterministically blended into a neutral trait fragment that is
+    added to the request's ``registry_traits``. A single ``style`` may be
+    supplied alone (existing behaviour); if ``blend`` is supplied, ``style``
+    is still required as the canonical base style (backward compatible).
+    Unknown slugs fail fast — never a silent fallback.
     """
 
     clean_prompt = str(prompt).strip()
@@ -182,9 +196,22 @@ def prepare_image_request(
     clean_backend = str(backend).strip().lower() or "codex"
     if clean_backend not in _ALLOWED_BACKENDS:
         raise ImageRequestError(f"backend must be one of: {', '.join(sorted(_ALLOWED_BACKENDS))}")
+
+    blend_slugs = tuple(str(slug).strip() for slug in blend if str(slug).strip())
+    registry_traits: str | None = None
+    if blend_slugs:
+        from style_registry import RegistryError, resolve_fragment
+
+        try:
+            registry_traits = resolve_fragment(style_slug=None, blend_slugs=list(blend_slugs))
+        except RegistryError as exc:
+            raise ImageRequestError(f"invalid blend: {exc}") from exc
+
     return PreparedImageRequest(
         prompt=clean_prompt,
         style_id=_resolve_style(str(style)),
         backend=clean_backend,
         references=_normalise_references(references),
+        registry_traits=registry_traits,
+        registry_slugs=blend_slugs,
     )

@@ -42,6 +42,7 @@ def run_generate_image(
     style: str,
     backend: str = "codex",
     references: Optional[list[str]] = None,
+    blend: Optional[list[str]] = None,
     stage_root: str,
     job_id: str,
     aspect_ratio: str = "landscape",
@@ -81,6 +82,7 @@ def run_generate_image(
         style=style,
         backend=backend,
         references=references or (),
+        blend=blend or (),
     )
     # Fail fast on a non-codex backend *before* staging, mirroring
     # content_engine.py:467-468.  Local execution is disabled pending
@@ -121,6 +123,7 @@ def render_generate_image_command(
     style: str,
     backend: str = "codex",
     references: Optional[list[str]] = None,
+    blend: Optional[list[str]] = None,
     stage_root: str,
     job_id: str,
     aspect_ratio: str = "landscape",
@@ -135,7 +138,8 @@ def render_generate_image_command(
     argument value is shell-quoted via :func:`shlex.quote` so the line is
     safe to copy-paste into a terminal.  Reference URLs are emitted as
     repeated ``--reference`` flags (one per URL), matching the argparse
-    ``action="append"`` contract in ``content_engine.py``.
+    ``action="append"`` contract in ``content_engine.py``.  Blend slugs are
+    emitted as repeated ``--blend`` flags.
 
     The returned string is the *canonical* form both the REPL and the
     gateway show to the user before approval, so the user can verify
@@ -156,6 +160,8 @@ def render_generate_image_command(
     ]
     for ref in references or ():
         parts.append(f"--reference {shlex.quote(ref)}")
+    for slug in blend or ():
+        parts.append(f"--blend {shlex.quote(slug)}")
     parts.append(f"--stage-root {shlex.quote(stage_root)}")
     parts.append(f"--job-id {shlex.quote(job_id)}")
     parts.append(f"--aspect-ratio {shlex.quote(aspect_ratio)}")

@@ -336,6 +336,7 @@ def main() -> int:
     generated.add_argument("--style", required=True)
     generated.add_argument("--backend", default="codex", choices=("codex", "local"))
     generated.add_argument("--reference", action="append", default=[], help="User-supplied URL; repeat for multiple sources")
+    generated.add_argument("--blend", action="append", default=[], help="Extended style menu: registry style slug(s) to blend (repeat for multiple; requires >=2)")
     generated.add_argument("--stage-root", type=Path, required=True, help="Private root for one staged image job")
     generated.add_argument("--job-id", required=True, help="Safe identifier for one private image job")
     generated.add_argument("--aspect-ratio", default="landscape", choices=("landscape", "square", "portrait"))
@@ -463,6 +464,7 @@ def main() -> int:
                 style=args.style,
                 backend=args.backend,
                 references=args.reference,
+                blend=args.blend,
             )
             if prepared.backend != "codex":
                 raise ImageExecutionError("Local execution is disabled pending manual quality acceptance")

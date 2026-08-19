@@ -189,6 +189,11 @@ def _native_prompt(request: PreparedImageRequest, references: tuple[StagedRefere
         f"Style direction: {profile.label} ({profile.kind}).",
         f"Permitted layout grammar: {', '.join(profile.layout_options)}.",
     ]
+    # Extended style menu: merge the neutral registry trait fragment when the
+    # request carried a style/blend from the ~9,000-style registry. This is
+    # additive trait language — never a protected name, never SREF.
+    if request.registry_traits:
+        lines.append(f"Additional neutral style traits: {request.registry_traits}.")
     excerpts = [reference.text_excerpt.strip() for reference in references if reference.text_excerpt.strip()]
     if excerpts:
         lines.extend(

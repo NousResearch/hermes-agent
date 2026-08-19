@@ -6188,7 +6188,7 @@ class GatewaySlashCommandsMixin:
         # those defaults explicitly.
         _core_required = ("prompt", "style", "stage_root", "job_id")
         _all_fields = (
-            "prompt", "style", "backend", "references", "stage_root", "job_id", "aspect_ratio",
+            "prompt", "style", "backend", "references", "stage_root", "job_id", "aspect_ratio", "blend",
         )
         if any(not fields.get(field, "").strip() for field in _core_required):
             missing = [field for field in _all_fields if not fields.get(field, "").strip()]
@@ -6327,7 +6327,12 @@ class GatewaySlashCommandsMixin:
                 None,
             )
         if field == "aspect_ratio":
-            return ("Which aspect ratio? Press Enter for landscape.", list(self._GI_ASPECT_CHOICES))
+            return (f"Which aspect ratio? Press Enter for landscape.", list(self._GI_ASPECT_CHOICES))
+        if field == "blend":
+            return (
+                "Blend two or more registry styles? e.g. `steampunk+synthwave` (or press Enter for none).",
+                None,
+            )
         # Unknown field — open-ended.
         return (f"Value for {field}?", None)
 
@@ -6377,6 +6382,12 @@ class GatewaySlashCommandsMixin:
             # Chat platforms cannot submit a meaningful empty reply; accept a
             # natural explicit opt-out and preserve an empty reference list.
             value = "" if raw_reply.casefold() in {"none", "no", "skip", "-"} else raw_reply
+        elif field == "blend":
+            # Accept comma- or plus-separated registry slugs; empty/none → no blend.
+            if raw_reply.casefold() in {"none", "no", "skip", "-", ""}:
+                value = ""
+            else:
+                value = raw_reply
         else:
             value = raw_reply
         updated = _gi.advance(session_key, value)
@@ -6446,6 +6457,10 @@ class GatewaySlashCommandsMixin:
         references: list[str] = []
         if refs_raw:
             references = [r.strip() for r in refs_raw.split(",") if r.strip()]
+        blend_raw = fields.get("blend", "").strip()
+        blend: list[str] = []
+        if blend_raw:
+            blend = [s.strip() for s in blend_raw.replace(",", "+").split("+") if s.strip()]
 
         # Final configuration summary + exact canonical command shown to the
         # user before confirmation.  The exact command lets the user verify
@@ -6457,6 +6472,7 @@ class GatewaySlashCommandsMixin:
             style=style,
             backend=backend,
             references=references,
+            blend=blend,
             stage_root=stage_root,
             job_id=job_id,
             aspect_ratio=aspect_ratio,
@@ -6467,6 +6483,7 @@ class GatewaySlashCommandsMixin:
             f"• style: `{style}`\n"
             f"• backend: `{backend}`\n"
             f"• references: {', '.join(references) if references else '(none)'}\n"
+            f"• blend: {', '.join(blend) if blend else '(none)'}\n"
             f"• stage-root: `{stage_root}`\n"
             f"• job-id: `{job_id}`\n"
             f"• aspect-ratio: `{aspect_ratio}`\n"
@@ -6484,6 +6501,7 @@ class GatewaySlashCommandsMixin:
                 style=style,
                 backend=backend,
                 references=references,
+                blend=blend,
                 stage_root=stage_root,
                 job_id=job_id,
                 aspect_ratio=aspect_ratio,
@@ -6504,6 +6522,7 @@ class GatewaySlashCommandsMixin:
         style: str,
         backend: str,
         references: list[str],
+        blend: list[str],
         stage_root: str,
         job_id: str,
         aspect_ratio: str,
@@ -6529,6 +6548,7 @@ class GatewaySlashCommandsMixin:
                     style=style,
                     backend=backend,
                     references=references,
+                    blend=blend,
                     stage_root=stage_root,
                     job_id=job_id,
                     aspect_ratio=aspect_ratio,

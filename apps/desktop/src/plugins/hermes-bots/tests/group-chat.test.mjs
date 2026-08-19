@@ -582,6 +582,22 @@ test('turn transport is gateway-native (session RPCs) and hostile text rides ver
   assert.match(pluginSource, /const title = `Group: \$\{room\.roomId \|\| group\}`/)
 })
 
+test('room plumbing sessions carry the room_plumbing contract', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.sendToGroupChat('Rpc', [{ name: 'research', title: '' }], 'hello')
+  for (let i = 0; i < 200 && (gc.$groupChats.get().Rpc || {}).running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  // The per-group plumbing session must be hidden AND stamped as
+  // room_plumbing so the server rebuilds it from the member profile's
+  // CURRENT config instead of restoring a stale stored provider pin
+  // (GH #89497 — room bots stuck on Nous after a provider switch).
+  assert.match(pluginSource, /hidden: true/)
+  assert.match(pluginSource, /room_plumbing: true/)
+})
+
 test('log trimming keeps watermarks consistent', () => {
   const gc = load(() => '(pass)')
   const log = Array.from({ length: 200 }, (_, i) => ({ from: { kind: 'user', name: 'You' }, text: `m${i}`, at: i }))

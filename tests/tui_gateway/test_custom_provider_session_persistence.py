@@ -469,3 +469,91 @@ class TestOverridesHaveRoutableProvider:
         assert _overrides_have_routable_provider({}) is False
 
 
+# --- Bot-Mode room plumbing sessions follow the profile's CURRENT config ------
+#
+# Room plumbing sessions are per-member scratch conversations inside a group
+# chat (desktop Bot Mode). They must ALWAYS rebuild from the member profile's
+# current config: restoring the stored model/provider pin from an old row is
+# what left room bots stuck on a stale provider (e.g. "out of Nous credits"
+# after the profile was switched to ollama-cloud) while the same bots worked
+# fine in DMs. The stored-runtime restore stays intact for normal 1:1 chats.
+#
+# The contract is an EXPLICIT ``room_plumbing`` marker persisted in
+# model_config (set by session.create/room consumers), with the hidden +
+# "Group:" title shape kept as a legacy fallback for rows created by older
+# desktop builds that never sent the marker.
+#
+# Regression: GH #89497 (room bots hang then report "out of Nous credits").
+
+
+class TestRoomPlumbingRuntimeOverrides:
+    def test_marked_row_returns_no_overrides(self):
+        """A row carrying the room_plumbing marker never restores a stored
+        provider pin — resume falls back to the profile's CURRENT config."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "openai/gpt-5.6-luna-pro",
+            "billing_provider": "nous",
+            "model_config": json.dumps(
+                {"model": "openai/gpt-5.6-luna-pro", "provider": "nous", "room_plumbing": True}
+            ),
+        }
+        assert _stored_session_runtime_overrides(row) == {}
+
+    def test_marked_row_dict_model_config(self):
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "openai/gpt-5.6-luna-pro",
+            "model_config": {"model": "openai/gpt-5.6-luna-pro", "provider": "nous", "room_plumbing": True},
+        }
+        assert _stored_session_runtime_overrides(row) == {}
+
+    def test_legacy_group_title_shape_still_skipped(self):
+        """Rows from older desktop builds (hidden + \"Group:\" title, no
+        marker) keep the legacy guard: they also rebuild from current config."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "title": "Group: Ceo, Product Designer, Cfo, COO, CTO, Coding",
+            "hidden": 1,
+            "model": "openai/gpt-5.6-luna-pro",
+            "billing_provider": "nous",
+            "model_config": json.dumps({"model": "openai/gpt-5.6-luna-pro", "provider": "nous"}),
+        }
+        assert _stored_session_runtime_overrides(row) == {}
+
+    def test_normal_row_still_restores_stored_runtime(self):
+        """The intended stored-runtime restore is untouched for normal 1:1
+        chats: reopening an old chat shows the model it actually used."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "title": "Analyze business idea gaps",
+            "hidden": 0,
+            "model": "glm-5.1",
+            "billing_provider": "ollama-cloud",
+            "model_config": json.dumps(
+                {"model": "glm-5.1", "provider": "ollama-cloud", "service_tier": "normal"}
+            ),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+        assert overrides["model_override"]["model"] == "glm-5.1"
+        assert overrides["model_override"]["provider"] == "ollama-cloud"
+
+    def test_hidden_normal_chat_untouched_by_legacy_shape(self):
+        """A hidden NON-room chat (hidden without a \"Group:\" title) keeps the
+        stored-runtime restore — the legacy shape is narrow on purpose."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "title": "My hidden scratchpad",
+            "hidden": 1,
+            "model": "glm-5.1",
+            "billing_provider": "ollama-cloud",
+            "model_config": json.dumps({"model": "glm-5.1", "provider": "ollama-cloud"}),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+        assert overrides["model_override"]["model"] == "glm-5.1"
+

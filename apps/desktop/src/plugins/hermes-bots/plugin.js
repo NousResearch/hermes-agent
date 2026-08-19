@@ -7474,7 +7474,12 @@ async function ensureGroupChatSession(group, member) {
     profile: member.name,
     title,
     // Room member sessions are plumbing — always hidden from the sidebar.
-    hidden: true
+    hidden: true,
+    // Explicit contract: this session's runtime always follows the member
+    // profile's CURRENT config. Resume must NOT restore the stored
+    // model/provider pin from an old row (that left room bots stuck on a
+    // stale provider — e.g. "out of Nous credits" — after a profile switch).
+    room_plumbing: true
   })
   const stored = created?.stored_session_id || null
 

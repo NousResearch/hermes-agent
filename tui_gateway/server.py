@@ -3618,6 +3618,74 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     )
 
 
+# A tour action is a DOM operation the renderer performs and answers straight
+# back, so a client that implements the bridge replies in milliseconds. The
+# generous deadline exists for one case only: a preview tour's first action
+# injects the engine into a live page.
+_TOUR_TIMEOUT_S = 45
+# Until a session's client has proven it answers at all, hold it to a deadline
+# a working renderer cannot miss. See _tour_request.
+_TOUR_PROBE_TIMEOUT_S = 10
+
+_TOUR_BRIDGE_UNAVAILABLE = json.dumps(
+    {
+        "success": False,
+        "error": (
+            "No Hermes Desktop window answered the tour request. The tour is "
+            "driven by the desktop app's renderer, which updates separately "
+            "from this backend, so an app build older than the tour tool has "
+            "nothing listening. Update the Hermes Desktop app and start a new "
+            "session. Do not retry tour in this session."
+        ),
+    }
+)
+
+
+def _tour_request(sid: str, payload: dict) -> str:
+    """Bridge the tour tool callback onto _block, without paying for a client
+    that cannot answer it.
+
+    The renderer's ``tour.request`` handler ships in the desktop bundle, but
+    the tool is offered by this backend — and the two update on different
+    clocks. Against an app older than the tool the event lands in a renderer
+    with no branch for it, nobody ever calls ``tour.respond``, and the agent
+    blocks for the full deadline. The model then does what the schema tells it
+    to and tries the next action, so a single "give me a tour" turn stacks
+    those waits (the timeouts reported against #89620).
+
+    A session's first action therefore gets the probe deadline, and an
+    unanswered probe marks the bridge unavailable for that session: every later
+    call returns immediately, telling the user what to actually fix instead of
+    stalling again. Once a client has answered, real actions get the full
+    deadline back and a single slow one no longer condemns it. The verdict
+    lives on the session record, so it dies with the session and a new one
+    re-probes.
+    """
+    # A detached caller has no session record; the throwaway keeps it on the
+    # plain bridge, unprobed.
+    session = _sessions.get(sid)
+    if session is None:
+        session = {}
+    state = session.get("tour_bridge")
+
+    if state == "unanswered":
+        return _TOUR_BRIDGE_UNAVAILABLE
+
+    answer = _block(
+        "tour.request",
+        sid,
+        dict(payload),
+        timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S,
+    )
+
+    if answer:
+        session["tour_bridge"] = "answered"
+    elif state != "answered":
+        session["tour_bridge"] = "unanswered"
+
+    return answer or _TOUR_BRIDGE_UNAVAILABLE
+
+
 def _clear_pending(sid: str | None = None) -> None:
     """Release pending prompts with an empty answer.
 
@@ -6325,14 +6393,8 @@ def _agent_cbs(sid: str) -> dict:
         # tour tool (desktop GUI): the renderer drives driver.js — highlighting
         # elements in the app's own DOM or injecting the engine into the
         # preview pane's webview — and answers tour.respond with the outcome
-        # (did the selector match, which step is active). Generous timeout: a
-        # preview tour's first action loads the engine into a live page.
-        "tour_callback": lambda payload: _block(
-            "tour.request",
-            sid,
-            dict(payload),
-            timeout=45,
-        ),
+        # (did the selector match, which step is active).
+        "tour_callback": lambda payload: _tour_request(sid, payload),
     }
 
     # Interim assistant commentary (text alongside tool calls, or the attempted

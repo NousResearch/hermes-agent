@@ -253,6 +253,36 @@ class TestNodeToolRunnable:
         assert resolved == str(broken_npm)
         assert resolved != str(system_bin / "npm")
 
+    def test_missing_managed_npm_heals_when_node_still_runs(self, tmp_path, monkeypatch):
+        """npm entirely absent while node survives must heal (not PATH-fall back)."""
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        self._stub(managed_bin, "node", "#!/bin/sh\necho '22.0.0'\nexit 0\n")
+        # Intentionally no managed npm/npx — the partial-tree case this heals.
+        heal_called = {"value": False}
+        healed_npm = managed_bin / "npm"
+
+        system_bin = tmp_path / "system-bin"
+        system_bin.mkdir()
+        self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", str(system_bin))
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+
+        def _heal():
+            heal_called["value"] = True
+            healed_npm.write_text("#!/bin/sh\necho '22.0.0'\nexit 0\n")
+            healed_npm.chmod(0o755)
+            return True
+
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", _heal)
+
+        resolved = find_node_executable("npm")
+        assert heal_called["value"] is True
+        assert resolved == str(healed_npm)
+        assert resolved != str(system_bin / "npm")
 
     def test_broken_managed_npm_returns_none_when_heal_fails(self, tmp_path, monkeypatch):
         profile_home = tmp_path / "profiles" / "assistant"

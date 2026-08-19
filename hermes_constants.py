@@ -802,11 +802,14 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
 def find_hermes_node_executable(command: str) -> str | None:
     """Return a Hermes-managed Node/npm executable path, healing broken trees.
 
-    Outdated trees (node major below ``_HERMES_NODE_TARGET_MAJOR``) heal the
-    same way broken ones do — the once-per-process heal redownloads the target
-    major, upgrading existing users on next launch rather than next reinstall.
-    When the heal fails (offline, download error), an outdated-but-runnable
-    tree is still returned: old Node beats no Node.
+    Heals when the requested tool is present-but-broken, entirely missing while
+    the managed tree is otherwise present (a sibling such as ``node`` survives),
+    or outdated (node major below ``_HERMES_NODE_TARGET_MAJOR``). The
+    once-per-process heal redownloads the target major — upgrading existing
+    users on next launch rather than next reinstall, and restoring npm/npx
+    deleted by a self-update clobber, partial symlink cleanup, or interrupted
+    zip extraction. When the heal fails (offline, download error), an
+    outdated-but-runnable tree is still returned: old Node beats no Node.
     """
     names = _candidate_node_command_names(command)
 
@@ -825,8 +828,10 @@ def find_hermes_node_executable(command: str) -> str | None:
         return None, broken
 
     resolved, broken_present = _first_runnable()
-    needs_heal = broken_present or (
-        resolved is not None and _managed_node_tree_outdated()
+    needs_heal = (
+        broken_present
+        or (resolved is None and hermes_managed_node_tree_present())
+        or (resolved is not None and _managed_node_tree_outdated())
     )
     if needs_heal and heal_hermes_managed_node():
         healed, _ = _first_runnable()

@@ -3094,6 +3094,43 @@ class TestModelContextLength:
         assert result["model"]["context_length"] == 100000
         assert "model_context_length" not in result  # virtual field removed
 
+    def test_denormalize_context_length_alone_is_applied(self):
+        """The Settings autosave now sends a diff, not the full draft: editing
+        only the Context Window control must not omit ``model`` and thereby
+        drop the context_length edit on the floor (#89597 review)."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "anthropic/claude-sonnet-4", "provider": "anthropic",
+                      "context_length": 100000}
+        })
+
+        result = _denormalize_config_from_web({"model_context_length": 200000})
+        assert isinstance(result["model"], dict)
+        assert result["model"]["context_length"] == 200000
+        assert result["model"]["default"] == "anthropic/claude-sonnet-4"
+
+    def test_denormalize_model_alone_preserves_context_length(self):
+        """The mirror case: editing only the Model field must not silently
+        wipe an existing context_length override just because the diff omits
+        the unrelated model_context_length key (#89597 review).
+
+        No ``provider`` on disk here on purpose: that keeps this test isolated
+        to the diff-omission bug rather than the separate, pre-existing (and
+        intentional, see ``_apply_main_model_assignment``) behavior where a
+        real provider switch drops the context_length override."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "anthropic/claude-sonnet-4", "context_length": 150000}
+        })
+
+        result = _denormalize_config_from_web({"model": "anthropic/claude-opus-4.6"})
+        assert result["model"]["context_length"] == 150000
+        assert result["model"]["default"] == "anthropic/claude-opus-4.6"
+
 
 class TestDenormalizeProviderSwitch:
     """The flat Config-page Model field carries no provider info. When the

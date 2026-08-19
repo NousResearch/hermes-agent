@@ -64,6 +64,7 @@ describe('connection display helpers', () => {
       tokenSet: true,
       url: 'https://work.example.test:9443'
     }
+
     const ssh = {
       ...connection('studio', 'Studio over SSH', 'ssh'),
       host: 'studio.example.test',

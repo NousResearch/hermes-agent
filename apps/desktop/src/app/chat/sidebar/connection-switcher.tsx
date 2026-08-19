@@ -185,7 +185,8 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
                     '[role="menuitemradio"]:not([data-disabled])'
                   )
 
-                  const target = event.key === 'ArrowDown' ? results?.item(0) : results?.item((results?.length ?? 1) - 1)
+                  const target =
+                    event.key === 'ArrowDown' ? results?.item(0) : results?.item((results?.length ?? 1) - 1)
 
                   if (target) {
                     event.preventDefault()
@@ -231,10 +232,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
             )}
           </DropdownMenuRadioGroup>
           <DropdownMenuSeparator className={searchable ? 'm-0' : undefined} />
-          <DropdownMenuItem
-            className={searchable ? dropdownMenuRow : undefined}
-            onSelect={onConnect}
-          >
+          <DropdownMenuItem className={searchable ? dropdownMenuRow : undefined} onSelect={onConnect}>
             <ManageGatewaysLabel label={t.profiles.connectGateway} />
           </DropdownMenuItem>
         </DropdownMenuContent>

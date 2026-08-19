@@ -438,7 +438,9 @@ describe('refreshSessions batches slices into one request', () => {
     const personalRefresh = result.current.refreshSessions()
 
     await act(async () => {
-      personal.resolve(sidebar({ sessions: [row('personal-session')] }, [], [row('personal-chat', { source: 'telegram' })]))
+      personal.resolve(
+        sidebar({ sessions: [row('personal-session')] }, [], [row('personal-chat', { source: 'telegram' })])
+      )
       await personalRefresh
 
       work.resolve(sidebar({ sessions: [row('work-session')] }, [], [row('work-chat', { source: 'signal' })]))

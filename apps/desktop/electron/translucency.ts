@@ -26,6 +26,7 @@ export {
   glassMaterialsFor,
   glassSupportedOn,
   glassSurfaceKeep,
+  hudFrostFor,
   normalizeMaterial,
   normalizeMode,
   normalizeScope,

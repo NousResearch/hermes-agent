@@ -849,37 +849,57 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Model resolution + payload construction
 # ---------------------------------------------------------------------------
-def _resolve_fal_model() -> tuple:
+def _resolve_fal_model(override: Optional[str] = None) -> tuple:
     """Resolve the active FAL model from config.yaml (primary) or default.
 
-    Returns (model_id, metadata_dict). Falls back to DEFAULT_MODEL if the
-    configured model is unknown (logged as a warning).
+    A non-empty ``override`` (typically the per-call ``model`` argument
+    surfaced in the ``image_generate`` schema) wins over the configured
+    ``image_gen.model`` value. Callers that don't accept per-call model
+    overrides can simply pass None.
+
+    Returns ``(model_id, metadata_dict)``. Falls back to DEFAULT_MODEL if the
+    resolved model id is unknown (logged as a warning).
+
+    When an ``override`` was supplied but fell back to DEFAULT_MODEL (because
+    the override id was not in ``FAL_MODELS``), the returned metadata dict
+    includes ``"override_dropped": True`` so callers can signal the fallback
+    in their response payload.
     """
-    model_id = ""
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
-        if isinstance(img_cfg, dict):
-            raw = img_cfg.get("model")
-            if isinstance(raw, str):
-                model_id = raw.strip()
-    except Exception as exc:
-        logger.debug("Could not load image_gen.model from config: %s", exc)
+    requested_override = ""
+    if isinstance(override, str):
+        requested_override = override.strip()
+    model_id = requested_override
+    if not model_id:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
+            if isinstance(img_cfg, dict):
+                raw = img_cfg.get("model")
+                if isinstance(raw, str):
+                    model_id = raw.strip()
+        except Exception as exc:
+            logger.debug("Could not load image_gen.model from config: %s", exc)
 
     # Env var escape hatch (undocumented; backward-compat for tests/scripts).
     if not model_id:
         model_id = os.getenv("FAL_IMAGE_MODEL", "").strip()
 
     if not model_id:
-        return DEFAULT_MODEL, FAL_MODELS[DEFAULT_MODEL]
+        meta = dict(FAL_MODELS[DEFAULT_MODEL])
+        if requested_override:
+            meta["override_dropped"] = True
+        return DEFAULT_MODEL, meta
 
     if model_id not in FAL_MODELS:
         logger.warning(
             "Unknown FAL model '%s' in config; falling back to %s",
             model_id, DEFAULT_MODEL,
         )
-        return DEFAULT_MODEL, FAL_MODELS[DEFAULT_MODEL]
+        meta = dict(FAL_MODELS[DEFAULT_MODEL])
+        if requested_override:
+            meta["override_dropped"] = True
+        return DEFAULT_MODEL, meta
 
     return model_id, FAL_MODELS[model_id]
 
@@ -1172,6 +1192,7 @@ def image_generate_tool(
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
     upscale: Optional[bool] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Generate an image from a text prompt, or edit a source image, via FAL.
 
@@ -1179,16 +1200,25 @@ def image_generate_tool(
     the configured model declares an ``edit_endpoint``, the call routes to that
     image-to-image / edit endpoint; otherwise it's plain text-to-image.
 
-    The agent-facing schema exposes ``prompt``, ``aspect_ratio``, ``image_url``
-    and ``reference_image_urls``; the remaining kwargs are overrides for direct
-    Python callers and are filtered per-model via the ``supports`` /
-    ``edit_supports`` whitelist (unsupported overrides are silently dropped so
-    legacy callers don't break when switching models).
+    The agent-facing schema exposes ``prompt``, ``aspect_ratio``, ``image_url``,
+    ``reference_image_urls``, ``upscale`` and the optional ``model`` override;
+    the remaining kwargs are overrides for direct Python callers and are
+    filtered per-model via the ``supports`` / ``edit_supports`` whitelist
+    (unsupported overrides are silently dropped so legacy callers don't break
+    when switching models).
+
+    The ``model`` argument is the per-call override surfaced in the
+    ``image_generate`` schema. When set, it wins over ``image_gen.model`` from
+    config for this call only. Empty / whitespace / non-string values fall
+    back to the configured default.
 
     Returns a JSON string with ``{"success": bool, "image": url | None,
-    "modality": "text" | "image", "error": str, "error_type": str}``.
+    "modality": "text" | "image", "model": str, "error": str,
+    "error_type": str}``. When a per-call ``model`` override was requested
+    but the id was unrecognized, ``"model_override_dropped": True`` is
+    included and ``"model"`` shows the fallback that was actually used.
     """
-    model_id, meta = _resolve_fal_model()
+    model_id, meta = _resolve_fal_model(model)
 
     # Collect any source images (primary + references) into one ordered list.
     source_images: list = []
@@ -1341,7 +1371,10 @@ def image_generate_tool(
             "image": formatted_images[0]["url"] if formatted_images else None,
             "modality": modality,
             "upscaled": bool(formatted_images and formatted_images[0].get("upscaled")),
+            "model": model_id,
         }
+        if meta.get("override_dropped"):
+            response_data["model_override_dropped"] = True
 
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
@@ -1559,6 +1592,16 @@ IMAGE_GENERATE_SCHEMA = {
                     "than fidelity."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional backend-specific model id that overrides "
+                    "the configured default for this call only. Valid "
+                    "values depend on the active backend; leave unset to "
+                    "use the configured default. Ignored by backends "
+                    "that don't accept a per-call model override."
+                ),
+            },
         },
         "required": ["prompt"],
     },
@@ -1610,6 +1653,7 @@ def _dispatch_to_plugin_provider(
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
     upscale: Optional[bool] = None,
+    model: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1627,13 +1671,23 @@ def _dispatch_to_plugin_provider(
     route to its edit endpoint. ``upscale`` (when explicitly set) requests a
     post-generation high-resolution pass; providers without upscale support
     ignore it via their ``**kwargs`` (the ABC contract).
+
+    ``model`` (when explicitly set) is the per-call backend-specific model
+    override surfaced in the ``image_generate`` schema. It wins over
+    ``image_gen.model`` from config for this call only. Backends without a
+    per-call model concept receive the value via ``**kwargs`` and ignore it
+    — the provider ABC contract (``agent.image_gen_provider.ImageGenProvider``)
+    requires implementations to accept and silently ignore unknown kwargs.
     """
     configured = _read_configured_image_provider()
     if not configured or configured == "fal":
         return None  # unset/explicit FAL keeps the legacy FAL path
 
-    # Also read configured model so we can pass it to the plugin
+    # Also read configured model so we can pass it to the plugin. A per-call
+    # ``model`` argument always wins; the configured default is the fallback.
     configured_model = _read_configured_image_model()
+    override_model = (model or "").strip() or None
+    effective_model = override_model or configured_model
 
     try:
         # Import locally so plugin discovery isn't triggered just by
@@ -1671,8 +1725,8 @@ def _dispatch_to_plugin_provider(
 
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
     try:
-        if configured_model:
-            kwargs["model"] = configured_model
+        if effective_model:
+            kwargs["model"] = effective_model
         if isinstance(image_url, str) and image_url.strip():
             kwargs["image_url"] = image_url.strip()
         norm_refs = None
@@ -1772,13 +1826,15 @@ def _maybe_route_managed_krea(
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
     upscale: Optional[bool] = None,
+    model: Optional[str] = None,
 ) -> Optional[str]:
     """Route a native ``krea-2-*`` model to the managed Krea gateway, in managed mode.
 
     Returns a JSON result string when handled by the Krea managed gateway, or
     ``None`` to fall through to the normal plugin/FAL pipeline. Fires only when
     all hold:
-      - the configured image model is a native ``krea-2-*`` id, AND
+      - the configured image model is a native ``krea-2-*`` id (or the per-call
+        ``model`` argument names one), AND
       - the user isn't already routed to the Krea plugin via
         ``image_gen.provider`` (that path dispatches normally), AND
       - the managed Krea gateway is resolvable (portal/managed mode).
@@ -1789,7 +1845,10 @@ def _maybe_route_managed_krea(
     if _read_configured_image_provider() == "krea":
         return None
 
-    normalized = _normalize_krea_model(_read_configured_image_model())
+    # Per-call model wins over the configured default for routing decisions,
+    # matching the dispatch path's behavior. Routing only fires for ``krea-2-*``.
+    candidate_model = (model or "").strip() or _read_configured_image_model()
+    normalized = _normalize_krea_model(candidate_model)
     if normalized is None:
         return None
 
@@ -1903,6 +1962,10 @@ def _handle_image_generate(args, **kw):
     upscale = args.get("upscale")
     if not isinstance(upscale, bool):
         upscale = None
+    # Optional per-call model override. Strings only — anything else is treated
+    # as "unset" so a bad LLM tool-call can't crash the dispatch path.
+    raw_model = args.get("model")
+    per_call_model = raw_model.strip() if isinstance(raw_model, str) else None
     task_id = kw.get("task_id")
 
     # Terminal-backend confinement chokepoint: convert path-like sources to
@@ -1922,6 +1985,7 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
         upscale=upscale,
+        model=per_call_model,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
@@ -1936,6 +2000,7 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
         upscale=upscale,
+        model=per_call_model,
     )
     if krea_routed is not None:
         return _postprocess_image_generate_result(krea_routed, task_id=task_id)
@@ -1946,6 +2011,7 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
         upscale=upscale,
+        model=per_call_model,
     )
     return _postprocess_image_generate_result(raw, task_id=task_id)
 

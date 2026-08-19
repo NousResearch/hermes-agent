@@ -186,11 +186,15 @@ class ImageGenProvider(abc.ABC):
         parameters future versions of the schema will expose —
         implementations MUST ignore unknown keys (no TypeError).
 
-        Known optional kwarg: ``upscale`` (bool) — when true, the caller
-        requests a post-generation high-resolution pass through the
-        backend's upscaler/enhancer. Providers without an upscaler simply
-        ignore it; providers that honor it should report ``upscaled: True``
-        in the response ``extra``.
+        Known optional kwargs:
+          - ``upscale`` (bool) — when true, the caller requests a
+            post-generation high-resolution pass through the backend's
+            upscaler/enhancer. Providers without an upscaler simply
+            ignore it; providers that honor it should report
+            ``upscaled: True`` in the response ``extra``.
+          - ``model`` (str) — a per-call backend-specific model id that
+            overrides the configured default. Providers that don't
+            support per-call model selection should ignore it silently.
         """
 
 

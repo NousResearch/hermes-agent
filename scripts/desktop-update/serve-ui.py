@@ -4,16 +4,36 @@ Two GET routes: / serves ui.html, /progress serves the status file the
 orchestrator script writes ({"status": "running"|"done"|"error", ...}).
 Exists because a file:// page cannot receive events from a detached
 process. Prints the chosen ephemeral port on stdout, serves until killed.
+
+`elapsed_seconds` is stamped per request, not read from the status file:
+stages are minutes apart, so a value frozen at the last publish would sit
+still through the longest waits -- exactly the stall the page exists to
+disprove. Windows' in-process listener computes it the same way.
 """
 
 import http.server
 import json
 import socketserver
 import sys
+import time
 
 html_path, status_path = sys.argv[1], sys.argv[2]
+started_at = float(sys.argv[3]) if len(sys.argv) > 3 else time.time()
 with open(html_path, "rb") as f:
     HTML = f.read()
+
+
+def progress_body():
+    try:
+        with open(status_path, "rb") as f:
+            state = json.loads(f.read())
+        if not isinstance(state, dict):
+            raise ValueError(state)
+    except Exception:
+        state = {"status": "running", "message": ""}
+    state["elapsed_seconds"] = max(0, int(time.time() - started_at))
+
+    return json.dumps(state).encode("utf-8")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -22,12 +42,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/progress"):
-            try:
-                with open(status_path, "rb") as f:
-                    body = f.read()
-                json.loads(body)
-            except Exception:
-                body = b'{"status":"running","message":""}'
+            body = progress_body()
             ctype = "application/json; charset=utf-8"
         elif self.path == "/":
             body, ctype = HTML, "text/html; charset=utf-8"

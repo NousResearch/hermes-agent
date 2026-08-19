@@ -4,8 +4,9 @@
 
   Served over loopback by the orchestrator (windows.ps1 / posix.sh) into a
   chromeless browser app window. Pure veneer: polls /progress for the current
-  hand-off stage or a terminal event and reacts; owns nothing (relaunch, result file, marker hygiene
-  all live in the orchestrator, which runs identically with no UI at all).
+  hand-off stage or a terminal event and reacts; owns nothing (relaunch,
+  result file, marker hygiene all live in the orchestrator, which runs
+  identically with no UI at all).
 
   The visual is PR #75895's update hand-off screen, ported verbatim:
   - Loader: the desktop's "Fourier Flow" curve. Math + tuning lifted from
@@ -13,7 +14,9 @@
     apps/desktop/src/components/ui/loader.tsx 'fourier-flow'). Keep the
     constants in sync if the desktop's curve is retuned.
   - Layout: loader (size-20) + one title + one muted stage/elapsed line. No
-    progress bar, stage list, log pane, or cancel (see #75895 for the arguments).
+    progress bar, stage list, log pane, or cancel (see #75895 for the
+    arguments). Elapsed comes from the orchestrator or is omitted -- a clock
+    started here would measure when this window painted, not the update.
   - Appearance follows the OS. Dark seeds are the installer's neutral
     charcoal (#232323 base, foreground #d6d6d6) — never brand blue.
 -->
@@ -89,6 +92,7 @@
     font-size: 12px;
     line-height: 1.5;
     color: var(--muted-foreground);
+    white-space: pre-line;
   }
   p code {
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -104,7 +108,7 @@
     <div id="loader" role="status" aria-label="Updating"></div>
     <div id="glyph"></div>
     <h2 id="title">Updating Hermes</h2>
-    <p id="line">Preparing update<br>0s elapsed</p>
+    <p id="line">Hermes will open once done.</p>
   </div>
 <script>
   /* ── Fourier Flow loader, ported verbatim from loader.tsx ─────────────── */
@@ -199,8 +203,11 @@
   const titleEl = document.getElementById('title')
   const lineEl = document.getElementById('line')
   const glyphEl = document.getElementById('glyph')
-  const clientStartedAt = Date.now()
+  const defaultLine = lineEl.textContent   /* what a stage-less run says */
   let settled = false
+
+  const elapsedText = s =>
+    s < 60 ? `${s}s elapsed` : `${Math.floor(s / 60)}m ${s % 60}s elapsed`
 
   function settle(state) {
     settled = true
@@ -211,15 +218,11 @@
   function apply(state) {
     if (settled) return
     if (state.status === 'running') {
-      const reported = Number(state.elapsed_seconds)
-      const elapsed = Number.isFinite(reported) && reported >= 0
-        ? Math.floor(reported)
-        : Math.floor((Date.now() - clientStartedAt) / 1000)
-      const elapsedText = elapsed < 60
-        ? `${elapsed}s elapsed`
-        : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s elapsed`
-      lineEl.textContent = `${state.message || 'Updating Hermes'}\n${elapsedText}`
-      lineEl.style.whiteSpace = 'pre-line'
+      const stage = state.message || defaultLine
+      const elapsed = Number(state.elapsed_seconds)
+      lineEl.textContent = Number.isFinite(elapsed) && elapsed >= 0
+        ? `${stage}\n${elapsedText(Math.floor(elapsed))}`
+        : stage
     } else if (state.status === 'done') {
       settle('done')
       glyphEl.textContent = '\u2713'

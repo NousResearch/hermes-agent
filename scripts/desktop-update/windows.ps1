@@ -83,7 +83,7 @@ $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
 $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
 $script:Ui = $null
-$script:UiStage = "Preparing update"
+$script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 function Write-HandoffLog([string]$Message) {

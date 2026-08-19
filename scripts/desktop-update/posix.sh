@@ -64,6 +64,7 @@ LOG_DIR="$HERMES_HOME/logs"; mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG="$LOG_DIR/desktop-update-handoff.log"
 RESULT="$HERMES_HOME/.hermes-update-result.json"
 STATUS="${TMPDIR:-/tmp}/hermes-update-status.$$"
+STARTED_AT="$(date +%s)"  # the shim's elapsed clock; see serve-ui.py
 
 UI_SERVER_PID="" UI_BROWSER_PID="" FINAL_CODE=1
 FINAL_MSG="update did not complete"
@@ -147,9 +148,19 @@ notify_fallback() { # status message — renderer-free recovery surface.
   log "NOTICE: no notification surface accepted; outcome reaches the user via the result dialog on next launch: $2"
 }
 
-publish() { # status message -- atomic replace; the server reads per poll
+write_status() { # status message -- atomic replace; the server reads per poll
   printf '{"status":"%s","message":"%s"}' "$(json_escape "$1")" "$(json_escape "$2")" > "$STATUS.tmp" \
     && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null || true
+}
+
+publish_stage() { # a long wait the orchestrator is already gating on. No poll
+  # beat (that would add a second per stage to every update) and no
+  # notification fallback (there is nothing here for the user to act on).
+  write_status "running" "$1"
+}
+
+publish() { # terminal event -- the page must render it before teardown
+  write_status "$1" "$2"
   [ -n "$UI_SERVER_PID" ] && sleep 1  # one poll beat to render the state
   [ -z "$UI_SERVER_PID" ] && notify_fallback "$1" "$2"
 }
@@ -178,7 +189,7 @@ start_ui() {
   browser="$(find_browser)"
   { [ -f "$html" ] && [ -n "$py" ] && [ -n "$browser" ]; } || { log "shim: no renderer; skipping UI"; return; }
 
-  publish "running" ""
+  publish_stage ""
   # The Desktop's final teardown targets the updater process group.  Put both
   # UI processes in their own sessions so neither the HTTP server nor a Chrome
   # renderer becomes collateral damage (Chrome surfaces that renderer death as
@@ -190,7 +201,7 @@ start_ui() {
   # window showed ERR_CONNECTION_REFUSED for the whole run; upstream #66753).
   # stop_ui ends the server with SIGKILL instead — it is stateless HTTP.
   "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); os.execv(sys.argv[1], sys.argv[1:])' \
-    "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" > "$LOG_DIR/desktop-update-ui-port" 2>>"$LOG" &
+    "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" "$STARTED_AT" > "$LOG_DIR/desktop-update-ui-port" 2>>"$LOG" &
   UI_SERVER_PID=$!
   for i in $(seq 1 10); do
     port="$(tr -cd '0-9' < "$LOG_DIR/desktop-update-ui-port" 2>/dev/null)"
@@ -264,6 +275,7 @@ mac_swap() {
   # the copy in. Every step checked; a failed final move ROLLS BACK so the
   # user always has a launchable app, and the result file tells the truth.
   if [ "$FINAL_CODE" -eq 0 ] && [ -n "$rebuilt" ] && [ -d "$RELAUNCH_TARGET" ] && [ "$rebuilt" != "$RELAUNCH_TARGET" ]; then
+    publish_stage "Installing the new app"
     rm -rf "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET.old" 2>/dev/null || true
     if ! /usr/bin/ditto "$rebuilt" "$RELAUNCH_TARGET.new"; then
       rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
@@ -486,6 +498,7 @@ cd "$INSTALL_ROOT" || {
 }
 export PYTHONUNBUFFERED=1
 log "running: hermes update --yes --gateway --branch $BRANCH"
+publish_stage "Updating code and dependencies"
 OUT="$("$HERMES_BIN" update --yes --gateway --branch "$BRANCH" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
@@ -494,6 +507,7 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   # Retry once: update-boundary class (fresh code on disk, stale in memory).
   # Exit 2 ("close all Hermes windows") is not retryable.
   log "retrying once (freshly pulled fix loads on the second run)"
+  publish_stage "Retrying update"
   OUT="$("$HERMES_BIN" update --yes --gateway --branch "$BRANCH" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
@@ -505,6 +519,7 @@ trap 'on_signal TERM' TERM
 # and call it success -- retry the build once, propagate honestly.
 if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
   log "desktop build failed inside hermes update; retrying build"
+  publish_stage "Rebuilding Desktop"
   "$HERMES_BIN" desktop --force-build --build-only >> "$LOG" 2>&1 || {
     FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build. Run hermes desktop --force-build from a terminal to retry."
     exit 6

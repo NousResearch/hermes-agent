@@ -307,8 +307,12 @@ describe('profile-aware plugin session opens', () => {
         resolved = true
       })
 
-    await Promise.resolve()
-    await Promise.resolve()
+    // Flush a macrotask rather than counting microtask ticks: the profile
+    // activation is now a bounded race, so the number of awaits between the
+    // call and the core open is an implementation detail, and `resolved`
+    // staying false through a full turn of the event loop is the stronger
+    // assertion anyway.
+    await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(openSessionCore).toHaveBeenCalledWith('bot-chat', expect.any(Function), 'in-place')
     expect(resolved).toBe(false)
@@ -356,8 +360,7 @@ describe('profile-aware plugin session opens', () => {
       hydrationTimeoutMs: 1_000
     })
 
-    await Promise.resolve()
-    await Promise.resolve()
+    await new Promise(resolve => setTimeout(resolve, 0))
 
     // The old pre-open "already selected" precondition skipped this request,
     // stranding the pane blank until timeout. It must fire now.
@@ -503,5 +506,168 @@ describe('profile-aware plugin session opens', () => {
     expect($activeGatewayProfile.get()).toBe('hyoseob')
     expect($selectedStoredSessionId.get()).toBe('chat-b')
     expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+
+  it('surfaces a wedged profile activation instead of waiting on it forever (#89556)', async () => {
+    // The dial the store is waiting on never settles - a backend that accepts
+    // the socket and then never completes the handshake. Before this was
+    // bounded, openSession's await sat here for the life of the window and the
+    // hydration timer, which is armed downstream, never got a chance to fire:
+    // the pane wedged with no error and no Retry rather than timing out.
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
+
+    setMockAtom($selectedStoredSessionId, 'wedged-chat')
+    setMockAtom($activeSessionId, 'runtime-wedged')
+    setMockAtom($messages, [{ id: 'history-1', parts: [], role: 'user' }] as never)
+
+    await expect(
+      host.openSession('wedged-chat', {
+        profile: 'medicina',
+        intent: 'main',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 60
+      })
+    ).rejects.toThrow("Timed out loading medicina's session history.")
+
+    // The stranded-session surface is the point: a bounded failure the user can
+    // retry, not a frozen pane.
+    expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('wedged-chat')
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('names the phase in the wake log so a stuck dial is not read as a slow transcript', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
+
+    await expect(
+      host.openSession('wedged-chat', {
+        profile: 'medicina',
+        intent: 'main',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 60
+      })
+    ).rejects.toThrow('Timed out loading ')
+
+    expect(warn).toHaveBeenCalledWith('[bot-wake] hydration timed out', expect.objectContaining({ phase: 'activation' }))
+
+    const payload = warn.mock.calls.at(-1)?.[1] as { hydrationWaitMs: number; profileActivationMs: number }
+
+    // The whole budget went to activation. Reporting it as hydration wait time
+    // would send a support bundle reader looking at transcript size.
+    expect(payload.profileActivationMs).toBeGreaterThan(0)
+    expect(payload.hydrationWaitMs).toBe(0)
+
+    warn.mockRestore()
+  })
+
+  it('gives hydration its own full budget after a slow but successful activation', async () => {
+    // Guards the choice of a SEPARATE budget per phase over one shared clock.
+    // A cold profile backend can legitimately spend most of the budget getting
+    // its socket up; if hydration then inherited what was left, this wake would
+    // fail even though the transcript painted well inside the documented
+    // 20s-equivalent window.
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(
+      async (target: null | string | undefined) =>
+        new Promise<void>(resolve => {
+          setTimeout(() => {
+            $activeGatewayProfile.set(target || 'default')
+            resolve()
+          }, 150)
+        })
+    )
+
+    const opening = host.openSession('slow-dial-chat', {
+      profile: 'medicina',
+      intent: 'main',
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 200
+    })
+
+    // 300ms total is past a single shared 200ms budget and inside hydration's
+    // own one, which only starts once the profile is actually active.
+    await new Promise(resolve => setTimeout(resolve, 300))
+    setMockAtom($selectedStoredSessionId, 'slow-dial-chat')
+    setMockAtom($activeSessionId, 'runtime-medicina')
+    setMockAtom($messages, [{ id: 'history-1', parts: [], role: 'user' }] as never)
+
+    await expect(opening).resolves.toBeUndefined()
+    expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
+  })
+
+  it('absorbs an activation that rejects after its budget has already expired', async () => {
+    // The abandoned race loser keeps running - there is no cancellation handle
+    // for an in-flight dial - so a late rejection must not escape as an
+    // unhandled promise rejection long after the caller gave up.
+    // Node's process-level hook, not window's: under jsdom a rejection that
+    // escapes lands on the runner's process, which is where vitest turns it
+    // into an "Unhandled Rejection" run failure.
+    const unhandled: unknown[] = []
+
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason)
+    }
+
+    const existing = process.listeners('unhandledRejection')
+
+    for (const listener of existing) {
+      process.off('unhandledRejection', listener)
+    }
+
+    process.on('unhandledRejection', onUnhandled)
+
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          setTimeout(() => reject(new Error('dial failed after the caller gave up')), 120)
+        })
+    )
+
+    await expect(
+      host.openSession('late-failure-chat', {
+        profile: 'medicina',
+        intent: 'main',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 40
+      })
+    ).rejects.toThrow('Timed out loading ')
+
+    await new Promise(resolve => setTimeout(resolve, 200))
+    process.off('unhandledRejection', onUnhandled)
+
+    for (const listener of existing) {
+      process.on('unhandledRejection', listener)
+    }
+
+    expect(unhandled).toEqual([])
+  })
+
+  it('leaves a plain open unbounded, because it has no budget and no Retry surface', async () => {
+    // Deliberate scope line, not an oversight: the activation deadline rides on
+    // the same contract as the hydration one. A caller that never passed
+    // awaitHydration gets exactly the behaviour it had before, since a
+    // rejection here would surface to code with nowhere to render it.
+    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
+
+    let settled = 'pending'
+
+    void host.openSession('plain-chat', { profile: 'medicina', intent: 'main', hydrationTimeoutMs: 40 }).then(
+      () => {
+        settled = 'resolved'
+      },
+      () => {
+        settled = 'rejected'
+      }
+    )
+
+    await new Promise(resolve => setTimeout(resolve, 200))
+
+    expect(settled).toBe('pending')
+    expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
   })
 })

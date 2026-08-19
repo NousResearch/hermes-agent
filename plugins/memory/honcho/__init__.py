@@ -1557,7 +1557,13 @@ class HonchoMemoryProvider(MemoryProvider):
                     if result is None:
                         return tool_error("Failed to update peer card.")
                     return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
-                card = self._manager.get_peer_card(self._session_key, peer=peer)
+                # Explicit tool call: surface a backend failure as an error
+                # instead of collapsing it into the empty-card diagnostic
+                # hint, which actively guesses benign causes that would
+                # mislead when the real cause is a timeout/server error.
+                card = self._manager.get_peer_card(
+                    self._session_key, peer=peer, raise_errors=True,
+                )
                 if not card:
                     return json.dumps(self._empty_profile_hint(peer))
                 return json.dumps({"result": card})
@@ -1568,8 +1574,13 @@ class HonchoMemoryProvider(MemoryProvider):
                     return tool_error("Missing required parameter: query")
                 max_tokens = min(int(args.get("max_tokens", 800)), 2000)
                 peer = args.get("peer", "user")
+                # Explicit tool call: surface timeouts/server errors as
+                # errors instead of collapsing them into "no relevant
+                # context found", indistinguishable from a genuinely empty
+                # result (same #36098 issue 4 class dialectic_query fixes).
                 result = self._manager.search_context(
-                    self._session_key, query, max_tokens=max_tokens, peer=peer
+                    self._session_key, query, max_tokens=max_tokens, peer=peer,
+                    raise_errors=True,
                 )
                 if not result:
                     return json.dumps({"result": "No relevant context found."})
@@ -1612,7 +1623,12 @@ class HonchoMemoryProvider(MemoryProvider):
 
             elif tool_name == "honcho_context":
                 peer = args.get("peer", "user")
-                ctx = self._manager.get_session_context(self._session_key, peer=peer)
+                # Explicit tool call: surface backend failures as errors
+                # instead of collapsing them into "no context available
+                # yet", indistinguishable from a genuinely empty context.
+                ctx = self._manager.get_session_context(
+                    self._session_key, peer=peer, raise_errors=True,
+                )
                 if not ctx:
                     return json.dumps({"result": "No context available yet."})
                 parts = []

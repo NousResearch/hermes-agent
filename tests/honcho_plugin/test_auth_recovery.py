@@ -815,7 +815,7 @@ class TestToolAuthVisibility:
 
     def test_context_tool_reports_auth_failure(self):
         class _Mgr:
-            def get_session_context(self, key, peer="user"):
+            def get_session_context(self, key, peer="user", raise_errors=False):
                 raise HonchoAuthError("Honcho rejected our credentials")
 
         out = self._provider(_Mgr()).handle_tool_call("honcho_context", {})
@@ -824,7 +824,7 @@ class TestToolAuthVisibility:
 
     def test_search_tool_reports_auth_failure(self):
         class _Mgr:
-            def search_context(self, key, query, max_tokens=800, peer="user"):
+            def search_context(self, key, query, max_tokens=800, peer="user", raise_errors=False):
                 raise HonchoAuthError("Honcho rejected our credentials")
 
         out = self._provider(_Mgr()).handle_tool_call("honcho_search", {"query": "schema"})
@@ -833,7 +833,7 @@ class TestToolAuthVisibility:
 
     def test_profile_tool_reports_auth_failure_not_empty_profile(self):
         class _Mgr:
-            def get_peer_card(self, key, peer="user"):
+            def get_peer_card(self, key, peer="user", raise_errors=False):
                 raise HonchoAuthError("Honcho rejected our credentials")
 
         out = self._provider(_Mgr()).handle_tool_call("honcho_profile", {})

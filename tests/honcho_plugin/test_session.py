@@ -199,6 +199,89 @@ class TestPeerLookupHelpers:
         }])
 
 
+class TestReadMethodRaiseErrors:
+    """search_context / get_peer_card / get_session_context must offer the
+    same raise_errors escape hatch dialectic_query has: an explicit tool
+    call needs to tell a genuine backend failure apart from a legitimately
+    empty result (#36098 issue 4 class), instead of collapsing both to a
+    falsy return value.
+    """
+
+    def _make_cached_manager(self):
+        mgr = HonchoSessionManager()
+        session = HonchoSession(
+            key="telegram:123",
+            user_peer_id="robert",
+            assistant_peer_id="hermes",
+            honcho_session_id="telegram-123",
+        )
+        mgr._cache[session.key] = session
+        mgr._sessions_cache[session.honcho_session_id] = MagicMock()
+        return mgr, session
+
+    def test_search_context_default_swallows_error(self):
+        mgr, session = self._make_cached_manager()
+        mgr._authed_call = MagicMock(side_effect=RuntimeError("backend down"))
+        mgr._get_or_create_peer = MagicMock(
+            return_value=MagicMock(search=MagicMock(side_effect=RuntimeError("backend down")))
+        )
+        assert mgr.search_context(session.key, "neuralancer") == ""
+
+    def test_search_context_raise_errors_propagates_after_fallback_fails(self):
+        mgr, session = self._make_cached_manager()
+        mgr._authed_call = MagicMock(side_effect=RuntimeError("backend down"))
+        try:
+            mgr.search_context(session.key, "neuralancer", raise_errors=True)
+        except RuntimeError as e:
+            assert "backend down" in str(e)
+        else:
+            raise AssertionError("expected RuntimeError to propagate")
+
+    def test_get_peer_card_default_swallows_error(self):
+        mgr, session = self._make_cached_manager()
+        mgr._fetch_peer_card = MagicMock(side_effect=RuntimeError("backend down"))
+        assert mgr.get_peer_card(session.key) == []
+
+    def test_get_peer_card_raise_errors_propagates(self):
+        mgr, session = self._make_cached_manager()
+        mgr._fetch_peer_card = MagicMock(side_effect=RuntimeError("backend down"))
+        try:
+            mgr.get_peer_card(session.key, raise_errors=True)
+        except RuntimeError as e:
+            assert "backend down" in str(e)
+        else:
+            raise AssertionError("expected RuntimeError to propagate")
+
+    def test_get_session_context_default_swallows_error(self):
+        mgr, session = self._make_cached_manager()
+        mgr._authed_call = MagicMock(side_effect=RuntimeError("backend down"))
+        assert mgr.get_session_context(session.key) == {}
+
+    def test_get_session_context_raise_errors_propagates(self):
+        mgr, session = self._make_cached_manager()
+        mgr._authed_call = MagicMock(side_effect=RuntimeError("backend down"))
+        try:
+            mgr.get_session_context(session.key, raise_errors=True)
+        except RuntimeError as e:
+            assert "backend down" in str(e)
+        else:
+            raise AssertionError("expected RuntimeError to propagate")
+
+    def test_raise_errors_never_masks_auth_error(self):
+        """HonchoAuthError must always propagate, raise_errors or not — it's
+        never collapsed into an empty result at any raise_errors setting."""
+        from plugins.memory.honcho.session import HonchoAuthError
+
+        mgr, session = self._make_cached_manager()
+        mgr._fetch_peer_card = MagicMock(side_effect=HonchoAuthError("nope"))
+        try:
+            mgr.get_peer_card(session.key)  # raise_errors=False (default)
+        except HonchoAuthError:
+            pass
+        else:
+            raise AssertionError("expected HonchoAuthError to propagate even with raise_errors=False")
+
+
 class TestConcludeToolDispatch:
     def test_conclude_schema_has_no_anyof(self):
         """anyOf/oneOf/allOf breaks Anthropic and Fireworks APIs — schema must be plain object."""

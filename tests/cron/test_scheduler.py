@@ -2337,7 +2337,8 @@ class TestCronContinuableSurfaceInChannel:
         mock_cfg.platforms = {Platform.SLACK: pconfig}
         return mock_cfg
 
-    def _run_inchannel_delivery(self, extra, adapter, *, mirror_ok=True, origin=None):
+    def _run_inchannel_delivery(self, extra, adapter, *, mirror_ok=True, origin=None,
+                                attach_to_session=True):
         """Drive _deliver_result down the live-adapter path for a Slack
         channel-origin job with the given ``extra`` config. Returns the
         _open_continuable_cron_thread mock and the mirror_to_session mock."""
@@ -2366,8 +2367,9 @@ class TestCronContinuableSurfaceInChannel:
             # Carries the scheduling user's id — the in_channel seed must key
             # the flat channel session to THIS user (see build_session_key).
             "origin": origin or {"platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN"},
-            # Opt into the continuable mirror.
-            "attach_to_session": True,
+            # Opt into the continuable mirror (parameterized: the seed must
+            # NOT depend on this — see the no-attach regression test).
+            "attach_to_session": attach_to_session,
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
@@ -2439,6 +2441,30 @@ class TestCronContinuableSurfaceInChannel:
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("thread_id") is None
         assert mirror_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
+
+    def test_in_channel_seed_fires_without_attach_to_session(self):
+        """REGRESSION (live, Alice 2026-08-19): the in_channel seed was gated on
+        mirror_this_target (mirror_enabled AND origin match), so a continuable
+        in_channel cron created WITHOUT attach_to_session (and with the
+        cron.mirror_delivery global at its default False) delivered the brief
+        flat but never seeded the flat session — the next plain reply hit a
+        blank session and the agent had no idea about its own delivery message.
+
+        in_channel IS the continuation surface: the seed must fire on origin
+        match alone. attach_to_session stays the opt-in for the SEPARATE
+        default-surface mirror behavior; it must not be required here."""
+        from cron.scheduler import _deliver_result  # noqa: F401 (driven via helper)
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        with patch("cron.scheduler._seed_cron_channel_session", return_value=True) as seed_mock:
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False,
+            )
+        seed_mock.assert_called_once()
+        # user_id must ride along even without the mirror opt-in — the flat
+        # session key includes it on per-user-isolated chats.
+        assert seed_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
 
 
 class TestMultiTargetDeliveryContinuesOnFailure:

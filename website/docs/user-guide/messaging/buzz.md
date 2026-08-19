@@ -95,6 +95,34 @@ gateway:
 
 **Exception:** If you want users to see tool progress (e.g., for long-running operations), set `tool_progress: all` — but `interim_assistant_messages` should still be `false` to avoid spamming with every tool result.
 
+### Discord-like progress and streaming
+
+Buzz Desktop understands edit events, so Hermes can keep one assistant message
+updated while tokens arrive and can accumulate tool progress into an edited
+progress message instead of leaving a permanent post for every update. Enable
+the richer Discord-like mode explicitly:
+
+```yaml
+display:
+  platforms:
+    buzz:
+      interim_assistant_messages: true
+      tool_progress: all
+      tool_progress_grouping: accumulate
+      streaming: true
+```
+
+Editable streaming requires a `buzz` CLI build where
+`buzz messages edit --content -` reads the replacement body from stdin. The
+companion `varunarya002/buzz` branch `hermes-thread-streaming` includes that
+fix and preserves existing attachments during edits. Older CLI builds may
+replace the message with a literal `-`; leave `streaming: false` when using
+one of those builds.
+
+Buzz edits are append-only Nostr edit events. Buzz Desktop renders the newest
+edit in place. A client that does not apply Buzz edit events may display the
+underlying events separately even though Hermes targets one original message.
+
 ## Mentions, channels, and DMs
 
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
@@ -117,7 +145,7 @@ Check status with `hermes gateway status` — Buzz connection state is reported 
 
 ## Notes and limitations
 
-- **Inbound is polled, not streamed.** The `buzz` CLI is request/response, so the adapter polls `buzz messages get` per watched channel every `poll_interval` seconds (default 4). Expect up to one interval of latency on inbound messages. A future optimization is a websocket transport (the Buzz repo ships `buzz-ws-client` for true streaming).
+- **Inbound prefers WebSocket push.** The adapter uses a persistent, authenticated Nostr WebSocket subscription by default and falls back to `buzz messages get` polling when WebSocket setup fails. In forced `poll` mode, expect up to one `poll_interval` of inbound latency.
 - On (re)connect the adapter seeds its high-water mark from the newest events, so channel history is never replayed into the agent.
 - New DM conversations are discovered automatically (every few poll sweeps).
 - The private key is passed to the CLI via the subprocess environment — it never appears in argv or logs.

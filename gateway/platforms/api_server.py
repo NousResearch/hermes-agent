@@ -441,29 +441,23 @@ def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
     summary delimiter. Tool calls are dropped from both shapes because a
     carrier's inherited calls are historical context, not live client output.
     """
-    projected = message.copy()
-    if not _is_compressed_summary_message(projected):
-        return projected
+    from agent.compaction_display import project_compaction_message_for_display
 
-    from agent.context_compressor import ContextCompressor
-
-    unwrapped = ContextCompressor._strip_context_summary_handoff_message(
-        projected
-    )
-    for internal_key in (
-        "tool_calls",
-        "finish_reason",
-        "reasoning",
-        "reasoning_content",
-    ):
-        projected.pop(internal_key, None)
-    if unwrapped is None:
+    projected = project_compaction_message_for_display(message)
+    if projected is None:
+        projected = message.copy()
+        for internal_key in (
+            "tool_calls",
+            "finish_reason",
+            "reasoning",
+            "reasoning_content",
+            "reasoning_details",
+            "codex_reasoning_items",
+            "codex_message_items",
+        ):
+            projected.pop(internal_key, None)
         projected["content"] = ""
         projected["display_kind"] = "hidden"
-        return projected
-
-    projected["content"] = unwrapped.get("content")
-    projected.pop("display_kind", None)
     return projected
 
 

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from hermes_state_common import (
     SCHEMA_SQL,
+    _PREVIEW_ELIGIBLE_SQL,
     _PREVIEW_RAW_SELECT,
     _shape_preview,
     _sql_session_last_active,
@@ -107,6 +108,7 @@ class SessionPortabilityMixin:
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                       AND {_PREVIEW_ELIGIBLE_SQL}
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
@@ -191,6 +193,7 @@ class SessionPortabilityMixin:
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                       AND {_PREVIEW_ELIGIBLE_SQL}
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,

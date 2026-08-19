@@ -35,6 +35,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
+from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
@@ -7672,6 +7673,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
 
     for m in history:
         if not isinstance(m, dict):
+            continue
+        m = project_compaction_message_for_display(m)
+        if m is None:
             continue
         role = m.get("role")
         if role not in {"user", "assistant", "tool", "system"}:

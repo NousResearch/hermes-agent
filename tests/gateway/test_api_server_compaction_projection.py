@@ -5,6 +5,7 @@ from __future__ import annotations
 from aiohttp.test_utils import TestClient, TestServer
 import pytest
 
+from agent.compaction_display import project_compaction_message_for_display
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     HISTORICAL_TASK_HEADING,
@@ -79,6 +80,9 @@ class TestMessageProjection:
                 tool_calls=[{"id": "stale"}],
                 reasoning="internal compression reasoning",
                 reasoning_content="internal compression reasoning",
+                reasoning_details=[{"type": "reasoning.summary", "summary": "internal"}],
+                codex_reasoning_items=[{"type": "reasoning", "id": "internal"}],
+                codex_message_items=[{"type": "message", "id": "internal"}],
             )
         )
 
@@ -88,6 +92,9 @@ class TestMessageProjection:
         assert "finish_reason" not in projected
         assert "reasoning" not in projected
         assert "reasoning_content" not in projected
+        assert "reasoning_details" not in projected
+        assert "codex_reasoning_items" not in projected
+        assert "codex_message_items" not in projected
 
     def test_merged_carrier_preserves_only_real_prior_content(self):
         projected = APIServerAdapter._message_response(
@@ -125,11 +132,16 @@ class TestMessageProjection:
         assert projected["content"] == [{"type": "text", "text": REAL_USER}]
 
     def test_real_message_that_mentions_marker_text_is_untouched(self):
-        content = "please explain the string [CONTEXT COMPACTION] in this bug report"
-        projected = APIServerAdapter._message_response(_row("user", content))
+        message = _row(
+            "user",
+            "please explain the string [CONTEXT COMPACTION] in this bug report",
+            tool_calls=[{"id": "real"}],
+            reasoning="real provider payload",
+        )
+        projected = project_compaction_message_for_display(message)
 
-        assert projected["content"] == content
-        assert "display_kind" not in projected
+        assert projected == message
+        assert projected is not message
 
     def test_unrelated_hidden_message_is_not_reclassified_as_compaction(self):
         message = _row("assistant", "ordinary hidden control row", display_kind="hidden")

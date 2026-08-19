@@ -59,6 +59,7 @@ from agent.conversation_compression import (
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
 )
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from agent.compaction_display import project_compaction_message_for_display
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import (
@@ -23308,8 +23309,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         last_assistant = None
         try:
             for message in reversed(await self._session_db.get_messages(session_id)):
-                if message.get("role") == "assistant" and message.get("content"):
-                    last_assistant = str(message.get("content"))
+                if message.get("role") != "assistant":
+                    continue
+                projected = project_compaction_message_for_display(message)
+                if projected is not None and projected.get("content"):
+                    last_assistant = str(projected.get("content"))
                     break
         except Exception:
             last_assistant = None

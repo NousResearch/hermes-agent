@@ -352,28 +352,6 @@ def _render_blog_pane(entry: dict, max_width: int = 800, quality: int = 80) -> d
     return {"slug": slug, "title": title, "pane": pane, "group": BLOG_GROUP}
 
 
-def _article_items(records: list[dict], max_width: int = 800, quality: int = 80) -> tuple[dict[str, list[dict]], list[str]]:
-    """Render recorded pending articles and diagnose broken durable pointers."""
-    groups = {X_GROUP: [], LINKEDIN_GROUP: []}
-    diagnostics: list[str] = []
-    for record in records:
-        bundle = Path(record["bundle_path"])
-        article_path = bundle / "article.md"
-        if not article_path.is_file():
-            diagnostics.append(f"missing bundle for article {record['article_id']}: {bundle}")
-            continue
-        platform = str(record.get("platform", "")).lower()
-        if platform in {"twitter", "x"}:
-            group = X_GROUP
-        elif platform == "linkedin":
-            group = LINKEDIN_GROUP
-        else:
-            diagnostics.append(f"unsupported platform for article {record['article_id']}: {platform or 'unknown'}")
-            continue
-        groups[group].append(_render_article_pane(record, bundle, group, max_width, quality))
-    return groups, diagnostics
-
-
 def _pending_article_items(max_width: int = 800, quality: int = 80) -> tuple[dict[str, list[dict]], list[str]]:
     """Render recorded pending articles and diagnose broken durable pointers.
 

@@ -597,6 +597,10 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
         self._poll_count = 0
+        # inbound event_id -> thread root event id, or None when that message
+        # was itself top-level.  Lets send() mirror the user's own threading
+        # instead of opening a new thread under every reply (see _thread_root).
+        self._thread_roots: "OrderedDict[str, Optional[str]]" = OrderedDict()
 
     @property
     def name(self) -> str:
@@ -791,7 +795,9 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = (metadata or {}).get("thread_id") or reply_to
+        reply_target = self._resolve_reply_anchor(
+            (metadata or {}).get("thread_id") or reply_to
+        )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
@@ -938,7 +944,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            reply_target = (metadata or {}).get("thread_id") or reply_to
+            reply_target = self._resolve_reply_anchor(
+                (metadata or {}).get("thread_id") or reply_to
+            )
             if reply_target and self._reply_to_mode != "off":
                 args += ["--reply-to", str(reply_target)]
             code, out, err = await self._run_cli(args, input_text=caption or "")
@@ -1338,6 +1346,10 @@ class BuzzAdapter(BasePlatformAdapter):
             else None
         )
 
+        # Remember where this message sits in the thread graph so our reply
+        # can join the SAME thread rather than nesting a new one under it.
+        self._record_thread_root(event_id, event)
+
         await self._dispatch_message(
             text=dispatch_text,
             chat_id=channel_id,
@@ -1500,6 +1512,76 @@ class BuzzAdapter(BasePlatformAdapter):
         if state is not None:
             state["seen"][event_id] = None
             self._trim_seen(state)
+
+    # ── Thread anchoring ──────────────────────────────────────────────────
+    #
+    # NIP-10 marked ``e`` tags: a reply carries ["e", <root>, "", "root"] plus
+    # ["e", <parent>, "", "reply"]; a message that STARTS a thread carries a
+    # single ["e", <parent>, "", "reply"] and no root marker.
+    #
+    # The gateway hands adapters the triggering message's own id as the reply
+    # anchor.  Anchoring to that id is correct for a top-level message (it
+    # opens the thread the user expects), but inside an existing thread it
+    # nests a fresh sub-thread under every single answer.  Buzz renders that
+    # as an endless ladder of one-message threads.
+    #
+    # Fix: remember each inbound message's thread ROOT.  When the trigger was
+    # already inside a thread, reply against that root so our answer lands in
+    # the same thread the user is typing in.  When it was top-level, keep the
+    # existing behaviour and anchor to the message itself.
+
+    _THREAD_ROOT_CACHE = 512
+
+    @staticmethod
+    def _extract_thread_root(event: dict) -> Optional[str]:
+        """Return the NIP-10 thread root of ``event``, or None if top-level."""
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return None
+        root = None
+        reply = None
+        for tag in tags:
+            if not isinstance(tag, (list, tuple)) or len(tag) < 2:
+                continue
+            if str(tag[0]) != "e":
+                continue
+            marker = str(tag[3]).lower() if len(tag) > 3 else ""
+            if marker == "root":
+                root = str(tag[1])
+            elif marker == "reply":
+                reply = str(tag[1])
+            elif not marker and reply is None:
+                # Unmarked (deprecated positional) e-tag: treat as the parent.
+                reply = str(tag[1])
+        if root:
+            return root
+        # A lone "reply" e-tag means this message started a thread hanging off
+        # <reply>; that parent IS the thread root for anything that follows.
+        return reply
+
+    def _record_thread_root(self, event_id: str, event: dict) -> None:
+        """Cache the thread root for an inbound message id."""
+        if not event_id:
+            return
+        roots = getattr(self, "_thread_roots", None)
+        if roots is None:
+            roots = self._thread_roots = OrderedDict()
+        roots[event_id] = self._extract_thread_root(event)
+        roots.move_to_end(event_id)
+        while len(roots) > self._THREAD_ROOT_CACHE:
+            roots.popitem(last=False)
+
+    def _resolve_reply_anchor(self, anchor: Optional[str]) -> Optional[str]:
+        """Map a gateway reply anchor onto the right Buzz thread anchor.
+
+        Returns the thread root when the triggering message was already inside
+        a thread (so the reply joins it), otherwise the anchor unchanged (so a
+        reply to a top-level message opens one thread, as before).
+        """
+        if not anchor:
+            return anchor
+        roots = getattr(self, "_thread_roots", None) or {}
+        return roots.get(str(anchor)) or anchor
 
     async def _dispatch_message(
         self,

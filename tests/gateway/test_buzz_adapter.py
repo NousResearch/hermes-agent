@@ -950,6 +950,81 @@ class TestBuzzAdapterSend:
         assert args[args.index("--reply-to") + 1] == "stable-root"
 
 
+# ── Thread anchoring ──────────────────────────────────────────────────────
+
+
+class TestThreadAnchoring:
+    """A reply must JOIN the thread it was triggered from, not nest a new one.
+
+    The gateway hands adapters the triggering message's own id as the reply
+    anchor. For a top-level message that correctly opens a thread; for a
+    message already inside a thread it used to nest a fresh sub-thread under
+    every answer (an endless ladder of one-message threads in Buzz).
+    """
+
+    @staticmethod
+    def _event(eid, *e_tags):
+        return {"id": eid, "tags": [["h", CHANNEL], *e_tags]}
+
+    def test_top_level_message_has_no_root(self):
+        a = _make_adapter()
+        assert a._extract_thread_root(self._event("m1")) is None
+
+    def test_thread_opener_roots_at_its_parent(self):
+        a = _make_adapter()
+        ev = self._event("m2", ["e", "root1", "", "reply"])
+        assert a._extract_thread_root(ev) == "root1"
+
+    def test_in_thread_message_uses_root_marker_not_parent(self):
+        a = _make_adapter()
+        ev = self._event("m3", ["e", "root1", "", "root"], ["e", "m2", "", "reply"])
+        assert a._extract_thread_root(ev) == "root1"
+
+    def test_legacy_unmarked_etag_treated_as_parent(self):
+        a = _make_adapter()
+        assert a._extract_thread_root(self._event("m4", ["e", "root1"])) == "root1"
+
+    def test_reply_to_top_level_still_opens_a_thread(self):
+        """Regression guard: the original (correct) behaviour must survive."""
+        a = _make_adapter()
+        a._record_thread_root("m1", self._event("m1"))
+        assert a._resolve_reply_anchor("m1") == "m1"
+
+    def test_reply_inside_thread_joins_that_thread(self):
+        a = _make_adapter()
+        a._record_thread_root("m3", self._event(
+            "m3", ["e", "root1", "", "root"], ["e", "m2", "", "reply"]))
+        assert a._resolve_reply_anchor("m3") == "root1"
+
+    def test_unknown_and_empty_anchors_pass_through(self):
+        a = _make_adapter()
+        assert a._resolve_reply_anchor("never-seen") == "never-seen"
+        assert a._resolve_reply_anchor(None) is None
+
+    def test_root_cache_is_bounded_and_evicts_oldest(self):
+        a = _make_adapter()
+        for i in range(a._THREAD_ROOT_CACHE + 50):
+            a._record_thread_root(f"id{i}", self._event(f"id{i}"))
+        assert len(a._thread_roots) == a._THREAD_ROOT_CACHE
+        assert "id0" not in a._thread_roots
+        assert f"id{a._THREAD_ROOT_CACHE + 49}" in a._thread_roots
+
+    @pytest.mark.asyncio
+    async def test_send_anchors_to_root_not_trigger(self):
+        """End-to-end through send(): argv must carry the thread root."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+        adapter._record_thread_root("m3", self._event(
+            "m3", ["e", "root1", "", "root"], ["e", "m2", "", "reply"]))
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "e9", "message": ""})
+        adapter._run_cli = cli
+
+        await adapter.send(CHANNEL, "in-thread answer", reply_to="m3")
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "root1"
+
+
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
 

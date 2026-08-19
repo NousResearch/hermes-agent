@@ -1836,10 +1836,15 @@ class GatewayStreamConsumer:
         if not text.strip():
             return False
         try:
+            # Mark this send as interim commentary so adapters can distinguish
+            # mid-loop updates from the final response (e.g. OneBot merges
+            # loop messages into one QQ forward and retracts the originals).
+            _meta = dict(self.metadata) if self.metadata else {}
+            _meta["interim"] = True
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self.metadata,
+                metadata=_meta,
             )
             # Note: do NOT set _already_sent = True here.
             # Commentary messages are interim status updates (e.g. "Using browser

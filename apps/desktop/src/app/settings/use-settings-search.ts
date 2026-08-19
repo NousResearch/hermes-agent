@@ -162,6 +162,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.introSplashDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.introSplash}`,
+      keywords: ['splash', 'wordmark', 'empty chat', 'new chat'],
+      label: appearance.introSplashTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.introSplash, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.toolViewDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.toolView}`,

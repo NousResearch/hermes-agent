@@ -531,6 +531,8 @@ export const zh: Translations = {
       },
       backdropTitle: '聊天背景',
       backdropDesc: '对话后方那张淡淡的雕像图片。',
+      introSplashTitle: '开场标识',
+      introSplashDesc: '空白对话中显示的字标和提示语。',
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       composerPopoutTitle: '悬浮输入框',

@@ -440,6 +440,8 @@ export interface Translations {
       }
       backdropTitle: string
       backdropDesc: string
+      introSplashTitle: string
+      introSplashDesc: string
       reactionsTitle: string
       reactionsDesc: string
       composerPopoutTitle: string

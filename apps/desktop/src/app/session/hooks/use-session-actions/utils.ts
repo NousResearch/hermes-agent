@@ -1326,17 +1326,30 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
     // Not on the active profile — fall through to the cross-profile probe.
   }
 
-  // Multi-profile only: probe each other profile by id (still one cheap lookup
+  // Multi-profile only: probe each profile by id (still one cheap lookup
   // each) rather than pulling every profile's recent sessions. The first hit
   // carries its owning `profile`, which routes the resume to the right backend.
+  //
+  // The ACTIVE profile is probed too, and first. The unscoped rung above does
+  // NOT cover it: Electron routes a profile-less /api/sessions GET to the
+  // PRIMARY backend, not the active gateway's, so a session owned by the
+  // active non-primary profile 404s there. Skipping the active key then left
+  // it as the ONE profile never probed — a hidden Bot Mode chat (never in the
+  // sidebar cache) owned by the focused bot resolved to undefined on every
+  // switch, the transcript prefetch went unscoped to the primary, and the
+  // thread painted empty until an explicitly-profiled row (right-click →
+  // Sessions) seeded the cache.
   const activeKey = normalizeProfileKey($activeGatewayProfile.get())
 
-  const otherProfiles = $profiles
-    .get()
-    .map(profile => normalizeProfileKey(profile.name))
-    .filter(key => key !== activeKey)
+  const probeProfiles = [
+    activeKey,
+    ...$profiles
+      .get()
+      .map(profile => normalizeProfileKey(profile.name))
+      .filter(key => key !== activeKey)
+  ]
 
-  for (const profile of otherProfiles) {
+  for (const profile of probeProfiles) {
     try {
       const session = await getSession(storedSessionId, profile)
 

@@ -41,9 +41,33 @@ const SQL = KW(`
   table drop alter add column primary key foreign references join left right inner outer on
 `)
 
+const CSHARP = KW(`
+  abstract as base bool break byte case catch char checked class const continue decimal default delegate do double else
+  enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long
+  namespace new null object operator out override params private protected public readonly ref return sbyte sealed short
+  sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using virtual
+  void volatile while
+`)
+
+const JAVA = KW(`
+  abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally
+  float for goto if implements import instanceof int interface long native new null package private protected public return short
+  static strictfp super switch synchronized this throw throws transient true try void volatile while false
+`)
+
+const KOTLIN = KW(`
+  as break class continue do else false for fun if in interface is null object package return super this throw true try
+  typealias typeof val var when while by catch constructor delegate dynamic field file finally get import init param property
+  receiver set setparam where actual abstract annotation companion const crossinline data enum expect external final infix inline
+  inner internal lateinit noinline open operator out override private protected public reified sealed suspend tailrec value vararg
+`)
+
 const LANGS: Record<string, LangSpec> = {
+  cs: { comment: '//', keywords: CSHARP },
   go: { comment: '//', keywords: GO },
+  java: { comment: '//', keywords: JAVA },
   json: { comment: null, keywords: KW('true false null') },
+  kotlin: { comment: '//', keywords: KOTLIN },
   py: { comment: '#', keywords: PY },
   rust: { comment: '//', keywords: RUST },
   sh: { comment: '#', keywords: SH },
@@ -54,8 +78,14 @@ const LANGS: Record<string, LangSpec> = {
 
 const ALIAS: Record<string, string> = {
   bash: 'sh',
+  'c#': 'cs',
+  cs: 'cs',
+  csharp: 'cs',
+  csx: 'cs',
   javascript: 'ts',
   js: 'ts',
+  kt: 'kotlin',
+  kts: 'kotlin',
   jsx: 'ts',
   python: 'py',
   rs: 'rust',

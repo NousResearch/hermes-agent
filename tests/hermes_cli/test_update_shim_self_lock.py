@@ -60,7 +60,7 @@ def _capture_popen(monkeypatch, raises: Exception | None = None):
     def fake_popen(cmd, env=None, **kwargs):
         if raises is not None:
             raise raises
-        calls.append((list(cmd), dict(env or {})))
+        calls.append((list(cmd), dict(env or {}), kwargs))
         return object()
 
     monkeypatch.setattr(cli_main.subprocess, "Popen", fake_popen)
@@ -130,12 +130,21 @@ def test_reexec_runs_same_args_under_venv_python(venv, monkeypatch, capsys):
     calls = _capture_popen(monkeypatch)
 
     assert cli_main._reexec_update_off_windows_shim() is True
-    cmd, env = calls[0]
+    cmd, env, kwargs = calls[0]
     assert cmd == [
         str(venv / "python.exe"), "-m", "hermes_cli.main", "update", "--yes",
     ]
     assert env[cli_main._UPDATE_REEXEC_ENV] == "1"
     assert "under the venv Python" in capsys.readouterr().out
+
+
+def test_reexec_child_runs_unattended(venv, monkeypatch):
+    """The parent exits, so a prompt in the child could never be answered."""
+    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
+    calls = _capture_popen(monkeypatch)
+
+    assert cli_main._reexec_update_off_windows_shim() is True
+    assert calls[0][2]["stdin"] is cli_main.subprocess.DEVNULL
 
 
 def test_reexec_does_not_recurse(venv, monkeypatch):

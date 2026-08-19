@@ -2320,6 +2320,21 @@ class APIServerAdapter(BasePlatformAdapter):
             return None
         return self._model_routes.get(model_alias)
 
+    def _stored_session_model(self, session: Any) -> Optional[str]:
+        """The model persisted on a session row, minus the virtual alias.
+
+        The advertised virtual model (usually ``hermes-agent``) means "use
+        the gateway default". Session creation persists it when the client
+        sent no model, and replaying it upstream as a raw provider model id
+        400s ("hermes-agent is not a valid model ID") — the same filter
+        ``_request_agent_overrides`` applies to per-request bodies. One
+        resolver for both session-chat sites (sync + stream).
+        """
+        stored = session.get("model") if isinstance(session, dict) else None
+        if not stored or stored == self._model_name:
+            return None
+        return stored
+
     @staticmethod
     def _clean_runtime_id(value: Any, *, max_len: int = 200) -> str:
         if value is None:
@@ -2370,8 +2385,19 @@ class APIServerAdapter(BasePlatformAdapter):
         model = split_model or raw_model
         alias_route = self._resolve_route(raw_model) or self._resolve_route(model)
         route = dict(alias_route) if isinstance(alias_route, dict) else None
+        # The virtual model alias (self._model_name, e.g. "hermes-agent") is
+        # not a real provider model id — it's the id /v1/models advertises
+        # for "use the gateway default". A client that echoes it back
+        # (explicitly or via a generic model picker) means "no real request",
+        # same as omitting model entirely. Null it out here, upstream of
+        # both the route-building below and every caller's "requested"
+        # dict, so it never gets persisted as a session's model or
+        # misread later as a raw session_model override (#session-model-
+        # alias-leak — see _handle_create_session).
+        if model == self._model_name:
+            model = None
         route_source = "model_routes" if route else "global"
-        if not route and model and model != self._model_name:
+        if not route and model:
             route = {"model": model}
             if provider:
                 route["provider"] = provider
@@ -2877,7 +2903,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if not model:
             _recovered = (self._last_resolved_model.get(_resolved_key)
                           or self._last_resolved_model.get("*"))
-            if _recovered:
+            if _recovered and _recovered != self._model_name:
                 logger.warning(
                     "Empty model resolved for session=%s — recovering "
                     "last-known-good model %s (config read likely returned "
@@ -2886,9 +2912,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 model = _recovered
         elif model:
-            if _resolved_key:
-                self._last_resolved_model[_resolved_key] = model
-            self._last_resolved_model["*"] = model
+            if model != self._model_name:
+                if _resolved_key:
+                    self._last_resolved_model[_resolved_key] = model
+                self._last_resolved_model["*"] = model
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -3425,7 +3452,6 @@ class APIServerAdapter(BasePlatformAdapter):
         if len(session_id) > self._MAX_SESSION_HEADER_LEN:
             return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
 
-        model = body.get("model") or self._model_name
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
@@ -3435,7 +3461,18 @@ class APIServerAdapter(BasePlatformAdapter):
         if lock_error is not None:
             return lock_error
         requested = runtime_request.get("requested") or {}
-        model_name = self._clean_runtime_id(requested.get("model")) or (str(model) if model else None)
+        # requested["model"] is already normalized by
+        # _session_runtime_request_from_body: provider-prefixed values
+        # (e.g. "provider::hermes-agent") are split, and the virtual model
+        # alias (self._model_name, e.g. "hermes-agent") is nulled out
+        # there — a bare "hermes-agent" is not a model_routes alias, so a
+        # later chat on this session would otherwise fall into the raw
+        # session_model precedence branch in _handle_session_chat and get
+        # sent to the provider literally, failing with "invalid model
+        # identifier" (#session-model-alias-leak). Re-deriving straight
+        # from the raw body here would bypass that normalization and
+        # reintroduce the leak for the provider-prefixed case.
+        model_name = self._clean_runtime_id(requested.get("model")) or None
         model_config = None
         if requested.get("model") or requested.get("provider"):
             model_config = {
@@ -3740,7 +3777,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
         else:
-            stored_model = session.get("model") if isinstance(session, dict) else None
+            stored_model = self._stored_session_model(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
@@ -3850,7 +3887,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
         else:
-            stored_model = session.get("model") if isinstance(session, dict) else None
+            stored_model = self._stored_session_model(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None

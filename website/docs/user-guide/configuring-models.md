@@ -55,6 +55,18 @@ When you switch models **inside an active session** (Herm TUI model picker, `her
 Prompt caches are keyed to the model serving the request, so any mid-conversation model change — an explicit `/model` switch, an [automatic fallback](./features/fallback-providers.md), or a [credential-pool](./features/credential-pools.md) rotation onto a different account — means the next message re-reads the entire conversation at full input-token price instead of the cached (~75–90% discounted) rate. On a long session this one-time re-read can dwarf the per-token difference between the two models. Switch when you need to, but prefer doing it early in a conversation or right after starting a fresh session.
 :::
 
+### Unattended data-training tiers
+
+Models such as `muse-spark-1.2-contributor` are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.
+
+If training on the unattended workload's data is acceptable, record a persistent acknowledgement:
+
+```bash
+hermes config set security.allow_data_training_tiers_noninteractive true
+```
+
+Hermes still prints the full data-policy warning and the acknowledgement key on every unattended startup, so worker logs retain an audit trail. This setting does not approve expensive-model or provider-routing warnings, and it does not replace the interactive confirmation prompt. Revoke it with `hermes config unset security.allow_data_training_tiers_noninteractive`.
+
 ## Setting auxiliary models
 
 Click **Show auxiliary** to reveal the 11 task slots:
@@ -276,12 +288,19 @@ model_aliases:
     provider: x-ai
 ```
 
-**Short string form (`model.aliases.<name>: provider/model`)** — convenient from the shell because `hermes config set` only writes scalar values, but it can't carry a custom `base_url`:
+**Short string form (`model.aliases.<name>: provider/model`)** — convenient from the shell because `hermes config set` writes scalars and now also parses inline list/mapping literals, though this short alias form still can't carry a custom `base_url`:
 
 ```bash
 hermes config set model.aliases.fav anthropic/claude-opus-4.6
 hermes config set model.aliases.grok x-ai/grok-4
 ```
+
+> `hermes config set` also accepts inline **list/mapping literals** (JSON/YAML flow style). Quote them so your shell passes them through intact:
+>
+> ```bash
+> hermes config set platform_toolsets.line '["clarify", "file", "web"]'
+> hermes config set display.tool_progress_overrides '{"terminal": "off"}'
+> ```
 
 Both paths feed the same loader (`hermes_cli/model_switch.py`). Entries declared in `model_aliases:` take precedence over `model.aliases:` entries with the same name.
 

@@ -3552,6 +3552,57 @@ function Install-BrowserUseCli {
     }
 }
 
+function Test-CuaDriverRuntimeContract {
+    param([Parameter(Mandatory = $true)][string]$DriverPath)
+
+    try {
+        $versionOutput = (& $DriverPath --version 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            return $false
+        }
+        $versionMatch = [regex]::Match($versionOutput, '(\d+\.\d+\.\d+)')
+        if (-not $versionMatch.Success) {
+            return $false
+        }
+        if ([version]($versionMatch.Groups[1].Value) -lt [version]'0.20.0') {
+            return $false
+        }
+
+        $manifestOutput = (& $DriverPath manifest 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $manifestOutput) {
+            return $false
+        }
+        $manifest = $manifestOutput | ConvertFrom-Json
+        if (-not $manifest.mcp_invocation.args) {
+            return $false
+        }
+
+        $required = @{
+            mcp = @('--socket', '--grant')
+            serve = @(
+                '--socket', '--permission-mode', '--capability-manifest',
+                '--approve-capability-manifest', '--embedded'
+            )
+            stop = @('--socket')
+        }
+        foreach ($commandName in $required.Keys) {
+            $command = $manifest.subcommands | Where-Object { $_.name -eq $commandName }
+            if (-not $command) {
+                return $false
+            }
+            $argNames = @($command.args | ForEach-Object { $_.name })
+            foreach ($requiredArg in $required[$commandName]) {
+                if ($requiredArg -notin $argNames) {
+                    return $false
+                }
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # cua-driver powers the computer_use toolset (background desktop control).
 # Provision it at install time so enabling the tool later -- via `hermes
 # tools`, the dashboard, or the desktop app -- is a config flip, not a
@@ -3563,9 +3614,13 @@ function Install-CuaDriver {
         Write-Info "Skipping Computer Use (cua-driver) install (-SkipComputerUse)"
         return
     }
-    if (Get-Command cua-driver -ErrorAction SilentlyContinue) {
-        Write-Success "Computer Use driver (cua-driver) already installed"
-        return
+    $existingCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+    if ($existingCuaDriver) {
+        if (Test-CuaDriverRuntimeContract -DriverPath $existingCuaDriver.Source) {
+            Write-Success "Computer Use driver (cua-driver) already installed and compatible"
+            return
+        }
+        Write-Warn "Existing cua-driver is old or incomplete; repairing it"
     }
 
     Write-Info "Installing Computer Use driver (cua-driver)..."
@@ -3582,10 +3637,11 @@ function Install-CuaDriver {
         if (Wait-Job $job -Timeout 660) {
             Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
             Remove-Job $job -Force -ErrorAction SilentlyContinue
-            if (Get-Command cua-driver -ErrorAction SilentlyContinue) {
+            $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+            if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
                 Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
             } else {
-                Write-Warn "Computer Use driver install did not complete -- it will install on demand when you enable the tool."
+                Write-Warn "Computer Use driver install did not produce a compatible runtime -- repair it before enabling the tool."
                 Write-Info "Install later with: hermes computer-use install"
             }
         } else {

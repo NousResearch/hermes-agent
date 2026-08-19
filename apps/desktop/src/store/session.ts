@@ -5,6 +5,7 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { activeConnectionScopeSuffix, rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
@@ -42,7 +43,12 @@ const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
 function profileNavigationKey(base: string, profile: string): string {
   const key = profile.trim() || 'default'
 
-  return `${base}.profile.${encodeURIComponent(key)}`
+  // Also carries the CONNECTION scope: the same profile name on a different
+  // gateway is a different backend with its own sessions, and windows on
+  // different gateways share this localStorage area — restoring one
+  // gateway's remembered session under another navigates to a session that
+  // backend has never seen (#77318).
+  return `${base}.profile.${encodeURIComponent(key)}${activeConnectionScopeSuffix()}`
 }
 
 // Discard legacy global keys once per tick. A module-level flag avoids
@@ -592,6 +598,12 @@ export const $awaitingResponse = atom(false)
 // resume on the next render/focus/reconnect instead of stranding the window.
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
+export interface SessionResumeRequest {
+  sequence: number
+  sessionId: string
+}
+let sessionResumeRequestSequence = 0
+export const $sessionResumeRequest = atom<SessionResumeRequest | null>(null)
 // Stored-session id whose resume has EXHAUSTED its bounded auto-retries (the
 // terminal-failure latch above kept failing through all MAX_RESUME_RETRIES
 // attempts). Distinct from $resumeFailedSessionId, which is armed *during* the
@@ -660,6 +672,11 @@ export const $sessionPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => {
   updateAtom($connection, next)
+  // Repoint connection-scoped persistence (pins, manual session order,
+  // remembered navigation) at the new backend's storage scope before any
+  // consumer reconciles against it. A null descriptor (reconnect blip)
+  // keeps the current scope.
+  rescopeConnectionScopedStores($connection.get())
   syncCronModelImpactConnection($connection.get())
 }
 
@@ -760,6 +777,17 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
+
+export const requestSessionResume = (sessionId: string) => {
+  const id = sessionId.trim()
+
+  if (!id) {
+    return
+  }
+
+  $sessionResumeRequest.set({ sequence: ++sessionResumeRequestSequence, sessionId: id })
+}
+
 export const setResumeExhaustedSessionId = (next: Updater<string | null>) => updateAtom($resumeExhaustedSessionId, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)

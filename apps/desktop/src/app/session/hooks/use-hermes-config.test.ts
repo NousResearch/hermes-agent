@@ -18,6 +18,8 @@ import {
   setDefaultReasoningEffort
 } from '@/store/session'
 
+import { deferred } from '../../../test/deferred'
+
 import { useHermesConfig } from './use-hermes-config'
 
 vi.mock('@/hermes', () => ({
@@ -26,16 +28,6 @@ vi.mock('@/hermes', () => ({
 }))
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
 
 const mockConfig = (config: Record<string, unknown>) =>
   vi.mocked(getHermesConfig).mockResolvedValue(config as Awaited<ReturnType<typeof getHermesConfig>>)

@@ -15,6 +15,7 @@ import {
   $reviewCommitDefault,
   $reviewCommitMsgBusy,
   $reviewFiles,
+  $reviewScopeTarget,
   $reviewShipBusy,
   $reviewShipInfo,
   cancelCommitMessage,
@@ -35,6 +36,7 @@ export function ReviewShipBar() {
   const c = t.statusStack.coding
   const files = useStore($reviewFiles)
   const ship = useStore($reviewShipInfo)
+  const scopeTarget = useStore($reviewScopeTarget)
   const busy = useStore($reviewShipBusy)
   const generating = useStore($reviewCommitMsgBusy)
   const commitDefault = useStore($reviewCommitDefault)
@@ -129,7 +131,11 @@ export function ReviewShipBar() {
         <Button
           className="min-w-0 flex-1 justify-center px-7 text-[0.7rem] text-muted-foreground/85 hover:text-foreground"
           disabled={!hasFiles}
-          onClick={() => requestComposerSubmit(c.agentShipPrompt, { target: 'main' })}
+          onClick={() => {
+            if (!requestComposerSubmit(c.agentShipPrompt, { target: scopeTarget })) {
+              notifyError(new Error(c.agentShipUnavailable), c.agentShip)
+            }
+          }}
           size="sm"
           variant="ghost"
         >

@@ -6,11 +6,11 @@ import {
   type SidebarProjectTree
 } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
-import { getHermesConfig, type HermesGateway } from '@/hermes'
+import { getHermesConfig, hermesApi, type HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
-import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
@@ -374,14 +374,28 @@ function applyPayload(payload: ProjectsPayload): void {
   $activeProjectId.set(payload.active_id ?? null)
 }
 
+let projectsRefreshGeneration = 0
+
 // Pull the full project list + active pointer. Best-effort: a failure (gateway
 // not up yet) leaves the cached atoms intact so the sidebar doesn't flicker.
 export async function refreshProjects(): Promise<void> {
+  const generation = ++projectsRefreshGeneration
+  let gateway: HermesGateway | null = null
+
   try {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.list'))
+    gateway = (await activeProjectsContext()).gateway
+    const payload = await gatewayRequestOn<ProjectsPayload>(gateway, 'projects.list')
+
+    if (generation !== projectsRefreshGeneration || activeGateway() !== gateway) {
+      return
+    }
+
+    applyPayload(payload)
     markProjectsRpcSuccess()
   } catch (err) {
-    markProjectsRpcFailure(err)
+    if (generation === projectsRefreshGeneration && (!gateway || activeGateway() === gateway)) {
+      markProjectsRpcFailure(err)
+    }
     // Backend may not be ready; keep the last known list.
   }
 }
@@ -475,7 +489,7 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
   $projectTreeLoading.set(true)
 
   try {
-    const res = await window.hermesDesktop.api<ProjectTreePayload>({
+    const res = await hermesApi<ProjectTreePayload>({
       path: `/api/profiles/projects/tree?preview_limit=${PROJECT_TREE_PREVIEW_LIMIT}`,
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
@@ -1074,7 +1088,22 @@ export async function startWorkInRepo(
     return null
   }
 
-  const result = await git.worktreeAdd(repoPath, options)
+  let result
+
+  try {
+    result = await git.worktreeAdd(repoPath, options)
+  } catch (err) {
+    // Capability gate (#81724): a remote gateway serves worktree ops via the
+    // backend's /api/git mirror, and an older backend may predate it. The raw
+    // failure ("Expected JSON … but got HTML" / a bare 404) reads like a git
+    // error — name the real remedy instead of degrading silently.
+    if (isDesktopFsRemoteMode() && isMissingRestEndpoint(err)) {
+      throw new Error(translateNow('sidebar.projects.worktreeStaleBackend'))
+    }
+
+    throw err
+  }
+
   bumpWorktrees()
 
   return { branch: result.branch, path: result.path }
@@ -1084,7 +1113,8 @@ export async function startWorkInRepo(
 // local heads, plus the remote-tracking refs that have no local branch yet. A
 // teammate's branch is therefore reachable, and the user does not check it out
 // by hand first.
-// Empty on a remote backend or a non-repo, where the Electron probe cannot run.
+// Empty on a non-repo. On a remote gateway the list comes from the backend's
+// /api/git/branches mirror, so it acts on the repo where sessions actually run.
 export async function listRepoBranches(repoPath: string): Promise<HermesGitBranch[]> {
   const git = desktopGit()
 
@@ -1097,7 +1127,8 @@ export async function listRepoBranches(repoPath: string): Promise<HermesGitBranc
 
 // Local + remote-tracking branches for the base-branch picker in the
 // new-worktree dialog. The remote default (origin/HEAD) is flagged so the
-// UI can preselect it. Empty on a remote backend / non-repo.
+// UI can preselect it. Empty on a non-repo; remote gateways serve it from the
+// backend's /api/git/base-branches mirror.
 export async function listBaseBranches(repoPath: string): Promise<HermesGitBaseBranch[]> {
   const git = desktopGit()
 

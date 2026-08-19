@@ -290,6 +290,12 @@ export default class Ink {
   // render() takes; deferring into the atomic block means old content stays
   // visible until the new frame is fully ready.
   private needsEraseBeforePaint = false
+  // Scopes the scrollback-deep erase (CSI 3J) to resize healing only. Apple
+  // Terminal preserves alt-screen reflow artifacts in scrollback across a
+  // resize, which is the one case worth clearing history for. Other erase
+  // requesters (focus regain) must stay 2J-only — wiping the user's
+  // scrollback on an ordinary tab switch is data loss, not recovery.
+  private needsDeepEraseBeforePaint = false
   // Native cursor positioning: a component (via useDeclaredCursor) declares
   // where the terminal cursor should be parked after each frame. Terminal
   // emulators render IME preedit text at the physical cursor position, and
@@ -586,6 +592,7 @@ export default class Ink {
 
     this.resetFramesForAltScreen()
     this.needsEraseBeforePaint = true
+    this.needsDeepEraseBeforePaint = true
 
     this.resizeSettleTimer = setTimeout(() => {
       this.resizeSettleTimer = null
@@ -596,6 +603,7 @@ export default class Ink {
 
       this.resetFramesForAltScreen()
       this.needsEraseBeforePaint = true
+      this.needsDeepEraseBeforePaint = true
       this.render(this.currentNode!)
     }, 160)
   }
@@ -610,14 +618,37 @@ export default class Ink {
     // if we continue with the pre-blur virtual cursor/backbuffer, only the
     // next small dirty region may repaint and stale status/progress rows can
     // remain visible. Defer one tick so TerminalFocusProvider subscribers
-    // observe the new focus state first, then do the same recovery as /redraw.
+    // observe the new focus state first, then reset the virtual frames and
+    // repaint from scratch.
+    //
+    // The clear is required (a row that is BLANK in the new frame is skipped
+    // by the diff, so a stale row survives a buffer-only reset), but it is
+    // queued via needsEraseBeforePaint rather than written directly: that
+    // folds it into this frame's patch list so clear+paint reach the terminal
+    // in ONE write. forceRedraw()'s separate stdout.write(ERASE_SCREEN) is
+    // what makes an ordinary tab switch flash a blank screen.
+    //
+    // Modes are re-asserted too: an emulator that dropped DEC mouse tracking
+    // while the pane was hidden would otherwise stay dead until the DECRQM
+    // watchdog's next 2s probe. reassertTerminalModes(false) is the
+    // non-destructive form — extended keys + mouse preset, no alt-screen
+    // re-entry, no erase — so it costs a few idempotent bytes and no flicker.
     queueMicrotask(() => {
       if (this.isUnmounted || this.isPaused || !this.options.stdout.isTTY || this.currentNode === null) {
         return
       }
 
       this.reassertTerminalModes(false)
-      this.forceRedraw()
+
+      if (this.altScreenActive) {
+        this.resetFramesForAltScreen()
+      } else {
+        this.repaint()
+        this.invalidatePrevFrame()
+      }
+
+      this.needsEraseBeforePaint = true
+      this.onRender()
     })
   }
 
@@ -1025,12 +1056,34 @@ export default class Ink {
       // is still healed even if the repaint is visible.
       if (needsAltScreenErase) {
         this.needsEraseBeforePaint = false
-        optimized.unshift(needsAltScreenResizeScrollbackClear() ? DEEP_ERASE_THEN_HOME_PATCH : ERASE_THEN_HOME_PATCH)
+        // CSI 3J only when resize healing asked for it — see
+        // needsDeepEraseBeforePaint. A focus-regain erase must not take the
+        // user's scrollback with it.
+        const deep = this.needsDeepEraseBeforePaint && needsAltScreenResizeScrollbackClear()
+        this.needsDeepEraseBeforePaint = false
+        optimized.unshift(deep ? DEEP_ERASE_THEN_HOME_PATCH : ERASE_THEN_HOME_PATCH)
       } else {
         optimized.unshift(CURSOR_HOME_PATCH)
       }
 
       optimized.push(this.altScreenParkPatch)
+    } else if (this.needsEraseBeforePaint) {
+      // Main screen (INLINE_MODE / Termux). Same atomicity contract as the
+      // alt-screen branch above: fold the clear into this frame's patch list
+      // so clear+paint land in one write instead of a bare
+      // stdout.write(ERASE_SCREEN) followed by the frame. No cursor park —
+      // main-screen cursor position is meaningful (it's the prompt row) and
+      // log-update already restores it. No CSI 3J: scrollback is the user's
+      // history here, not a resize artifact.
+      //
+      // Always consume the flag, but only emit the clear when this frame
+      // actually repaints: a queued erase riding a later incremental frame
+      // (spinner tick) would wipe content that frame doesn't redraw.
+      this.needsEraseBeforePaint = false
+
+      if (hasDiff) {
+        optimized.unshift(ERASE_THEN_HOME_PATCH)
+      }
     }
 
     // Native cursor positioning: park the terminal cursor at the declared

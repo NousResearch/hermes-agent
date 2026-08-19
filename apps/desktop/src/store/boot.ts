@@ -66,6 +66,27 @@ export function setDesktopBootStep(step: {
   })
 }
 
+/**
+ * Re-arm the boot overlay for an automatic bounded retry of a failed REMOTE
+ * boot (#82679). Unlike setDesktopBootStep — whose null `error` intentionally
+ * cannot clear a latched failure — this explicitly lifts the error so the
+ * overlay shows the retry status instead of the terminal failure surface
+ * while the retry is in flight. failDesktopBoot() re-latches when the
+ * bounded retries are exhausted.
+ */
+export function resumeDesktopBootForRetry(message: string) {
+  const current = $desktopBoot.get()
+  $desktopBoot.set({
+    ...current,
+    error: null,
+    message,
+    phase: 'renderer.boot.retry',
+    running: true,
+    timestamp: Date.now(),
+    visible: true
+  })
+}
+
 export function completeDesktopBoot(message = translateNow('boot.ready')) {
   const current = $desktopBoot.get()
   $desktopBoot.set({

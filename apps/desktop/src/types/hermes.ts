@@ -405,6 +405,11 @@ export interface ModelOptionProvider {
   key_env?: string
   /** True for providers defined via the user's `providers:` config block. */
   is_user_defined?: boolean
+  /** User-defined providers only: every accepted identity for this endpoint
+   *  (bare config key, `custom:<key>`, normalized display name, …). A session's
+   *  `model.options` reports the canonical `custom:<key>` form, so "is this row
+   *  the current provider?" must check membership here, not slug equality. */
+  aliases?: string[]
   /** OpenAI-compatible endpoint for a user-defined provider. The backend
    *  exposes this as `api_url`; model assignments send it back as `base_url`
    *  so switching providers does not discard the selected local endpoint. */
@@ -450,6 +455,9 @@ export interface PaginatedSessions {
 export interface RpcEvent<T = unknown> {
   payload?: T
   profile?: string
+  /** Registry connection whose socket delivered the event (renderer-side tag;
+   * absent for the local/legacy primary path). */
+  connectionId?: string
   session_id?: string
   type: string
 }
@@ -526,6 +534,11 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Registry connection that owns this row when it came from a CONNECTED
+   *  non-primary gateway (Electron's unified-list splice, #88880). Absent for
+   *  rows served by the primary/local backend. Opens must route through the
+   *  connection-scoped gateway (`ensureGatewayAgent`) when present. */
+  connection_id?: string
 }
 
 export type TimelineDisplayMetadata =
@@ -606,6 +619,7 @@ export interface SessionResumeResponse {
     attempt: number
     interrupted_at: number
   }
+  hydrating?: boolean
   inflight?: null | {
     assistant?: string
     /** Mid-turn redirect corrections, oldest first. The turn's original prompt
@@ -911,6 +925,8 @@ export interface ProfileCreatePayload {
 }
 
 export interface ProfileInfo {
+  /** Presentation-only label override (profile.yaml display_name). */
+  display_name?: string
   has_env: boolean
   is_default: boolean
   model: null | string

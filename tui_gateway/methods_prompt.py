@@ -166,38 +166,53 @@ def _coerce_truncate_int(rid, value, param_name="truncate_before_user_ordinal"):
         return None, _err(rid, 4004, f"{param_name} must be an integer")
 
 
-def _reconcile_client_ordinal(rid, sid, client_ordinal, msg_ordinal, param_name, target_repr):
+def _reconcile_client_ordinal(
+    rid, sid, client_ordinal, msg_ordinal, param_name, target_repr,
+    prefix_user_count=0,
+):
     """Cross-check a client ordinal against a resolved durable target.
 
-    Returns ``(ordinal, error_response)``: the target's ordinal when the
-    client sent none or agreed, else the 4004/4030 refusal. A stale ordinal
-    alongside a *resolved* durable id is the #82756 drift class — refuse
-    rather than guess which address the user meant.
+    Returns ``(ordinal, error_response)``: the target's tip-relative ordinal
+    when the client sent none or agreed, else the 4004/4030 refusal. A stale
+    ordinal alongside a *resolved* durable id is the #82756 drift class —
+    refuse rather than guess which address the user meant.
+
+    Desktop/TUI ordinals count the full displayed lineage: after context
+    compression the client still renders the ancestor turns from
+    ``display_history_prefix`` while ``msg_ordinal`` is relative to the tip
+    segment only (#82462). A client ordinal that equals
+    ``msg_ordinal + prefix_user_count`` is therefore the SAME turn counted in
+    lineage space, not drift — accept it. The cut itself is always aimed by
+    the resolved durable target, never by the client ordinal, so this wider
+    acceptance can never re-aim a truncation.
     """
     if client_ordinal is None:
         return msg_ordinal, None
     ordinal, err = _coerce_truncate_int(rid, client_ordinal)
     if err is not None:
         return None, err
-    if ordinal != msg_ordinal:
-        logger.warning(
-            "prompt.submit: REFUSED truncation due to ordinal mismatch for session %s "
-            "(ordinal=%d, %s_ordinal=%d, %s=%s). "
-            "Stale truncate_before_user_ordinal detected.",
-            sid,
-            ordinal,
-            param_name,
-            msg_ordinal,
-            param_name,
-            target_repr,
-        )
-        return None, _err(
-            rid,
-            4030,
-            f"truncate_before_user_ordinal ({ordinal}) does not match "
-            f"{param_name} target turn ({msg_ordinal})",
-        )
-    return ordinal, None
+    if ordinal == msg_ordinal:
+        return msg_ordinal, None
+    if prefix_user_count > 0 and ordinal == msg_ordinal + prefix_user_count:
+        return msg_ordinal, None
+    logger.warning(
+        "prompt.submit: REFUSED truncation due to ordinal mismatch for session %s "
+        "(ordinal=%d, %s_ordinal=%d, %s=%s, prefix_user_count=%d). "
+        "Stale truncate_before_user_ordinal detected.",
+        sid,
+        ordinal,
+        param_name,
+        msg_ordinal,
+        param_name,
+        target_repr,
+        prefix_user_count,
+    )
+    return None, _err(
+        rid,
+        4030,
+        f"truncate_before_user_ordinal ({ordinal}) does not match "
+        f"{param_name} target turn ({msg_ordinal})",
+    )
 
 
 def _pending_reaction_notes(session: dict) -> str:
@@ -257,6 +272,10 @@ def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+    # Off-screen sends (widget intents): type the persisted user row so no
+    # client renders it as a bubble. Whitelisted to "hidden" — display_kind
+    # is a DB-only sidecar and this RPC must not mint arbitrary kinds.
+    display_kind = "hidden" if params.get("display_kind") == "hidden" else None
     # Typed bare stop phrase while backend voice mode is active ends the
     # voice chat instead of sending "stop" to the agent — the typed twin of
     # the spoken stop phrase (PR #73106), applied at the ONE server-side
@@ -424,8 +443,40 @@ def _(rid, params: dict) -> dict:
                     "an ordinary prompt.submit must not drop session history "
                     "(update your Hermes client if a rewind was intended)",
                 )
+            # Desktop/TUI ordinals count the full displayed lineage. After
+            # compression, session["history"] holds only the tip segment while
+            # display_history_prefix holds the immutable ancestor display rows
+            # still shown in the transcript (#82462 / #69107). Count the
+            # ancestor user turns once so every comparison between a client
+            # ordinal and a tip-relative ordinal below can translate, instead
+            # of loading ancestors into the tip (which would duplicate
+            # compressed history on later resumes).
+            prefix_user_count = sum(
+                1
+                for message in session.get("display_history_prefix") or []
+                if isinstance(message, dict)
+                and message.get("role") == "user"
+                and not message.get("display_kind")
+            )
 
             user_indices = _history_user_indices(history)
+
+            def _stale_target_data(resolved_ordinal=None):
+                # Structured recovery fields for clients (#82462): Desktop
+                # resyncs + retries on a stale target, and shows an explicit
+                # "compressed away" state when segment_ordinal < 0 (the target
+                # only exists in the immutable ancestor prefix).
+                segment = (
+                    client_ordinal - prefix_user_count
+                    if client_ordinal is not None
+                    else resolved_ordinal
+                )
+                return {
+                    "user_turn_count": len(user_indices),
+                    "ordinal": client_ordinal,
+                    "segment_ordinal": segment,
+                    "prefix_user_count": prefix_user_count,
+                }
 
             ordinal = None
 
@@ -449,12 +500,14 @@ def _(rid, params: dict) -> dict:
                         rid,
                         4018,
                         "target user message is no longer in session history",
+                        data=_stale_target_data(),
                     )
 
                 msg_ordinal, _ = found_match
                 ordinal, err = _reconcile_client_ordinal(
                     rid, sid, client_ordinal, msg_ordinal,
                     "truncate_before_row_id", target_row_id,
+                    prefix_user_count=prefix_user_count,
                 )
                 if err is not None:
                     return err
@@ -481,19 +534,31 @@ def _(rid, params: dict) -> dict:
                         rid,
                         4018,
                         "target user message is no longer in session history",
+                        data=_stale_target_data(),
                     )
 
                 msg_ordinal, _ = found_match
                 ordinal, err = _reconcile_client_ordinal(
                     rid, sid, client_ordinal, msg_ordinal,
                     "truncate_before_message_id", msg_id_str,
+                    prefix_user_count=prefix_user_count,
                 )
                 if err is not None:
                     return err
             else:
-                if client_ordinal < 0 or client_ordinal >= len(user_indices):
+                # Client ordinals count the full displayed lineage; translate
+                # into the tip segment before the bounds check (#82462). An
+                # ancestor-only target (segment_ordinal < 0) is not editable
+                # from this continuation segment — same stale-target refusal,
+                # with the structured fields so the client can tell the
+                # "compressed away" case apart from plain drift.
+                segment_ordinal = client_ordinal - prefix_user_count
+                if segment_ordinal < 0 or segment_ordinal >= len(user_indices):
                     return _err(
-                        rid, 4018, "target user message is no longer in session history"
+                        rid,
+                        4018,
+                        "target user message is no longer in session history",
+                        data=_stale_target_data(),
                     )
                 # Durability is a state.db property, not an optional annotation
                 # on the live copy. Resume/reload paths historically omitted
@@ -523,7 +588,7 @@ def _(rid, params: dict) -> dict:
                         "ordinal-only truncation is unsafe for durable session history; "
                         "include truncate_before_row_id",
                     )
-                ordinal = client_ordinal
+                ordinal = segment_ordinal
 
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative
@@ -531,7 +596,12 @@ def _(rid, params: dict) -> dict:
             # truncating history to everything before it and persisting that loss
             # via replace_messages — an unrecoverable overwrite of the session DB.
             if ordinal < 0 or ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
+                return _err(
+                    rid,
+                    4018,
+                    "target user message is no longer in session history",
+                    data=_stale_target_data(resolved_ordinal=ordinal),
+                )
             truncated = history[: user_indices[ordinal]]
             # Second gate, on top of confirm_truncate: ordinal 0 resolves to
             # history[:0] == [] and replace_messages() DELETEs every durable
@@ -641,7 +711,9 @@ def _(rid, params: dict) -> dict:
         _start_inflight_turn(session, text)
 
     if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+        isolated_response = _submit_prompt_to_compute_host(
+            rid, sid, session, text, display_kind=display_kind
+        )
         if not isolated_response.get("error"):
             if survivor_user_row_ids is not None:
                 # The truncation already happened inline above (memory + DB),
@@ -727,7 +799,7 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(rid, sid, session, text, display_kind=display_kind)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
@@ -1357,6 +1429,16 @@ def _(rid, params: dict) -> dict:
     # window (read_window_below tool). allow_expired=True for the same reason
     # as terminal.read: the tool's bounded wait can expire while the renderer's
     # round-trip to the main process is still in flight.
+    return _respond(rid, params, "text", allow_expired=True)
+
+
+@method("tour.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string with the tour action's outcome (tour tool) —
+    # matched targets, the active step, or an error naming the bad selector.
+    # allow_expired=True for the same reason as terminal.read: a preview tour
+    # injecting driver.js into a slow page can lose the race with the tool's
+    # bounded wait.
     return _respond(rid, params, "text", allow_expired=True)
 
 

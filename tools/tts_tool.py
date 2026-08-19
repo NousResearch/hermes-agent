@@ -2099,7 +2099,10 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 
     from tools.xai_http import resolve_xai_http_credentials
 
-    creds = resolve_xai_http_credentials()
+    # TTS is API-billed: a subscription OAuth bearer can authorize chat while
+    # returning 403 for /v1/tts (#87045, same root cause as x_search #88040),
+    # so prefer an explicit XAI_API_KEY with OAuth as the fallback.
+    creds = resolve_xai_http_credentials(prefer_api_key=True)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise ValueError("No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.")

@@ -132,6 +132,14 @@ model:
   #       CF-Access-Client-Id: "xxxx.access"
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
   #       X-Client-Name: "hermes-agent"
+# providers:
+#   meta:
+#     base_url: https://api.meta.ai/v1
+#     api_key: ${MODEL_API_KEY}
+#     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
+#     # (the bundled meta-ai provider covers this — a named custom provider is
+#     # only needed for a non-default Meta-compatible endpoint)
+
 
 # Command-minted credentials (optional): key_cmd
 # ------------------------------------------------------------------
@@ -779,6 +787,14 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
+#
+#   # Post-turn memory/skill self-improvement review fork. Runs after a turn
+#   # when the nudge intervals fire; writes skills/memories in a daemon thread.
+#   # Usage is recorded under session_model_usage task='background_review'.
+#   background_review:
+#     enabled: true            # false = skip automatic forks (/refine still works)
+#     provider: "auto"         # or pin a cheaper model (see memory.md)
+#     model: ""
 
 # =============================================================================
 # Persistent Memory

@@ -99,7 +99,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "read_preview", "read_window_below", "setup_mcp", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "read_terminal", "read_preview", "read_window_below", "setup_mcp", "tour", "delegate_task"}
 )
 
 
@@ -2145,6 +2145,32 @@ def plan_cache_sections_for_destination(
     return plan.messages, plan.tools
 
 
+def _is_litellm_route(provider_lower: str, base_url: str) -> bool:
+    """True when a route is a LiteLLM proxy, by provider id or host token.
+
+    Provider naming varies per install (``litellm``, ``custom:litellm``, or a
+    bare ``custom`` alias pointed at a LiteLLM host), so both signals are
+    checked. Both match ``litellm`` as a whole delimited token rather than a
+    raw substring: ``base_url_hostname``'s own docstring names substring host
+    matching as the false-positive class to avoid, and a plain
+    ``"litellm" in ...`` grants Anthropic markers to unrelated routes like
+    ``notlitellm.example.com`` or a provider named ``custom:notlitellm``.
+    A ``litellm`` *path* segment never qualifies — only the host does.
+    """
+    if _has_litellm_token(provider_lower, ":-_/"):
+        return True
+    return _has_litellm_token(base_url_hostname(base_url), ".-")
+
+
+def _has_litellm_token(value: str, delimiters: str) -> bool:
+    """True when ``value`` contains ``litellm`` as a whole delimited token."""
+    if not value:
+        return False
+    for delimiter in delimiters:
+        value = value.replace(delimiter, " ")
+    return "litellm" in value.split()
+
+
 def anthropic_prompt_cache_policy(
     agent,
     *,
@@ -2269,8 +2295,23 @@ def anthropic_prompt_cache_policy(
     # capability declaration instead; explicit false is authoritative too.
     # This preserves the runtime model id (and therefore request/cache keys)
     # while avoiding unsafe alias-name guesses.
+    #
+    # Also consulted for a LiteLLM route on the OpenAI wire: that grant is
+    # inferred from the provider/host name, so an operator who explicitly
+    # declares prompt_caching for the route+model must still win over the
+    # inference — in either direction. Narrowed to the routes the LiteLLM
+    # branch below can actually grant (chat_completions + Claude): the lookup
+    # calls get_compatible_custom_providers, which rebuilds its normalized
+    # view on every call (~1.5ms uncached), and this function runs per
+    # request destination. Widening it unconditionally regressed the
+    # non-declaring common case ~200x (7.5us -> 1528us).
     custom_prompt_caching = None
-    if is_anthropic_wire:
+    _litellm_openai_wire = (
+        eff_api_mode == "chat_completions"
+        and is_claude
+        and _is_litellm_route(provider_lower, eff_base_url)
+    )
+    if is_anthropic_wire or _litellm_openai_wire:
         try:
             from hermes_cli.config import get_custom_provider_model_capability
 
@@ -2286,7 +2327,11 @@ def anthropic_prompt_cache_policy(
                 _cap_exc,
             )
     if custom_prompt_caching is not None:
-        return custom_prompt_caching, custom_prompt_caching
+        # Layout follows the transport, not the declaration: the native
+        # inner-block form is only honored on the Anthropic Messages wire
+        # (see the LiteLLM OpenAI-wire branch below for why a top-level
+        # marker is dropped or 400s on chat_completions).
+        return custom_prompt_caching, custom_prompt_caching and is_anthropic_wire
 
     # MiniMax-M3 rides MiniMax's server-side automatic prefix cache on the
     # Anthropic wire (content-keyed, no marker needed); explicit cache_control
@@ -2333,6 +2378,42 @@ def anthropic_prompt_cache_policy(
     if is_anthropic_wire and is_claude:
         # Third-party Anthropic-compatible gateway.
         return True, True
+
+    # LiteLLM fronting a Claude model on the OpenAI-compatible wire.
+    # The branch above only matches LiteLLM in Anthropic proxy mode
+    # (api_mode == "anthropic_messages"). A LiteLLM deployment that
+    # exposes /v1/chat/completions instead matched no grant branch above
+    # and fell through to (False, False): no cache_control is injected, the
+    # system prompt goes on the wire as a plain string, and the provider
+    # serves zero cache hits — the entire prompt is re-billed at full price
+    # every turn. Same failure class already documented above for
+    # Qwen/DashScope. The endpoint supports Anthropic-style cache_control
+    # fine; only the provider detection missed it (#84506).
+    #
+    # Gated on the Claude family only: a Gemini/GPT/Qwen route through the
+    # same proxy must not receive markers — some strict OpenAI-wire relays
+    # reject the cache_control block format outright (cf. the DeepSeek /
+    # OpenCode exclusion below, #77217).
+    #
+    # Envelope layout (native_anthropic=False), matching every other
+    # OpenAI-wire grant in this function. The native inner-block layout
+    # writes a TOP-LEVEL msg["cache_control"] on role:tool and
+    # empty-content messages and relies on the Anthropic adapter to
+    # relocate it — but that adapter only runs for api_mode ==
+    # "anthropic_messages" (agent/transports/anthropic.py), and the
+    # chat_completions transport performs no relocation. On this wire the
+    # native layout therefore (a) silently loses those breakpoints, spending
+    # 2 of the 4 available on markers the provider never sees, and (b) when
+    # LiteLLM relocates a top-level marker itself for an OpenRouter-backed
+    # Claude route, lands it on an empty text block — the HTTP 400
+    # "text content blocks must contain" shape handled in
+    # agent/anthropic_adapter.py (#69512).
+    #
+    # Gated on chat_completions explicitly rather than `not
+    # is_anthropic_wire`: codex_responses / bedrock_converse are separate
+    # transports with their own marker handling and must not be swept in.
+    if _litellm_openai_wire:
+        return True, False
 
     # MiniMax on its Anthropic-compatible endpoint serves its own
     # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
@@ -2992,17 +3073,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         try:
-            from hermes_cli.plugins import resolve_pre_tool_block
-            block_message = resolve_pre_tool_block(
-                function_name,
-                function_args,
-                task_id=effective_task_id or "",
+            from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+            block_message, modified_args = _dispatch_pre_tool_call_hooks(
+                function_name, function_args, task_id=effective_task_id or "",
                 session_id=getattr(agent, "session_id", "") or "",
                 tool_call_id=tool_call_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 middleware_trace=list(_tool_middleware_trace),
             )
+            if modified_args is not None:
+                function_args = modified_args
         except Exception:
             block_message = None
     if block_message is not None:
@@ -3119,6 +3200,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
                     multi_select=next_args.get("multi_select", False),
+                    questions=next_args.get("questions"),
                     callback=agent.clarify_callback,
                 ),
                 next_args,
@@ -3151,6 +3233,23 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(
                 _read_window_below_tool(
                     callback=getattr(agent, "read_window_below_callback", None),
+                ),
+                next_args,
+            )
+    elif function_name == "tour":
+        def _execute(next_args: dict) -> Any:
+            from tools.tour_tool import tour_tool as _tour_tool
+            return _finish_agent_tool(
+                _tour_tool(
+                    action=next_args.get("action", ""),
+                    surface=next_args.get("surface"),
+                    selector=next_args.get("selector"),
+                    title=next_args.get("title"),
+                    text=next_args.get("text"),
+                    side=next_args.get("side"),
+                    steps=next_args.get("steps"),
+                    step_index=next_args.get("step_index"),
+                    callback=getattr(agent, "tour_callback", None),
                 ),
                 next_args,
             )
@@ -3597,9 +3696,21 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # tool result. This is the final pre-API chokepoint, so dedup defensively
     # here even though repair_message_sequence also consumes matched ids.
     #   (a) collapse duplicate tool_calls WITHIN an assistant message
-    #   (b) drop later tool result messages reusing an already-seen id
+    #   (b) drop tool results that answer no OUTSTANDING tool call
+    #
+    # (b) tracks outstanding calls rather than every id ever seen, because
+    # ``tool_call_id`` is NOT globally unique in practice: llama.cpp emits a
+    # single constant id for every tool call it ever returns (verified: three
+    # separate completions from one server all carry the same id). A
+    # seen-once-drop-forever rule reads the SECOND legitimate tool result of
+    # such a session as a duplicate and deletes it, so from the second tool
+    # call onward the model never sees any result — it announces its next
+    # action and the turn dies with the work unfinished. Outstanding-call
+    # semantics keep both protections intact: a re-emitted result still
+    # answers no pending call and is still dropped, while a genuine new call
+    # that reuses the id re-arms that id first.
     seen_assistant_call_ids: set = set()
-    seen_result_call_ids: set = set()
+    outstanding_call_ids: set = set()
     deduped: List[Dict[str, Any]] = []
     removed_dupes = 0
     for msg in messages:
@@ -3613,6 +3724,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     continue
                 if cid:
                     seen_assistant_call_ids.add(cid)
+                    outstanding_call_ids.add(cid)
                 kept_tcs.append(tc)
             if kept_tcs:
                 msg = {**msg, "tool_calls": kept_tcs}
@@ -3621,11 +3733,15 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             deduped.append(msg)
         elif role == "tool":
             cid = (msg.get("tool_call_id") or "").strip()
-            if cid and cid in seen_result_call_ids:
+            if cid and cid not in outstanding_call_ids:
                 removed_dupes += 1
                 continue
             if cid:
-                seen_result_call_ids.add(cid)
+                # Answered: this id is no longer outstanding, so a second
+                # result replaying it is still caught above.
+                outstanding_call_ids.discard(cid)
+                # A reused id must be re-armable by the next assistant call.
+                seen_assistant_call_ids.discard(cid)
             deduped.append(msg)
         else:
             deduped.append(msg)

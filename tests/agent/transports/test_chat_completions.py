@@ -18,8 +18,70 @@ def transport():
 
 
 class TestChatCompletionsBasic:
+    @pytest.mark.parametrize(
+        "choice",
+        [SimpleNamespace(message=SimpleNamespace()), SimpleNamespace()],
+    )
+    def test_normalize_response_allows_missing_optional_message_fields(
+        self, transport, choice
+    ):
+        response = SimpleNamespace(choices=[choice], usage=None)
 
+        normalized = transport.normalize_response(response)
 
+        assert normalized.content is None
+        assert normalized.tool_calls is None
+        assert normalized.finish_reason == "stop"
+
+    def test_normalize_response_allows_sparse_tool_call_fields(self, transport):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(arguments='{"city":"Paris"}')
+                            ),
+                            SimpleNamespace(),
+                            SimpleNamespace(
+                                id="call-3",
+                                function=SimpleNamespace(name="lookup"),
+                            ),
+                            SimpleNamespace(
+                                id="call-4",
+                                function=SimpleNamespace(name="", arguments="{}"),
+                            ),
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="weather", arguments="{}"
+                                )
+                            ),
+                        ]
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+        normalized = transport.normalize_response(response)
+
+        assert normalized.finish_reason == "stop"
+        assert normalized.tool_calls is not None
+        assert [tool.id for tool in normalized.tool_calls] == [
+            "call-3",
+            "call-4",
+            None,
+        ]
+        assert [tool.name for tool in normalized.tool_calls] == [
+            "lookup",
+            "",
+            "weather",
+        ]
+        assert [tool.arguments for tool in normalized.tool_calls] == [
+            "{}",
+            "{}",
+            "{}",
+        ]
 
     @pytest.mark.parametrize("provider", ["nous", "openrouter"])
     def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):
@@ -251,6 +313,40 @@ class TestChatCompletionsBuildKwargs:
             "include_thoughts": True,
             "thinking_level": "high",
         }
+
+    def test_gemini_ultra_thinking_raises_first_request_max_tokens(self, transport):
+        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+            reasoning_config={"enabled": True, "effort": "ultra"},
+        )
+        assert kw["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
+
+    def test_gemini_without_thinking_keeps_explicit_max_tokens(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 4096
+
 
 
 

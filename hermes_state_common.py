@@ -378,6 +378,11 @@ CREATE TABLE IF NOT EXISTS gateway_routing (
     PRIMARY KEY (scope, session_key)
 );
 
+CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
+    session_key TEXT PRIMARY KEY,
+    failure_streak INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,

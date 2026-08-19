@@ -22,6 +22,7 @@
  */
 
 import { setSessionPinnedRemote } from '@/hermes'
+import { onConnectionScopeChange } from '@/lib/connection-scoped'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 
@@ -179,6 +180,10 @@ function reconcile(): void {
 
 // Sync once, then re-sync on pin-set and session-list changes. Call once per app.
 export function watchSessionPins(): void {
+  // A connection rescope repaints $pinnedSessionIds from the new backend's
+  // storage scope; the mirrored/pending/unconfirmed bookkeeping describes
+  // the PREVIOUS backend and must reset before that reload reconciles.
+  onConnectionScopeChange(resetSessionPinMirror)
   reconcile()
   $pinnedSessionIds.listen(reconcile)
   $sessions.listen(reconcile)

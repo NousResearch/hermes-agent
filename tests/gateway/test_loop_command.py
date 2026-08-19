@@ -1,6 +1,8 @@
 """Gateway /loop command tests — dispatch, routing capture, mid-run guard."""
 
+import logging
 import time
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -8,7 +10,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-from hermes_cli import loops
+from hermes_cli import goals, loops
 
 
 class _FakeSessionEntry:
@@ -19,7 +21,7 @@ class _FakeSessionStore:
     def __init__(self):
         self.entry = _FakeSessionEntry()
 
-    def get_or_create_session(self, source):
+    def get_or_create_session(self, source, *, touch_activity=True):
         return self.entry
 
     def _generate_session_key(self, source):
@@ -31,9 +33,9 @@ def loop_env(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    loops._DB_CACHE.clear()
+    goals._DB_CACHE.clear()
     yield home
-    loops._DB_CACHE.clear()
+    goals._DB_CACHE.clear()
 
 
 def _make_runner():
@@ -137,3 +139,112 @@ async def test_post_turn_loop_completion_noop_without_inflight_tick(loop_env):
     reloaded = loops.load_loop("sid-gateway-loop")
     assert reloaded.status == "active"
     assert reloaded.ticks_fired == 0
+
+
+def test_streamed_already_sent_none_recovers_text_for_hooks():
+    """Streamed turns return None. Hooks must still see the delivered reply."""
+    event = _make_event("wakeup")
+    event._streamed_final_response = "CI is green.\nLOOP_COMPLETE"
+    assert GatewayRunner._final_text_for_post_turn_hooks(None, event) == (
+        "CI is green.\nLOOP_COMPLETE"
+    )
+    assert GatewayRunner._final_text_for_post_turn_hooks(None, _make_event("x")) == ""
+    assert (
+        GatewayRunner._final_text_for_post_turn_hooks(
+            {"final_response": "from dict"}, event
+        )
+        == "from dict"
+    )
+
+
+@pytest.mark.asyncio
+async def test_streamed_already_sent_completes_loop_tick(loop_env):
+    """A streamed wakeup must not leave awaiting_response stuck."""
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+    assert mgr.state.awaiting_response is True
+    assert mgr.is_due() is False
+
+    event = _make_event("wakeup")
+    event._streamed_final_response = "CI is done.\nLOOP_COMPLETE"
+    # Same inputs the already_sent branch leaves for _handle_message.
+    final_text = GatewayRunner._final_text_for_post_turn_hooks(None, event)
+    assert final_text.strip()
+
+    await GatewayRunner._post_turn_loop_completion(
+        runner,
+        session_entry=_FakeSessionEntry(),
+        source=None,
+        final_response=final_text,
+    )
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False
+    assert reloaded.status == "done"
+
+
+@pytest.mark.asyncio
+async def test_empty_agent_result_releases_inflight_loop_tick(loop_env):
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+    assert mgr.state.awaiting_response is True
+
+    runner._post_turn_goal_continuation = AsyncMock()
+    await GatewayRunner._run_post_turn_hooks(
+        runner,
+        agent_result={"final_response": ""},
+        source=_make_event("wakeup").source,
+        is_internal=True,
+    )
+
+    runner._post_turn_goal_continuation.assert_not_awaited()
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False
+    assert reloaded.status == "active"
+    assert reloaded.next_due_at > time.time()
+
+
+@pytest.mark.asyncio
+async def test_goal_hook_failure_does_not_block_loop_completion(loop_env, caplog):
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+
+    runner._post_turn_goal_continuation = AsyncMock(side_effect=RuntimeError("judge failed"))
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        await GatewayRunner._run_post_turn_hooks(
+            runner,
+            agent_result={"final_response": "still working"},
+            source=_make_event("wakeup").source,
+            is_internal=True,
+        )
+
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False
+    assert "goal continuation hook failed: judge failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_post_turn_session_resolution_failure_is_logged(loop_env, caplog):
+    runner = _make_runner()
+    runner.session_store.get_or_create_session = Mock(side_effect=RuntimeError("store unavailable"))
+
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        await GatewayRunner._run_post_turn_hooks(
+            runner,
+            agent_result={"final_response": ""},
+            source=_make_event("wakeup").source,
+            is_internal=True,
+        )
+
+    assert "post-turn session resolution failed: store unavailable" in caplog.text

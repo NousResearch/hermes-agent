@@ -167,10 +167,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
+    CommandDef("worktree", "Show, list, or create isolated git worktrees for this session", "Session",
+               cli_only=True, args_hint="[new [name]|list]",
+               subcommands=("new", "list")),
     CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
                aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]"),
-    CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
-               args_hint="[number]"),
+    CommandDef("rollback", "List or restore filesystem checkpoints (restores keep your hand-edits; --all overrides)", "Session",
+               args_hint="[number] [--all]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
                cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
     CommandDef("export", "Export a profile (config, skills, theme) to a shareable archive", "Configuration",
@@ -973,11 +976,12 @@ def _collect_gateway_skill_entries(
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
         _skills_dir = str(SKILLS_DIR.resolve())
         _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
         # Build set of allowed directory prefixes: local skills dir + any
-        # user-configured ``skills.external_dirs``. Ensure each prefix ends
+        # user-configured ``skills.external_dirs`` + trusted project dirs.
+        # Ensure each prefix ends
         # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
         # Without this widening, external skills are visible in
         # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
@@ -985,6 +989,9 @@ def _collect_gateway_skill_entries(
         _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
         _allowed_prefixes.extend(
             str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
+        )
+        _allowed_prefixes.extend(
+            str(d).rstrip("/") + "/" for d in get_project_skills_dirs()
         )
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
@@ -1153,7 +1160,7 @@ def discord_skill_commands_by_category(
 
     try:
         from agent.skill_commands import get_skill_commands
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
         from tools.skills_tool import SKILLS_DIR
 
         _skills_dir = SKILLS_DIR.resolve()
@@ -1166,6 +1173,14 @@ def discord_skill_commands_by_category(
             for ext in get_external_skills_dirs():
                 try:
                     _scan_roots.append(_P(ext).resolve())
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        try:
+            for proj in get_project_skills_dirs():
+                try:
+                    _scan_roots.append(_P(proj).resolve())
                 except Exception:
                     continue
         except Exception:

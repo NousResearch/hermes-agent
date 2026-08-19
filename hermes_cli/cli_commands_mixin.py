@@ -53,7 +53,10 @@ class CLICommandsMixin:
 
         Syntax:
             /rollback                 — list checkpoints
-            /rollback <N>             — restore checkpoint N (also undoes last chat turn)
+            /rollback <N>             — restore checkpoint N, preserving user
+                                        hand-edits (also undoes last chat turn)
+            /rollback <N> --all       — classic full restore (may overwrite
+                                        files you edited after Hermes did)
             /rollback diff <N>        — preview changes since checkpoint N
             /rollback <N> <file>      — restore a single file from checkpoint N
         """
@@ -73,6 +76,16 @@ class CLICommandsMixin:
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         parts = command.split()
         args = parts[1:] if len(parts) > 1 else []
+
+        # --all / --force: classic full restore, overwriting user edits too.
+        restore_all = False
+        filtered = []
+        for a in args:
+            if a.lower() in ("--all", "--force"):
+                restore_all = True
+            else:
+                filtered.append(a)
+        args = filtered
 
         if not args:
             # List checkpoints
@@ -126,12 +139,21 @@ class CLICommandsMixin:
         # Check for file-level restore: /rollback <N> <file>
         file_path = args[1] if len(args) > 1 else None
 
-        result = mgr.restore(cwd, target_hash, file_path=file_path)
+        result = mgr.restore(
+            cwd, target_hash, file_path=file_path,
+            safe=not restore_all and not file_path,
+        )
         if result["success"]:
             if file_path:
                 print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
             else:
                 print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+            skipped = result.get("skipped_user_edits") or []
+            if skipped:
+                shown = ", ".join(skipped[:5])
+                more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+                print(f"  ↷ Kept your hand-edits: {shown}{more}")
+                print("  Use /rollback <N> --all to restore those too.")
             print("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context
@@ -928,6 +950,14 @@ class CLICommandsMixin:
                 _cprint(f"  ↻ Handoff complete. The session is now active on {platform_name}.")
                 _cprint(f"  Resume it on this CLI later with: /resume {session_title}")
                 _cprint("")
+                # Mark this session as handed off so _run_cleanup does NOT
+                # finalize it on CLI exit.  The gateway reopened the session
+                # row and now owns its lifecycle; a CLI cleanup finalize would
+                # set end_reason on the row the gateway is actively writing
+                # to, causing the handoff leg to vanish from session history
+                # and session_search (#88234).
+                from cli import _handed_off_session_ids
+                _handed_off_session_ids.add(self.session_id)
                 # End the CLI cleanly — same exit semantics as /quit.
                 self._should_exit = True
                 return False
@@ -1176,6 +1206,98 @@ class CLICommandsMixin:
 
         # /sessions <id_or_title> behaves the same as /resume <id_or_title>.
         self._handle_resume_command(f"/resume {arg}")
+
+    def _handle_worktree_command(self, cmd_original: str) -> None:
+        """Handle /worktree — inspect or create isolated git worktrees.
+
+        Syntax:
+            /worktree              — show the active worktree (if any)
+            /worktree new [name]   — create a worktree and move this session into it
+            /worktree list         — list worktrees under the repo's .worktrees/
+
+        Inspired by Copilot CLI's ``/worktree new``: start isolated work in a
+        fresh worktree without leaving the session. Creating one retargets the
+        terminal/file tools (``TERMINAL_CWD`` + process cwd) at the new tree;
+        the launcher's exit cleanup applies (kept only when it has unpushed
+        commits, same as ``hermes -w``).
+        """
+        import subprocess
+
+        import cli as _cli
+
+        parts = cmd_original.split(None, 2)
+        sub = parts[1].lower() if len(parts) > 1 else ""
+
+        repo_root = _cli._git_repo_root()
+
+        if not sub or sub in {"status", "show"}:
+            active = _cli._active_worktree
+            if active:
+                print(f"  Active worktree: {active['path']}")
+                print(f"  Branch: {active['branch']}")
+            else:
+                print("  No active worktree for this session.")
+            if repo_root:
+                print("  /worktree new [name] — create one and move this session into it")
+            else:
+                print("  (not inside a git repository)")
+            return
+
+        if sub in {"list", "ls"}:
+            if not repo_root:
+                print("  Not inside a git repository.")
+                return
+            try:
+                result = subprocess.run(
+                    ["git", "worktree", "list"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=10, cwd=repo_root,
+                )
+                out = result.stdout.strip() if result.returncode == 0 else ""
+            except Exception:
+                out = ""
+            if out:
+                for line in out.splitlines():
+                    print(f"  {line}")
+            else:
+                print("  Could not list worktrees.")
+            return
+
+        if sub in {"new", "add", "create"}:
+            if not repo_root:
+                print("  ❌ /worktree new requires being inside a git repository.")
+                return
+            name = parts[2].strip() if len(parts) > 2 else None
+            from hermes_cli.config import load_config
+            try:
+                sync_base = bool(load_config().get("worktree_sync", True))
+            except Exception:
+                sync_base = True
+            wt_info = _cli._setup_worktree(
+                repo_root=repo_root, sync_base=sync_base, name=name,
+            )
+            if not wt_info:
+                return  # _setup_worktree already printed the failure
+            # Retarget the session's terminal/file tools at the new tree, the
+            # same way `hermes -w` and session-resume cwd restore do.
+            try:
+                os.chdir(wt_info["path"])
+            except OSError as e:
+                print(f"  ⚠ Created worktree but could not enter it: {e}")
+            os.environ["TERMINAL_CWD"] = wt_info["path"]
+            # Register for the same keep-if-unpushed cleanup as `hermes -w`.
+            # Only one worktree is tracked as "active" per process; an earlier
+            # one keeps its own atexit registration (explicit info arg).
+            import atexit
+            _cli._active_worktree = wt_info
+            atexit.register(_cli._cleanup_worktree, wt_info)
+            print(f"  ✅ Worktree ready: {wt_info['path']}")
+            print(f"  Branch: {wt_info['branch']}")
+            print("  Terminal and file tools now operate in the worktree.")
+            return
+
+        print(f"  Unknown /worktree subcommand: {sub}")
+        print("  Usage: /worktree [new [name] | list]")
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
@@ -2639,10 +2761,24 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No goal to resume.{_RST}")
             else:
                 _cprint(f"  ▶ Goal resumed: {state.goal}")
-                _cprint(
-                    f"  {_DIM}Send any message (or press Enter on an empty prompt "
-                    f"is a no-op; type 'continue' to kick it off).{_RST}"
-                )
+                # Resume must restart work, not just flip persisted state
+                # (#75362): queue the canonical continuation prompt the same
+                # way /goal <text> queues its kickoff, so the loop takes the
+                # next step without the user sending another message.
+                prompt = mgr.next_continuation_prompt()
+                queued = False
+                if prompt:
+                    try:
+                        self._pending_input.put(prompt)
+                        queued = True
+                    except Exception:
+                        pass
+                if queued:
+                    _cprint(f"  {_DIM}Continuing now — taking the next step.{_RST}")
+                else:
+                    _cprint(
+                        f"  {_DIM}Send any message to kick off the next step.{_RST}"
+                    )
             return
 
         if lower in {"clear", "stop", "done"}:

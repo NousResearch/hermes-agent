@@ -46,6 +46,9 @@ export const ar = defineLocale({
     revealInSidebar: 'إظهار في شجرة الملفات',
     copyPath: 'نسخ المسار',
     copyRelativePath: 'نسخ المسار النسبي',
+    download: 'تنزيل',
+    downloadSaved: 'تم الحفظ',
+    downloadFailed: 'فشل التنزيل',
     rename: 'إعادة تسمية...',
     delete: 'حذف',
     renameTitle: 'إعادة تسمية',
@@ -61,6 +64,7 @@ export const ar = defineLocale({
       connectingGateway: 'جار الاتصال ببوابة سطح المكتب',
       loadingSettings: 'جار تحميل إعدادات Hermes',
       loadingSessions: 'جار تحميل الجلسات الأخيرة',
+      retryingRemoteBackend: 'جارٍ إعادة الاتصال بخادم Hermes البعيد…',
       startingDesktopConnection: 'جار بدء اتصال سطح المكتب',
       startingHermesDesktop: 'جار تشغيل Hermes Desktop...'
     },
@@ -115,6 +119,14 @@ export const ar = defineLocale({
     updateReadyMessage: count => `${count} تغيير جديد متاح.`,
     updateReadyMessageUnknown: 'يتوفر تحديث جديد.',
     seeWhatsNew: 'عرض الجديد',
+    mcp: {
+      needsAuthTitle: 'خادم MCP يحتاج إلى إعادة المصادقة',
+      needsAuthMessage: name => `يحتاج ${name} MCP إلى إعادة المصادقة.`,
+      errorTitle: 'تعذر الوصول إلى خادم MCP',
+      errorMessage: name => `فشل فحص سلامة ${name} MCP.`,
+      signIn: 'تسجيل الدخول',
+      view: 'عرض'
+    },
     errors: {
       elevenLabsNeedsKey: 'يتطلب ElevenLabs STT المفتاح ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'رفض ElevenLabs مفتاح API (401).',
@@ -231,6 +243,7 @@ export const ar = defineLocale({
       'view.toggleRightSidebar': 'تبديل متصفح الملفات',
       'view.toggleReview': 'تبديل لوحة المراجعة',
       'view.showFiles': 'إظهار متصفح الملفات',
+      'view.showBrowser': 'فتح المتصفح',
       'view.showTerminal': 'إظهار الطرفية',
       'view.closeTab': 'إغلاق علامة التبويب',
       'view.reopenTab': 'إعادة فتح علامة التبويب المغلقة',
@@ -400,7 +413,24 @@ export const ar = defineLocale({
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',
       reasoningCollapsedDesc: 'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.',
       translucencyTitle: 'شفافية النافذة',
-      translucencyDesc: 'إظهار سطح المكتب من خلال النافذة بالكامل. متاح على macOS وWindows فقط.',
+      translucencyDesc: 'إظهار سطح المكتب من خلال النافذة بالكامل، بما في ذلك النص.',
+      translucencyGlassDesc: 'زجاج غير لامع: يظهر سطح المكتب كضبابية ناعمة بينما يبقى النص واضحًا.',
+      translucencyModeClear: 'شفاف',
+      translucencyModeGlass: 'زجاج',
+      translucencyTintTitle: 'التلوين',
+      translucencyFadeTitle: 'التلاشي',
+      translucencyFrostTitle: 'نوع الضبابية',
+      translucencyFrost: {
+        'under-window': 'عميق',
+        popover: 'ناعم',
+        titlebar: 'ساطع',
+        header: 'متوهج'
+      },
+      translucencyScopeTitle: 'النطاق',
+      translucencyScope: {
+        window: 'النافذة كاملة',
+        sidebar: 'الشريط الجانبي فقط'
+      },
       backdropTitle: 'خلفية النافذة',
       backdropDesc: 'اختيار مقدار مزج خلفية سطح المكتب مع سطح Hermes.',
       reactionsTitle: 'تفاعلات الرسائل',
@@ -595,6 +625,10 @@ export const ar = defineLocale({
       heading: 'حول Hermes',
       version: value => `الإصدار ${value}`,
       versionUnavailable: 'الإصدار غير متاح',
+      bundleOutOfSync: 'إصدار التطبيق قديم',
+      bundleOutOfSyncDesc:
+        'تم تحديث وقت تشغيل Hermes، لكن تطبيق سطح المكتب نفسه لا يزال إصدارًا قديمًا — لن تظهر ميزات الواجهة الجديدة (مثل Bot Mode) حتى يتم تحديث التطبيق. شغّل التحديث أدناه لإعادة بناء التطبيق. إذا لم يختفِ هذا التحذير، فأعد التثبيت من أحدث مثبّت لسطح المكتب.',
+      bundleOutOfSyncAction: 'الحصول على المثبّت',
       updates: 'التحديثات',
       checkNow: 'التحقق الآن',
       checking: 'جار التحقق...',
@@ -670,18 +704,11 @@ export const ar = defineLocale({
       title: 'اتصال البوابة',
       envOverride: 'تجاوز من البيئة',
       intro:
-        'يشغّل Hermes Desktop بوابة محلية خاصة افتراضياً. استخدم بوابة بعيدة عندما تريد أن يتحكم هذا التطبيق بخلفية Hermes تعمل مسبقاً على جهاز آخر أو خلف وكيل موثوق.',
-      appliesTo: 'ينطبق على',
-      allProfiles: 'كل الملفات الشخصية',
-      defaultConnection: 'الاتصال الافتراضي لكل ملف شخصي لا يملك تجاوزاً خاصاً.',
-      profileConnection: profile =>
-        `الاتصال المستخدم فقط عندما يكون "${profile}" هو الملف الشخصي النشط. اختر "استخدام البوابة الافتراضية" لإزالة التجاوز الخاص به.`,
+        'يشغّل Hermes Desktop بوابة محلية خاصة افتراضياً. استخدم بوابة بعيدة عندما تريد أن يتحكم هذا التطبيق بخلفية Hermes تعمل مسبقاً على جهاز آخر أو خلف وكيل موثوق. اتصالات البوابة إعداد على مستوى الجهاز؛ ويتم اكتشاف الملفات الشخصية من البوابات المتصلة.',
       envOverrideTitle: 'متغيرات البيئة تتحكم في جلسة سطح المكتب هذه.',
       envOverrideDesc: 'أزل HERMES_DESKTOP_REMOTE_URL و HERMES_DESKTOP_REMOTE_TOKEN لاستخدام الإعداد المحفوظ أدناه.',
       localTitle: 'بوابة محلية',
       localDesc: 'تشغيل خلفية Hermes خاصة على localhost. هذا هو الافتراضي ويعمل دون اتصال.',
-      inheritTitle: 'استخدام البوابة الافتراضية',
-      inheritDesc: 'إزالة التجاوز الخاص بهذا الملف الشخصي واستخدام الاتصال الافتراضي.',
       remoteTitle: 'بوابة بعيدة',
       remoteDesc:
         'صل واجهة سطح المكتب هذه بخلفية Hermes بعيدة. البوابات المستضافة تستخدم OAuth أو اسم مستخدم وكلمة مرور، والبوابات الذاتية قد تستخدم رمز جلسة.',
@@ -735,6 +762,10 @@ export const ar = defineLocale({
       failedLoad: 'فشل تحميل مفاتيح API',
       empty: 'لا يوجد شيء مضبوط في هذه الفئة بعد.'
     },
+    profileScope: {
+      appliesTo: 'ينطبق على',
+      editsProfile: profile => `تنطبق التغييرات في هذه الصفحة على الملف الشخصي «${profile}».`
+    },
     mcp: {
       loading: 'جار تحميل خوادم MCP...',
       failedLoad: 'فشل تحميل إعدادات MCP',
@@ -761,7 +792,21 @@ export const ar = defineLocale({
       name: 'الاسم',
       serverJson: 'JSON الخادم',
       remove: 'إزالة',
-      saveServer: 'حفظ الخادم'
+      saveServer: 'حفظ الخادم',
+      deepLinkTitle: 'إضافة خادم MCP؟',
+      deepLinkDescription:
+        'طلب رابط إضافة خادم MCP هذا إلى Hermes. راجع الإعدادات الكاملة أدناه — فهي قادمة من الرابط وليست من Hermes.',
+      deepLinkStdioWarning:
+        'سيشغّل هذا الخادم عملية محلية على جهازك بالأمر الموضح أدناه. لا تتابع إلا إذا كنت تثق بمصدره.',
+      deepLinkConfirm: 'إضافة الخادم',
+      deepLinkNameInvalid: 'الأسماء من 1-64 حرفا أو رقما أو نقطة أو شرطة أو شرطة سفلية.',
+      deepLinkNameConflict: name => `يوجد خادم باسم ${name} بالفعل — اختر اسما مختلفا أو ألغِ العملية.`,
+      deepLinkErrorTitle: 'رُفض رابط تثبيت MCP',
+      deepLinkErrorName: 'اسم الخادم في الرابط مفقود أو غير صالح.',
+      deepLinkErrorConfig: 'إعدادات الرابط ليست JSON صالحا مرمّزا بـ base64.',
+      deepLinkErrorShape: 'يجب أن تكون الإعدادات كائن JSON يحتوي على حقل `url` أو `command` نصي.',
+      deepLinkErrorUrl: 'يسمح فقط بعناوين http:// و https:// للخادم.',
+      deepLinkErrorTooLarge: 'حجم الإعدادات يتجاوز الحد الأقصى 32KB.'
     },
     model: {
       loading: 'جار تحميل إعدادات النموذج...',
@@ -1092,8 +1137,10 @@ export const ar = defineLocale({
     gatewayStopped: 'البوابة متوقفة',
     hermesActiveSessions: (version, count) => `Hermes ${version} لديه ${count} جلسة نشطة`,
     restartGateway: 'إعادة تشغيل البوابة',
+    openBrowser: 'فتح المتصفح',
     gatewayRestartFailed: 'فشل إعادة تشغيل البوابة.',
     updateHermes: 'تحديث Hermes',
+    reloadWindow: 'إعادة تحميل النافذة',
     actionRunning: 'الإجراء قيد التشغيل',
     actionDone: 'اكتمل الإجراء',
     actionFailed: 'فشل الإجراء',
@@ -1309,6 +1356,8 @@ export const ar = defineLocale({
     allProfiles: 'كل الملفات الشخصية',
     showAllProfiles: 'إظهار كل الملفات الشخصية',
     switchToProfile: name => `التبديل إلى ${name}`,
+    switchToConnection: name => `التبديل إلى ${name}`,
+    switchConnectionFailed: name => `تعذّر الاتصال بـ ${name}`,
     manageProfiles: 'إدارة الملفات الشخصية',
     actions: 'إجراءات',
     color: 'اللون',
@@ -1611,6 +1660,8 @@ export const ar = defineLocale({
       newWorktreeDesc: 'سمِّ الفرع لشجرة العمل هذه.',
       branchPlaceholder: 'مثال: my-feature',
       startWorkFailed: 'تعذّر إنشاء شجرة العمل',
+      worktreeStaleBackend:
+        'حدِّث خادم Hermes لإنشاء أشجار العمل عبر هذا الاتصال البعيد — فهو أقدم من واجهة git worktree.',
       worktreeProjectLabel: 'المشروع',
       worktreeProjectPlaceholder: 'ابحث في المشاريع…',
       worktreeProjectNone: 'لا توجد مشاريع بمجلد',
@@ -1845,6 +1896,7 @@ export const ar = defineLocale({
       openPr: 'فتح PR',
       ghMissing: 'ثبّت GitHub CLI (gh) وسجّل الدخول لفتح طلبات السحب',
       agentShip: 'اطلب من Hermes فتح PR',
+      agentShipUnavailable: 'المحادثة التي تملك هذه التغييرات ليست على الشاشة.',
       agentShipPrompt: 'راجع التغييرات الحالية، وأودعها برسالة إيداع تقليدية واضحة، وادفع الفرع، وافتح طلب سحب.',
       newBranch: 'فرع جديد',
       branchOffFrom: base => `فرع جديد من ${base}`,
@@ -1901,6 +1953,19 @@ export const ar = defineLocale({
     applyingClose: 'ستُغلق هذه النافذة أثناء تشغيل التحديث، ثم يعيد Hermes فتح نفسه تلقائيا.',
     errorTitle: 'لم يكتمل التحديث',
     errorBody: 'لا داعي للقلق — لم يُفقد شيء. يمكنك إعادة المحاولة الآن.',
+    blockerTitle: 'إغلاق المعاينات المحلية لتحديث Hermes؟',
+    blockerBody: 'يحتاج Hermes إلى إيقاف هذه المعاينات المحلية قبل التحديث. لن يؤدي ذلك إلى تعديل ملفاتك أو حذفها.',
+    foreignBlockerTitle: 'أغلق العمليات الأخرى لتحديث Hermes',
+    foreignBlockerBody:
+      'لا يمكن لـ Hermes إغلاق هذه العمليات تلقائيًا بأمان. أغلق التطبيق أو الطرفية أو الخدمة التي تشغّل كل عملية، ثم حاول التحديث مرة أخرى.',
+    mixedBlockerBody:
+      'يمكن لـ Hermes إغلاق المعاينات المحلية المدرجة أدناه. يجب إغلاق العمليات الأخرى يدويًا قبل متابعة التحديث.',
+    closePreviewsAndUpdate: 'إغلاق المعاينات والتحديث',
+    closePreviewsAndCheckAgain: 'إغلاق المعاينات والتحقق مجددًا',
+    localPreview: 'معاينة محلية',
+    portLabel: port => `المنفذ ${port}`,
+    pidLabel: pid => `معرّف العملية ${pid}`,
+    technicalDetails: 'التفاصيل التقنية',
     notNow: 'ليس الآن',
     applyStatus: {
       preparing: 'جار تحديث الواجهة الخلفية...',
@@ -2086,6 +2151,7 @@ export const ar = defineLocale({
       inferenceNotReady: 'الاستدلال غير جاهز',
       checkingInference: 'جار فحص الاستدلال',
       disconnected: 'منقطع',
+      reconnectGateway: 'إعادة الاتصال بالبوابة',
       openSystem: 'فتح النظام',
       connection: label => `الاتصال: ${label}`,
       recentActivity: 'النشاط الأخير',
@@ -2224,6 +2290,8 @@ export const ar = defineLocale({
     web: {
       appFailedToBoot: 'فشل إقلاع تطبيق المعاينة',
       serverNotFound: 'الخادم غير موجود',
+      remoteLoopback:
+        'يشير هذا العنوان إلى الجهاز الذي يشغّل الوكيل، وليس هذا الجهاز. تحمّل لوحة المتصفح الصفحات محليًا، لذا يحتاج خادم التطوير البعيد إلى إعادة توجيه منفذ أو اسم مضيف يمكن الوصول إليه.',
       failedToLoad: 'فشل تحميل المعاينة',
       tryAgain: 'إعادة المحاولة',
       restarting: 'جار إعادة تشغيل Hermes...',
@@ -2237,6 +2305,12 @@ export const ar = defineLocale({
       showConsole: 'إظهار كونسول المعاينة',
       hideDevTools: 'إخفاء DevTools المعاينة',
       openDevTools: 'فتح DevTools المعاينة',
+      goBack: 'رجوع',
+      goForward: 'تقدم',
+      reload: 'إعادة تحميل الصفحة',
+      address: 'العنوان',
+      addressPlaceholder: 'أدخل العنوان',
+      blankPageBody: 'اكتب عنوانًا في الأعلى للتصفح، أو اطلب من Hermes فتح صفحة.',
       finishedRestarting: message => `أنهى Hermes إعادة تشغيل خادم المعاينة${message ? `: ${message}` : ''}`,
       failedRestarting: message => `فشلت إعادة تشغيل الخادم: ${message}`,
       unknownError: 'خطأ غير معروف',
@@ -2261,6 +2335,12 @@ export const ar = defineLocale({
   zones: {
     showHeader: 'إظهار الرأس',
     hideHeader: 'إخفاء الرأس',
+    showStripTab: title => `إظهار ${title}`,
+    hideStripTab: title => `إخفاء ${title}`,
+    lastTabKeptTitle: 'يبقى آخر تبويب',
+    lastTabKeptBody:
+      'تحتاج هذه المنطقة إلى تبويب مرئي واحد على الأقل. أظهر تبويبا آخر أولا، أو اطو الشريط الجانبي بأكمله.',
+    toggleStripTab: title => `تبديل تبويب ${title}`,
     minimize: 'تصغير',
     restore: 'استعادة',
     closeRunningTitle: 'إغلاق تبويب يعمل؟',
@@ -2298,6 +2378,29 @@ export const ar = defineLocale({
     notExpressible: 'هذا الترتيب متشابك — لا يمكن تمثيله كتقسيمات متداخلة بعد',
     zoneCount: count => `${count} مناطق`,
     tabCount: count => `${count} تبويبات`
+  },
+  contextMenu: {
+    link: {
+      openInApp: 'فتح في متصفح التطبيق',
+      openExternal: 'فتح في المتصفح الخارجي',
+      copyUrl: 'نسخ الرابط',
+      copyResolvedUrl: 'نسخ الرابط المُحلَّل'
+    },
+    image: {
+      copyImage: 'نسخ الصورة',
+      copyImageAddress: 'نسخ عنوان الصورة',
+      saveImageAs: 'حفظ الصورة باسم…'
+    },
+    edit: {
+      cut: 'قص',
+      paste: 'لصق',
+      selectAll: 'تحديد الكل',
+      addToDictionary: 'إضافة إلى القاموس'
+    },
+    page: {
+      copyPageUrl: 'نسخ رابط الصفحة',
+      inspectElement: 'فحص العنصر'
+    }
   },
   assistant: {
     thread: {
@@ -2361,7 +2464,10 @@ export const ar = defineLocale({
       other: 'غير ذلك',
       placeholder: 'اكتب إجابتك...',
       skip: 'تخطي',
-      continueLabel: 'متابعة'
+      continueLabel: 'متابعة',
+      confirmAndContinueLabel: 'تأكيد ومتابعة',
+      answeredBadge: 'تمت الإجابة',
+      questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
     },
     tool: {
       copyCode: 'نسخ الكود',
@@ -2564,6 +2670,7 @@ export const ar = defineLocale({
     stopFailed: 'فشل الإيقاف',
     regenerateFailed: 'فشلت إعادة التوليد',
     editFailed: 'فشل التحرير',
+    editTurnUnavailable: 'هذه الجولة لم تعد في سجل الخادم (ربما أزيلت بالضغط).',
     resumeFailed: 'فشل الاستئناف',
     resumeStrandedTitle: 'تعذّر تحميل هذه الجلسة',
     resumeStrandedBody:

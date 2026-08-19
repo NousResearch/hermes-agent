@@ -13,19 +13,25 @@ import {
   getGlobalModelOptions,
   getHermesConfig,
   getHermesConfigDefaults,
+  getLatestSessionMessages,
+  getOlderSessionMessages,
   getProfiles,
   getSessionMessages,
   getStatus,
+  LATEST_SESSION_MESSAGES_LIMIT,
   listAllProfileSessions,
   listSessions,
   listSidebarSessions,
+  pluginSocket,
   resetSidebarBatchCapability,
+  setApiRequestConnection,
   setApiRequestProfile,
   speakText,
   transcribeAudio,
   triggerCronJob
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
+import { $transcriptTailBySessionId, transcriptTailState } from './store/transcript-tail'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -47,6 +53,7 @@ describe('Hermes REST helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestConnection(null)
     setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
@@ -94,6 +101,40 @@ describe('Hermes REST helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('routes session, profile, and model reads through the active registry source', async () => {
+    api.mockImplementation(async ({ path }: { path: string }) =>
+      path.startsWith('/api/profiles/sessions/sidebar')
+        ? { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } }
+        : emptySessionsResponse
+    )
+    setApiRequestConnection('personal')
+
+    await listSessions()
+    await listAllProfileSessions()
+    await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 20,
+      messagingExclude: []
+    })
+    await getProfiles()
+    await getGlobalModelInfo()
+
+    for (const call of api.mock.calls) {
+      expect(call[0]).toEqual(expect.objectContaining({ connectionId: 'personal' }))
+    }
+  })
+
+  it('keeps an explicit This device source on REST requests', async () => {
+    setApiRequestConnection('local')
+
+    await getProfiles()
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'local', path: '/api/profiles' }))
   })
 
   it('defaults missing sidebar slices to empty session arrays', async () => {
@@ -152,7 +193,7 @@ describe('Hermes REST helpers', () => {
     })
 
     // Slices reassembled from the legacy per-slice route with the same
-    // scoping: recents on the caller's profile, cron + messaging cross-profile.
+    // scoping: every section follows the caller's profile.
     expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
     // One row back against a 30-row window: the profile is fully loaded, so
     // the legacy path must not claim there's another page.
@@ -163,7 +204,10 @@ describe('Hermes REST helpers', () => {
     const paths = api.mock.calls.map(call => (call[0] as { path: string }).path)
     expect(paths.filter(p => p.startsWith('/api/profiles/sessions/sidebar'))).toHaveLength(1)
     expect(paths.filter(p => p.startsWith('/api/profiles/sessions?'))).toHaveLength(3)
-    expect(paths).toContainEqual(expect.stringContaining('profile=work'))
+    expect(
+      paths.filter(path => path.startsWith('/api/profiles/sessions?') && path.includes('profile=work'))
+    ).toHaveLength(3)
+    expect(paths.some(path => path.includes('profile=all'))).toBe(false)
     expect(paths).toContainEqual(expect.stringContaining('source=cron'))
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
   })
@@ -350,6 +394,47 @@ describe('Hermes REST helpers', () => {
     })
   })
 
+  it('hydrates the latest transcript with a small tail page (120, latest, compacted rows included)', async () => {
+    api.mockResolvedValue({
+      messages: [],
+      pagination: { limit: 120, offset: 0, order: 'latest', returned: 0 },
+      session_id: 'session-1'
+    })
+
+    await getLatestSessionMessages('session-1', 'xiaoxuxu')
+
+    expect(LATEST_SESSION_MESSAGES_LIMIT).toBe(120)
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&order=latest&include_compacted=true',
+      profile: 'xiaoxuxu'
+    })
+  })
+
+  it('records tail truncation state under the requested and resolved session ids', async () => {
+    $transcriptTailBySessionId.set({})
+    api.mockResolvedValue({
+      messages: Array.from({ length: 120 }, (_, index) => ({ content: `m${index}`, id: index, role: 'user' })),
+      pagination: { limit: 120, offset: 0, order: 'latest', returned: 120 },
+      session_id: 'resolved-1'
+    })
+
+    await getLatestSessionMessages('prefix-1')
+
+    expect(transcriptTailState('prefix-1')).toMatchObject({ nextOffset: 120, possiblyTruncated: true })
+    expect(transcriptTailState('resolved-1')).toMatchObject({ nextOffset: 120, possiblyTruncated: true })
+  })
+
+  it('requests older pages backwards from the newest message', async () => {
+    api.mockResolvedValue({ messages: [], session_id: 'session-1' })
+
+    await getOlderSessionMessages('session-1', 'xiaoxuxu', 240)
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&offset=240&order=latest&include_compacted=true',
+      profile: 'xiaoxuxu'
+    })
+  })
+
   it('passes bounded transcript pagination through to the backend', async () => {
     api.mockResolvedValue({ messages: [], session_id: 'session-1' })
 
@@ -479,5 +564,43 @@ describe('Hermes REST helpers', () => {
         path: '/api/model/options?refresh=1&include_unconfigured=1'
       })
     )
+  })
+})
+
+describe('pluginSocket', () => {
+  let getConnection: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    getConnection = vi.fn().mockResolvedValue(null)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api: vi.fn(), getConnection }
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    setApiRequestProfile(null)
+  })
+
+  it('scopes the connection to the active profile, like pluginRest', async () => {
+    setApiRequestProfile('work')
+
+    const dispose = pluginSocket('kanban', '/events', () => {})
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
+    expect(getConnection).toHaveBeenCalledWith('work')
+
+    dispose()
+  })
+
+  it('passes null when no profile is scoped (single-profile / primary)', async () => {
+    const dispose = pluginSocket('kanban', '/events', () => {})
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
+    expect(getConnection).toHaveBeenCalledWith(null)
+
+    dispose()
   })
 })

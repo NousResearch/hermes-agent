@@ -16,6 +16,7 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
+import { registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
@@ -33,6 +34,7 @@ import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
   $lastReadAtBySessionId,
@@ -53,6 +55,45 @@ import { isSecondaryWindow } from './windows'
 // ---------------------------------------------------------------------------
 
 export const $sessionStates = atom<Record<string, ClientSessionState>>({})
+
+// ---------------------------------------------------------------------------
+// Event-source scopes: which registry connection's socket delivered a runtime
+// session's events. Working/attention membership alone is profile-blind — two
+// connected gateways can both expose a 'default' profile, so the gateway
+// keep-set (pruneSecondaryGateways) must key live work by the composite
+// (connectionId, profile) scope, not the bare profile name. Recorded at
+// event fan-in (use-gateway-boot); local/primary events carry no connectionId
+// and record nothing, so single-source behavior is untouched.
+// ---------------------------------------------------------------------------
+
+const sessionScopeByRuntimeId = new Map<string, string>()
+
+export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
+  if (event.session_id && event.connectionId) {
+    sessionScopeByRuntimeId.set(event.session_id, registryBackendScopeKey(event.connectionId, event.profile))
+  }
+}
+
+/** Composite scopes of registry-sourced sessions that are live (busy or
+ * waiting on input) — the (connectionId, profile) half of the gateway
+ * keep-set. Local-source live work keeps flowing through profile names. */
+export function liveSessionScopes(): Set<string> {
+  const scopes = new Set<string>()
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    if (!state || (!state.busy && !state.needsInput)) {
+      continue
+    }
+
+    const scope = sessionScopeByRuntimeId.get(runtimeId)
+
+    if (scope) {
+      scopes.add(scope)
+    }
+  }
+
+  return scopes
+}
 
 // Stored session ids whose authoritative state is still busy, but whose
 // runtime has produced no state publish for the watchdog window. Silence is
@@ -300,6 +341,8 @@ export function dropSessionState(runtimeId: string) {
   // a just-finished session's row survives merge eviction even if its tile or
   // cached runtime is dropped in the meantime.
   clearWatchdog(runtimeId)
+  clearSessionProviderWait(runtimeId)
+  sessionScopeByRuntimeId.delete(runtimeId)
 
   const current = $sessionStates.get()
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
@@ -324,6 +367,8 @@ export function clearAllSessionStates() {
 
   sessionWatchdogTimers.clear()
   settledExpiry.clear()
+  clearAllProviderWaits()
+  sessionScopeByRuntimeId.clear()
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }
@@ -566,12 +611,36 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
 }
 
 /** Drop live runtime bindings so every tile re-resumes — used on gateway
- *  reconnect, where a respawned backend re-mints (recycles) runtime ids. */
+ *  reconnect, where a respawned backend re-mints (recycles) runtime ids.
+ *  Also invalidates the wiring cache's stored→runtime map: clearing only the
+ *  tile atoms left `resumeTile`'s warm path free to re-bind the same dead
+ *  runtime id from the cache, so post-wake tiles repainted empty and never
+ *  actually re-resumed. */
 export function resetTileRuntimeBindings() {
+  sessionTileDelegate()?.invalidateRuntimeBindings?.()
+
   const tiles = $sessionTiles.get()
 
   if (tiles.some(t => t.runtimeId)) {
     $sessionTiles.set(tiles.map(toStored))
+  }
+}
+
+/** Unbind ONE reclaimed runtime from whichever tile holds it — the targeted
+ *  sibling of resetTileRuntimeBindings. The reconnect-time reset can't cover a
+ *  backend reclaim: the WS re-dials immediately, but the orphan reaper fires a
+ *  grace window LATER, so the reclaim lands after every reconnect-path unbind
+ *  already ran. Without this, the tile keeps pointing at the dead runtime whose
+ *  state `session.reclaimed` just dropped — an empty transcript under live
+ *  chrome — and SessionTilePane's resume effect (gated on `!runtimeId`) never
+ *  re-resumes. Clearing the binding re-arms that effect, which rebinds a fresh
+ *  runtime from the stored row. The pane itself stays: the stored session is
+ *  intact, only its live runtime was reclaimed. */
+export function unbindTileRuntime(runtimeId: string) {
+  const tiles = $sessionTiles.get()
+
+  if (tiles.some(t => t.runtimeId === runtimeId)) {
+    $sessionTiles.set(tiles.map(t => (t.runtimeId === runtimeId ? { ...t, runtimeId: undefined } : t)))
   }
 }
 
@@ -593,6 +662,12 @@ export interface SessionTileDelegate {
   executeSlash(rawCommand: string, sessionId: string): Promise<void>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
+  /** Drop the wiring cache's stored→runtime bindings. Called on gateway
+   *  reconnect: a respawned backend re-mints runtime ids, so every binding
+   *  recorded before the reconnect is suspect — without this, `resumeTile`'s
+   *  warm path re-binds tiles to dead runtime ids (the sleep/wake "empty
+   *  right pane" bug). Bindings re-record from live post-reconnect events. */
+  invalidateRuntimeBindings?(): void
   /** Bind a live runtime id for a stored session (resume without touching
    *  the main view). Returns the runtime id, or throws. */
   resumeTile(storedSessionId: string): Promise<string>
@@ -740,6 +815,17 @@ export function nextSessionTileForWorkspace(): null | string {
       if (tiles.some(t => t.storedSessionId === storedSessionId)) {
         return storedSessionId
       }
+    }
+  }
+
+  // Nothing stacked WITH main — but a session tile in another zone can still
+  // shift in. Without this, closing main in a side-by-side layout skipped
+  // promotion entirely and dropped to a fresh "New session" draft, which read
+  // as "closing a pane gave me a new session" (#88924). Promoting the tile
+  // also collapses its zone, so Close is how a multi-pane layout shrinks.
+  for (const tile of tiles) {
+    if (tree && findGroupOfPane(tree, `${TILE_PANE_PREFIX}${tile.storedSessionId}`)) {
+      return tile.storedSessionId
     }
   }
 

@@ -125,6 +125,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
+  // ⌘⇧L — "L" for location, the address-bar chord every browser shares. Plain
+  // ⌘L is the terminal's selection shortcut, hence the shift.
+  { id: 'view.showBrowser', category: 'view', defaults: ['mod+shift+l'] },
   // ⌘⇧H — "h" for HUD. Enters/leaves the chrome-free floating chat: the app
   // window steps aside and a composer + live reply float over whatever the
   // user is working in. Ships bound because the whole point is leaving the app

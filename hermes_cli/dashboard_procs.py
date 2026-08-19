@@ -76,21 +76,22 @@ def _scan_dashboard_processes(
             # here is errors="ignore": it prevents a reader-thread
             # UnicodeDecodeError from leaving result.stdout=None and turning
             # the later .split() into an AttributeError (#17049).
-            # CREATE_NO_WINDOW hides the conhost flash: this scan can run from
-            # the windowless pythonw.exe desktop/gateway backend during an
-            # update, where a bare wmic spawn would pop a console window.
-            from hermes_cli._subprocess_compat import windows_hide_flags
+            # bounded_probe_run (rather than subprocess.run with a timeout)
+            # keeps a slow scan from wedging the caller forever: run()'s
+            # post-timeout cleanup joins the pipe reader threads unbounded,
+            # and a conhost.exe descendant holding duplicated pipe handles
+            # blocks that join indefinitely (#87134). It also passes
+            # CREATE_NO_WINDOW: this scan can run from the windowless
+            # pythonw.exe desktop/gateway backend during an update, where a
+            # bare wmic spawn would pop a console window.
+            from hermes_cli._subprocess_compat import bounded_probe_run
 
-            result = subprocess.run(
+            result = bounded_probe_run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True,
-                text=True,
                 timeout=10,
-                encoding="utf-8",
                 errors="ignore",
-                creationflags=windows_hide_flags(),
             )
-            if result.returncode != 0 or result.stdout is None:
+            if result is None or result.returncode != 0 or result.stdout is None:
                 return []
             current_cmd = ""
             for line in result.stdout.split("\n"):
@@ -295,6 +296,7 @@ def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
     *,
     restart_managed: bool = False,
+    already_restarted_units: "set[str] | None" = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes.
 
@@ -318,6 +320,14 @@ def _kill_stale_dashboard_processes(
     e.g. a remote backend's ``hermes-serve.service``) has its owning unit
     restarted after the kill, because systemd treats our SIGTERM as a clean
     stop and ``Restart=on-failure`` would never fire (#68934).
+
+    *already_restarted_units* names units (no ``.service`` suffix) the
+    caller already restarted directly — e.g. ``hermes update``'s systemd
+    fleet-restart loop, which restarts ``hermes-serve*`` units before this
+    function runs. Without excluding them, a Serve-only install's freshly
+    restarted process is found again here and restarted a second time for
+    no benefit (review on #83595). PIDs owned by one of these units are
+    left untouched.
     """
     if restart_managed and _m()._restart_managed_dashboard_service(reason):
         return {"matched": [], "killed": [], "failed": []}
@@ -346,9 +356,6 @@ def _kill_stale_dashboard_processes(
     if not pids:
         return {"matched": [], "killed": [], "failed": []}
 
-    print()
-    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
-
     # Before killing, snapshot systemd cgroup info for each PID so we can
     # restart supervised services after the kill (the cgroup disappears
     # along with the process).  Only meaningful on Linux, and only when the
@@ -372,6 +379,22 @@ def _kill_stale_dashboard_processes(
                 if cmdline:
                     pid_cmdline[pid] = cmdline
                     pid_home[pid] = _hermes_home_for_pid(pid)
+
+        if already_restarted_units:
+            # Already handled directly by the caller (e.g. hermes update's
+            # systemd fleet-restart loop) — leave these alone instead of
+            # killing and re-restarting a process that's already fresh.
+            pids = [
+                pid
+                for pid in pids
+                if (pid_service.get(pid) or "").removesuffix(".service")
+                not in already_restarted_units
+            ]
+            if not pids:
+                return {"matched": [], "killed": [], "failed": []}
+
+    print()
+    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
 
     killed: list[int] = []
     failed: list[tuple[int, str]] = []

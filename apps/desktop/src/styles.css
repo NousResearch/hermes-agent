@@ -31,16 +31,8 @@
 /* Continuous decorative animations otherwise keep Chromium's renderer awake
    behind another app. main.tsx owns this attribute only for the primary
    window; wake/pet overlays retain their purpose-built visibility behavior. */
-:root[data-renderer-animations-paused] :is(
-    .shimmer,
-    .quest-glow,
-    .pet-egg,
-    .pet-egg__glow,
-    .pet-egg-shadow,
-    .pet-wobble,
-    .progress-slide,
-    .kanban-arc
-  ),
+:root[data-renderer-animations-paused]
+  :is(.shimmer, .quest-glow, .pet-egg, .pet-egg__glow, .pet-egg-shadow, .pet-wobble, .progress-slide, .kanban-arc),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused]
   [data-slot='aui_assistant-message-content']
@@ -556,6 +548,150 @@
        touch — still clearly a surface, no longer the brightest thing in the
        transcript. Derived from the card so every skin follows its own seed. */
     --ui-widget-surface-background: color-mix(in srgb, var(--ui-bg-editor) 88%, #000);
+  }
+
+  /* ── Window glass (Settings → Appearance → Window Translucency: Glass) ──
+     Set on <html> by store/translucency.ts; chat windows on a glass-capable
+     OS (macOS vibrancy, Windows 11 DWM acrylic/mica). The native material
+     composites BELOW the web contents; the page normally buries it under
+     fully opaque surfaces.
+
+     ONE PAINTER: <body> paints the glass tint exactly once, at
+     `--translucency-glass-keep` (set inline from the Tint slider, linear to
+     zero — the top of the lever is bare material), and the field tokens
+     (chat / sidebar / editor surface) go fully transparent. The field
+     surfaces NEST — body > pane container > chat section > transcript
+     wrapper all wear these tokens — so thinning the tokens themselves stacks
+     the tint once per layer and a session pane ends up near-opaque (~0.93 at
+     60%) while the landing page, with fewer layers, reads far clearer. With a
+     single painter the field alpha is the same number on every route. Raised
+     content (cards, popovers, bubbles, the composer) keeps its own opaque
+     fills over full-contrast text; regions still read distinct through their
+     borders and the material itself. Unlike Clear, nothing on the page fades
+     — the separate Fade lever does that natively, at the window level, and
+     defaults to off.
+
+     The boot script in index.html pins an opaque inline background on <html>
+     before first paint; it has to go transparent here or it sits behind the
+     translucent <body> and blocks the material. The terminal surface is
+     pinned back to the opaque chrome mix: xterm resolves its surface var to a
+     concrete color for its canvas (see right-sidebar/terminal/selection.ts),
+     which does not composite page alpha. */
+  :root[data-hermes-glass] {
+    background-color: transparent !important;
+    --ui-chat-surface-background: transparent;
+    --ui-sidebar-surface-background: transparent;
+    --ui-editor-surface-background: transparent;
+    --ui-terminal-surface-background: var(--ui-bg-chrome);
+  }
+
+  :root[data-hermes-glass] body {
+    background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
+  }
+
+  /* Sidebar scope (the Finder shape): glass rail, opaque content column.
+     <body> stays the one painter but splits at the rail's visual edge — the
+     store publishes it as --glass-rail-edge (live-tracked through collapse
+     animation and pane resizes). Left of the seam: the normal glass mix.
+     Right of it: the full opaque chrome. A hard gradient stop, so there is
+     no smear across the seam; RTL mirrors via html[dir='rtl']. The content
+     column's own surfaces stay transparent (they'd double-paint the tint
+     otherwise) — the body backdrop alone restores the opaque look. */
+  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'] body {
+    background: linear-gradient(
+      to right,
+      color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
+        var(--glass-rail-edge, 0px),
+      var(--ui-bg-chrome) var(--glass-rail-edge, 0px)
+    );
+  }
+
+  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'][dir='rtl'] body {
+    background: linear-gradient(
+      to left,
+      color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
+        var(--glass-rail-edge, 0px),
+      var(--ui-bg-chrome) var(--glass-rail-edge, 0px)
+    );
+  }
+
+  /* The app shell's two full-window opaque painters (the contrib controller
+     root and the SidebarProvider wrapper) sit between <body> and every
+     surface. Their fills are Tailwind utilities (bg-(--ui-bg-chrome) /
+     bg-background), which cascade-layer above these base rules — hence the
+     !important. Clearing them makes <body> the window's only field paint. */
+  :root[data-hermes-glass] [data-contrib-shell],
+  :root[data-hermes-glass] [data-slot='sidebar-wrapper'] {
+    background-color: transparent !important;
+  }
+
+  /* Surfaces that MASK sibling content must stay filled under glass — a
+     see-through mask reads as text bleeding through text, not as glass.
+     Anything that paints over its own siblings declares `data-glass-opaque`
+     at its call site (the diff gutter, a dragged sidebar row), rather than
+     styles.css reaching in by class name. */
+  :root[data-hermes-glass] [data-glass-opaque] {
+    --ui-chat-surface-background: var(--ui-bg-chrome);
+    --ui-editor-surface-background: var(--ui-bg-chrome);
+    --ui-sidebar-surface-background: var(--ui-bg-sidebar);
+  }
+
+  /* Content RAISED above the field (overlay cards, the inline edit box) runs
+     counter to it: near-opaque over a glass field, never thinner than the
+     field itself — max() covers low slider values where the field still keeps
+     more than 94%. The card wears the chat token and its internal nav asides
+     wear the sidebar token, so both come back as almost-solid fills and the
+     two-tone layout survives. */
+  :root[data-hermes-glass] [data-glass-raised] {
+    --ui-chat-surface-background: color-mix(
+      in srgb,
+      var(--ui-bg-chrome) max(94%, var(--translucency-glass-keep, 100%)),
+      transparent
+    );
+    --ui-sidebar-surface-background: color-mix(
+      in srgb,
+      var(--ui-bg-sidebar) max(94%, var(--translucency-glass-keep, 100%)),
+      transparent
+    );
+    --ui-editor-surface-background: var(--ui-bg-chrome);
+  }
+
+  /* Clear mode (native window opacity) fades EVERYTHING in the window
+     uniformly, so when an overlay opens over a session two layers of text
+     fade by the same amount and fight through the overlay's light default
+     scrim (bg-black/22 + 2px blur). While clear is active, the scrim works
+     for a living: darken it and widen the blur so the covered transcript
+     drops away and the overlay's own text is the only line of type in front
+     of the desktop. Set on <html> by store/translucency.ts whenever
+     mode='clear' and intensity > 0; !important because the utility classes
+     live in a later cascade layer. */
+  :root[data-hermes-clear] [data-overlay-surface] {
+    background-color: rgb(0 0 0 / 0.55) !important;
+    backdrop-filter: blur(0.5rem) !important;
+  }
+
+  /* Translucency peek: while the user holds the intensity slider (or for a
+     short pulse after a frost/area/mode click) the entire overlay layer —
+     scrim, blur and near-opaque card as ONE group — ghosts down so the live
+     window behind it becomes the preview. The layer keeps pointer events:
+     a held drag keeps delivering to the slider it started on. Opacity is
+     the one property that fades the scrim, its backdrop-blur and the card
+     together without relayout. Asymmetric easing: quick reveal while the
+     hand is on the control, unhurried return.
+
+     Both the peek and its return are scoped to a settings overlay that has
+     ARMED the interaction ([data-translucency-peek-scope], set by the
+     appearance row). An unscoped `[data-overlay-surface] { transition:
+     opacity … }` would tax every overlay in the app — command center, cron,
+     agents, model picker — with a 420ms opacity transition for the life of
+     the process, to serve one slider. */
+  :root [data-overlay-surface]:has([data-translucency-peek-scope]) {
+    transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  :root[data-hermes-translucency-peek] [data-overlay-surface]:has([data-translucency-peek-scope]) {
+    opacity: 0.08;
+    transition: opacity 160ms cubic-bezier(0.32, 0.72, 0, 1);
   }
 
   * {
@@ -1798,8 +1934,8 @@ body.guest-pointer-lock :is(webview, iframe) {
    *pairs* qualified meant the live status line (not tool, thinking or prose)
    fell through every branch and carried its own half-size margin instead. */
 [data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md)
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md) {
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity'], .aui-md)
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity'], .aui-md) {
   margin-top: var(--turn-block-gap);
 }
 
@@ -1817,8 +1953,8 @@ body.guest-pointer-lock :is(webview, iframe) {
    is the wrong hook here: it's absent on a multi-call tool GROUP, which is most
    of a real run, and present on rows nested inside one. */
 [data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'])
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']) {
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity'])
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity']) {
   margin-top: var(--scaffold-block-gap);
 }
 
@@ -1858,11 +1994,15 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='aui_turn-pair']
   > [data-slot='aui_assistant-message-root']:has(
     > [data-slot='aui_assistant-message-content']
-      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):last-child
+      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_turn-activity']):last-child
   ):not(:has([data-file-edit]))
   + [data-slot='aui_assistant-message-root']:has(
     > [data-slot='aui_assistant-message-content']
-      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):first-child
+      > :is(
+        [data-slot='tool-block'],
+        [data-slot='aui_thinking-disclosure'],
+        [data-slot='aui_turn-activity']
+      ):first-child
   ):not(:has([data-file-edit])) {
   margin-top: calc(var(--scaffold-block-gap) - var(--conversation-turn-gap));
 }
@@ -2409,8 +2549,7 @@ button[data-slot='aui_msg-reactions'] svg {
 
      No fill of its own — the sheet is its own layer ([data-hud-glass]) so it
      can animate independently of the text. */
-  inset: auto var(--hud-band-inset) var(--hud-bar-height, var(--composer-fallback-height))
-    var(--hud-band-inset) !important;
+  inset: auto var(--hud-band-inset) var(--hud-bar-height, var(--composer-fallback-height)) var(--hud-band-inset) !important;
   height: var(--hud-band-height, 0px) !important;
   width: auto !important;
   max-width: none !important;
@@ -2567,8 +2706,7 @@ button[data-slot='aui_msg-reactions'] svg {
    goes fully opaque and the band falls back behind it: dimmer, fractionally
    smaller, slightly out of focus. Scaled from the bar's edge, so it reads as
    depth rather than as the panel shrinking. */
-[data-hud-shell]:has([data-slot='composer-completion-drawer'])
-  :is([data-slot='composer-bounds'], [data-hud-glass]) {
+[data-hud-shell]:has([data-slot='composer-completion-drawer']) :is([data-slot='composer-bounds'], [data-hud-glass]) {
   opacity: 0.25 !important;
   scale: 0.97;
   filter: blur(1.5px);

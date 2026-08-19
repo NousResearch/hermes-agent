@@ -575,6 +575,43 @@ _TIMEOUT_MESSAGE_PATTERNS = [
     "upstream timed out",
 ]
 
+# Connection-establishment / DNS failure message patterns.  These surface
+# when the exception TYPE is generic (RuntimeError/Exception from a local
+# shim, MCP bridge, subprocess wrapper, or an SDK that re-raises without
+# chaining) so the _TRANSPORT_ERROR_TYPES check never fires, and the error
+# carries no HTTP status.  Without message-level matching they fall through
+# to FailoverReason.unknown, which misses the transport eager-fallback path
+# in the retry loop (unknown retries the same dead endpoint for the full
+# budget before fallback).  Ported from anomalyco/opencode#40707, which hit
+# the same bug shape: serialized midstream errors matched by type only.
+#
+# Deliberately EXCLUDES mid-stream disconnect strings ("connection reset by
+# peer", "peer closed connection", "unexpected eof", "socket hang up") —
+# those belong to _SERVER_DISCONNECT_PATTERNS, whose classification step
+# runs later and routes large sessions to context-overflow compression.
+# A connection that was never established cannot be a server-side overflow
+# rejection, so these are safe to classify as plain retryable transport.
+_CONNECTION_MESSAGE_PATTERNS = [
+    # TCP connect failures
+    "connection refused",
+    "econnrefused",
+    "no route to host",
+    "network is unreachable",
+    "network unreachable",
+    # DNS resolution failures (Python, glibc, macOS, Node bridge phrasings)
+    "name or service not known",
+    "temporary failure in name resolution",
+    "nodename nor servname provided",
+    "getaddrinfo failed",
+    "getaddrinfo enotfound",
+    "eai_again",
+    # Node/undici bridge generic network failure (MCP servers, local shims)
+    "fetch failed",
+    "failed to fetch",
+    # Envoy/proxy upstream connect failure (cloud gateways)
+    "upstream connect error",
+]
+
 # Transport error type names
 _TRANSPORT_ERROR_TYPES = frozenset({
     "ReadTimeout", "ConnectTimeout", "PoolTimeout",
@@ -1792,6 +1829,16 @@ def _classify_by_message(
     # loop rebuilds the client instead of treating the turn as an empty
     # model response.
     if any(p in error_msg for p in _TIMEOUT_MESSAGE_PATTERNS):
+        return result_fn(FailoverReason.timeout, retryable=True)
+
+    # Connection-establishment / DNS failure message patterns — same shim
+    # problem as the timeout patterns above: the wrapping exception type is
+    # generic, so _TRANSPORT_ERROR_TYPES never matches and the error would
+    # fall through to FailoverReason.unknown. Classified as timeout (the
+    # transport bucket) so the retry loop's eager transport fallback and
+    # client rebuild apply. Never routes to compression: a connection that
+    # was never established is not a context-overflow signal.
+    if any(p in error_msg for p in _CONNECTION_MESSAGE_PATTERNS):
         return result_fn(FailoverReason.timeout, retryable=True)
 
     return None

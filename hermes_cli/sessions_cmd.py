@@ -39,8 +39,8 @@ def _relative_time(ts):
     return _m()._relative_time(ts)
 
 
-def _session_browse_picker(sessions):
-    return _m()._session_browse_picker(sessions)
+def _session_browse_picker(sessions, session_db=None):
+    return _m()._session_browse_picker(sessions, session_db=session_db)
 
 
 def _size_delta_label(saved_mb):
@@ -301,6 +301,12 @@ def cmd_sessions(args, sessions_parser=None):
         print("✗ Recovery output did not pass every verification check.")
         print("  Do not install it. Review the JSON report for partial data or errors.")
         return 1
+
+    if action == "import":
+        from hermes_cli.foreign_sessions import run_sessions_import
+
+        run_sessions_import(args)
+        return
 
     try:
         from hermes_state import SessionDB
@@ -936,6 +942,20 @@ def cmd_sessions(args, sessions_parser=None):
             filters["archived"] = False
 
         candidates = db.list_prune_candidates(**filters)
+        # Archive expands each selected row to its compression lineage, which
+        # can include open continuations; a direct-open count would therefore
+        # describe the eventual archive effect inaccurately.
+        skipped_open = (
+            db.count_open_prune_matches(**filters) if action == "prune" else 0
+        )
+        if skipped_open:
+            suffix = "" if skipped_open == 1 else "s"
+            print(
+                f"Note: {skipped_open} open session{suffix} also match these "
+                "filters but will be skipped because prune only deletes ended "
+                "sessions. Use `hermes sessions delete <id>` "
+                "to remove one explicitly."
+            )
         verb = "Delete" if action == "prune" else "Archive"
         if not candidates:
             print(f"No sessions match ({describe_filters(filters)}).")
@@ -1002,6 +1022,69 @@ def cmd_sessions(args, sessions_parser=None):
                 print(f"Session '{args.session_id}' not found.")
         except ValueError as e:
             print(f"Error: {e}")
+
+    elif action in ("pin", "unpin"):
+        # CLI surface for the durable "keep" flag (issue #52955). Pinned
+        # sessions are exempt from the sessions.auto_archive stale sweep and
+        # always surface in listings; until now only the Desktop sidebar
+        # could write the flag. Inspired by Perplexity Computer's
+        # conversational session management (pin/archive from any surface):
+        # pin state is operational infrastructure, so every surface — GUI,
+        # TUI, CLI, scripts — needs read/write access to the same store.
+        pinning = action == "pin"
+        failures = 0
+        for raw_id in args.session_ids:
+            resolved = db.resolve_session_id(raw_id)
+            if not resolved:
+                print(f"Session '{raw_id}' not found.")
+                failures += 1
+                continue
+            if db.set_session_pinned(resolved, pinning):
+                verb = "Pinned" if pinning else "Unpinned"
+                title = db.get_session_title(resolved)
+                suffix = f"  ({title})" if title else ""
+                print(f"{verb} session '{resolved}'.{suffix}")
+            else:
+                print(f"Session '{raw_id}' not found.")
+                failures += 1
+        if failures:
+            return 1
+
+    elif action == "pinned":
+        # List every pinned conversation regardless of age. limit=1 keeps the
+        # recency page minimal; include_pinned back-fills ALL pinned rows the
+        # page missed (bounded by pin count, see list_sessions_rich), so old
+        # pins can't fall off a paging window.
+        rows = db.list_sessions_rich(
+            limit=1, include_pinned=True, exclude_sources=_exclude
+        )
+        pinned_rows = [s for s in rows if s.get("pinned")]
+        if getattr(args, "json", False):
+            payload = [
+                {
+                    "id": s["id"],
+                    "title": s.get("title"),
+                    "source": s.get("source"),
+                    "last_active": s.get("last_active"),
+                    "message_count": s.get("message_count"),
+                }
+                for s in pinned_rows
+            ]
+            print(_json.dumps(payload, indent=2))
+            return
+        if not pinned_rows:
+            print(
+                "No pinned sessions. Pin one with: hermes sessions pin <session_id>"
+            )
+            return
+        print(f"{'Title':<32} {'Last Active':<13} {'Src':<9} {'ID'}")
+        print("─" * 100)
+        for s in pinned_rows:
+            title = (s.get("title") or s.get("preview", "") or "—")[:30]
+            last_active = _relative_time(s.get("last_active"))
+            print(
+                f"{title:<32} {last_active:<13} {(s.get('source') or '-'):<9} {s['id']}"
+            )
 
     elif action == "retitle-skills":
         from agent.skill_commands import describe_skill_invocation
@@ -1070,12 +1153,17 @@ def cmd_sessions(args, sessions_parser=None):
         sessions = db.list_sessions_rich(
             source=source, exclude_sources=_browse_exclude, limit=limit
         )
-        db.close()
         if not sessions:
+            db.close()
             print("No sessions found.")
             return
 
-        selected_id = _session_browse_picker(sessions)
+        # Keep the DB open: the picker uses it for lifecycle status tags and
+        # the 'd' delete-with-confirmation action.
+        try:
+            selected_id = _session_browse_picker(sessions, session_db=db)
+        finally:
+            db.close()
         if not selected_id:
             print("Cancelled.")
             return

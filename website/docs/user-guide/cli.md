@@ -25,6 +25,11 @@ hermes
 # Single query mode (non-interactive)
 hermes chat -q "Hello"
 
+# Single query from a file or stdin — nothing is shell-interpreted, so
+# arbitrary text (quotes, $(...), backticks) arrives verbatim
+hermes chat --query-file prompt.txt
+hermes chat --query-file - < prompt.txt
+
 # With a specific model
 hermes chat --model "anthropic/claude-sonnet-4"
 

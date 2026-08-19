@@ -2,6 +2,8 @@ import type { ILink, Terminal as TerminalType } from '@xterm/xterm'
 import { Terminal } from '@xterm/xterm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $previewTabs, closeRightRail } from '@/store/preview'
+
 import { isTerminalLinkActivation, terminalLinkHandler, terminalWebLinksAddon } from './links'
 
 const openExternal = vi.fn()
@@ -9,6 +11,7 @@ const click = (init: Partial<MouseEvent> = {}) => ({ ctrlKey: false, metaKey: fa
 
 beforeEach(() => {
   openExternal.mockClear()
+  closeRightRail()
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { openExternal } })
   // jsdom reports a non-mac platform, so the activation modifier resolves to
   // Ctrl unless we say otherwise.
@@ -40,11 +43,23 @@ async function clickLinkIn(text: string, event: MouseEvent) {
 }
 
 describe('terminal links', () => {
-  it('opens a ⌘-clicked URL through the desktop bridge, not the window.open Electron denies', async () => {
+  it('opens a ⌘-clicked URL in the in-app browser, not the window.open Electron denies', async () => {
     const uri = 'https://example.com/path'
 
     expect(await clickLinkIn(uri, new MouseEvent('click', { metaKey: true }))).toBe(uri)
+    expect(openExternal).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe(uri))
+  })
+
+  // The terminal spends ⌘/Ctrl on activation itself, so ⇧ is what escapes to
+  // the OS browser here.
+  it('escapes to the OS browser on ⇧⌘-click', async () => {
+    const uri = 'https://example.com/path'
+
+    await clickLinkIn(uri, new MouseEvent('click', { metaKey: true, shiftKey: true }))
+
     expect(openExternal).toHaveBeenCalledWith(uri)
+    expect($previewTabs.get()).toHaveLength(0)
   })
 
   it('leaves a bare click to the selection, so a misclick never launches a browser', async () => {
@@ -53,13 +68,13 @@ describe('terminal links', () => {
     expect(openExternal).not.toHaveBeenCalled()
   })
 
-  it('routes OSC 8 hyperlinks the same way, instead of xterm\u2019s confirm() dialog', () => {
+  it('routes OSC 8 hyperlinks the same way, instead of xterm’s confirm() dialog', async () => {
     terminalLinkHandler.activate(new MouseEvent('click', { metaKey: true }), 'https://example.com/osc8', {
       end: { x: 10, y: 1 },
       start: { x: 1, y: 1 }
     })
 
-    expect(openExternal).toHaveBeenCalledWith('https://example.com/osc8')
+    await vi.waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/osc8'))
   })
 })
 

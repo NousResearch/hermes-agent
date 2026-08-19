@@ -13,6 +13,7 @@ import atexit
 import concurrent.futures
 import contextlib
 import contextvars
+import errno
 import json
 import logging
 import os
@@ -148,6 +149,48 @@ def _fallback_chain_phrase() -> str:
     )
 
 
+def _failure_streak_nudge(job: dict) -> str:
+    """Return a review nudge when a recurring job keeps failing, else "".
+
+    Inspired by Poke (poke.com), which "encourages users to review recurring
+    automations that haven't been acted upon": once a recurring job has failed
+    several runs in a row, the per-run failure ping stops being information and
+    starts being noise — the useful message is "this automation needs your
+    attention (fix, pause, or remove it)".
+
+    The streak counter (``failure_streak``) is persisted by
+    ``cron.jobs.mark_job_run`` and reset on any successful run. Because the
+    failure message is delivered BEFORE ``mark_job_run`` records this run, the
+    prospective streak for the current failure is stored+1.
+
+    Threshold config: ``cron.failure_nudge_threshold`` (default 3, ``0``
+    disables the nudge). One-shot jobs never nudge — they don't recur.
+    """
+    schedule_kind = (job.get("schedule") or {}).get("kind")
+    if schedule_kind not in {"cron", "interval"}:
+        return ""
+    try:
+        cfg = load_config() or {}
+        threshold = int(
+            ((cfg.get("cron") or {}) if isinstance(cfg, dict) else {}).get(
+                "failure_nudge_threshold", 3
+            )
+        )
+    except Exception:
+        threshold = 3
+    if threshold <= 0:
+        return ""
+    streak = int(job.get("failure_streak") or 0) + 1  # +1 = this run
+    if streak < threshold:
+        return ""
+    job_ref = job.get("name") or job.get("id") or "this job"
+    return (
+        f"\nThis job has failed {streak} runs in a row — worth a review. "
+        f"Fix its prompt/config, or pause it with `hermes cron pause {job_ref}` "
+        "(resume/remove also available) to stop the noise."
+    )
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -168,9 +211,9 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         else:
             job_id = job.get("id") or "<job_id>"
             remediation = (
-                "Pin it explicitly: "
-                f"`cronjob action=update job_id={job_id} "
-                "provider=<provider> model=<model>`."
+                "On the host running Hermes, pin it explicitly: "
+                f"`hermes cron edit {job_id} --provider <provider> "
+                "--model <model>`."
             )
         return (
             f"⚠️ Cron '{job_name}' skipped before inference to prevent "
@@ -338,7 +381,9 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     else:
         disabled = ["cronjob", "messaging", "clarify", "memory"]
     agent_cfg = (cfg or {}).get("agent") or {}
-    user_disabled = agent_cfg.get("disabled_toolsets") or []
+    from agent.skill_utils import parse_config_string_list
+
+    user_disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
     for name in user_disabled:
         name = str(name).strip()
         if name and name not in disabled:
@@ -452,6 +497,7 @@ from cron.jobs import (
     claim_dispatch,
     claim_job_for_fire,
     fire_claim_fence,
+    clear_run_claim,
     get_due_jobs,
     heartbeat_fire_claim,
     heartbeat_run_claim,
@@ -810,6 +856,60 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     now = time.time()
     stale: list = []
 
+    # Latest durable execution per RELEASABLE-LOOKING in-flight job id, loaded
+    # in one indexed query.  Used for the persisted-state reconciliation below
+    # (t_8b5480b3): an in-memory claim whose OWN run's execution row is
+    # terminal cannot represent a live run — the durable ledger proves that
+    # run already ended — so the claim is stale by construction, regardless of
+    # its in-memory age.  A leaked claim is then recoverable without
+    # force-run/resume.  Two-phase so the healthy steady state pays no DB
+    # work: a claim with a live future is never released, so the query only
+    # covers claims whose future is missing/pending/done (the snapshot is
+    # taken under _running_lock; iterating a set concurrently mutated by
+    # try_register/release_running_job can raise RuntimeError).  A claim that
+    # becomes releasable between the snapshot and the sweep loop simply waits
+    # for the next tick's query.
+    from cron.executions import _TERMINAL_STATES as _terminal_states
+
+    with _running_lock:
+        _claim_futures = {
+            job_id: _running_futures.get(job_id) for job_id in _running_job_ids
+        }
+    _ledger_candidates = [
+        job_id
+        for job_id, fut in _claim_futures.items()
+        if fut is None or fut is _FUTURE_PENDING or fut.done()
+    ]
+    _latest: dict = {}
+    if _ledger_candidates:
+        try:
+            from cron.executions import latest_executions as _latest_execs
+            _latest = _latest_execs(_ledger_candidates)
+        except Exception:
+            _latest = {}
+
+    def _row_belongs_to_claim(row: dict, claim_started: float) -> bool:
+        """True when the ledger row was claimed at/after this in-memory claim.
+
+        The latest terminal row proves THIS claim's run ended only if it was
+        created by this claim's dispatch (create_execution runs moments AFTER
+        try_register_running_job).  A terminal row older than the in-memory
+        claim is the PREVIOUS run's outcome — for a recurring job that is the
+        common case in the window between try_register and create_execution,
+        and releasing on it would double-dispatch a healthy fresh claim.
+        Unparseable timestamps fail closed (row treated as previous-run; the
+        age-based path below still bounds the claim).
+        """
+        claimed_at = row.get("claimed_at")
+        if not claimed_at:
+            return False
+        try:
+            from cron.jobs import _ensure_aware as _ensure_aware_ts
+            row_ts = _ensure_aware_ts(datetime.fromisoformat(claimed_at))
+            return row_ts.timestamp() >= claim_started
+        except (ValueError, TypeError, OSError):
+            return False
+
     # Precompute job intervals OUTSIDE _running_lock so croniter evaluation
     # does not block try_register/release_running_job for other jobs.
     _intervals = {jid: _job_interval_minutes(j) for jid, j in by_id.items()}
@@ -827,8 +927,6 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             allowance = floor_seconds
             if interval_minutes:
                 allowance = max(allowance, 2.0 * interval_minutes * 60.0)
-            if age < allowance:
-                continue
             fut = _running_futures.get(job_id)
             if fut is _FUTURE_PENDING:
                 # The claim is past its allowance and the owning future still
@@ -838,13 +936,40 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 pass
             elif fut is not None and not fut.done():
                 continue  # genuinely still executing
+            # Persisted-state reconciliation: if the durable executions ledger
+            # shows THIS claim's run reached a terminal state, the claim is
+            # provably stale even if it is still inside its in-memory age
+            # allowance (or was adopted fresh this tick).  Release it now so
+            # the job re-dispatches on the next tick without force-run/resume
+            # (t_8b5480b3 — the 2026-08-14 recurring-router wedge where the
+            # in-memory age bound alone could not see a run the ledger had
+            # already finished).  The row must belong to THIS claim
+            # (claimed_at >= claim registration): for a recurring job the
+            # latest terminal row is usually the PREVIOUS run's outcome —
+            # a fresh claim in the try_register→create_execution window, or a
+            # finished run whose worker finally hasn't released yet, would
+            # otherwise be force-released and double-dispatched.  Reaching
+            # here implies the future is missing/pending/done (the live-future
+            # case continued above), so every claim in this branch was a
+            # ledger-query candidate.
+            latest = _latest.get(job_id)
+            if (
+                latest is not None
+                and latest.get("status") in _terminal_states
+                and _row_belongs_to_claim(latest, started)
+            ):
+                reason = "ledger-terminal"
+            elif age >= allowance:
+                reason = "age"
+            else:
+                continue
             _running_job_ids.discard(job_id)
             _running_since.pop(job_id, None)
             _running_futures.pop(job_id, None)
             _forced_release_count += 1
-            stale.append((job_id, age, allowance, fut))
+            stale.append((job_id, age, allowance, fut, reason))
 
-    for job_id, age, allowance, fut in stale:
+    for job_id, age, allowance, fut, _reason in stale:
         job = by_id.get(job_id) or {}
         name = job.get("name") or job_id
         if fut is _FUTURE_PENDING:
@@ -854,9 +979,10 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
         else:
             future_state = "finished"
         logger.warning(
-            "cron.inflight.forced_release event=forced_release job='%s' id=%s "
-            "age=%.0fs allowance=%.0fs future=%s — stale in-flight claim "
+            "cron.inflight.forced_release event=forced_release reason=%s job='%s' "
+            "id=%s age=%.0fs allowance=%.0fs future=%s — stale in-flight claim "
             "released; the job was skipping every fire with 'already running'",
+            _reason,
             name,
             job_id,
             age,
@@ -864,6 +990,18 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             future_state,
         )
         _record_forced_release(job_id, name, age, allowance)
+        # A ledger-terminal release is authoritative: the durable executions
+        # ledger ALREADY records how the last run ended (completed/failed/
+        # unknown), so we must NOT call mark_job_run here — doing so would
+        # clobber an honest completed/ok status with a synthetic failure, or
+        # double-write an already-recorded failure.  We only release the claim
+        # so the job re-dispatches on its next due tick; the ledger is the
+        # record of record for the outcome.  The age-based release below keeps
+        # the original wedge-surfacing mark_job_run behaviour (an age-release
+        # may have no ledger row at all, so surfacing last_error is the only
+        # way the wedge becomes visible).
+        if _reason == "ledger-terminal":
+            continue
         # Finite-repeat guard: a forced release is NOT a real run, so it must
         # not consume a finite one-shot's repeat budget or let mark_job_run
         # auto-delete the row (completed >= times).  The claim is released and
@@ -1288,6 +1426,73 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+# Errnos that mean "another ticker (or manual tick) holds the tick lock",
+# as opposed to a real failure opening/locking the file.  Everything else —
+# most importantly EMFILE/ENFILE (fd exhaustion, #87644) and EACCES on
+# open() — must be surfaced, never swallowed as lock contention.
+def _is_lock_contention_errno(err: OSError) -> bool:
+    """Return True when *err* from the lock syscall means the lock is held.
+
+    - POSIX: ``flock(LOCK_EX|LOCK_NB)`` reports EWOULDBLOCK/EAGAIN when
+      another process holds the lock (EACCES on some NFS implementations).
+    - Windows: ``msvcrt.locking(LK_NBLCK)`` reports EACCES/EDEADLK.
+    """
+    if err.errno is None:
+        return False
+    if fcntl is not None:
+        return err.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES)
+    if msvcrt is not None:
+        return err.errno in (errno.EACCES, errno.EDEADLK)
+    return False
+
+
+def _is_fd_exhaustion_text(text: str) -> bool:
+    """Text-level half of :func:`_is_fd_exhaustion` (shared with the CLI hint)."""
+    lowered = text.lower()
+    return "too many open files" in lowered or "emfile" in lowered
+
+
+def _is_fd_exhaustion(exc: BaseException) -> bool:
+    """Return True when *exc* indicates file-descriptor exhaustion.
+
+    Recognizes EMFILE/ENFILE by errno, and the "Too many open files" wording
+    for wrapped exceptions (``load_jobs`` wraps the raw OSError in a
+    RuntimeError with that message, #87644).
+    """
+    if isinstance(exc, OSError) and exc.errno in (errno.EMFILE, errno.ENFILE):
+        return True
+    return _is_fd_exhaustion_text(str(exc))
+
+
+def _reclaim_fds_best_effort() -> None:
+    """Best-effort attempt to free leaked file descriptors.
+
+    The cron FD-leak family (#60859, #79742, #80792) leaks descriptors from
+    abandoned workers/sessions.  Two safe, idempotent levers:
+
+    1. ``gc.collect()`` — closes file-like objects held only in reference
+       cycles (the classic unclosed-file leak shape), which CPython would
+       otherwise never finalize.
+    2. ``apply_nofile_soft_limit()`` — raise RLIMIT_NOFILE's soft limit
+       toward the configured target when the hard limit allows, giving the
+       process headroom to keep serving even before every leak is freed.
+
+    Never raises: a reclamation attempt must not make the ticker worse.
+    """
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        from hermes_cli.resource_limits import apply_nofile_soft_limit
+
+        apply_nofile_soft_limit(None)
+    except Exception:
+        pass
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -2141,18 +2346,40 @@ def _send_media_via_adapter(
     loop,
     job: dict,
     platform=None,
-) -> None:
+) -> list:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
 
     Routes each file to the appropriate adapter method (send_voice, send_image_file,
     send_video, send_document) based on file extension — mirroring the routing logic
     in ``BasePlatformAdapter._process_message_background``.
+
+    Returns a list of per-file error strings (empty when every attachment
+    delivered). Callers surface these into the job's delivery errors so a
+    dropped attachment is visible in ``last_error``/run status instead of
+    only in the gateway log (the silent-drop half of the manual-run
+    attachment bug: text delivered, file vanished, job marked ok).
     """
     from pathlib import Path
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
+    errors: list = []
+    requested = [(str(p), v) for p, v in (media_files or [])]
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # Report paths the safety filter dropped: the model referenced them in
+    # MEDIA: tags but they will never be sent (missing file, denied prefix,
+    # or strict-mode policy miss).
+    kept = {p for p, _ in media_files}
+    for raw_path, _v in requested:
+        try:
+            from gateway.platforms.base import validate_media_delivery_path
+
+            if validate_media_delivery_path(raw_path) not in kept:
+                errors.append(
+                    f"attachment dropped by media path policy: {raw_path}"
+                )
+        except Exception:
+            errors.append(f"attachment dropped by media path policy: {raw_path}")
 
     for media_path, _is_voice in media_files:
         try:
@@ -2170,23 +2397,37 @@ def _send_media_via_adapter(
             from agent.async_utils import safe_schedule_threadsafe
             future = safe_schedule_threadsafe(coro, loop)
             if future is None:
-                logger.warning(
-                    "Job '%s': cannot send media %s, gateway loop unavailable",
-                    job.get("id", "?"), media_path,
-                )
-                return
+                msg = f"cannot send media {media_path}: gateway loop unavailable"
+                logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+                errors.append(msg)
+                return errors
             try:
-                result = future.result(timeout=30)
+                # Large attachments (long TTS audio, concatenated recordings,
+                # big exports) can legitimately exceed a fixed 30s upload
+                # window. Configurable, matching the other cron timeouts
+                # (cron.media_send_timeout_seconds in config.yaml, or the
+                # HERMES_CRON_MEDIA_SEND_TIMEOUT env override).
+                result = future.result(timeout=_get_media_send_timeout())
             except TimeoutError:
                 future.cancel()
                 raise
             if result and not getattr(result, "success", True):
-                logger.warning(
-                    "Job '%s': media send failed for %s: %s",
-                    job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
+                msg = (
+                    f"media send failed for {media_path}: "
+                    f"{getattr(result, 'error', 'unknown')}"
                 )
+                logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+                errors.append(msg)
         except Exception as e:
-            logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+            # Argument-less exceptions (notably TimeoutError, the most likely
+            # failure on this path) have an empty str(), which would render
+            # the reason as nothing at all. Fall back to the class name.
+            msg = (
+                f"failed to send media {media_path}: {str(e) or type(e).__name__}"
+            )
+            logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+            errors.append(msg)
+    return errors
 
 
 def _confirm_adapter_delivery(send_result) -> bool:
@@ -2328,8 +2569,34 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
+
+    # Bridge gateway media-policy config (strict / allow_dirs / trust_recent)
+    # into the env vars the path validator reads. Gateway startup does this
+    # at boot; a standalone process (manual `hermes cron run` from the CLI,
+    # a cron tick without the gateway) historically did NOT — so manual runs
+    # filtered attachment paths under a DIFFERENT policy than scheduled runs
+    # and silently dropped files the gateway would deliver. Idempotent,
+    # env-wins, never raises.
+    from gateway.media_policy import apply_media_policy_env
+
+    apply_media_policy_env(user_cfg)
+
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    requested_media = [(str(p), v) for p, v in media_files]
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # Attachments the policy filter dropped will never be sent on ANY lane —
+    # record them up front so the run status says so (previously one
+    # stderr WARNING was the only trace: text delivered, file vanished).
+    _policy_dropped = len(requested_media) - len(media_files)
+    policy_drop_errors = (
+        [
+            f"{_policy_dropped} media attachment(s) dropped by media path "
+            "policy (missing file, denied prefix, or strict-mode miss); "
+            "see gateway.strict / media_delivery_allow_dirs in config.yaml"
+        ]
+        if _policy_dropped > 0
+        else []
+    )
 
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session
@@ -2769,7 +3036,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 routed_media_metadata["user_id"] = logical_home.user_id
                             if logical_home.scope_id:
                                 routed_media_metadata["scope_id"] = logical_home.scope_id
-                    _send_media_via_adapter(
+                    _media_errors = _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
@@ -2778,6 +3045,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         job,
                         platform=platform,
                     )
+                    # Surface per-file failures into the run status (parity
+                    # with the standalone lane): text delivered but an
+                    # attachment didn't is a visible partial failure, not ok.
+                    for _me in _media_errors:
+                        _msg = f"{_me} (target {platform_name}:{chat_id})"
+                        delivery_errors.append(_msg)
                 elif timed_out and media_files:
                     msg = (
                         f"{len(media_files)} media attachment(s) not delivered to "
@@ -2915,6 +3188,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
 
+            # Standalone senders report per-file attachment failures in
+            # ``warnings`` while still returning success (the text leg
+            # delivered). Surface them: a cron whose PDF/image silently
+            # vanished used to mark the run ok with no trace — the exact
+            # "manual run delivers text but no attachment" field report.
+            _sender_warnings = (
+                result.get("warnings") if isinstance(result, dict) else None
+            ) or []
+            for _w in _sender_warnings:
+                msg = f"delivery warning: {_w} (target {platform_name}:{chat_id})"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
             _maybe_mirror_cron_delivery(
                 job, platform_name, chat_id, mirror_text,
@@ -2922,6 +3208,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 enabled=mirror_this_target and not thread_seeded,
             )
 
+    if policy_drop_errors:
+        # Filter-time drops apply to every target; report them once.
+        delivery_errors.extend(policy_drop_errors)
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None
@@ -2965,6 +3254,44 @@ def _get_script_timeout() -> int:
         logger.debug("Failed to load cron script timeout from config: %s", exc)
 
     return _DEFAULT_SCRIPT_TIMEOUT
+
+
+_DEFAULT_MEDIA_SEND_TIMEOUT = 300
+
+
+def _get_media_send_timeout() -> int:
+    """Resolve the per-attachment media-send timeout from env/config.
+
+    Mirrors the ``script_timeout_seconds`` resolution pattern: the
+    HERMES_CRON_MEDIA_SEND_TIMEOUT env var wins, then
+    ``cron.media_send_timeout_seconds`` in config.yaml, then the default
+    (300s — large attachments like long TTS audio can legitimately exceed
+    the old fixed 30s upload window).
+    """
+    env_value = os.getenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            timeout = int(float(env_value))
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning(
+                "Invalid HERMES_CRON_MEDIA_SEND_TIMEOUT=%r; using config/default",
+                env_value,
+            )
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("media_send_timeout_seconds")
+        if configured is not None:
+            timeout = int(float(configured))
+            if timeout > 0:
+                return timeout
+    except Exception as exc:
+        logger.debug("Failed to load cron media-send timeout from config: %s", exc)
+
+    return _DEFAULT_MEDIA_SEND_TIMEOUT
 
 
 def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
@@ -3106,6 +3433,52 @@ def _drain_script_pipes(proc: subprocess.Popen) -> None:
         pass
 
 
+def _windows_cron_bootstrap_argv(
+    python_exe: str,
+    env_overlay: dict[str, str],
+    script_path: str,
+) -> list[str]:
+    """Bootstrap a cron script under the base interpreter with ``.pth`` support.
+
+    The uv-venv overlay mode runs the base ``python.exe`` (to avoid the
+    launcher re-execing a console interpreter and flashing a window) and
+    re-attaches the venv via ``PYTHONPATH``.  But ``PYTHONPATH`` entries are
+    plain ``sys.path`` additions — Python's site initialization never
+    processes ``.pth`` files for them (only ``site.addsitedir()`` does) — so
+    editable installs (``pip install -e``, ``__editable__*.pth`` links) are
+    invisible to cron script jobs.
+
+    Bootstrap with ``site.addsitedir()`` on the venv ``site-packages``, then
+    exec the script as ``__main__``.  ``runpy.run_path`` keeps ``__file__``
+    correct; ``sys.path[0]`` is set to the script's directory to preserve the
+    ``python script.py`` import semantics.  Note: ``runpy`` does not set
+    ``__package__``/``__spec__`` the way a direct invocation does, so
+    package-relative imports (``from . import x``) may behave differently.
+    Falls back to a plain invocation if the venv layout is unresolvable —
+    the pre-existing PYTHONPATH behaviour is strictly better than failing
+    to run at all.
+    """
+    site_packages = Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages"
+    if not site_packages.is_dir():
+        # Silent here would make the "editable installs invisible" failure
+        # undiagnosable; the pre-existing PYTHONPATH-only behaviour applies.
+        logger.warning(
+            "Windows cron script: venv site-packages %s not found; running "
+            "without .pth processing (editable installs may be unimportable)",
+            site_packages,
+        )
+        return [python_exe, script_path]
+    bootstrap = (
+        "import os, runpy, site, sys;"
+        f"site.addsitedir({str(site_packages)!r});"
+        "script = sys.argv[1];"
+        "sys.argv = [script] + sys.argv[2:];"
+        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
+        "runpy.run_path(script, run_name='__main__')"
+    )
+    return [python_exe, "-c", bootstrap, script_path]
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
@@ -3150,6 +3523,18 @@ def _run_job_script(
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
+
+    # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path:
+    # a NUL-bearing value can never name a real script, and on Windows the
+    # Path operations raise ValueError *after* expanduser (expanduser never
+    # expands "~user" there, so the try below never fires) — reject eagerly
+    # so both platforms fail cleanly instead of crashing the scheduler.
+    # str() first so the guard itself can never raise TypeError on a
+    # non-str script_path (e.g. a Path passed by a future caller) — the
+    # guard must be crash-proof even though every current call site
+    # passes a plain str (#86832 review).
+    if "\x00" in str(script_path):
+        return False, f"Blocked: script path contains a NUL byte: {script_path!r}"
 
     try:
         raw = Path(script_path).expanduser()
@@ -3207,7 +3592,13 @@ def _run_job_script(
         env_overlay: dict[str, str] = {}
     else:
         python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-        argv = [python_exe, str(path)]
+        if env_overlay:
+            # Overlay mode (Windows uv venv): PYTHONPATH alone cannot make
+            # editable installs importable — .pth processing needs
+            # site.addsitedir() (see _windows_cron_bootstrap_argv).
+            argv = _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path))
+        else:
+            argv = [python_exe, str(path)]
 
     try:
         from tools.environments.local import build_subprocess_env
@@ -3442,6 +3833,16 @@ def _build_job_prompt(
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
+            # "self" resolves to the job's own id: the job wakes up with its
+            # most recent output injected, giving recurring jobs continuity
+            # across runs (dedupe against what was already reported, continue
+            # where the last run left off) without touching session history.
+            is_self = False
+            if isinstance(source_job_id, str) and source_job_id.strip().lower() == "self":
+                source_job_id = str(job.get("id") or "")
+                is_self = True
+            elif source_job_id == job.get("id"):
+                is_self = True
             # Guard against path traversal — valid job IDs are 12-char hex strings
             if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
                 logger.warning(
@@ -3469,13 +3870,24 @@ def _build_job_prompt(
                 if len(latest_output) > _MAX_CONTEXT_CHARS:
                     latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
                 if latest_output:
-                    prompt = (
-                        f"## Output from job '{source_job_id}'\n"
-                        "The following is the most recent output from a preceding "
-                        "cron job. Use it as context for your analysis.\n\n"
-                        f"```\n{latest_output}\n```\n\n"
-                        f"{prompt}"
-                    )
+                    if is_self:
+                        prompt = (
+                            "## Your previous run's output\n"
+                            "The following is this job's most recent output from its "
+                            "previous run. Use it for continuity: avoid repeating what "
+                            "was already reported, and continue where the last run "
+                            "left off.\n\n"
+                            f"```\n{latest_output}\n```\n\n"
+                            f"{prompt}"
+                        )
+                    else:
+                        prompt = (
+                            f"## Output from job '{source_job_id}'\n"
+                            "The following is the most recent output from a preceding "
+                            "cron job. Use it as context for your analysis.\n\n"
+                            f"```\n{latest_output}\n```\n\n"
+                            f"{prompt}"
+                        )
                     has_injected_data = True
                 else:
                     continue  # silent skip — empty output
@@ -3892,8 +4304,8 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
         return (
             f"provider credential missing: {exc}. "
             "Set the provider API key in .env (or `hermes setup`), or pin a "
-            "working provider via `cronjob action=update job_id="
-            f"{job.get('id')} provider=<p>`."
+            "working provider via `hermes cron edit "
+            f"{job.get('id')} --provider <p>`."
         )
     except Exception:
         # Non-auth resolution errors (bad config shapes, network probes,
@@ -4707,9 +5119,9 @@ def run_job(
         # Model resolution precedence: per-job override > cron.model (the
         # cron-fleet default) > HERMES_MODEL env > config.yaml ``model:``
         # (string or ``{default: ...}``). The per-job value is intentionally
-        # re-read from storage every tick so a ``cronjob action=update
-        # model=...`` after a failed run takes effect on the next tick — there
-        # is no in-memory cache.
+        # re-read from storage every tick so a ``hermes cron edit --model``
+        # after a failed run takes effect on the next tick — there is no
+        # in-memory cache.
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # cron.model / cron.model_provider: a deliberate cron-fleet default
@@ -4771,7 +5183,7 @@ def run_job(
                 f"HERMES_MODEL={os.getenv('HERMES_MODEL', '')!r}, "
                 "config.yaml model.default missing or empty). "
                 f"Set a per-job model via "
-                f"`cronjob action=update job_id={job_id} model=<name>` or set a "
+                f"`hermes cron edit {job_id} --model <name>` or set a "
                 "default with `hermes model <name>`."
             )
 
@@ -5043,9 +5455,9 @@ def run_job(
             if _drift:
                 _changes = "; ".join(_drift)
                 # Lifecycle-aware remediation (#72056, @sashmatash): a finite
-                # one-shot is consumed by this attempted dispatch — telling the
-                # operator to `cronjob action=update` a spent job is a dead
-                # end. Recurring/repeatable jobs get the pin command instead.
+                # one-shot is consumed by this attempted dispatch — telling an
+                # operator to edit a spent job is a dead end. Recurring and
+                # repeatable jobs get the pin command instead.
                 _repeat = job.get("repeat") if isinstance(job.get("repeat"), dict) else {}
                 _finite_oneshot = (
                     isinstance(job.get("schedule"), dict)
@@ -5060,10 +5472,11 @@ def run_job(
                     )
                 else:
                     _remediation = (
-                        "To run on the new config, pin it explicitly: "
-                        f"`cronjob action=update job_id={job_id} "
-                        "provider=<provider> model=<model>` (or pin the original "
-                        "values to keep them)."
+                        "To run on the new config, on the host running Hermes "
+                        "pin it explicitly: "
+                        f"`hermes cron edit {job_id} --provider <provider> "
+                        "--model <model>` (or pin the original values to keep "
+                        "them)."
                     )
                 logger.warning(
                     "Job '%s': SKIPPED — global inference config drifted since "
@@ -6004,7 +6417,10 @@ def _run_one_job_body(
                     "the configuration is fixed."
                 )
             else:
-                deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+                deliver_content = final_response if success else (
+                    _summarize_cron_failure_for_delivery(job, error)
+                    + _failure_streak_nudge(job)
+                )
                 if drift_skip and not success:
                     # Drift-skip alert: bypass the generic summarizer's
                     # 180-char truncation (it would eat the remediation
@@ -6338,7 +6754,12 @@ def tick(
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
-    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
+    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows.
+    # Only genuine lock contention (another ticker holds the lock) skips the
+    # tick silently.  A real OSError — most importantly EMFILE/ENFILE from fd
+    # exhaustion — must NOT be swallowed as "another instance holds the
+    # lock": that previously made the scheduler appear healthy (tick returned
+    # 0, heartbeat recorded success) while no job ever ran again (#87644).
     lock_fd = None
     try:
         lock_fd = open(lock_file, "w", encoding="utf-8")
@@ -6346,11 +6767,35 @@ def tick(
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-    except (OSError, IOError):
-        logger.debug("Tick skipped — another instance holds the lock")
+    except OSError as exc:
+        if lock_fd is not None and _is_lock_contention_errno(exc):
+            logger.debug("Tick skipped — another instance holds the lock")
+            try:
+                lock_fd.close()
+            except OSError:
+                pass
+            return 0
+        # Real failure: log loudly, attempt fd reclamation, and let the
+        # caller (ticker loop) see a FAILED tick so liveness degrades
+        # instead of reporting healthy-while-stalled.
         if lock_fd is not None:
-            lock_fd.close()
-        return 0
+            try:
+                lock_fd.close()
+            except OSError:
+                pass
+        if _is_fd_exhaustion(exc):
+            # Reclamation is owned by the ticker loop's except handler
+            # (scheduler_provider.py) — it classifies the raised error and
+            # runs _reclaim_fds_best_effort exactly once per failed tick.
+            # Calling it here too would double the gc.collect() pause.
+            logger.error(
+                "Cron tick could not acquire tick lock: %s — scheduler will "
+                "attempt fd reclamation and retry with backoff",
+                exc,
+            )
+        else:
+            logger.error("Cron tick could not acquire tick lock: %s", exc)
+        raise
 
     try:
         # Global emergency stop (`hermes pause`): skip dispatch entirely while
@@ -6530,6 +6975,35 @@ def tick(
             membership is released in the worker's finally block.
             """
             job_id = job["id"]
+
+            def _clear_run_claim_best_effort() -> None:
+                """Best-effort claim cleanup on the dispatch-failure paths.
+
+                Only one-shot jobs carry a ``run_claim`` (stamped by
+                get_due_jobs, #59229), so recurring jobs skip the call
+                entirely — clear_run_claim acquires _jobs_lock (blocking
+                cross-process flock) and does a full load_jobs read, and the
+                dispatch-failure paths fire exactly when the process can
+                least afford N pointless lock/read round-trips (interpreter
+                shutdown, EMFILE).  clear_run_claim itself does
+                load_jobs/save_jobs file I/O; on those degraded paths it can
+                raise, and these early-exits exist precisely to skip cleanly
+                — a stale claim expiring at the TTL is a better outcome than
+                crashing the tick (#86522).
+                """
+                _schedule = job.get("schedule")
+                if not (isinstance(_schedule, dict) and _schedule.get("kind") == "once"):
+                    return
+                try:
+                    clear_run_claim(job_id)
+                except Exception as claim_err:
+                    logger.warning(
+                        "Could not clear run_claim for job '%s' after dispatch "
+                        "failure: %s (claim will expire at TTL)",
+                        job.get("name", job_id),
+                        claim_err,
+                    )
+
             # A tick can race gateway teardown: once the interpreter is
             # finalizing, ``pool.submit`` raises "cannot schedule new futures
             # after interpreter shutdown" and crashes the tick. Skip cleanly —
@@ -6540,6 +7014,7 @@ def tick(
                     "Job '%s' not dispatched — interpreter is shutting down",
                     job.get("name", job_id),
                 )
+                _clear_run_claim_best_effort()
                 return None
             if not try_register_running_job(job_id):
                 logger.info("Job '%s' already running — skipping", job.get("name", job_id))
@@ -6557,6 +7032,7 @@ def tick(
                 # audit requirement: every add is paired with guaranteed
                 # cleanup).
                 release_running_job(job_id)
+                _clear_run_claim_best_effort()
                 logger.exception(
                     "Job '%s' not dispatched: execution creation failed: %s",
                     job.get("name", job_id),
@@ -6574,6 +7050,7 @@ def tick(
                 fut = pool.submit(_run_and_release)
             except Exception as submit_err:
                 release_running_job(job_id)
+                _clear_run_claim_best_effort()
                 finish_execution(
                     execution["id"],
                     success=False,

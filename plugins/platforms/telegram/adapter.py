@@ -303,6 +303,7 @@ from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
 )
 from plugins.platforms.telegram.telegram_network import (
+    SEED_FALLBACK_IPS,
     TelegramFallbackTransport,
     discover_fallback_ips,
     parse_fallback_ip_env,
@@ -416,7 +417,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
-    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
+    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -436,6 +437,7 @@ def check_telegram_requirements() -> bool:
             CallbackQueryHandler as _CQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
+            TypeHandler as _TH,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
@@ -456,6 +458,7 @@ def check_telegram_requirements() -> bool:
     ParseMode = _PM
     ChatType = _CtT
     HTTPXRequest = _HR
+    TypeHandler = _TH
     TELEGRAM_AVAILABLE = True
     return True
 
@@ -1437,22 +1440,44 @@ class TelegramAdapter(BasePlatformAdapter):
                     pass
 
         if authorized is None:
+            # Resolve through the runner's full auth chain (platform + group
+            # allowlists, pairing store, allow-all flags). Prefer the
+            # platform-bound callback registered via set_authorization_check:
+            # it routes to GatewayRunner._is_user_authorized AND survives
+            # multiplex handler wrapping, whereas the bound-handler __self__
+            # lookup is None when the primary handler is a profile closure —
+            # which silently dropped the chat allowlist and default-denied
+            # allowlisted group members under multiplex_profiles (#87132). Fall
+            # back to the bound handler for setups without a registered callback.
             runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
             auth_fn = getattr(runner, "_is_user_authorized", None)
-            if callable(auth_fn):
-                # Only make an early decision via the runner when an allowlist
-                # actually exists; otherwise unknown DMs must reach the pairing
-                # flow rather than being default-denied here.
+            has_callback = getattr(self, "_authorization_check", None) is not None
+            if has_callback or callable(auth_fn):
+                # Only make an early decision when an allowlist actually exists;
+                # otherwise unknown DMs must reach the pairing flow rather than
+                # being default-denied here.
                 if not self._telegram_auth_env_configured():
                     return True
-                try:
-                    authorized = bool(auth_fn(source))
-                except Exception:
-                    logger.debug(
-                        "[Telegram] Falling back to env-only auth for user %s",
+                decision = (
+                    self._is_sender_authorized(
                         user_id,
-                        exc_info=True,
+                        chat_type=source.chat_type,
+                        chat_id=source.chat_id,
                     )
+                    if has_callback
+                    else None
+                )
+                if decision is not None:
+                    authorized = decision
+                elif callable(auth_fn):
+                    try:
+                        authorized = bool(auth_fn(source))
+                    except Exception:
+                        logger.debug(
+                            "[Telegram] Falling back to env-only auth for user %s",
+                            user_id,
+                            exc_info=True,
+                        )
 
         if authorized is None:
             allowed_csv = _scoped_gate_env("TELEGRAM_ALLOWED_USERS").strip()
@@ -1542,9 +1567,13 @@ class TelegramAdapter(BasePlatformAdapter):
         Messages topics can opt in with explicit ``direct_messages_topic_id``
         metadata. Hermes-created private-chat topic lanes are marked with
         ``telegram_dm_topic_reply_fallback``. Live replies send the private
-        topic thread id together with a reply anchor; synthetic/resumed sends
-        without an anchor use ``direct_messages_topic_id`` when metadata has it.
-        ``message_thread_id`` alone can render outside the visible lane.
+        topic thread id together with a reply anchor. Synthetic/resumed sends
+        without an anchor (loop wakeups, background-process notifications,
+        queued follow-ups after a gateway restart) prefer the Hermes topic's
+        ``message_thread_id`` so they stay in the active topic lane (#87051);
+        ``direct_messages_topic_id`` is only used when no topic thread
+        resolves, since the native DM-topic id does not match the Hermes
+        topic lane and can render the message in a different chat lane.
 
         When ``reply_to_mode`` is ``"off"``, the reply anchor is suppressed for
         DM topic fallback sends while preserving the ``message_thread_id`` so
@@ -1556,6 +1585,15 @@ class TelegramAdapter(BasePlatformAdapter):
             if reply_to_message_id is None:
                 reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
             if reply_to_message_id is None:
+                # Anchor-less synthetic sends (loop wakeups, watch
+                # notifications, restart-resumed follow-ups) must stay in the
+                # active topic lane: prefer the Hermes topic thread id when it
+                # resolves (#87051). Routing via direct_messages_topic_id here
+                # sent these to a different lane than the topic the session
+                # runs in.
+                thread_message_id = cls._message_thread_id_for_send(thread_id)
+                if thread_message_id is not None:
+                    return {"message_thread_id": thread_message_id}
                 direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
                 if direct_topic_id is not None:
                     return {
@@ -4363,12 +4401,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.warning(
                         "[%s] Telegram fallback-IP discovery failed after %.0fs; "
-                        "continuing with the plain api.telegram.org path: %s",
+                        "using seed IPv4 Telegram API IPs so a blackholed IPv6 "
+                        "hostname path cannot hang initialize() (#87015): %s",
                         self.name,
                         discovery_timeout,
                         _redact_telegram_error_text(exc),
                     )
-                    fallback_ips = []
+                    fallback_ips = list(SEED_FALLBACK_IPS)
                 else:
                     logger.info(
                         "[%s] Auto-discovered Telegram fallback IPs: %s",
@@ -9587,7 +9626,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
+            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -9692,6 +9731,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=self._session_key_profile(event.source),
         )
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:

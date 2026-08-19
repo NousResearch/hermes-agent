@@ -90,6 +90,43 @@ class TestGenerateTitle:
             assert len(title) == 80
             assert title.endswith("...")
 
+    def test_rejects_answer_shaped_output(self):
+        """A model that ignores the titling task and answers the user's
+        message returns a full sentence; without a word bound the whole
+        reply (truncated mid-sentence) became the session title.
+        Regression for the can1357/oh-my-pi#7306 bug class."""
+        answer = (
+            "I don't have context on a \"registration system\" - that's not "
+            "something I recognize from this conversation, and I don't see "
+            "any prior discussion or code about it here"
+        )
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = answer
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("how does the registration system work?", "...") is None
+
+    def test_rejects_many_short_words(self):
+        """13 short words stays under the 80-char cap but is not a title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "one two three four five six seven eight nine ten eleven twelve thirteen"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question", "answer") is None
+
+    def test_accepts_normal_title(self):
+        """A normal 3-7 word title is unaffected by the answer-shape guard."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Investigate the title resolver bug"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question", "answer") == "Investigate the title resolver bug"
+
 
 
     def test_invokes_failure_callback_on_exception(self):

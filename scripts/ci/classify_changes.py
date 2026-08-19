@@ -14,6 +14,8 @@ Lanes:
   test suite. A tests-only PR keeps ``python`` (pytest must run) while
   skipping those product jobs.
 * ``docker_meta`` — Dockerfiles etc.
+* ``docker`` — any product change + docker meta
+* ``nix``         — ``nix flake check``: the flake inputs and any product change.
 * ``frontend``    — TS typecheck matrix + desktop build.
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
@@ -36,6 +38,13 @@ must never skip one a change could break:
   or a frontend-only package; an unrecognized path keeps it on.
 * ``skills/`` (incl. ``SKILL.md``) is python-relevant — the skill-doc tests
   read that tree, so a doc-looking edit can still break Python.
+* ``nix/``, ``flake.nix`` and ``flake.lock`` are the exception the other way:
+  only the flake reads them, so they skip the Python lanes and run ``nix``
+  alone. ``pyproject.toml`` and ``uv.lock`` are flake inputs too, but the
+  packaging tests read them, so they keep every Python lane.
+* ``website/static/oauth/`` is python-relevant too: it publishes the OAuth
+  Client ID Metadata Document that ``tests/tools/test_mcp_cimd.py`` checks
+  against the pinned callback ports in ``tools/mcp_oauth.py``.
 """
 
 from __future__ import annotations
@@ -47,9 +56,17 @@ import sys
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
+_NIX_PATHS = ("nix/",) # nix files
+_NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
+# Published artifacts that live under website/ but that Python asserts about.
+# The OAuth Client ID Metadata Document is cross-checked against the pinned
+# callback ports in tools/mcp_oauth.py, so editing it alone must still run the
+# Python lane — otherwise dropping a redirect URI goes green here and breaks
+# every CIMD login on main.
+_PY_RELEVANT_SITE = ("website/static/oauth/",)
 
 # CI-sensitive files: eslint config, workflow files, composite actions.
 # Changes here can influence what code the autofix job executes and pushes to
@@ -83,8 +100,20 @@ def _is_docs(p: str) -> bool:
     return p.endswith((".md", ".mdx")) or p.startswith("docs/") or p.startswith("LICENSE")
 
 
+def _is_nix(p: str) -> bool:
+    return p.startswith(_NIX_PATHS) or p in _NIX_FILES
+
+
 def _py_irrelevant(p: str) -> bool:
-    return _is_docs(p) or p in _ROOT_NPM or p.startswith(_PY_SKIP) or p.startswith(_DOCKER_META)
+    if p.startswith(_PY_RELEVANT_SITE):
+        return False
+    return (
+        _is_docs(p)
+        or p in _ROOT_NPM
+        or p.startswith(_PY_SKIP)
+        or p.startswith(_DOCKER_META)
+        or _is_nix(p)
+    )
 
 
 def _py_test_only(p: str) -> bool:
@@ -127,23 +156,33 @@ def ci_review_files(files: list[str]) -> list[str]:
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
+    python = any(not _py_irrelevant(f) for f in files)
+    python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
+    frontend = any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files)
+    deps = any(f == "pyproject.toml" for f in files)
+    npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
+    docker_meta = any(f.startswith(_DOCKER_META) for f in files)
+    
     ret = {
-        "python": any(not _py_irrelevant(f) for f in files),
-        "python_prod": any(not _py_irrelevant(f) and not _py_test_only(f) for f in files),
-        "docker_meta":  any(f.startswith(_DOCKER_META) for f in files),
-        "frontend": any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files),
+        "python": python,
+        "python_prod": python_prod,
+        "docker": docker_meta or python_prod or frontend,
+        "docker_meta": docker_meta,
+        "frontend": frontend,
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),
-        "deps": any(f == "pyproject.toml" for f in files),
+        "deps": deps,
         "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
-        "npm_lock": any(f.split("/")[-1] == "package-lock.json" for f in files),
+        "npm_lock": npm_lock,
         "installer": any(_is_installer(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
+        "nix": python_prod or frontend or any(_is_nix(f) for f in files)
     }
     if not files or any(f.startswith(".github/") for f in files):
         ret["python"] = True
         ret["python_prod"] = True
+        ret["docker"] = True
         ret["docker_meta"] = True
         ret["frontend"] = True
         ret["site"] = True
@@ -152,6 +191,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["uv_lock"] = True
         ret["npm_lock"] = True
         ret["installer"] = True
+        ret["nix"] = True
         ret["ci_review"] = True
 
         # explicitly skip mcp catalog here. it's not needed unless those files are modified.

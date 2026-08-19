@@ -9,6 +9,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
   contentHasVisibleText,
@@ -17,7 +18,7 @@ import {
 } from '@/components/assistant-ui/thread/content'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
-import { ResponseLoadingIndicator, StreamStallIndicator } from '@/components/assistant-ui/thread/status'
+import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
@@ -30,6 +31,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
+import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
@@ -96,7 +98,7 @@ export const AssistantMessage: FC<{
   // selector here returns a value that stays referentially stable across
   // token flushes (booleans, status strings, '' while running), so the
   // 30 Hz delta stream only re-renders the markdown part and the tiny
-  // StreamStallIndicator leaf — not the footer/preview/root subtree.
+  // TurnActivityIndicator leaf — not the footer/preview/root subtree.
   const messageStatus = useAuiState(s => s.message.status?.type)
   const isRunning = messageStatus === 'running'
   const isPlaceholder = useAuiState(s => s.message.status?.type === 'running' && s.message.content.length === 0)
@@ -199,7 +201,14 @@ export const AssistantMessage: FC<{
       >
         {/* Todos render in the composer status stack now, not inline. */}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {isLastMessage && (isPlaceholder ? <ResponseLoadingIndicator /> : isRunning && <StreamStallIndicator />)}
+        {/* The activity row is mounted by the TAIL of the thread and decides
+            for itself whether the turn owes the user a line. Gating the mount
+            on this bubble's own `running` status was the hole: a turn that
+            seals a bubble mid-flight (message.interim) or finishes one while
+            the agent keeps going leaves a settled message at the tail, so the
+            row unmounted and the seconds went uncounted while the composer's
+            arc border and Stop button said work was still happening. */}
+        {isLastMessage && (isPlaceholder ? <ResponseLoadingIndicator /> : <TurnActivityIndicator />)}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (
@@ -335,6 +344,8 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   const { t } = useI18n()
   const copy = t.assistant.thread
   const voicePlayback = useStore($voicePlayback)
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
 
   const readAloudStatus =
     voicePlayback.source === 'read-aloud' && voicePlayback.messageId === messageId ? voicePlayback.status : 'idle'
@@ -354,10 +365,11 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
 
     try {
       await playSpeechText(text, { messageId, source: 'read-aloud' })
+      markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
     } catch (error) {
       notifyError(error, copy.readAloudFailed)
     }
-  }, [copy.readAloudFailed, getText, messageId])
+  }, [copy.readAloudFailed, getText, messageId, sessionId, view.$messages])
 
   return (
     <TooltipIconButton

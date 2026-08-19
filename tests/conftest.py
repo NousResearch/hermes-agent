@@ -264,6 +264,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_VOICE",
     "HERMES_VOICE_TTS",
     "HERMES_YOLO_MODE",
+    # Injected into subprocess envs by the terminal tool (_make_run_env), so
+    # any test run launched FROM a Hermes agent session inherits them and
+    # hermes_constants home-resolution helpers prefer them over monkeypatched
+    # HOME (test_subprocess_home_isolation red locally, green on CI).
+    "HERMES_REAL_HOME",
+    "TERMINAL_HOME_MODE",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
@@ -560,6 +566,28 @@ def _hermetic_environment(tmp_path, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_kanban_memory_guard(request, monkeypatch):
+    """Pin the kanban dispatcher's memory guard to "no data" for every test.
+
+    The dispatcher consults live system memory before spawning (OOF-30/
+    OOF-77: memory-derived default cap + pressure-based spawn restriction).
+    Left un-patched, dispatch tests would pass or fail based on how loaded
+    the CI runner happens to be. Defaulting the sample to ``{}`` makes the
+    derived cap ``None`` and the pressure level ``"unknown"`` — i.e. the
+    pre-guard behaviour every existing test was written against. Tests that
+    exercise the guard itself opt out with
+    ``@pytest.mark.real_memory_guard`` or patch the seam directly.
+    """
+    if request.node.get_closest_marker("real_memory_guard"):
+        return
+    try:
+        from hermes_cli import kanban_db as _kb_mod
+    except Exception:
+        return
+    monkeypatch.setattr(_kb_mod, "_system_memory_sample", lambda: {}, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -1141,6 +1169,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "require_symlinks: skip the test if symbolic links cannot be "
         "created in the current environment (needs admin/developer mode "
         "on Windows).",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_memory_guard: bypass the autouse fixture that pins the kanban "
+        "dispatcher's memory guard to 'no data' — only for tests that "
+        "exercise the guard itself with their own patched samples.",
     )
     # NOTE: linux_only / macos_only / windows_only are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the

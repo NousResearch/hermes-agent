@@ -7,16 +7,51 @@ import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
   $sessionStates,
+  $sessionTiles,
   blankDraftTile,
   focusedSessionNeedsRoute,
   markSelectionRestore,
+  nextSessionTileForWorkspace,
   orderTilesByTree,
   releaseSessionTranscript,
-  selectionHomesToWorkspace
+  resetTileRuntimeBindings,
+  selectionHomesToWorkspace,
+  type SessionTileDelegate,
+  setSessionTileDelegate
 } from '@/store/session-states'
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`
+
+describe('resetTileRuntimeBindings', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('invalidates the delegate wiring cache AND drops tile runtime ids (sleep/wake reconnect)', () => {
+    // The reconnect path must bust BOTH layers: the tile atoms' runtimeId and
+    // the delegate's stored→runtime warm cache. Clearing only the atoms let
+    // resumeTile's warm path re-bind the same dead runtime id after wake.
+    const invalidateRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+
+    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
+    resetTileRuntimeBindings()
+
+    expect(invalidateRuntimeBindings).toHaveBeenCalledTimes(1)
+    expect($sessionTiles.get()).toEqual([
+      { anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }
+    ])
+  })
+
+  it('tolerates a delegate without invalidateRuntimeBindings (older wiring)', () => {
+    setSessionTileDelegate({} as unknown as SessionTileDelegate)
+    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
+
+    expect(() => resetTileRuntimeBindings()).not.toThrow()
+    expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
+  })
+})
 
 describe('releaseSessionTranscript', () => {
   afterEach(() => {
@@ -74,6 +109,47 @@ describe('selectionHomesToWorkspace', () => {
 
   it('skips homing when the selected id is already an open tile', () => {
     expect(selectionHomesToWorkspace('a', tiles)).toBe(false)
+  })
+})
+
+describe('nextSessionTileForWorkspace (⌘W promotion source)', () => {
+  afterEach(() => {
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('prefers a tile stacked WITH the workspace tab (nearest-out)', () => {
+    $layoutTree.set(group(['workspace', tilePane('a'), tilePane('b')], { active: 'workspace', id: 'main' }))
+    $sessionTiles.set([tile('a'), tile('b')])
+
+    expect(nextSessionTileForWorkspace()).toBe('a')
+  })
+
+  it('side-by-side layout: a tile in ANOTHER zone still promotes instead of dropping main to a fresh draft (#88924)', () => {
+    // main zone holds only the workspace; the session tile lives in its own
+    // zone beside it — db's three-pane report shape.
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { active: 'workspace', id: 'main' }),
+        group([tilePane('side')], { active: tilePane('side'), id: 'right' })
+      ])
+    )
+    $sessionTiles.set([tile('side')])
+
+    expect(nextSessionTileForWorkspace()).toBe('side')
+  })
+
+  it('returns null when no live tile exists anywhere in the tree', () => {
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { active: 'workspace', id: 'main' }),
+        group([tilePane('stale')], { active: tilePane('stale'), id: 'right' })
+      ])
+    )
+    // Pane persisted in the tree but its tile is gone — must not promote a ghost.
+    $sessionTiles.set([])
+
+    expect(nextSessionTileForWorkspace()).toBe(null)
   })
 })
 

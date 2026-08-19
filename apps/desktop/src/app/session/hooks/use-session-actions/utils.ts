@@ -7,7 +7,9 @@ import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
+  $cronSessions,
   $currentCwd,
+  $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
   releaseWorkspaceCwdOwner,
@@ -1291,7 +1293,9 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 }
 
 export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
+    sessionMatchesStoredId(session, storedSessionId)
+  )
 
   // A row with no owning profile can't route a resume when more than one
   // profile exists — a resume without a profile lands on whichever gateway is
@@ -1303,17 +1307,19 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
     return cached
   }
 
-  // Direct by-id on the live backend — one row lookup, no list scan. Covers
-  // single-profile users and any id on the active profile (e.g. an old session
-  // past the sidebar's recent window). 404 just means it's not on this profile.
-  try {
-    const session = await getSession(storedSessionId)
+  // Direct by-id on the active profile — one row lookup, no list scan. Electron
+  // routes an unscoped GET to the primary backend, which may not own the
+  // active profile. A 404 there used to skip that profile in the probes below,
+  // so the session was never found.
+  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
 
-    // Older backends omit `profile` on unscoped GETs; the serving backend is
-    // the active gateway's, so back-fill that rather than caching an unowned
-    // row. A present stamp is preserved: in app-global remote mode a bare hit
-    // can legitimately carry another profile's row (see the branch tests).
-    session.profile ||= normalizeProfileKey($activeGatewayProfile.get())
+  try {
+    const session = await getSession(storedSessionId, activeKey)
+
+    // Older backends can omit `profile`; this request targeted the active
+    // profile, so back-fill that rather than caching an unowned row. A present
+    // stamp is preserved for backend compatibility.
+    session.profile ||= activeKey
 
     upsertResolvedSession(session, storedSessionId)
 
@@ -1322,11 +1328,10 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
     // Not on the active profile — fall through to the cross-profile probe.
   }
 
-  // Multi-profile only: probe each other profile by id (still one cheap lookup
-  // each) rather than pulling every profile's recent sessions. The first hit
-  // carries its owning `profile`, which routes the resume to the right backend.
-  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
-
+  // Multi-profile only: probe each remaining profile by id (still one cheap
+  // lookup each) rather than pulling every profile's recent sessions. The
+  // first hit carries its owning `profile`, which routes the resume to the
+  // right backend. The active profile was already tried above.
   const otherProfiles = $profiles
     .get()
     .map(profile => normalizeProfileKey(profile.name))
@@ -1571,6 +1576,33 @@ export function isSessionGoneError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? '')
 
   return message.includes('404') || /session not found/i.test(message)
+}
+
+/**
+ * What to do when a resume's RPC and REST fallback BOTH came back
+ * gone-looking (#88540).
+ *
+ * A 404 is only proof of deletion when it came from the backend that owns
+ * the session. During (or moments after) a profile/connection switch the
+ * request can land on a backend that has never heard of the id — the
+ * cross-profile Bots-pane open is the reproducer: the route is written
+ * correctly, the resume races the gateway swap, both lookups 404 on the
+ * wrong backend, and the "genuinely gone" branch yanks the window to the
+ * blank new-chat route while the target session is perfectly alive.
+ *
+ * `'retry'` keeps the route and arms the bounded auto-retry (which re-runs
+ * the resume once the swap settles); `'draft'` is reserved for a session
+ * that is verifiably gone in calm conditions.
+ */
+export function goneSessionVerdict(options: {
+  /** The session was created by this window in this run — never discard. */
+  createdThisRun: boolean
+  /** A post-failure re-resolve still finds the row on SOME profile. */
+  stillListed: boolean
+  /** A profile swap or connection switch is in flight (or just targeted). */
+  switchInFlight: boolean
+}): 'draft' | 'retry' {
+  return options.createdThisRun || options.stillListed || options.switchInFlight ? 'retry' : 'draft'
 }
 
 /**

@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
@@ -8,6 +9,7 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
@@ -1202,12 +1204,79 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).not.toContain('/goal: no output')
   })
 
+  it('clears the goal card when /goal clear returns a typed exec dispatch (#80348)', async () => {
+    // The gateway can answer `/goal clear` with a TYPED `{ type: "exec" }`
+    // dispatch instead of the plain `{ output }` shape. The typed branch used
+    // to render and return without touching the goal store, so the stale
+    // "Goal paused" card kept showing until the chat was reopened.
+    setSessionGoal(RUNTIME_SESSION_ID, {
+      status: 'paused',
+      title: 'ship the release notes',
+      updatedAt: Date.now()
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return { type: 'exec', output: '✓ Goal cleared.' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/goal clear')
+
+    expect($goalsBySession.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+
+    $goalsBySession.set({})
+  })
+
+  it('updates the goal card live when /goal resume returns a typed exec dispatch', async () => {
+    // Sibling of the clear path: a typed exec `▶ Goal resumed: …` must flip
+    // the paused card back to active without a chat reopen.
+    setSessionGoal(RUNTIME_SESSION_ID, {
+      status: 'paused',
+      title: 'ship the release notes',
+      updatedAt: Date.now()
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return { type: 'exec', output: '▶ Goal resumed: ship the release notes' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/goal resume')
+
+    expect($goalsBySession.get()[RUNTIME_SESSION_ID]).toMatchObject({
+      status: 'active',
+      title: 'ship the release notes'
+    })
+
+    $goalsBySession.set({})
+  })
+
   it('queues the /goal kickoff instead of dropping it when the session is busy (#63352)', async () => {
     // The backend sets the goal the moment slash.exec runs — dropping the
     // returned kickoff message because busyRef was true left a goal the agent
     // never heard about. The busy path must park the kickoff on the composer
     // queue so the settle drain sends it.
     $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState(RUNTIME_SESSION_ID),
+      busy: true
+    })
 
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     const states: Record<string, unknown>[] = []
@@ -1261,6 +1330,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).toContain('⊙ Goal set (20-turn budget): ship the release notes')
     expect(renderedText).toContain('queued')
 
+    dropSessionState(RUNTIME_SESSION_ID)
     $queuedPromptsBySession.set({})
   })
 
@@ -2158,8 +2228,12 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
   })
 
-  it('a normal (non-queue) submit still respects the busyRef guard', async () => {
-    const busyRef = { current: true }
+  it('a normal (non-queue) submit is blocked when the target session is busy', async () => {
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState(RUNTIME_SESSION_ID),
+      busy: true
+    })
+    const busyRef = { current: false }
     const requestGateway = vi.fn(async () => ({}) as never)
 
     let handle: HarnessHandle | null = null
@@ -2176,6 +2250,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     expect(accepted).toBe(false)
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    dropSessionState(RUNTIME_SESSION_ID)
   })
 })
 
@@ -3189,6 +3264,65 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+  })
+
+  it('resumes the stored session and retries once when reloadFromMessage (regenerate) reports "session not found"', async () => {
+    // reloadFromMessage builds its own prompt.submit call inline instead of
+    // going through the shared send() path submitText/redirectPrompt use, so
+    // it needs the same sleep/wake recovery independently — otherwise
+    // "Regenerate" on a stale session surfaces a raw error instead of
+    // silently resuming, same as the general submit case above.
+    //
+    // reloadFromMessage bails early on $busy — an earlier suite in this file
+    // can leave it true (see the stale-closure describe block's own note),
+    // so reset it defensively rather than relying on run order.
+    $busy.set(false)
+    setMessages([
+      { id: 'u1', parts: [textPart('original prompt')], role: 'user', timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 }
+    ] as never)
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    await handle!.reloadFromMessage('u1')
+
+    // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
+    expect(calls[2]?.params).toEqual(
+      expect.objectContaining({ session_id: RECOVERED_SESSION_ID, text: 'original prompt' })
+    )
   })
 
   // #67603 (second symptom): a recovery resume must re-register on the session's
@@ -5167,5 +5301,79 @@ describe('usePromptActions stale-closure session routing', () => {
         expect(params.session_id).toBe(RUNTIME_SESSION_B)
       }
     }
+  })
+})
+
+describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
+  type GatewayRequestFn = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  type GatewayMock = GatewayRequestFn & { mock: { calls: unknown[][] } }
+
+  afterEach(() => {
+    cleanup()
+    clearNotifications()
+    setMessages([])
+    $busy.set(false)
+  })
+
+  it('surfaces a compressed-away notice instead of plain-resubmitting without an ordinal', async () => {
+    let handle: HarnessHandle | undefined
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new JsonRpcGatewayError('target user message is no longer in session history', {
+          code: 4018,
+          data: {
+            user_turn_count: 1,
+            ordinal: 0,
+            segment_ordinal: -1,
+            prefix_user_count: 1
+          }
+        })
+      }
+
+      return {} as never
+    }) as unknown as GatewayMock
+
+    const seed = [
+      { id: 'u1', parts: [textPart('pre-compress')], role: 'user' as const, timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 }
+    ]
+
+    setMessages(seed)
+
+    await actRender(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={seed}
+        storedSessionId="stored-1"
+      />
+    )
+
+    await handle!.editMessage({
+      content: [{ text: 'edited', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+
+    await waitFor(() => {
+      const titles = $notifications.get().map(n => n.title)
+      expect(titles.some(t => /no longer in server history|compressed/i.test(t || ''))).toBe(true)
+    })
+
+    const submitCalls = (requestGateway as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter(
+      ([method]) => method === 'prompt.submit'
+    )
+
+    // First attempt only — no plain resubmit that drops truncate_before_user_ordinal.
+    expect(submitCalls).toHaveLength(1)
+    expect(submitCalls[0]?.[1]).toMatchObject({
+      truncate_before_user_ordinal: 0,
+      confirm_truncate: true
+    })
   })
 })

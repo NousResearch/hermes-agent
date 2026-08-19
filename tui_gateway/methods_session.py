@@ -178,6 +178,11 @@ def _(rid, params: dict) -> dict:
             deny = frozenset({"kanban", "tool"})
 
             limit = int(params.get("limit", 200) or 200)
+            # ``include_hidden``: surfaces that OWN hidden sessions (the Bots
+            # pane's per-profile browser, plugin session pickers) need to list
+            # them; the flag stays off for the resume picker and every other
+            # global caller so `hidden` keeps meaning "not in shared lists".
+            include_hidden = is_truthy_value(params.get("include_hidden", False))
             # Over-fetch modestly so per-source filtering doesn't leave us
             # short; the compression-tip projection in ``list_sessions_rich``
             # can also merge rows.
@@ -189,6 +194,7 @@ def _(rid, params: dict) -> dict:
                     limit=fetch_limit,
                     order_by_last_active=True,
                     compact_rows=True,
+                    include_hidden=include_hidden,
                 )
                 if (s.get("source") or "").strip().lower() not in deny
             ][:limit]
@@ -317,6 +323,7 @@ def _(rid, params: dict) -> dict:
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    defer_history = is_truthy_value(params.get("defer_history", False))
     # Desktop hydrates persisted transcripts through the authenticated REST
     # route in parallel. Suppress the duplicate WebSocket transcript only when
     # the caller explicitly requests it; other clients keep upstream behavior.
@@ -424,6 +431,12 @@ def _(rid, params: dict) -> dict:
                 omit_messages=omit_messages,
             )
             payload["resumed"] = target
+            if defer_history:
+                payload["messages"] = []
+                payload["message_count"] = int(
+                    session.get("resume_message_count") or payload["message_count"]
+                )
+                payload["hydrating"] = bool(session.get("resume_hydrating"))
             # A lazy watch session never owns a run loop, so its payload's running
             # flag is always False — overlay the child-run registry so a reconnecting
             # watch window keeps its busy indicator while the child is still mid-run.
@@ -509,6 +522,72 @@ def _(rid, params: dict) -> dict:
                     "session_key": target,
                     "started_at": record["created_at"],
                     "status": "streaming" if child_running else "idle",
+                },
+            )
+
+        # Desktop can ask for a bounded acknowledgement and hydrate the display
+        # transcript through the paginated REST endpoint. Register the runtime now,
+        # then load model history and initialize optional providers in background.
+        # Repeated requests reuse the record through the live fast path above.
+        #
+        # Precedence vs omit_messages: defer_history SUPERSEDES omit_messages.
+        # Desktop sends both flags on a cold resume; when defer_history is set the
+        # response never carries a transcript (messages is always []) and the ONE
+        # history read happens in the background hydration worker — the synchronous
+        # omit_messages read below (cold resume default) is skipped entirely, so
+        # the transcript is never loaded twice for one resume. omit_messages only
+        # governs the response shape of the non-deferred paths.
+        if defer_history and not is_truthy_value(params.get("eager_build", False)):
+            sid = uuid.uuid4().hex[:8]
+            source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
+            _enable_gateway_prompts()
+            overrides = _stored_session_runtime_overrides(found) or {}
+            model_override = overrides.get("model_override") or {}
+            cwd = profile_resume_cwd or _default_session_cwd()
+            record = _deferred_session_record(
+                target,
+                cols=cols,
+                cwd=cwd,
+                history=[],
+                lease=lease,
+                source=source,
+                close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                profile_home=profile_home,
+                model_override=overrides.get("model_override"),
+                resume_runtime_overrides=overrides or None,
+            )
+            record["resume_history_ready"] = threading.Event()
+            record["resume_hydrating"] = True
+            record["resume_message_count"] = int(found.get("message_count") or 0)
+            if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+                return _ok(rid, _reuse_live_payload(*live))
+
+            _schedule_resume_hydration(sid, target, db, close_db=owns_db)
+            # The hydration worker now owns a profile-scoped handle and closes it
+            # after the transcript read. The shared launch DB is process-owned.
+            if owns_db:
+                owns_db = False
+            _schedule_session_cap_enforcement()
+            return _ok(
+                rid,
+                {
+                    "session_id": sid,
+                    "resumed": target,
+                    "message_count": record["resume_message_count"],
+                    "messages": [],
+                    "hydrating": True,
+                    "info": _lazy_resume_info(
+                        cwd,
+                        model=model_override.get("model") or "",
+                        provider=overrides.get("provider_override") or "",
+                        profile=profile,
+                    ),
+                    "inflight": None,
+                    "running": False,
+                    "session_key": target,
+                    "started_at": record["created_at"],
+                    "status": "resuming",
                 },
             )
 
@@ -847,8 +926,11 @@ def _(rid, params: dict) -> dict:
     stale ``git_repo_root`` would keep it grouped under the project it left.
 
     A live agent bound to the row follows through the runtime path too, so its
-    terminal/file tools re-anchor immediately; a mid-turn session refuses the
-    move rather than yanking the workspace out from under its tools.
+    terminal/file tools re-anchor immediately. An explicit move wins even
+    mid-turn: refusing a running session made the desktop's "Move to project"
+    claim success in the UI while ``state.db`` kept the old cwd — two sources
+    of truth disagreeing (#86626). In-flight tool calls keep the cwd they were
+    launched with; the NEXT tool call uses the new workspace.
     """
     target = str(params.get("session_key") or "").strip()
     if not target:
@@ -871,8 +953,6 @@ def _(rid, params: dict) -> dict:
             if sess.get("session_key") == target:
                 live, live_sid = sess, sid
                 break
-    if live is not None and live.get("running"):
-        return _err(rid, 4009, "session busy")
 
     branch = _git_branch_for_cwd(resolved)
     root = _git_common_repo_root_for_cwd(resolved)
@@ -1116,23 +1196,44 @@ def _(rid, params: dict) -> dict:
     owns it — for plugins that manage their own sessions and don't want them
     cluttering the shared recents list. Flips the whole compression chain as a
     unit in the DB layer.
+
+    Resolution is two-tier: a LIVE runtime session id first (which also
+    covers the not-yet-persisted draft via the ``pending_hidden`` deferral),
+    then a durable stored id/key against the target profile's state.db —
+    plugins reconciling sessions they own (e.g. Bot Mode's hide sweep) hold
+    stored ids for chats that aren't live right now, and the live-only
+    lookup silently failed those with 4001.
     """
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
     hidden = is_truthy_value(params.get("hidden", True))
-    with _session_db(session) as db:
+    session, err = _sess_nowait(params, rid)
+    if session is not None:
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5007)
+            key = session["session_key"]
+            try:
+                changed = db.set_session_hidden(key, hidden)
+                if not changed:
+                    # No row yet (write deferred to the first prompt): remember the
+                    # intent so _ensure_session_db_row is born hidden, mirroring the
+                    # pending_title deferral.
+                    session["pending_hidden"] = hidden
+                return _ok(rid, {"hidden": hidden, "session_key": key})
+            except Exception as e:
+                return _err(rid, 5007, str(e))
+    # Durable fallback: a stored session id (or key) in the requested
+    # profile's db. ``resolve_session_id`` follows key/title aliases the
+    # same way the REST pin/archive path does.
+    target = str(params.get("session_id") or "").strip()
+    with _profile_db(params) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
-        key = session["session_key"]
         try:
-            changed = db.set_session_hidden(key, hidden)
-            if not changed:
-                # No row yet (write deferred to the first prompt): remember the
-                # intent so _ensure_session_db_row is born hidden, mirroring the
-                # pending_title deferral.
-                session["pending_hidden"] = hidden
-            return _ok(rid, {"hidden": hidden, "session_key": key})
+            resolved = db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target
+            if not resolved:
+                return err
+            db.set_session_hidden(resolved, hidden)
+            return _ok(rid, {"hidden": hidden, "session_key": resolved})
         except Exception as e:
             return _err(rid, 5007, str(e))
 
@@ -2493,8 +2594,16 @@ def _(rid, params: dict) -> dict:
         with _session_db(session) as db:
             if db is not None:
                 try:
+                    # include_row_ids: the durable row id is how clients address
+                    # a specific persisted turn (reactions, and the Desktop's
+                    # content-based truncation-target resolution — #87059). The
+                    # projection in _history_to_messages only forwards row_id
+                    # when the row carries a stamp, so an unstamped read here
+                    # silently strips the one durable address clients can use.
                     history = db.get_messages_as_conversation(
-                        session["session_key"], include_ancestors=True
+                        session["session_key"],
+                        include_ancestors=True,
+                        include_row_ids=True,
                     )
                 except Exception:
                     pass

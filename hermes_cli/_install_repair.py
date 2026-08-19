@@ -183,10 +183,15 @@ def _run_install_cmd(cmd: list[str], *, env: dict | None, root: Path) -> None:
     moved = _quarantine_running_hermes_exe(scripts_dir) if scripts_dir else []
     try:
         subprocess.run(cmd, cwd=root, check=True, env=env)
-    except BaseException:
+    finally:
+        # Restore runs on success AND failure: a SUCCESSFUL install can still
+        # skip the entry-points step entirely (uv audits an already-satisfied
+        # editable install as a no-op and rewrites nothing), which would leave
+        # the quarantined shims renamed aside and `hermes` gone from PATH
+        # (#75584). _restore_quarantined_exes only renames back when the
+        # installer did NOT write a fresh shim, so this is safe in both cases.
         if scripts_dir is not None:
             _restore_quarantined_exes(moved)
-        raise
 
 
 def _load_installable_optional_extras(root: Path, group: str) -> list[str]:

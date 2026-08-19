@@ -2347,6 +2347,56 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5": 272_000,
 }
 
+# Codex OAuth advertises 272K via /backend-api/codex/models for these
+# families, but the backend actually ACCEPTS far more. OpenAI enabled the
+# large-context window for ChatGPT-subscription Codex accounts on
+# Aug 16 2026 (announced by @thsottiaux; previously API-key-only).
+# Verified live against chatgpt.com/backend-api/codex/responses the same
+# day: 911,276 input tokens completed OK on gpt-5.6-sol; ~925K+ rejected
+# with ``context_length_exceeded`` (the 1.05M window minus reserved output
+# headroom). gpt-5.6-terra, gpt-5.6-luna, and gpt-5.4 all completed 900,026
+# tokens OK. gpt-5.5 and gpt-5.4-mini still rejected >272K, so their
+# advertisement is real enforcement and they are NOT listed. 900K keeps
+# ≥11K margin under the observed ceiling and matches the compaction point
+# Codex's own client config documents for the 1M window.
+#
+# Applied ONLY when the resolved value (live probe or fallback table) is
+# exactly the known-stale 272,000 advertisement — if OpenAI moves the
+# advertised number in either direction (the gpt-5.6 family shifted
+# 272K → 372K → 272K during July 2026), the catalog is trusted again and
+# this table is inert. ``gpt-5.6`` is a FAMILY PREFIX (sol/terra/luna and
+# dated snapshots; ``-pro`` slugs are not routable on Codex OAuth — the
+# backend 400s them — so over-matching there is moot). ``gpt-5.4`` is EXACT:
+# gpt-5.4-mini was probed and genuinely enforces 272K (rejected 500K), so
+# prefix-matching the 5.4 family would over-report for mini.
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
+    "gpt-5.6": 900_000,   # sol / terra / luna — all three verified live at 900K
+}
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
+    "gpt-5.4": 900_000,   # verified live at 900K; gpt-5.4-mini rejected 500K — excluded
+}
+
+# The advertised value the verified-above table is allowed to override.
+_CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000
+
+
+def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
+    """Return the live-verified Codex cap for a slug, or ``None``.
+
+    Exact slugs first, then family prefixes (``<key>``, ``<key>-``,
+    ``<key>.``) so dated snapshots of a verified family inherit the bump.
+    """
+    slug = (model_bare or "").strip().lower()
+    if not slug:
+        return None
+    exact = _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT.get(slug)
+    if exact is not None:
+        return exact
+    for key, ctx in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES.items():
+        if slug == key or slug.startswith(key + "-") or slug.startswith(key + "."):
+            return ctx
+    return None
+
 
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
@@ -2474,16 +2524,33 @@ def _resolve_codex_oauth_context_length_with_source(
     if not model_bare:
         return None, ""
 
+    def _apply_verified_bump(ctx: int, source: str) -> Tuple[int, str]:
+        """Lift a known-stale 272K advertisement to the live-verified cap.
+
+        Only fires when the resolved value is EXACTLY the stale 272,000
+        advertisement for a slug we have probed above it (see
+        ``_verified_codex_ctx_for_slug``). Any other advertised value —
+        higher or lower — is trusted as a real server-side change.
+        """
+        bumped = _verified_codex_ctx_for_slug(model_bare)
+        if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+            logger.debug(
+                "Codex OAuth context for %s: advertised %d raised to "
+                "live-verified %d", model_bare, ctx, bumped,
+            )
+            return bumped, source
+        return ctx, source
+
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
         live_source = "live" if fresh_probe else "memory"
         if model_bare in live:
-            return live[model_bare], live_source
+            return _apply_verified_bump(live[model_bare], live_source)
         # Case-insensitive match in case casing drifts
         model_lower = model_bare.lower()
         for slug, ctx in live.items():
             if slug.lower() == model_lower:
-                return ctx, live_source
+                return _apply_verified_bump(ctx, live_source)
 
     # Fallback: longest-key-first substring match over hardcoded defaults.
     model_lower = model_bare.lower()
@@ -2491,7 +2558,7 @@ def _resolve_codex_oauth_context_length_with_source(
         _CODEX_OAUTH_CONTEXT_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True
     ):
         if slug in model_lower:
-            return ctx, "fallback"
+            return _apply_verified_bump(ctx, "fallback")
 
     return None, ""
 

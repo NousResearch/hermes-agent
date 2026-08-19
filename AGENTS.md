@@ -1288,6 +1288,30 @@ automatically scope to the active profile.
    This is intentional — it lets `hermes -p coder profile list` see all profiles regardless
    of which one is active.
 
+7. **Multiplex profile-scoped env reads MUST fail closed — never borrow from `os.environ`**
+   (`agent/secret_scope.py` contract; #72348, #86905). Under `gateway.multiplex_profiles`,
+   `os.environ` holds the **default profile's** values; a secondary profile's `.env` lives
+   only in its secret scope (installed per-turn by `_profile_runtime_scope`). Any
+   profile-level env config — credentials (`app_secret`, tokens) AND authorization
+   (`FEISHU_ALLOWED_USERS`, `{PLATFORM}_ALLOW_ALL_USERS`, `GATEWAY_ALLOW_ALL_USERS`,
+   `group_policy`, `allow_bots`, ...) — must be read scope-aware:
+   - Adapters: `_get_scoped_secret()` (canonical fail-closed copy in
+     `plugins/platforms/feishu/adapter.py`, #86905).
+   - Gateway authz: `_auth_env()` / `_platform_gate_env()` (`gateway/authz_mixin.py`).
+   Rules:
+   - Scope installed + multiplex active → a scoped miss returns the **default**.
+     NEVER fall through to `os.environ` — that leaks another profile's value and
+     silently breaks routing/admission (a leaked default allowlist skips the
+     allow-all check and rejects every secondary-profile sender, #86905).
+   - Unscoped default-profile path (`UnscopedSecretError`) and single-profile
+     deployments keep the `os.environ` read — there it IS the profile's own value.
+   - Authorization config is the sharpest edge: allowlist/allow-all leaks cause
+     silent rejections (or worse, fail-open) that only show up as missing replies.
+   - The `_get_scoped_secret` wrapper is copy-pasted across ~15 platform adapters —
+     when touching any of them, make sure the fail-closed semantics are present;
+     do not reintroduce the `except _UnscopedSecretError: val = os.getenv(...)`
+     fallback-after-miss shape.
+
 ## Known Pitfalls
 
 ### DO NOT hardcode `~/.hermes` paths

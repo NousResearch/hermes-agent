@@ -199,18 +199,22 @@ export async function withSessionNotFoundResume<T>(
  * blocks an IDLE target and reports "session busy" about a session doing
  * nothing, and the converse lets a background send fire mid-turn.
  *
- * The published per-session state is authoritative. Fall back to the
- * foreground flag only when the target has no state yet — a just-minted
- * session whose first publish hasn't landed.
+ * The published per-session state is authoritative. A known target with no
+ * slice yet is idle — never inherit another session's leftover foreground
+ * flag (focusing B while A runs). Fall back to the foreground flag only for
+ * a true draft (no session id), where that flag must be the focused view's
+ * busy, not a process-global lock.
  */
 export function isTargetSessionBusy(
   sessionStates: Record<string, { busy: boolean }>,
   sessionId: null | string,
   foregroundBusy: boolean
 ): boolean {
-  const state = sessionId ? sessionStates[sessionId] : undefined
+  if (!sessionId) {
+    return foregroundBusy
+  }
 
-  return state ? state.busy : foregroundBusy
+  return Boolean(sessionStates[sessionId]?.busy)
 }
 
 // Gateway JSON-RPC calls reject with "request timed out: <method>" when the
@@ -603,28 +607,45 @@ export function isVisibleUserMessage(message: ChatMessage): boolean {
   return message.role === 'user' && !message.hidden
 }
 
+/**
+ * A user turn whose submit failed: the optimistic bubble stayed in the
+ * transcript (followed by an assistant error), but the turn never reached the
+ * gateway, so it does not exist in backend history. Every backend-facing
+ * user-turn count must skip these or every later ordinal overshoots the
+ * gateway's index and the rewind mis-aims / gets refused (#41275, #86573).
+ */
+export function isFailedUserTurn(messages: readonly ChatMessage[], index: number): boolean {
+  const next = messages[index + 1]
+
+  return next?.role === 'assistant' && Boolean(next.error)
+}
+
+/**
+ * Indices of the user turns the backend also knows about — visible AND not
+ * failed. This is the ONE ordinal space shared with the gateway: truncate
+ * ordinals, ordinal→index resolution, survivor-rowId rebinding, and durable
+ * row-id resolution all iterate exactly this list.
+ */
+export function visibleUserMessageIndices(messages: readonly ChatMessage[]): number[] {
+  const indices: number[] = []
+
+  for (let index = 0; index < messages.length; index += 1) {
+    if (isVisibleUserMessage(messages[index]) && !isFailedUserTurn(messages, index)) {
+      indices.push(index)
+    }
+  }
+
+  return indices
+}
+
 export function visibleUserOrdinal(messages: readonly ChatMessage[], end: number): number {
-  return messages.slice(0, end).filter(isVisibleUserMessage).length
+  return visibleUserMessageIndices(messages).filter(index => index < end).length
 }
 
 export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targetOrdinal: number): number {
-  let ordinal = 0
+  const indices = visibleUserMessageIndices(messages)
 
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]
-
-    if (!isVisibleUserMessage(message)) {
-      continue
-    }
-
-    if (ordinal === targetOrdinal) {
-      return index
-    }
-
-    ordinal += 1
-  }
-
-  return -1
+  return targetOrdinal >= 0 && targetOrdinal < indices.length ? indices[targetOrdinal] : -1
 }
 
 export interface SubmitTextOptions {
@@ -642,6 +663,10 @@ export interface SubmitTextOptions {
    *  body — model-facing scaffolding the UI must never render — so the slash
    *  dispatcher passes the invocation (`/work fix the leak`) here. */
   displayText?: string
+  /** `hidden` types the persisted user row (display_kind) so no bubble
+   *  renders anywhere — the off-screen path for widget intents. The agent
+   *  still receives the text as a normal user turn. */
+  displayKind?: 'hidden'
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

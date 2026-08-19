@@ -329,7 +329,7 @@ class TestInstallResolution:
         )
         captured = {}
 
-        def fake_core(identifier, *, force, ref=None):
+        def fake_core(identifier, *, force, ref=None, scan_decision_cb=None):
             captured["identifier"] = identifier
             captured["ref"] = ref
             raise plugins_cmd.PluginOperationError("stop here")
@@ -348,7 +348,7 @@ class TestInstallResolution:
         )
         captured = {}
 
-        def fake_core(identifier, *, force, ref=None):
+        def fake_core(identifier, *, force, ref=None, scan_decision_cb=None):
             captured["ref"] = ref
             raise plugins_cmd.PluginOperationError("stop here")
 
@@ -401,7 +401,7 @@ class TestInstallResolution:
         monkeypatch.setattr(plugin_index, "load_index", boom)
         captured = {}
 
-        def fake_core(identifier, *, force, ref=None):
+        def fake_core(identifier, *, force, ref=None, scan_decision_cb=None):
             captured["identifier"] = identifier
             captured["ref"] = ref
             raise plugins_cmd.PluginOperationError("stop here")

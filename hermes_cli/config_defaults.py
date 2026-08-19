@@ -33,6 +33,15 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    "session": {
+        # Per-terminal `hermes -c`: each CLI session drops a breadcrumb file
+        # under $HERMES_HOME/terminal-sessions/<terminal-id>, and a bare
+        # -c/--continue resumes THIS terminal's session (tmux pane, kitty
+        # window, wezterm pane, plain tty, ...) instead of the globally
+        # most-recent one. Set false to restore the old latest-session
+        # behavior everywhere.
+        "terminal_continue": True,
+    },
     "agent": {
         "max_turns": 500,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -114,6 +123,22 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Empty-response retry guard (NS-503).  The empty-retry loop
+        # re-sends the full conversation input at full price on every
+        # attempt; these settings stop it from re-billing *deterministic*
+        # empties (unsignaled provider refusals with zero output tokens)
+        # while failing open on any ambiguous evidence (missing usage,
+        # any generated tokens, model/provider change mid-streak).
+        "empty_response_guard": {
+            # Master switch for both guards below. False restores the
+            # legacy fixed 3-retry behaviour unconditionally.
+            "enabled": True,
+            # When the estimated input cost of a single empty attempt
+            # meets or exceeds this many USD, the retry budget for the
+            # streak drops from 3 to 1. Unknown pricing or missing usage
+            # leaves the budget untouched.
+            "cost_threshold_usd": 0.25,
+        },
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -154,6 +179,9 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # Bot Mode teammate-messaging protocol section (silent unless a
+        # profile is managed by the desktop's Bot Mode).
+        "bot_mode_protocol": True,
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Hermes
         # (sandbox runner, managed platform) explain the runtime environment
@@ -650,6 +678,17 @@ DEFAULT_CONFIG = {
                                       # threshold and this token count. Clamped to
                                       # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        "tail_mode": "legacy",        # tail retention policy (#87326):
+                                      #   "legacy" — 0.20×window verbatim tail (default)
+                                      #   "lean"   — clamped 2.5%-of-window tail
+                                      #              (10K floor / 25K cap) plus chunked
+                                      #              digests, a mechanical anchor index,
+                                      #              verbatim user messages, and
+                                      #              session_search recovery pointers in
+                                      #              the summary. ~3x fewer retained
+                                      #              tokens after compaction; costs a few
+                                      #              extra summarizer calls at the
+                                      #              compaction boundary.
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
                                       # survive in the uncompressed tail. 1 = existing
@@ -1120,6 +1159,9 @@ DEFAULT_CONFIG = {
         # replay; different model = digest. Quality holds (memory capture
         # identical, skill near-identical in benchmarks).
         "background_review": {
+            # Master switch for automatic post-turn memory/skill review forks.
+            # false = skip automatic spawns (manual /refine still works).
+            "enabled": True,
             "provider": "auto",
             "model": "",
             "base_url": "",
@@ -1922,6 +1964,16 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Project-local skill discovery: when a session starts inside a git
+        # checkout, ``<root>/.hermes/skills/`` and ``<root>/.agents/skills/``
+        # are sourced as the highest-precedence skill tier — but ONLY when the
+        # project root is listed in trusted_project_dirs below. Trust a repo
+        # with ``hermes skills trust`` (run from inside it). Set to false to
+        # disable discovery entirely (no scan, no untrusted-skills notice).
+        "project_discovery": True,
+        # Absolute paths of project roots whose repo-local skills may load.
+        # Managed by ``hermes skills trust`` / ``hermes skills untrust``.
+        "trusted_project_dirs": [],
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
@@ -1947,6 +1999,18 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Advisory NVIDIA SkillEvaluator Tier 1 scan on hub installs
+        # (`hermes skills install`). Runs ALONGSIDE the built-in skills
+        # guard (which stays the enforcement layer) and only when the
+        # optional `skillevaluator` binary is on PATH:
+        #   uv tool install --python 3.13 \
+        #     "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
+        # Findings are informational — shown with file/line before the
+        # install confirmation, never blocking. Secrets-class findings
+        # (private keys, tokens, credentialed connection strings) are
+        # highlighted in red. On by default because it is a no-op
+        # without the binary installed.
+        "tier1_advisory": True,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
         # background self-improvement review fork.
@@ -1959,6 +2023,14 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Per-mutation audit ledger (tracker #79686 P3). Every skill mutation
+        # — curator, agent, or user — appends one JSONL entry to
+        # ~/.hermes/skills/.curator_ledger.jsonl with before/after file
+        # hashes; file contents are stored content-addressed (deduped) under
+        # ~/.hermes/.curator_backups/blobs/. Enables `hermes curator ledger`
+        # and single-mutation `hermes curator rollback <entry-id>`.
+        # Telemetry, never a gate: ledger failures cannot block a mutation.
+        "ledger": True,
     },
 
     # Curator — background skill maintenance.
@@ -2001,6 +2073,11 @@ DEFAULT_CONFIG = {
         # genuine non-use (never a mass-prune on the first run). Set to false
         # to keep all bundled built-ins permanently.
         "prune_builtins": True,
+        # TTL purge of skills/.archive/. 0 (default) = never purge — archived
+        # skills are kept forever. When > 0, `hermes curator purge` deletes
+        # archived skills older than this many days (explicit command only,
+        # never automatic; every purge is recorded in the audit ledger).
+        "archive_ttl_days": 0,
         # Pre-run backup: before every real curator pass (dry-run is
         # skipped), snapshot ~/.hermes/skills/ into
         # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
@@ -2168,6 +2245,16 @@ DEFAULT_CONFIG = {
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
     #
+    # single_query_mode — what to do when a single-query (-q) session hits a
+    # dangerous command. -q runs export HERMES_INTERACTIVE=1 (for interactive
+    # sudo prompts) but have NO user waiting to answer approval prompts — an
+    # unanswered prompt just waits the full timeout then fails closed, so the
+    # agent is forced to work around the block (often via execute_code). This
+    # setting makes that intent explicit:
+    #   deny    — block the command and let the agent find another way (default,
+    #             safe; mirrors cron_mode deny)
+    #   approve — auto-approve all dangerous commands in single-query mode
+    #
     # timeout — seconds to wait for the user's approve/deny before failing
     # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
     # Messaging approvals arrive as a push notification the user may not see
@@ -2177,6 +2264,7 @@ DEFAULT_CONFIG = {
         "mode": "smart",
         "timeout": 300,
         "cron_mode": "deny",
+        "single_query_mode": "deny",
         # Operator-customizable policy text for smart approvals. When
         # non-empty, this is appended to the smart-approval guardian's
         # SYSTEM prompt (trusted channel) as additional rules — e.g.
@@ -2265,6 +2353,10 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Persisted acknowledgement for unattended model overrides whose tier
+        # lets the vendor train on prompts/completions. The startup guard still
+        # prints the full warning on every run and never bypasses cost guards.
+        "allow_data_training_tiers_noninteractive": False,
         # Human approval presentation transport. "builtin" preserves the
         # current CLI/TUI/gateway/ACP surfaces. A plugin transport is used only
         # when named explicitly here. Transport timeout/error/invalid response
@@ -2410,6 +2502,12 @@ DEFAULT_CONFIG = {
         # wedges the job's dispatch guard forever. Also overridable via
         # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
         "session_db_timeout_seconds": 10,
+        # Timeout (seconds) for each media attachment send during cron
+        # delivery via a live gateway adapter. Large attachments (long TTS
+        # audio, big exports) can exceed the old fixed 30s window. Also
+        # overridable via HERMES_CRON_MEDIA_SEND_TIMEOUT env var. Keep in
+        # sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
+        "media_send_timeout_seconds": 300,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
@@ -2459,6 +2557,19 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Global concurrency cap (#33488): when set to a positive int, the
+        # HOST never has more than N tasks in 'running' at once — counted
+        # across every active board and across both the ready and review
+        # dispatch lanes (workers are OS processes sharing one machine's
+        # memory, so the cap bounds the machine, not each board; OOF-30).
+        # Unset (None) means
+        # "derive from system memory" (OOF-30/OOF-77): the dispatcher caps
+        # concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] —
+        # e.g. 2 workers on a 1 GiB VM. On hosts where total memory can't
+        # be read (macOS/Windows), unset falls back to no cap. Set an
+        # explicit value to override the derived default in either
+        # direction.
+        "max_in_progress": None,
         # Per-profile concurrency cap (#21582). When set to a positive int,
         # no single profile can have more than N workers running at once,
         # even if the global max_in_progress / max_spawn caps would allow
@@ -3060,6 +3171,15 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # When `hermes update` finds the source checkout parked on a feature
+        # branch (left behind by tooling or a manual checkout), switch back
+        # to the update target automatically — but only when the branch is
+        # clean and every commit on it is already merged into the target.
+        # When it is not safe, the code update is SKIPPED with a loud
+        # warning instead of pretending success (2026-08-17 incident:
+        # "✓ Code updated!" printed while the checkout stayed days behind
+        # main on a stale branch). Set false to never auto-switch.
+        "auto_switch_parked_branch": True,
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example
@@ -3274,6 +3394,33 @@ DEFAULT_CONFIG = {
         #   True  = always disable the overlay
         #   False = always enable the overlay
         "no_overlay": None,
+        # cua-driver permission mode for each Hermes computer-use runtime.
+        #   standard (default) — cua-driver's own approval boundary. Protected
+        #     operations (e.g. attaching to an existing signed-in browser
+        #     profile) fail closed unless grant_existing_profile is enabled
+        #     below.
+        #   bounded — repeatable automation under a user-reviewed session
+        #     capability manifest (set capability_manifest below). No runtime
+        #     prompts; anything outside the manifest fails closed inside
+        #     cua-driver.
+        # `unrestricted` is intentionally NOT accepted here: it stays bound to
+        # the explicit per-session YOLO toggle so a config line can never
+        # silently bypass approvals.
+        "permission_mode": "standard",
+        # Absolute or ~ path to the reviewed cua-driver capability
+        # manifest used when permission_mode is "bounded". Hermes passes the
+        # canonical --capability-manifest and --approve-capability-manifest
+        # flags when it launches the runtime. See
+        # https://cua.ai/docs/reference/cua-driver/permission-modes
+        "capability_manifest": "",
+        # Pre-authorize existing-profile browser attachment in standard mode
+        # (cua-driver's trusted-launcher `--grant existing-profile`). When
+        # true, the agent can attach to your already-running, signed-in
+        # Chrome/Edge window — exposing that profile's live pages, cookies,
+        # and storage to the browser protocol — without a per-use prompt.
+        # Leave false to keep existing-profile attachment failing closed;
+        # isolated driver-owned profiles work either way.
+        "grant_existing_profile": False,
     },
 
     # =========================================================================
@@ -3718,6 +3865,14 @@ OPTIONAL_ENV_VARS = {
         "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
         "prompt": "OpenCode Zen API key",
         "url": "https://opencode.ai/auth",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "COMMANDCODE_API_KEY": {
+        "description": "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)",
+        "prompt": "CommandCode API key",
+        "url": "https://commandcode.ai/studio/",
         "password": True,
         "category": "provider",
         "advanced": True,

@@ -1043,6 +1043,12 @@ class DiscordAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    # Safety ceiling on split deliveries (#86581): a degenerate turn can
+    # produce tens of thousands of characters — without a cap the adapter
+    # posts every 2000-char chunk back-to-back and floods the channel (the
+    # incident delivered 60,698 chars as 31 messages).  Chunks beyond the
+    # cap are replaced by a short notice.
+    MAX_SPLIT_MESSAGES = 8
 
     # Auto-disconnect from voice channel after this many seconds of inactivity.
     # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
@@ -3397,6 +3403,29 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("Could not build reply-to reference: %s", e)
             return None
 
+    def _cap_split_chunks(self, chunks: List[str]) -> List[str]:
+        """Cap the number of chunks sent for one logical response (#86581).
+
+        A degenerate turn can produce tens of thousands of characters; the
+        #86581 incident delivered 60,698 chars as 31 back-to-back Discord
+        messages.  When ``chunks`` exceeds ``MAX_SPLIT_MESSAGES``, keep the
+        first ``N-1`` chunks and replace the rest with a short notice so the
+        user sees a clear signal instead of a flood.  The full response
+        remains available in the gateway session history / logs.
+        """
+        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
+            return chunks
+        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
+        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
+        notice = (
+            f"\n\n⚠️ **Response truncated** — this reply exceeded the "
+            f"delivery limit ({self.MAX_SPLIT_MESSAGES} messages). "
+            f"{dropped_chars} characters were not delivered; the full "
+            f"response is in the session logs."
+        )
+        kept.append(notice)
+        return kept
+
     async def send(
         self,
         chat_id: str,
@@ -3475,7 +3504,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self._cap_split_chunks(
+                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            )
 
             message_ids = []
             # Build the reference from ids — no fetch_message round trip.
@@ -3565,7 +3596,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self._cap_split_chunks(
+            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
 
         thread_name = _derive_forum_thread_name(content)
 
@@ -3832,7 +3865,9 @@ class DiscordAdapter(BasePlatformAdapter):
         returns ``success=False`` (a real adapter problem, not overflow).
         """
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self._cap_split_chunks(
+            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
         if len(chunks) <= 1:
             # Defensive: caller's pre-flight should guarantee >1 chunk, but if
             # not, just edit normally.
@@ -8529,7 +8564,7 @@ class DiscordAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
+            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:

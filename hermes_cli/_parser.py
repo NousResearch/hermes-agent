@@ -300,8 +300,19 @@ def build_top_level_parser():
         help="Interactive chat with the agent",
         description="Start an interactive chat session with Hermes Agent",
     )
-    chat_parser.add_argument(
+    _query_group = chat_parser.add_mutually_exclusive_group()
+    _query_group.add_argument(
         "-q", "--query", help="Single query (non-interactive mode)"
+    )
+    _query_group.add_argument(
+        "--query-file",
+        metavar="PATH",
+        help=(
+            "Read the single query from a file instead of the command line "
+            "('-' reads stdin). Safe for arbitrary text: nothing is shell-"
+            "interpreted, so quotes, $(...), and backticks are preserved "
+            "verbatim. Mutually exclusive with -q."
+        ),
     )
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
@@ -405,6 +416,17 @@ def build_top_level_parser():
         default=argparse.SUPPRESS,
         metavar="SESSION_NAME",
         help="Resume a session by name, or the most recent if no name given",
+    )
+    chat_parser.add_argument(
+        "--create-if-missing",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "With -c/--continue <name>: if no session matches the name, "
+            "create a new session with that title and proceed (instead of "
+            "failing with a not-found error). Programmatic callers that "
+            "want 'send to this named thread, making it if needed'."
+        ),
     )
     chat_parser.add_argument(
         "--worktree",

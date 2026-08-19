@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesModule from '@/hermes'
 import { getSession } from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
-import { $sessions } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { resolveSessionProfile, resolveStoredSession } from './utils'
@@ -21,6 +21,8 @@ const profiles = (...names: string[]) => names.map(name => ({ name }) as never)
 
 describe('resolveStoredSession profile ownership', () => {
   beforeEach(() => {
+    $cronSessions.set([])
+    $messagingSessions.set([])
     $sessions.set([])
     $profiles.set(profiles('default', 'meta'))
     $activeGatewayProfile.set('meta')
@@ -28,6 +30,8 @@ describe('resolveStoredSession profile ownership', () => {
   })
 
   afterEach(() => {
+    $cronSessions.set([])
+    $messagingSessions.set([])
     $sessions.set([])
     $profiles.set([])
     $activeGatewayProfile.set('default')
@@ -42,6 +46,19 @@ describe('resolveStoredSession profile ownership', () => {
     expect(mockGetSession).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['cron', $cronSessions],
+    ['messaging', $messagingSessions]
+  ])('resolves a %s sidebar row without duplicating it into regular sessions', async (_source, store) => {
+    store.set([session({ id: 's1', profile: 'default' })])
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.profile).toBe('default')
+    expect(mockGetSession).not.toHaveBeenCalled()
+    expect($sessions.get()).toEqual([])
+  })
+
   it('treats a profile-less cache hit as unresolved when multiple profiles exist', async () => {
     $sessions.set([session({ id: 's1' })])
     mockGetSession.mockRejectedValueOnce(new Error('404: Session not found'))
@@ -50,9 +67,28 @@ describe('resolveStoredSession profile ownership', () => {
     const resolved = await resolveStoredSession('s1')
 
     expect(resolved?.profile).toBe('default')
-    // rung 2 (bare) then rung 3 (stamped cross-profile probe)
-    expect(mockGetSession).toHaveBeenNthCalledWith(1, 's1')
+    // rung 2 (active profile) then rung 3 (stamped cross-profile probe)
+    expect(mockGetSession).toHaveBeenNthCalledWith(1, 's1', 'meta')
     expect(mockGetSession).toHaveBeenNthCalledWith(2, 's1', 'default')
+  })
+
+  it('scopes the first by-id lookup so a miss does not skip the active profile', async () => {
+    $activeGatewayProfile.set('brain')
+    $profiles.set(profiles('default', 'brain'))
+    mockGetSession.mockImplementation(async (id, profile) => {
+      if (profile === 'brain') {
+        return session({ id, profile: 'brain' })
+      }
+
+      throw new Error('404: Session not found')
+    })
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.profile).toBe('brain')
+    expect(mockGetSession).toHaveBeenCalledWith('s1', 'brain')
+    expect(mockGetSession).not.toHaveBeenCalledWith('s1')
+    expect(mockGetSession).not.toHaveBeenCalledWith('s1', 'default')
   })
 
   it('accepts a profile-less cache hit for single-profile users', async () => {
@@ -71,6 +107,7 @@ describe('resolveStoredSession profile ownership', () => {
     const resolved = await resolveStoredSession('s1')
 
     expect(resolved?.profile).toBe('meta')
+    expect(mockGetSession).toHaveBeenCalledWith('s1', 'meta')
     // the upserted cache row is owned too, so the next hit short-circuits
     expect($sessions.get().find(s => s.id === 's1')?.profile).toBe('meta')
   })

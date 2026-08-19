@@ -20,7 +20,7 @@ import {
 } from '@/store/composer'
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { requestDesktopOnboarding } from '@/store/onboarding'
+import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import {
   $sessions,
   resolveComposerSessionKey,
@@ -178,6 +178,23 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       if (isVoicePlaybackActive()) {
         markVoicePlaybackInterrupted()
         stopVoicePlayback()
+      }
+
+      // The gateway already told us this profile has no usable provider (a
+      // credential warning arrived with the session's runtime info, deferred
+      // instead of popping onboarding on the mere profile switch). The user
+      // is now actually trying to chat — THIS is the moment to open
+      // onboarding, before a send the gateway said will fail. The draft
+      // stays in the composer; once a provider is configured they just hit
+      // Enter again.
+      if (!options?.fromQueue) {
+        const deferredCredentialWarning = consumePendingCredentialWarning()
+
+        if (deferredCredentialWarning) {
+          requestDesktopOnboarding(deferredCredentialWarning)
+
+          return false
+        }
       }
 
       // Barged mid-speech (here or via the voice loop's VAD)? Flag the submit
@@ -360,9 +377,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // assistant bubble — settle any leftover (drop it when empty)
             // before appending, or a stale spinner gets stranded
             // mid-transcript above this message forever.
+            //
+            // Off-screen sends (displayKind 'hidden', widget intents) settle
+            // leftovers but append NO bubble: an absent row can't become a
+            // dead branch sibling in the runtime repository. The durable row
+            // is typed hidden by the gateway, so resume stays bubble-free.
             messages: state.messages.some(m => m.id === optimisticId)
               ? state.messages
-              : [...finalizeInterruptedMessages(state.messages, state.streamId), buildUserMessage()],
+              : options?.displayKind === 'hidden'
+                ? finalizeInterruptedMessages(state.messages, state.streamId)
+                : [...finalizeInterruptedMessages(state.messages, state.streamId), buildUserMessage()],
             busy: true,
             awaitingResponse: true,
             pendingBranchGroup: null,
@@ -671,6 +695,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           session_id: targetId,
           text,
           ...(interrupted && { interrupted }),
+          // Off-screen widget intent: the gateway types the persisted user
+          // row display_kind=hidden so no client renders it as a bubble.
+          ...(options?.displayKind === 'hidden' && { display_kind: 'hidden' }),
           // Typed into the floating HUD, so the user is looking at another app
           // rather than at Hermes. The gateway turns this into a per-turn hint
           // to read the window underneath and work in it.

@@ -123,7 +123,7 @@ class TestBuildWebUISkipsWhenFresh:
 
 
 
-    def test_web_install_omits_workspace_when_web_has_own_lockfile(
+    def test_web_install_omits_workspace_and_scrubs_esbuild_override(
         self, tmp_path, monkeypatch
     ):
         """web/ with its own lockfile => _workspace_root returns web_dir, so
@@ -132,26 +132,32 @@ class TestBuildWebUISkipsWhenFresh:
         Symmetric to the TUI fix in test_tui_npm_install.py. See #42973.
 
         With web's own lockfile present at cwd, _run_npm_install_deterministic
-        uses ``npm ci`` (not ``npm install``).
+        uses ``npm ci`` (not ``npm install``). The shared installer must also
+        remove an inherited esbuild binary override so package/binary versions
+        cannot diverge (#87405).
         """
         web_dir, _ = _make_web_dir(tmp_path)
         (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
         (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
         monkeypatch.delenv("TERMUX_VERSION", raising=False)
         monkeypatch.setenv("PREFIX", "/usr")
+        monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-0.28.2")
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
-             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp) as mock_build:
             result = _build_web_ui(web_dir)
 
         assert result is True
         args, kwargs = mock_run.call_args
         assert "--workspace" not in args[0]
-        assert args[0] == ["/usr/bin/npm", "ci", "--include=dev", "--silent", "--prefer-offline"]
+        assert Path(args[0][0]).name in {"npm", "npm.cmd"}
+        assert args[0][1:] == ["ci", "--include=dev", "--silent", "--prefer-offline"]
         assert kwargs["cwd"] == web_dir
+        assert "ESBUILD_BINARY_PATH" not in kwargs["env"]
+        assert "ESBUILD_BINARY_PATH" not in mock_build.call_args.kwargs["env"]
 
     def test_workspace_root_install_names_update_closure(self, tmp_path, monkeypatch):
         """From the workspace root, _build_web_ui must install the SAME

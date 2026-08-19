@@ -1102,18 +1102,27 @@ def _confirm_startup_expensive_model_override(args) -> None:
 
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.model_selection_guards import combined_selection_warning
+        from hermes_cli.model_selection_guards import (
+            combined_message,
+            selection_warnings,
+        )
     except Exception as exc:
         logger.warning("startup model cost guard unavailable: %s", exc)
         return
 
     try:
-        model_cfg = (load_config().get("model") or {})
+        config = load_config()
     except Exception as exc:
         logger.warning("startup model cost guard could not load config: %s", exc)
-        model_cfg = {}
+        config = {}
+    if not isinstance(config, dict):
+        config = {}
+    model_cfg = config.get("model") or {}
     if not isinstance(model_cfg, dict):
         model_cfg = {}
+    security_cfg = config.get("security") or {}
+    if not isinstance(security_cfg, dict):
+        security_cfg = {}
 
     model = explicit_model or (model_cfg.get("default") or "").strip()
     if not model:
@@ -1122,7 +1131,7 @@ def _confirm_startup_expensive_model_override(args) -> None:
     try:
         # Unified registry: cost guard + id-keyed guards (e.g. the
         # data-training-tier warning) all fire at startup too.
-        warning = combined_selection_warning(
+        warnings = selection_warnings(
             model,
             provider=provider,
             base_url=(model_cfg.get("base_url") or ""),
@@ -1131,15 +1140,41 @@ def _confirm_startup_expensive_model_override(args) -> None:
     except Exception as exc:
         logger.warning("startup model cost guard failed for %s/%s: %s", provider, model, exc)
         return
-    if warning is None:
+    if not warnings:
         return
 
     # Cost and provider-routing confirmation is intentionally independent of
     # --yolo / --accept-hooks: those flags approve local command/tool risk, not
     # paid aggregator spend or a surprising provider route.
-    message = warning.message
-    if not sys.stdin.isatty():
+    is_interactive = sys.stdin.isatty()
+    allow_unattended_data_training = (
+        security_cfg.get("allow_data_training_tiers_noninteractive") is True
+    )
+    if not is_interactive and allow_unattended_data_training:
+        acknowledged = [
+            warning for warning in warnings if warning.kind == "data_policy"
+        ]
+        if acknowledged:
+            sys.stderr.write(combined_message(acknowledged) + "\n")
+            sys.stderr.write(
+                "Proceeding in non-interactive mode because "
+                "security.allow_data_training_tiers_noninteractive is true.\n"
+            )
+            warnings = [
+                warning for warning in warnings if warning.kind != "data_policy"
+            ]
+            if not warnings:
+                return
+
+    message = combined_message(warnings)
+    if not is_interactive:
         sys.stderr.write(message + "\n")
+        if any(warning.kind == "data_policy" for warning in warnings):
+            sys.stderr.write(
+                "To acknowledge data-training tiers for unattended runs, set "
+                "security.allow_data_training_tiers_noninteractive to true "
+                "in config.yaml.\n"
+            )
         sys.stderr.write(
             "Refusing this startup model override in non-interactive mode. "
             "Run interactively and confirm if you intend to use it.\n"
@@ -1156,8 +1191,42 @@ def _confirm_startup_expensive_model_override(args) -> None:
         raise SystemExit(1)
 
 
-def _session_browse_picker(sessions: list) -> Optional[str]:
+def _session_status_tag(status: Optional[str]) -> str:
+    """Short fixed-width tag for a session lifecycle status."""
+    return {
+        "complete": "done",
+        "interrupted": "intr",
+        "error": "err",
+        "empty": "empty",
+    }.get(status or "", "-")
+
+
+def _annotate_session_statuses(sessions: list, session_db) -> None:
+    """Attach a ``_status`` key to each session row (best-effort, cheap).
+
+    Uses ``SessionDB.session_lifecycle_statuses`` — one indexed last-message
+    lookup per listed session, never a transcript scan. On any failure the
+    rows simply stay untagged and the picker renders '-' for status.
+    """
+    if session_db is None or not sessions:
+        return
+    try:
+        statuses = session_db.session_lifecycle_statuses(
+            [s.get("id") for s in sessions]
+        )
+    except Exception:
+        return
+    for s in sessions:
+        s["_status"] = statuses.get(s.get("id"), "")
+
+
+def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
+
+    Shows lifecycle status (done / intr / err / empty) and message count per
+    session when *session_db* is provided. With a live *session_db*, pressing
+    ``d`` on a row (while the search filter is empty) prompts y/n and deletes
+    the session via ``SessionDB.delete_session``.
 
     Returns the selected session ID, or None if cancelled.
     """
@@ -1165,11 +1234,31 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         print("No sessions found.")
         return None
 
+    _annotate_session_statuses(sessions, session_db)
+
+    def _delete_session(session_id: str) -> bool:
+        if session_db is None:
+            return False
+        try:
+            sessions_dir = get_hermes_home() / "sessions"
+        except Exception:
+            sessions_dir = None
+        try:
+            return bool(
+                session_db.delete_session(session_id, sessions_dir=sessions_dir)
+            )
+        except Exception:
+            return False
+
     # Try curses-based picker first
     try:
         import curses
 
         result_holder = [None]
+
+        # Layout: [arrow 3] [title/preview flexible] [status 5] [msgs 5]
+        #         [active 12] [src 6] [id 18]
+        _FIXED_COLS = 3 + 5 + 2 + 5 + 2 + 12 + 6 + 18 + 6
 
         def _format_row(s, max_x):
             """Format a session row for display."""
@@ -1178,11 +1267,11 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             source = s.get("source", "")[:6]
             last_active = _relative_time(s.get("last_active"))
             sid = s["id"][:18]
+            status = _session_status_tag(s.get("_status"))
+            msgs = s.get("message_count")
+            msgs_str = str(msgs) if isinstance(msgs, int) else "-"
 
-            # Adaptive column widths based on terminal width
-            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
-            fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
-            name_width = max(20, max_x - fixed_cols)
+            name_width = max(20, max_x - _FIXED_COLS)
 
             if title:
                 name = title[:name_width]
@@ -1191,7 +1280,10 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             else:
                 name = sid
 
-            return f"{name:<{name_width}}  {last_active:<10}  {source:<5} {sid}"
+            return (
+                f"{name:<{name_width}}  {status:<5}  {msgs_str:>5}  "
+                f"{last_active:<10}  {source:<5} {sid}"
+            )
 
         def _match(s, query):
             """Check if a session matches the search query (case-insensitive)."""
@@ -1212,11 +1304,24 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)  # header
                 curses.init_pair(3, curses.COLOR_CYAN, -1)  # search
                 curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)  # dim
+                curses.init_pair(5, curses.COLOR_RED, -1)  # error/delete
 
             cursor = 0
             scroll_offset = 0
             search_text = ""
+            confirm_delete = None  # session dict pending y/n confirmation
+            flash = ""  # one-frame notice (e.g. "deleted <title>")
             filtered = list(sessions)
+
+            def _status_attr(status):
+                if not curses.has_colors():
+                    return curses.A_NORMAL
+                return {
+                    "complete": curses.color_pair(1),
+                    "interrupted": curses.color_pair(2),
+                    "error": curses.color_pair(5),
+                    "empty": curses.color_pair(4),
+                }.get(status or "", curses.A_NORMAL)
 
             while True:
                 stdscr.clear()
@@ -1238,7 +1343,10 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     if curses.has_colors():
                         header_attr |= curses.color_pair(3)
                 else:
-                    header = "  Browse sessions — ↑↓ navigate  Enter select  Type to filter  Esc quit"
+                    header = (
+                        "  Browse sessions — ↑↓ navigate  Enter select"
+                        "  Type to filter  Esc quit"
+                    )
                     header_attr = curses.A_BOLD
                     if curses.has_colors():
                         header_attr |= curses.color_pair(2)
@@ -1248,9 +1356,11 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     pass
 
                 # Column header line
-                fixed_cols = 3 + 12 + 6 + 18 + 6
-                name_width = max(20, max_x - fixed_cols)
-                col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
+                name_width = max(20, max_x - _FIXED_COLS)
+                col_header = (
+                    f"   {'Title / Preview':<{name_width}}  {'Stat':<5}  "
+                    f"{'Msgs':>5}  {'Active':<10}  {'Src':<5} {'ID'}"
+                )
                 try:
                     dim_attr = (
                         curses.color_pair(4) if curses.has_colors() else curses.A_DIM
@@ -1298,30 +1408,75 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                                 attr |= curses.color_pair(1)
                         try:
                             stdscr.addnstr(y, 0, row, max_x - 1, attr)
+                            if i != cursor:
+                                # Recolor the status tag column in place.
+                                status = s.get("_status")
+                                tag = _session_status_tag(status)
+                                tag_x = 3 + max(20, (max_x - 3) - _FIXED_COLS) + 2
+                                if tag_x + 5 < max_x - 1:
+                                    stdscr.addnstr(
+                                        y, tag_x, f"{tag:<5}", 5, _status_attr(status)
+                                    )
                         except curses.error:
                             pass
 
                 # Footer
                 footer_y = max_y - 1
-                if filtered:
-                    footer = f"  {cursor + 1}/{len(filtered)} sessions"
-                    if len(filtered) < len(sessions):
-                        footer += f" (filtered from {len(sessions)})"
-                else:
-                    footer = f"  0/{len(sessions)} sessions"
-                try:
-                    stdscr.addnstr(
-                        footer_y,
-                        0,
-                        footer,
-                        max_x - 1,
-                        curses.color_pair(4) if curses.has_colors() else curses.A_DIM,
+                footer_attr = (
+                    curses.color_pair(4) if curses.has_colors() else curses.A_DIM
+                )
+                if confirm_delete is not None:
+                    label = (
+                        (confirm_delete.get("title") or "").strip()
+                        or (confirm_delete.get("preview") or "").strip()
+                        or confirm_delete["id"]
                     )
+                    if len(label) > 40:
+                        label = label[:37] + "..."
+                    footer = f"  Delete session '{label}'? [y/N]"
+                    footer_attr = curses.A_BOLD
+                    if curses.has_colors():
+                        footer_attr |= curses.color_pair(5)
+                elif flash:
+                    footer = f"  {flash}"
+                    flash = ""
+                else:
+                    if filtered:
+                        footer = f"  {cursor + 1}/{len(filtered)} sessions"
+                        if len(filtered) < len(sessions):
+                            footer += f" (filtered from {len(sessions)})"
+                    else:
+                        footer = f"  0/{len(sessions)} sessions"
+                    if session_db is not None and not search_text:
+                        footer += "   d delete"
+                try:
+                    stdscr.addnstr(footer_y, 0, footer, max_x - 1, footer_attr)
                 except curses.error:
                     pass
 
                 stdscr.refresh()
                 key = stdscr.getch()
+
+                if confirm_delete is not None:
+                    # y/n confirmation mode — only an explicit 'y' deletes.
+                    target = confirm_delete
+                    confirm_delete = None
+                    if key in {ord("y"), ord("Y")}:
+                        if _delete_session(target["id"]):
+                            sessions[:] = [
+                                s for s in sessions if s["id"] != target["id"]
+                            ]
+                            filtered = (
+                                [s for s in sessions if _match(s, search_text)]
+                                if search_text
+                                else list(sessions)
+                            )
+                            flash = "Deleted."
+                            if not sessions:
+                                return
+                        else:
+                            flash = "Delete failed."
+                    continue
 
                 if key in {curses.KEY_UP,}:
                     if filtered:
@@ -1354,6 +1509,15 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                         scroll_offset = 0
                 elif key == ord("q") and not search_text:
                     return
+                elif (
+                    key == ord("d")
+                    and not search_text
+                    and session_db is not None
+                    and filtered
+                ):
+                    # 'd' only acts as delete when the filter is empty —
+                    # while a search is active it types into the query below.
+                    confirm_delete = filtered[cursor]
                 elif 32 <= key <= 126:
                     # Printable character → add to search filter
                     search_text += chr(key)
@@ -1367,7 +1531,8 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     except Exception:
         pass
 
-    # Fallback: numbered list (Windows without curses, etc.)
+    # Fallback: numbered list (Windows without curses, etc.). Shows the same
+    # status/message-count columns but has no delete support.
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
     for i, s in enumerate(sessions):
         title = (s.get("title") or "").strip()
@@ -1377,7 +1542,13 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             label = label[:47] + "..."
         last_active = _relative_time(s.get("last_active"))
         src = s.get("source", "")[:6]
-        print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
+        status = _session_status_tag(s.get("_status"))
+        msgs = s.get("message_count")
+        msgs_str = str(msgs) if isinstance(msgs, int) else "-"
+        print(
+            f"  {i + 1:>3}. {label:<50}  {status:<5}  {msgs_str:>5}  "
+            f"{last_active:<10}  {src}"
+        )
 
     while True:
         try:
@@ -1606,6 +1777,127 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             except Exception:
                 pass
     return None
+
+
+def _create_titled_session(title: str) -> Optional[str]:
+    """Create a fresh session with the given title; return its session id.
+
+    Used by ``chat -c <title> --create-if-missing`` (#86794): programmatic
+    callers (plugins, scripts) that want "send to this named thread, making
+    it if needed" get a deterministic outcome instead of a silent no-op.
+
+    The session id follows the same timestamp+uuid shape the CLI uses for a
+    brand-new session; the title is recorded with user provenance so
+    auto-titling never overwrites it.
+    """
+    db = None
+    try:
+        import uuid as _uuid
+
+        from hermes_state import SessionDB
+
+        now = datetime.now()
+        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+        short_uuid = _uuid.uuid4().hex[:6]
+        new_session_id = f"{timestamp_str}_{short_uuid}"
+
+        db = SessionDB()
+        db.create_session(new_session_id, source="cli")
+        db.set_session_title(new_session_id, title)
+        return new_session_id
+    except Exception:
+        # Programmatic callers (the #86794 use case) rely on --create-if-missing
+        # being deterministic; swallow the failure to keep the error path simple,
+        # but log the underlying cause so it lands in errors.log and stays
+        # debuggable (DB lock, I/O error, import error — all otherwise invisible).
+        logger.exception("Failed to create titled session %r", title)
+        return None
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def _resolve_continue_arg(args, *, use_tui: bool) -> None:
+    """Resolve ``-c/--continue`` into ``args.resume``.
+
+    Handles both forms:
+    - ``-c <name>``: resolve by title/ID. On miss, fail loudly on **stderr**
+      (exit 1) so programmatic callers see the error even under quiet mode
+      (#86794); with ``--create-if-missing``, create a fresh titled session
+      and resume into it instead.
+    - bare ``-c``: continue this terminal's breadcrumb session if valid,
+      else the most recent session (workspace-scoped MRU, then global
+      fallback).
+    """
+    continue_val = getattr(args, "continue_last", None)
+    if continue_val and not getattr(args, "resume", None):
+        if isinstance(continue_val, str):
+            # -c "session name" — resolve by title or ID
+            resolved = _resolve_session_by_name_or_id(continue_val)
+            if resolved:
+                args.resume = resolved
+            elif getattr(args, "create_if_missing", False):
+                # --create-if-missing: no session matches the title — create a
+                # new session with that title and proceed. This is the
+                # programmatic-caller primitive ("send to this named thread,
+                # making it if needed"); without it a background/quiet send to
+                # a not-yet-existing named session silently no-ops (#86794).
+                new_sid = _create_titled_session(continue_val)
+                if new_sid:
+                    args.resume = new_sid
+                else:
+                    print(
+                        f"No session found matching '{continue_val}' and "
+                        "a new titled session could not be created.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+            else:
+                print(f"No session found matching '{continue_val}'.", file=sys.stderr)
+                print(
+                    "Use 'hermes sessions list' to see available sessions, or "
+                    "pass --create-if-missing to start a new session with that title.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            # -c with no argument — prefer this terminal's own breadcrumb
+            # (written at session start / rotation) so side-by-side terminals
+            # each continue their own conversation. Falls back to the
+            # most-recent session when there is no valid breadcrumb, or when
+            # session.terminal_continue is false in config.yaml.
+            if getattr(args, "create_if_missing", False):
+                # --create-if-missing only makes sense with a named session;
+                # with a bare -c there is nothing to create, so surface the
+                # no-op to programmatic callers instead of silently ignoring it.
+                print(
+                    "--create-if-missing requires a session name: "
+                    "`-c <name> --create-if-missing`",
+                    file=sys.stderr,
+                )
+            try:
+                from hermes_cli.terminal_breadcrumbs import resolve_breadcrumb_session
+
+                _crumb_id = resolve_breadcrumb_session()
+            except Exception:
+                _crumb_id = None
+            if _crumb_id:
+                args.resume = _crumb_id
+            else:
+                # No valid breadcrumb — continue the most recent session
+                source = "tui" if use_tui else "cli"
+                last_id = _resolve_last_session(source=source)
+                if not last_id and source == "tui":
+                    last_id = _resolve_last_session(source="cli")
+                if last_id:
+                    args.resume = last_id
+                else:
+                    kind = "TUI" if use_tui else "CLI"
+                    print(f"No previous {kind} session found to continue.")
+                    sys.exit(1)
 
 
 def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
@@ -2018,6 +2310,15 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
     sys.exit(1)
 
 
+def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a clean environment for the pinned UI toolchain lifecycle."""
+    run_env = {**os.environ, **(env or {}), "CI": "1"}
+    # esbuild treats this as an executable override. If a shell points it at a
+    # different release, the pinned package's postinstall rejects that binary.
+    run_env.pop("ESBUILD_BINARY_PATH", None)
+    return run_env
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
@@ -2148,7 +2449,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                env={**with_hermes_node_path(), "CI": "1"},
+                env=_npm_lifecycle_env(with_hermes_node_path()),
             )
 
         result = _run_tui_install()
@@ -2189,6 +2490,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_npm_lifecycle_env(),
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -2219,6 +2521,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_npm_lifecycle_env(),
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -2404,6 +2707,7 @@ def _launch_tui(
             from cli import (
                 _cleanup_worktree,
                 _git_repo_root,
+                _maintain_pack_health,
                 _prune_stale_worktrees,
                 _setup_worktree,
             )
@@ -2411,6 +2715,19 @@ def _launch_tui(
             repo = _git_repo_root()
             if repo:
                 _prune_stale_worktrees(repo)
+                # Same maintenance pass as the CLI path: repack on pack
+                # sprawl so `worktree add` never crawls on a multi-agent box
+                # (cli._maintain_pack_health is a cheap no-op below the
+                # threshold). Runs on a thread — the TUI path calls the
+                # pruner synchronously, and a repack must not block launch.
+                import threading as _threading
+
+                _threading.Thread(
+                    target=_maintain_pack_health,
+                    args=(repo,),
+                    name="pack-maintenance",
+                    daemon=True,
+                ).start()
             wt_info = _setup_worktree()
         except Exception as exc:
             print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
@@ -2660,29 +2977,32 @@ def cmd_chat(args):
             sys.exit(1)
 
     # Resolve --continue into --resume with the latest session or by name
-    continue_val = getattr(args, "continue_last", None)
-    if continue_val and not getattr(args, "resume", None):
-        if isinstance(continue_val, str):
-            # -c "session name" — resolve by title or ID
-            resolved = _resolve_session_by_name_or_id(continue_val)
-            if resolved:
-                args.resume = resolved
-            else:
-                print(f"No session found matching '{continue_val}'.")
-                print("Use 'hermes sessions list' to see available sessions.")
-                sys.exit(1)
-        else:
-            # -c with no argument — continue the most recent session
-            source = "tui" if use_tui else "cli"
-            last_id = _resolve_last_session(source=source)
-            if not last_id and source == "tui":
-                last_id = _resolve_last_session(source="cli")
-            if last_id:
-                args.resume = last_id
-            else:
-                kind = "TUI" if use_tui else "CLI"
-                print(f"No previous {kind} session found to continue.")
-                sys.exit(1)
+    _resolve_continue_arg(args, use_tui=use_tui)
+
+    # --resume @claude / --resume @codex: import a foreign session (Claude
+    # Code / Codex CLI) and resume the newly created Hermes session.
+    _resume_foreign = getattr(args, "resume", None)
+    if isinstance(_resume_foreign, str) and _resume_foreign.strip().lower() in (
+        "@claude",
+        "@codex",
+    ):
+        from hermes_cli.foreign_sessions import (
+            import_foreign_session,
+            pick_foreign_session,
+        )
+
+        _foreign_source = _resume_foreign.strip().lower().lstrip("@")
+        _picked = pick_foreign_session(_foreign_source)
+        if _picked is None:
+            sys.exit(1)
+        try:
+            _imported_id = import_foreign_session(_picked.source, _picked.path)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        print(f"✓ Imported as {_imported_id} — resuming it now.")
+        print(f"  (later: hermes --resume {_imported_id})")
+        args.resume = _imported_id
 
     # Resolve --resume by title if it's not a direct session ID
     resume_val = getattr(args, "resume", None)
@@ -2858,6 +3178,31 @@ def cmd_chat(args):
 
     # Import and run the CLI
     from cli import main as cli_main
+
+    # --query-file: read the single query from a file (or stdin via '-') so
+    # callers never have to shell-quote message bodies. This is the transport
+    # the Bot Mode DM protocol uses — interpolating arbitrary text into a
+    # double-quoted shell argument truncates on quotes and executes $(...)
+    # (see tools/bot_mode_probe.py).
+    _qfile = getattr(args, "query_file", None)
+    if _qfile:
+        if args.query:
+            # argparse's mutually-exclusive group catches the normal CLI path;
+            # this guards programmatic callers that fill the namespace directly.
+            print("Error: -q/--query and --query-file are mutually exclusive", file=sys.stderr)
+            sys.exit(2)
+        try:
+            if _qfile == "-":
+                args.query = sys.stdin.read()
+            else:
+                with open(_qfile, "r", encoding="utf-8", errors="replace") as _fh:
+                    args.query = _fh.read()
+        except OSError as _e:
+            print(f"Error: cannot read --query-file {_qfile}: {_e}", file=sys.stderr)
+            sys.exit(2)
+        if not (args.query or "").strip():
+            print(f"Error: --query-file {_qfile} is empty", file=sys.stderr)
+            sys.exit(2)
 
     # Build kwargs from args
     kwargs = {
@@ -3344,9 +3689,11 @@ def select_provider_and_model(args=None):
                 "name": name,
                 "base_url": base_url,
                 "api_key": entry.get("api_key", ""),
-                "key_env": entry.get("key_env", ""),
+                "key_env": entry.get("key_env") or entry.get("api_key_env", ""),
                 "model": entry.get("model", ""),
                 "models": entry.get("models", {}),
+                "models_discovered": entry.get("models_discovered", False),
+                "extra_headers": entry.get("extra_headers", {}),
                 "discover_models": entry.get("discover_models", True),
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
@@ -3707,6 +4054,17 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("curator", "Curator", "skill-usage review pass"),
 ]
 
+# Special non-auxiliary task surfaced in the same picker: subagent delegation.
+# Routing lives under top-level `delegation.*` in config.yaml (NOT
+# `auxiliary.delegation`) because delegate_task spawns full child agents via
+# tools/delegate_tool.py::_resolve_delegation_credentials(), which reads the
+# delegation section directly. "auto" here means "inherit the parent agent's
+# provider/model/credentials" and is stored as empty strings — never persist
+# the literal "auto", or it would be resolved as a provider name.
+_DELEGATION_TASK_KEY = "delegation"
+_DELEGATION_TASK_NAME = "Delegation"
+_DELEGATION_TASK_DESC = "subagent model (delegate_task)"
+
 
 def _all_aux_tasks() -> list[tuple[str, str, str]]:
     """Return built-in + plugin-registered auxiliary tasks for picker/menu use.
@@ -3746,6 +4104,32 @@ def _format_aux_current(task_cfg: dict) -> str:
     return provider
 
 
+def _delegation_cfg_as_task(cfg: dict) -> dict:
+    """Project the top-level ``delegation`` section into aux-task shape.
+
+    Returns a dict with provider/model/base_url/api_key keys so the shared
+    rendering (``_format_aux_current``) and picker code can treat delegation
+    like any other task. Empty provider means "inherit parent" which renders
+    as "auto".
+    """
+    d = cfg.get("delegation")
+    if not isinstance(d, dict):
+        d = {}
+    return {
+        "provider": str(d.get("provider") or "").strip(),
+        "model": str(d.get("model") or "").strip(),
+        "base_url": str(d.get("base_url") or "").strip(),
+        "api_key": str(d.get("api_key") or "").strip(),
+    }
+
+
+def _aux_task_display_name(task: str) -> str:
+    """Display name for a task key, covering the special delegation entry."""
+    if task == _DELEGATION_TASK_KEY:
+        return _DELEGATION_TASK_NAME
+    return next((name for key, name, _ in _all_aux_tasks() if key == task), task)
+
+
 def _save_aux_choice(
     task: str,
     *,
@@ -3759,10 +4143,28 @@ def _save_aux_choice(
     Only writes the four routing fields — timeout, download_timeout, and any
     other task-specific settings are preserved untouched. The main model
     config (``model.default``/``model.provider``) is never modified.
+
+    The special ``delegation`` task writes to the top-level ``delegation``
+    section (consumed by ``tools/delegate_tool.py``), not ``auxiliary.*``.
+    There, "auto" (inherit the parent agent) is stored as an empty provider —
+    the literal string "auto" would be resolved as a provider name.
     """
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
+
+    if task == _DELEGATION_TASK_KEY:
+        entry = cfg.setdefault("delegation", {})
+        if not isinstance(entry, dict):
+            entry = {}
+            cfg["delegation"] = entry
+        entry["provider"] = "" if provider == "auto" else provider
+        entry["model"] = model or ""
+        entry["base_url"] = base_url or ""
+        entry["api_key"] = api_key or ""
+        save_config(cfg)
+        return
+
     aux = cfg.setdefault("auxiliary", {})
     if not isinstance(aux, dict):
         aux = {}
@@ -3808,6 +4210,18 @@ def _reset_aux_to_auto() -> int:
         # Preserve timeout/download_timeout — those are user-tuned, not routing
         if changed:
             count += 1
+    # Delegation (top-level section) — clear only the routing fields; other
+    # delegation settings (max_concurrent_children, max_spawn_depth, etc.)
+    # are not routing and must be preserved.
+    dele = cfg.get("delegation")
+    if isinstance(dele, dict):
+        changed = False
+        for field in ("provider", "model", "base_url", "api_key"):
+            if dele.get(field):
+                dele[field] = ""
+                changed = True
+        if changed:
+            count += 1
     save_config(cfg)
     return count
 
@@ -3836,13 +4250,19 @@ def _aux_config_menu() -> None:
 
         # Build the task menu with current settings inline
         all_tasks = _all_aux_tasks()
-        name_col = max(len(name) for _, name, _ in all_tasks) + 2
-        desc_col = max(len(desc) for _, _, desc in all_tasks) + 4
+        menu_tasks = all_tasks + [
+            (_DELEGATION_TASK_KEY, _DELEGATION_TASK_NAME, _DELEGATION_TASK_DESC)
+        ]
+        name_col = max(len(name) for _, name, _ in menu_tasks) + 2
+        desc_col = max(len(desc) for _, _, desc in menu_tasks) + 4
         entries: list[tuple[str, str]] = []
-        for task_key, name, desc in all_tasks:
-            task_cfg = (
-                aux.get(task_key, {}) if isinstance(aux.get(task_key), dict) else {}
-            )
+        for task_key, name, desc in menu_tasks:
+            if task_key == _DELEGATION_TASK_KEY:
+                task_cfg = _delegation_cfg_as_task(cfg)
+            else:
+                task_cfg = (
+                    aux.get(task_key, {}) if isinstance(aux.get(task_key), dict) else {}
+                )
             current = _format_aux_current(task_cfg)
             label = (
                 f"{name.ljust(name_col)}{('(' + desc + ')').ljust(desc_col)}{current}"
@@ -3887,13 +4307,16 @@ def _aux_select_for_task(task: str) -> None:
     from hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
 
     cfg = load_config()
-    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-    task_cfg = aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
+    if task == _DELEGATION_TASK_KEY:
+        task_cfg = _delegation_cfg_as_task(cfg)
+    else:
+        aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+        task_cfg = aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
     current_provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
     current_model = str(task_cfg.get("model") or "").strip()
     current_base_url = str(task_cfg.get("base_url") or "").strip()
 
-    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
+    display_name = _aux_task_display_name(task)
 
     # Gather authenticated providers (has credentials + curated model list)
     try:
@@ -3911,7 +4334,12 @@ def _aux_select_for_task(task: str) -> None:
     auto_marker = (
         "  ← current" if current_provider == "auto" and not current_base_url else ""
     )
-    entries.append(("__auto__", f"auto (recommended){auto_marker}", []))
+    auto_label = (
+        "auto (inherit main agent)"
+        if task == _DELEGATION_TASK_KEY
+        else "auto (recommended)"
+    )
+    entries.append(("__auto__", f"{auto_label}{auto_marker}", []))
 
     entries.extend(
         format_aux_picker_entries(
@@ -3961,7 +4389,7 @@ def _aux_flow_provider_model(
     from hermes_cli.auth import _prompt_model_selection
     from hermes_cli.models import get_pricing_for_provider
 
-    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
+    display_name = _aux_task_display_name(task)
 
     # Fetch live pricing for this provider (non-blocking)
     pricing: dict = {}
@@ -4008,7 +4436,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     """Prompt for a direct OpenAI-compatible base_url + optional api_key/model."""
     from hermes_cli.secret_prompt import masked_secret_prompt
 
-    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
+    display_name = _aux_task_display_name(task)
     current_base_url = str(task_cfg.get("base_url") or "").strip()
     current_model = str(task_cfg.get("model") or "").strip()
 
@@ -4398,6 +4826,9 @@ _LAZY_COMMAND_EXPORTS = {
         "_capture_active_lazy_features",
         "_capture_active_tool_dependencies",
         "_capture_head_sha",
+        "_assess_parked_branch_switch",
+        "_branch_head_label",
+        "_branch_head_suffix",
         "_cmd_update_check",
         "_cmd_update_impl",
         "_cold_start_windows_gateway_after_update",
@@ -4435,6 +4866,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_print_curator_first_run_notice",
         "_print_curator_recent_run_notice",
         "_print_fts_optimize_available_notice",
+        "_print_parked_branch_skip_warning",
         "_print_stash_cleanup_guidance",
         "_print_update_completion",
         "_record_npm_lockfile_hash",
@@ -4451,6 +4883,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_resume_windows_gateways_after_update",
         "_run_logged_subprocess",
         "_run_pre_update_backup",
+        "_service_unit_supports_graceful_sigusr1_restart",
         "_should_skip_upstream_prompt",
         "_stash_apply_failed_only_on_existing_untracked",
         "_stash_local_changes_if_needed",
@@ -5732,7 +6165,7 @@ def _run_npm_install_deterministic(
     # unicode-animations' postinstall animates to /dev/tty (bypasses
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
     # install path and nix/lib.nix npm ci hooks.
-    run_env = {**os.environ, **(env or {}), "CI": "1"}
+    run_env = _npm_lifecycle_env(env)
 
     def _run(cmd: list[str]) -> subprocess.CompletedProcess:
         return _run_npm_watching_for_engine_failure(
@@ -5923,7 +6356,7 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _say("Web UI frontend not built and npm is not available.")
             _say("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
-    build_env = with_hermes_node_path()
+    build_env = _npm_lifecycle_env(with_hermes_node_path())
     _say("→ Building web UI...")
 
     def _relay(result: "subprocess.CompletedProcess") -> None:
@@ -7510,6 +7943,7 @@ def cmd_gui(args: argparse.Namespace):
             if _force_adhoc_macos_signing(env, source_mode=source_mode):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
+            npm_build_env = _npm_lifecycle_env(env)
             if not source_mode:
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
@@ -7519,7 +7953,9 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
-            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            build_result = subprocess.run(
+                [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+            )
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -7546,7 +7982,9 @@ def cmd_gui(args: argparse.Namespace):
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
-                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+                    build_result = subprocess.run(
+                        [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                    )
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -7557,7 +7995,7 @@ def cmd_gui(args: argparse.Namespace):
                       "GitHub looks blocked. Re-downloading via a public mirror "
                       "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
                 mirror = _ELECTRON_FALLBACK_MIRROR
-                mirror_env = dict(env)
+                mirror_env = dict(npm_build_env)
                 mirror_env["ELECTRON_MIRROR"] = mirror
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
@@ -8600,12 +9038,17 @@ def _run_quarantined_install(
         moved = _quarantine_running_hermes_exe(scripts_dir)
     try:
         _run_install_with_heartbeat(cmd, env=env)
-    except BaseException:
-        # Restore shims if pip/uv didn't write replacements (e.g. install
-        # failed before the entry-points step). Don't swallow the error.
+    finally:
+        # Restore shims when the installer didn't write replacements — on
+        # FAILURE (install died before the entry-points step) and on SUCCESS
+        # too: uv audits an already-satisfied editable install as a no-op and
+        # rewrites no entry points, which would otherwise leave the shims
+        # quarantined aside and `hermes` missing from PATH after a green
+        # install (#75584). _restore_quarantined_exes skips any shim the
+        # installer actually replaced, so this never clobbers fresh output.
+        # Errors are not swallowed — the finally re-raises whatever escaped.
         if scripts_dir is not None:
             _restore_quarantined_exes(moved)
-        raise
 
 
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
@@ -9487,6 +9930,7 @@ def cmd_update(args):
         detect_install_method,
         format_docker_update_message,
         is_managed,
+        is_nix_install_method,
         managed_error,
         recommended_update_command_for_method,
     )
@@ -9506,7 +9950,7 @@ def cmd_update(args):
         print(format_docker_update_message())
         sys.exit(1)
 
-    if install_method in {"nix", "nixos"}:
+    if is_nix_install_method(install_method) or install_method == "apt":
         print(recommended_update_command_for_method(install_method))
         sys.exit(1)
 
@@ -9596,6 +10040,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "security",
         "acp",
         "webhook",
+        "peer",
         "memory",
         "dump",
         "debug",
@@ -9651,31 +10096,47 @@ def cmd_profile(args):
 
     if action is None:
         # Bare `hermes profile` — show current profile status
+        from hermes_cli.profiles import format_profile_label
+
         profile_name = get_active_profile_name()
         dhh = display_hermes_home()
-        print(f"\nActive profile: {profile_name}")
-        print(f"Path:           {dhh}")
 
         profiles = list_profiles()
-        for p in profiles:
-            if p.name == profile_name or (profile_name == "default" and p.is_default):
-                if p.model:
-                    print(
-                        f"Model:          {p.model}"
-                        + (f" ({p.provider})" if p.provider else "")
-                    )
+        current = next(
+            (
+                p
+                for p in profiles
+                if p.name == profile_name
+                or (profile_name == "default" and p.is_default)
+            ),
+            None,
+        )
+        label = format_profile_label(
+            profile_name, current.display_name if current else ""
+        )
+        print(f"\nActive profile: {label}")
+        print(f"Path:           {dhh}")
+
+        if current is not None:
+            p = current
+            if p.model:
                 print(
-                    f"Gateway:        {'running' if p.gateway_running else 'stopped'}"
+                    f"Model:          {p.model}"
+                    + (f" ({p.provider})" if p.provider else "")
                 )
-                print(f"Skills:         {p.skill_count} installed")
-                if p.alias_path:
-                    alias_display = p.alias_name or p.name
-                    print(f"Alias:          {alias_display} → hermes -p {p.name}")
-                break
+            print(
+                f"Gateway:        {'running' if p.gateway_running else 'stopped'}"
+            )
+            print(f"Skills:         {p.skill_count} installed")
+            if p.alias_path:
+                alias_display = p.alias_name or p.name
+                print(f"Alias:          {alias_display} → hermes -p {p.name}")
         print()
         return
 
     if action == "list":
+        from hermes_cli.profiles import format_profile_label
+
         profiles = list_profiles()
         active = get_active_profile_name()
 
@@ -9699,7 +10160,7 @@ def cmd_profile(args):
                 if (p.name == active or (active == "default" and p.is_default))
                 else "  "
             )
-            name = p.name
+            name = format_profile_label(p.name, p.display_name)
             model = (p.model or "—")[:26]
             gw = "running" if p.gateway_running else "stopped"
             alias = (p.alias_name or p.name) if p.alias_path else "—"
@@ -9958,6 +10419,8 @@ def cmd_profile(args):
             _read_distribution_meta,
             _get_wrapper_dir,
             find_alias_for_profile,
+            format_profile_label,
+            read_profile_meta,
         )
 
         if not profile_exists(name):
@@ -9969,8 +10432,9 @@ def cmd_profile(args):
         skills = _count_skills(profile_dir)
         dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
         alias_name = find_alias_for_profile(name)
+        display = read_profile_meta(profile_dir).get("display_name", "")
 
-        print(f"\nProfile: {name}")
+        print(f"\nProfile: {format_profile_label(name, display)}")
         print(f"Path:    {profile_dir}")
         if model:
             print(f"Model:   {model}" + (f" ({provider})" if provider else ""))
@@ -10031,12 +10495,13 @@ def cmd_profile(args):
                     print(f"⚠ {_get_wrapper_dir()} is not in your PATH.")
 
     elif action == "rename":
-        from hermes_cli.profiles import rename_profile
+        from hermes_cli.profiles import normalize_profile_name, rename_profile
 
         try:
             new_dir = rename_profile(args.old_name, args.new_name)
-            print(f"\nProfile renamed: {args.old_name} → {args.new_name}")
-            print(f"Path: {new_dir}\n")
+            if normalize_profile_name(args.old_name) != "default":
+                print(f"\nProfile renamed: {args.old_name} → {args.new_name}")
+                print(f"Path: {new_dir}\n")
         except (ValueError, FileExistsError, FileNotFoundError) as e:
             print(f"Error: {e}")
             sys.exit(1)
@@ -11001,7 +11466,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "pets", "plugins", "portal", "profile",
+        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
         "project", "proxy",
         "prompt-size",
         "resume",
@@ -11636,10 +12101,87 @@ def cmd_skills(args):
         from hermes_cli.skills_config import skills_command as skills_config_command
 
         skills_config_command(args)
+    elif getattr(args, "skills_action", None) in ("trust", "untrust"):
+        _cmd_skills_trust(args)
     else:
         from hermes_cli.skills_hub import skills_command
 
         skills_command(args)
+
+
+def _cmd_skills_trust(args):
+    """``hermes skills trust [path]`` / ``hermes skills untrust [path]``.
+
+    Manages ``skills.trusted_project_dirs`` in config.yaml. With no path,
+    operates on the project root enclosing the current directory (nearest
+    ancestor with ``.git``).
+    """
+    from pathlib import Path
+
+    from agent.skill_utils import (
+        PROJECT_SKILLS_SUBDIRS,
+        _candidate_project_skills_dirs,
+        find_project_root,
+        iter_skill_index_files,
+    )
+    from hermes_cli.config import load_config, save_config
+
+    action = args.skills_action
+    raw_path = getattr(args, "path", None)
+    if raw_path:
+        root = Path(raw_path).expanduser().resolve()
+        if not root.is_dir():
+            print(f"Not a directory: {root}")
+            return
+    else:
+        root = find_project_root()
+        if root is None:
+            print(
+                "Not inside a git checkout. Run from a project directory or "
+                "pass the project root path explicitly."
+            )
+            return
+
+    config = load_config()
+    skills_cfg = config.setdefault("skills", {})
+    trusted = skills_cfg.get("trusted_project_dirs") or []
+    if not isinstance(trusted, list):
+        trusted = [trusted]
+    trusted = [str(t) for t in trusted]
+    root_str = str(root)
+
+    if action == "untrust":
+        kept = [t for t in trusted if str(Path(t).expanduser().resolve()) != root_str]
+        if len(kept) == len(trusted):
+            print(f"{root} was not trusted.")
+            return
+        skills_cfg["trusted_project_dirs"] = kept
+        save_config(config)
+        print(f"Untrusted: {root}")
+        print("Project skills from this repo will no longer load.")
+        return
+
+    # trust
+    if any(str(Path(t).expanduser().resolve()) == root_str for t in trusted):
+        print(f"Already trusted: {root}")
+    else:
+        trusted.append(root_str)
+        skills_cfg["trusted_project_dirs"] = trusted
+        save_config(config)
+        print(f"Trusted: {root}")
+
+    # Show what this unlocks
+    count = 0
+    for d in _candidate_project_skills_dirs(root):
+        count += sum(1 for _ in iter_skill_index_files(d, "SKILL.md"))
+    if count:
+        print(
+            f"{count} project skill(s) will load in sessions started inside "
+            "this repo (they take precedence over same-named profile skills)."
+        )
+    else:
+        subdirs = " or ".join(PROJECT_SKILLS_SUBDIRS)
+        print(f"No project skills found yet — add them under {subdirs}.")
 
 
 def cmd_pairing(args):
@@ -12007,6 +12549,13 @@ def main():
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 
     # =========================================================================
+    # peer command — bot-to-bot DMs across machines (peer Hermes gateways)
+    # =========================================================================
+    from hermes_cli.subcommands.peer import build_peer_parser
+
+    build_peer_parser(subparsers)
+
+    # =========================================================================
     # portal command — Nous Portal status + Tool Gateway routing
     # =========================================================================
     from hermes_cli.portal_cli import add_parser as _add_portal_parser
@@ -12269,7 +12818,7 @@ def main():
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
 
     # =========================================================================
-    # computer-use command — manage Computer Use (cua-driver) on macOS
+    # computer-use command — manage Computer Use (cua-driver)
     # =========================================================================
     computer_use_parser = subparsers.add_parser(
         "computer-use",
@@ -12372,15 +12921,20 @@ def main():
         "grant",
         help="Request the grants (opens the dialog attributed to CuaDriver)",
     )
-
     def cmd_computer_use(args):
         action = getattr(args, "computer_use_action", None)
         if action == "install":
-            from hermes_cli.tools_config import install_cua_driver
-            install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
-            return
+            from hermes_cli.tools_config import (
+                _cua_driver_contract_status,
+                install_cua_driver,
+            )
+            if not install_cua_driver(upgrade=bool(getattr(args, "upgrade", False))):
+                return 1
+            return 0 if _cua_driver_contract_status().get("ready") else 1
         if action == "status":
+            import os as _os
             import subprocess
+            from hermes_cli.tools_config import _cua_driver_contract_status
             from tools.computer_use.cua_backend import (
                 cua_driver_update_check,
                 resolve_cua_driver_cmd,
@@ -12388,6 +12942,7 @@ def main():
             # Must match the runtime resolver: Desktop/TUI processes can omit
             # ~/.local/bin even though the official installer put the driver there.
             path = resolve_cua_driver_cmd()
+            override = _os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
             if path:
                 version = ""
                 try:
@@ -12399,10 +12954,31 @@ def main():
                     ).stdout.strip()
                 except Exception:
                     pass
+                from hermes_cli.tools_config import _cua_version_summary
+                version = _cua_version_summary(version)
+                # Name the override here too. Without it the operator is told
+                # to repair an install that `hermes computer-use install` will
+                # (correctly) refuse to touch, with nothing pointing at the
+                # env var that actually selected the binary.
+                origin = " [custom binary from HERMES_CUA_DRIVER_CMD]" if override else ""
                 if version:
-                    print(f"cua-driver: installed at {path} ({version})")
+                    print(f"cua-driver: installed at {path}{origin} ({version})")
                 else:
-                    print(f"cua-driver: installed at {path}")
+                    print(f"cua-driver: installed at {path}{origin}")
+                contract = _cua_driver_contract_status(path)
+                if not contract.get("ready"):
+                    print(
+                        "  ⚠ Repair required: "
+                        + (contract.get("reason") or "runtime contract is incomplete")
+                    )
+                    if override:
+                        print(
+                            "    Update the binary selected by HERMES_CUA_DRIVER_CMD, or unset "
+                            "the override and run: hermes computer-use install --upgrade"
+                        )
+                    else:
+                        print("    Run: hermes computer-use install")
+                    return 1
                 try:
                     st = cua_driver_update_check()
                     if st and st.get("update_available"):
@@ -12416,10 +12992,10 @@ def main():
                         print("  Refresh to latest: hermes computer-use install --upgrade")
                 except Exception:
                     print("  Refresh to latest: hermes computer-use install --upgrade")
-                return
+                return 0
             print("cua-driver: not installed")
             print("  Run: hermes computer-use install")
-            return
+            return 1
         if action == "doctor":
             from tools.computer_use.doctor import run_doctor
             code = run_doctor(
@@ -12886,6 +13462,36 @@ def main():
     sessions_rename.add_argument("session_id", help="Session ID to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
 
+    sessions_pin = sessions_subparsers.add_parser(
+        "pin",
+        help="Pin session(s) — durable keep flag, exempt from auto-archive",
+        description=(
+            "Set the durable 'keep' flag on one or more sessions. Pinned "
+            "sessions are exempt from the sessions.auto_archive stale sweep "
+            "and always appear in listings. The same flag drives the Desktop "
+            "sidebar's Pinned section — pin from either surface, both see it."
+        ),
+    )
+    sessions_pin.add_argument(
+        "session_ids", nargs="+", help="Session ID(s) or unique prefix(es) to pin"
+    )
+
+    sessions_unpin = sessions_subparsers.add_parser(
+        "unpin", help="Remove the pin (durable keep flag) from session(s)"
+    )
+    sessions_unpin.add_argument(
+        "session_ids", nargs="+", help="Session ID(s) or unique prefix(es) to unpin"
+    )
+
+    sessions_pinned = sessions_subparsers.add_parser(
+        "pinned", help="List pinned sessions"
+    )
+    sessions_pinned.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON (for backup/restore scripting)",
+    )
+
     sessions_retitle = sessions_subparsers.add_parser(
         "retitle-skills",
         help="Re-title sessions whose auto-title came from a /skill's own text",
@@ -12918,6 +13524,28 @@ def main():
     )
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
+    )
+
+    sessions_import = sessions_subparsers.add_parser(
+        "import",
+        help="Import a Claude Code or Codex CLI session into Hermes",
+        description=(
+            "Pull a conversation started in Claude Code (~/.claude/projects) "
+            "or Codex CLI (~/.codex/sessions) into the Hermes session store "
+            "so it can be resumed with 'hermes --resume <id>'. The foreign "
+            "files are only read, never modified."
+        ),
+    )
+    sessions_import.add_argument(
+        "--from",
+        dest="from_source",
+        choices=["claude", "codex"],
+        help="Which tool to import from (default: pick across both)",
+    )
+    sessions_import.add_argument(
+        "path",
+        nargs="?",
+        help="Path to a specific session JSONL file (skips the picker)",
     )
 
 

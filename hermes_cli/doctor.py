@@ -16,6 +16,7 @@ from hermes_cli.config import (
     get_env_path,
     get_hermes_home,
     get_project_root,
+    is_nix_install_method,
     recommended_update_command_for_method,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -63,6 +64,7 @@ _PROVIDER_ENV_HINTS = (
     "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
+    "COMMANDCODE_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
 )
@@ -89,8 +91,11 @@ def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
     if method == "docker":
         command = recommended_update_command_for_method(method)
         action = f"run `{command}`, then recreate all Hermes containers"
-    elif method in {"nix", "nixos"}:
+    elif is_nix_install_method(method):
+        # The Nix helper is prose guidance, not a literal shell command.
         action = recommended_update_command_for_method(method)
+    elif method == "apt":
+        action = f"run `{recommended_update_command_for_method(method)}`"
     else:
         action = "run `hermes update`"
     return (
@@ -118,18 +123,48 @@ def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
 _SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
 
 
+def _unreadable_reason(db_path: Path) -> str:
+    """Explain why a database file could not be read, without opening it.
+
+    ``read_header_bytes_preopen`` collapses every ``OSError`` into ``None``,
+    but doctor's job is to say *which* problem it hit. ``stat()`` and
+    ``access()`` answer that from directory metadata alone — neither takes a
+    file descriptor, so neither can cancel the file's POSIX advisory locks.
+    """
+    try:
+        db_path.stat()
+    except OSError as exc:
+        return str(exc)
+    if not os.access(db_path, os.R_OK):
+        return f"permission denied: {db_path}"
+    return "file could not be read"
+
+
 def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
     """Return (journal mode, error) from the file header without opening the database.
 
     Header byte 18 is 2 for WAL and 1 for a rollback journal. Opening the
     database through the SQLite engine — even read-only — creates -wal/-shm
     sidecar files, which a diagnostic must not do.
+
+    The byte read is routed through ``read_header_bytes_preopen`` rather than
+    a bare ``open()``: closing *any* descriptor for a database file cancels
+    this process's POSIX advisory locks on it, so a raw read would drop the
+    locks a live connection is holding (see ``hermes_cli.sqlite_safe_read``).
+    ``run_doctor`` is also called in-process by the dashboard console, which
+    holds live ``SessionDB`` connections. The helper refuses in that case and
+    the mode is reported as unreadable instead.
     """
-    try:
-        with open(db_path, "rb") as fh:
-            header = fh.read(20)
-    except OSError as exc:
-        return None, str(exc)
+    from hermes_cli.sqlite_safe_read import (
+        has_live_connection,
+        read_header_bytes_preopen,
+    )
+
+    header = read_header_bytes_preopen(db_path, length=20)
+    if header is None:
+        if has_live_connection(db_path):
+            return None, "database is open in this process"
+        return None, _unreadable_reason(db_path)
     if len(header) == 0:
         return None, "file is empty"
     if len(header) < 20 or not header.startswith(_SQLITE_HEADER_MAGIC):

@@ -146,6 +146,68 @@ class TestDiscoverAllPlugins:
         assert "web/tavily" in keys
         assert "a/b/c" not in keys
 
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_bundled_model_providers_skipped(self, mock_user_dir, mock_bundled_dir, tmp_path):
+        """``plugins/model-providers/`` has its own provider registry loader.
+
+        Bundled providers should not appear in ``hermes plugins list`` as
+        general opt-in plugins, or users get a misleading enable/disable
+        surface for providers selected via ``model.provider`` / ``--provider``.
+        Same rationale as the existing bundled memory/context_engine skip.
+        """
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        bundled = tmp_path / "bundled"
+        user = tmp_path / "user"
+        user.mkdir()
+        _make_category_plugin(bundled, "model-providers", "openrouter", {
+            "name": "openrouter-provider", "version": "1.0.0",
+            "kind": "model-provider",
+        })
+        _make_category_plugin(bundled, "memory", "letta", {
+            "name": "letta-memory", "version": "1.0.0"
+        })
+        _make_category_plugin(bundled, "context_engine", "compressor", {
+            "name": "compressor", "version": "1.0.0"
+        })
+        _make_category_plugin(bundled, "observability", "langfuse", {
+            "name": "langfuse", "version": "1.0.0"
+        })
+        mock_user_dir.return_value = user
+        mock_bundled_dir.return_value = bundled
+
+        entries = _discover_all_plugins()
+        keys = [e[5] for e in entries]
+        assert "model-providers/openrouter" not in keys
+        assert "memory/letta" not in keys
+        assert "context_engine/compressor" not in keys
+        assert "observability/langfuse" in keys
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_user_model_providers_subdir_is_still_scanned(
+        self, mock_user_dir, mock_bundled_dir, tmp_path
+    ):
+        """The model-providers skip only applies to *bundled* — a user plugin
+        at ``~/.hermes/plugins/model-providers/<x>/`` is still discovered so
+        ``hermes plugins list`` shows what the user installed."""
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        bundled = tmp_path / "bundled"
+        bundled.mkdir()
+        user = tmp_path / "user"
+        _make_category_plugin(user, "model-providers", "acme", {
+            "name": "acme-provider", "version": "0.1.0",
+            "kind": "model-provider",
+        })
+        mock_user_dir.return_value = user
+        mock_bundled_dir.return_value = bundled
+
+        entries = _discover_all_plugins()
+        keys = [e[5] for e in entries]
+        assert "model-providers/acme" in keys
+
 
 # ---------------------------------------------------------------------------
 # _plugin_status — key-aware status

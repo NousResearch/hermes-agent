@@ -18,8 +18,10 @@ from tools.tool_result_storage import (
     _resolve_storage_dir,
     _safe_result_filename,
     _write_to_sandbox,
+    cleanup_spillover_cache,
     enforce_turn_budget,
     generate_preview,
+    get_spillover_dir,
     maybe_persist_tool_result,
 )
 
@@ -194,13 +196,17 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         assert "tc_456.txt" in result
         assert len(result) < len(content)
-        env.execute.assert_called_once()
 
     def test_persists_full_content_as_is(self):
         """Content is persisted verbatim — no JSON extraction."""
         import json
         env = MagicMock()
-        env.execute.return_value = {"output": "", "returncode": 0}
+        # Readability probe fails -> falls back to the in-sandbox write.
+        env.execute.side_effect = [
+            {"output": "", "returncode": 1},
+            {"output": "", "returncode": 0},
+        ]
+        env.get_temp_dir.return_value = ""
         raw = "line1\nline2\n" * 5_000
         content = json.dumps({"output": raw, "exit_code": 0, "error": None})
         result = maybe_persist_tool_result(
@@ -218,7 +224,11 @@ class TestMaybePersistToolResult:
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
-        env.execute.return_value = {"output": "", "returncode": 0}
+        # Readability probe fails -> in-sandbox write is the reference path.
+        env.execute.side_effect = [
+            {"output": "", "returncode": 1},
+            {"output": "", "returncode": 0},
+        ]
         env.get_temp_dir.return_value = ""
         content = "x" * 60_000
         result = maybe_persist_tool_result(
@@ -320,3 +330,153 @@ class TestPerToolThresholds:
             assert val == 100_000
         except ImportError:
             pytest.skip("file_tools not importable in test env")
+
+
+# ── Host-side spillover ($HERMES_HOME/cache/spillover) ────────────────
+
+class TestSpillover:
+    @pytest.fixture(autouse=True)
+    def _isolated_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        # Reset the once-per-process prune flag so each test is independent.
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_spillover_pruned_once", False)
+        yield
+
+    def test_env_none_persists_to_spillover(self):
+        """No active sandbox env (MCP-only / cron session) must persist
+        host-side instead of inline-truncating — the guglielmo bundle bug."""
+        content = "x" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="tool_call",
+            tool_use_id="tc_mcp_1",
+            env=None,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "could not be saved" not in result
+        spill_file = get_spillover_dir() / "tc_mcp_1.txt"
+        assert spill_file.exists()
+        assert spill_file.read_text(encoding="utf-8") == content
+        assert str(spill_file) in result
+
+    def test_local_env_persists_to_spillover_not_sandbox(self):
+        """LocalEnvironment routes host-side: no env.execute() shell-out."""
+        from tools.environments.local import LocalEnvironment
+
+        env = MagicMock(spec=LocalEnvironment)
+        content = "y" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_local_1",
+            env=env,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        assert (get_spillover_dir() / "tc_local_1.txt").exists()
+        env.execute.assert_not_called()
+
+    def test_remote_env_probe_success_references_mounted_path(self):
+        """Remote env: host-side write is canonical; when the sandbox can read
+        the mounted/synced spillover path, the reference uses it and no
+        in-sandbox copy is written."""
+        env = MagicMock()  # not a LocalEnvironment
+        env.execute.return_value = {"output": "", "returncode": 0}  # probe OK
+        content = "z" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_remote_1",
+            env=env,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        # Canonical host copy always exists now.
+        assert (get_spillover_dir() / "tc_remote_1.txt").exists()
+        # Only the readability probe ran — no cat-into-sandbox call.
+        assert env.execute.call_count == 1
+        assert "test -r" in env.execute.call_args[0][0]
+
+    def test_remote_env_probe_failure_falls_back_to_sandbox_write(self):
+        """Persistent containers without the spillover mount still get a
+        readable in-sandbox copy."""
+        env = MagicMock()
+        env.execute.side_effect = [
+            {"output": "", "returncode": 1},  # probe: not readable
+            {"output": "", "returncode": 0},  # cat > sandbox path
+        ]
+        env.get_temp_dir.return_value = "/tmp"
+        content = "z" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_remote_2",
+            env=env,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "/tmp/hermes-results/tc_remote_2.txt" in result
+        assert env.execute.call_count == 2
+        # Host canonical copy exists regardless.
+        assert (get_spillover_dir() / "tc_remote_2.txt").exists()
+
+    def test_spillover_write_failure_falls_back_to_inline(self, monkeypatch):
+        import tools.tool_result_storage as trs
+        monkeypatch.setattr(trs, "_write_to_spillover", lambda *a, **k: None)
+        content = "w" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="tool_call",
+            tool_use_id="tc_fail_1",
+            env=None,
+            threshold=30_000,
+        )
+        assert "could not be saved" in result
+        assert PERSISTED_OUTPUT_TAG not in result
+
+    def test_cleanup_spillover_cache_removes_old_keeps_new(self):
+        import os
+        import time as _time
+
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        old = spill_dir / "old.txt"
+        new = spill_dir / "new.txt"
+        old.write_text("old")
+        new.write_text("new")
+        stale = _time.time() - (48 * 3600)
+        os.utime(old, (stale, stale))
+
+        removed = cleanup_spillover_cache(max_age_hours=24)
+
+        assert removed == 1
+        assert not old.exists()
+        assert new.exists()
+
+    def test_cleanup_missing_dir_returns_zero(self):
+        assert cleanup_spillover_cache() == 0
+
+    def test_first_spill_prunes_expired_files(self):
+        """The once-per-process prune fires on the first host-side spill."""
+        import os
+        import time as _time
+
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        old = spill_dir / "ancient.txt"
+        old.write_text("ancient")
+        stale = _time.time() - (48 * 3600)
+        os.utime(old, (stale, stale))
+
+        maybe_persist_tool_result(
+            content="v" * 60_000,
+            tool_name="tool_call",
+            tool_use_id="tc_prune_1",
+            env=None,
+            threshold=30_000,
+        )
+
+        assert not old.exists()
+        assert (spill_dir / "tc_prune_1.txt").exists()

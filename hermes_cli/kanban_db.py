@@ -5880,19 +5880,20 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
 
     Called from :func:`complete_task` after the DB transaction commits.
     Best-effort — any error is swallowed so cleanup never blocks task completion.
-    Only ``scratch`` workspaces are removed; ``worktree`` and ``dir`` workspaces
-    are intentionally preserved.
+    ``scratch`` workspaces are removed; ``worktree`` workspaces are removed only
+    when provably free of work (clean tree, every commit reachable from a
+    remote-tracking ref); ``dir`` workspaces are intentionally preserved.
     """
     try:
         row = conn.execute(
-            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            "SELECT workspace_kind, workspace_path, branch_name FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if not row:
             return
         kind: Optional[str] = row["workspace_kind"]
         path: Optional[str] = row["workspace_path"]
-        if kind != "scratch" or not path:
+        if kind not in ("scratch", "worktree") or not path:
             # This task's own workspace isn't a removable scratch dir, but its
             # completion may still unblock a deferred parent scratch cleanup
             # (e.g. a 'dir' child whose scratch parent was waiting on it). #33774
@@ -5900,7 +5901,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             return
         # Check if this task has children that still need the workspace.
         # If any child is not yet done/archived, defer cleanup so the
-        # child can read handoff artifacts from the scratch dir (#33774).
+        # child can read handoff artifacts from the workspace (#33774).
         _active_children = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks t ON t.id = l.child_id "
@@ -5910,10 +5911,18 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         ).fetchone()
         if _active_children:
             _log.debug(
-                "Deferring scratch workspace cleanup for task %s: "
+                "Deferring %s workspace cleanup for task %s: "
                 "active children still need workspace at %s",
-                task_id, path,
+                kind, task_id, path,
             )
+            return
+        if kind == "worktree":
+            # Kill the (dead) tmux worker session BEFORE removing the
+            # worktree so a lingering worker never has its cwd deleted out
+            # from under it. Both steps stay best-effort.
+            _cleanup_worker_tmux(conn, task_id)
+            _cleanup_worktree_workspace(task_id, path, row["branch_name"])
+            _try_cleanup_parent_workspaces(conn, task_id)
             return
         import shutil
         wp = Path(path)
@@ -5944,6 +5953,69 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         pass  # best-effort — never block completion
 
 
+def _cleanup_worktree_workspace(
+    task_id: str, path: str, branch_name: Optional[str] = None
+) -> None:
+    """Remove a finished task's linked git worktree when it holds no work.
+
+    Mirrors the safety judgment of the CLI startup pruner
+    (``cli._prune_stale_worktrees``): removal requires a clean working tree
+    AND every commit reachable from a remote-tracking ref. Any doubt — dirty
+    files, unpushed commits, unresolvable repo, failing git — preserves the
+    worktree. The task's auto-generated ``wt/<task-id>`` branch is deleted
+    with it; custom branches are kept. Best-effort like the scratch path.
+    """
+    try:
+        from cli import _worktree_has_unpushed_commits, _worktree_is_dirty
+    except Exception:
+        return  # CLI safety predicates unavailable — preserve
+    try:
+        wp = Path(path).expanduser()
+        if not wp.is_dir():
+            return
+        common = _git_common_dir(wp)
+        if common is None or common.name != ".git":
+            return  # not a linked worktree of a normal repo — never guess
+        repo_root = common.parent
+        if wp.resolve(strict=False) == repo_root.resolve(strict=False):
+            return  # never remove the main checkout
+        if _worktree_is_dirty(str(wp)) or _worktree_has_unpushed_commits(str(wp)):
+            _log.info(
+                "Preserving worktree for task %s: dirty or unpushed work at %s",
+                task_id, wp,
+            )
+            return
+        # No --force: the dirty/unpushed checks above run before removal, so
+        # git's own dirty guard re-verifies at removal time. If the tree
+        # became dirty between our check and the removal (TOCTOU), removal
+        # fails safe and the worktree is preserved.
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "remove", str(wp)],
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            _log.warning(
+                "git worktree remove failed for task %s at %s: %s",
+                task_id, wp, (result.stderr or result.stdout or "").strip(),
+            )
+            return
+        _log.debug("Removed worktree workspace: %s", wp)
+        branch = (branch_name or "").strip() or f"wt/{task_id}"
+        if branch.startswith("wt/"):
+            subprocess.run(
+                ["git", "-C", str(repo_root), "branch", "-D", branch],
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=30,
+                check=False,
+            )
+    except Exception:
+        pass  # best-effort — never block completion
+
+
 def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> None:
     """Clean up parent scratch workspaces now that *task_id* completed.
 
@@ -5959,10 +6031,14 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
         ).fetchall()
         for (parent_id,) in parents:
             row = conn.execute(
-                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                "SELECT workspace_kind, workspace_path, branch_name FROM tasks WHERE id = ?",
                 (parent_id,),
             ).fetchone()
-            if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+            if (
+                not row
+                or row["workspace_kind"] not in ("scratch", "worktree")
+                or not row["workspace_path"]
+            ):
                 continue
             # Check if ALL children of this parent are terminal
             active = conn.execute(
@@ -5975,6 +6051,11 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
             if active:
                 continue  # still has active children
             # All children done — safe to clean up parent workspace
+            if row["workspace_kind"] == "worktree":
+                _cleanup_worktree_workspace(
+                    parent_id, row["workspace_path"], row["branch_name"]
+                )
+                continue
             import shutil
             wp = Path(row["workspace_path"])
             if wp.is_dir() and _is_managed_scratch_path(wp):
@@ -7452,6 +7533,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
     recompute_ready(conn)
+    # Reap the workspace on archive too — tasks archived without ever
+    # completing previously kept their scratch dir / worktree forever.
+    _cleanup_workspace(conn, task_id)
     return True
 
 
@@ -7991,6 +8075,13 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    memory_pressure: Optional[str] = None
+    """System memory pressure observed at spawn time when the memory guard
+    restricted this tick (OOF-30/OOF-77): ``"critical"`` — no new workers
+    were spawned this tick; ``"elevated"`` — at most one new worker was
+    spawned. ``None`` when memory was fine/unknown and the guard imposed
+    no restriction. Reclaim/promotion bookkeeping still ran either way;
+    deferred tasks stay queued for the next tick."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -9519,6 +9610,201 @@ def review_dispatch_enabled() -> bool:
         return True
 
 
+# ---------------------------------------------------------------------------
+# Memory-aware dispatch guard (OOF-30 / OOF-77)
+#
+# Two production incidents ("larrikin-lollies", "synclare-task-manager")
+# followed the same shape: no ``kanban.max_in_progress`` configured, a busy
+# board, and a 1 GiB VM — the dispatcher fanned out 26-31 concurrent workers,
+# the host went into swap-thrash/OOM, and the dashboard (and everything else
+# on the machine) became unreachable. Two complementary safeguards:
+#
+#   1. A memory-DERIVED default concurrency cap when the operator never set
+#      ``kanban.max_in_progress`` (``resolve_max_in_progress``) — sized from
+#      MemTotal so a 1 GiB VM defaults to 2 workers, not unlimited.
+#   2. A live memory-PRESSURE guard inside the dispatch tick itself
+#      (``_memory_pressure_level``) — even a correctly-sized static cap can't
+#      see other tenants of the box, so under real observed pressure the
+#      dispatcher stops adding workers regardless of configured caps.
+#
+# Both fail open: on non-Linux hosts or any read error the sample is empty,
+# the derived default is None (no cap — unchanged behaviour), and the
+# pressure level is "unknown" (no spawn restriction).
+# ---------------------------------------------------------------------------
+
+# Assumed per-worker memory footprint for the derived default cap. Hermes
+# workers are full agent processes (Python + model client + tool subprocesses);
+# ~512 MiB is a deliberately conservative planning number so the derived cap
+# errs toward fewer workers on small VMs.
+MEMORY_GUARD_MB_PER_WORKER = 512
+# Bounds for the derived default: never below 2 (a board must still make
+# progress on the smallest hosted VM) and never above 8 (operators who want
+# more fan-out on big iron should say so explicitly in config).
+DERIVED_MAX_IN_PROGRESS_FLOOR = 2
+DERIVED_MAX_IN_PROGRESS_CEILING = 8
+
+
+def _system_memory_sample() -> dict:
+    """Best-effort system memory snapshot (KiB values), ``{}`` when unknown.
+
+    Delegates to :func:`gateway.lifecycle_ledger.sample_memory` (pure /proc
+    reads, Linux-only, never raises). Local import keeps ``kanban_db``
+    importable in stripped-down environments without the gateway package.
+    Module-level indirection is also the test seam — the shared conftest
+    patches this to ``{}`` so suite results don't depend on the CI runner's
+    live memory state.
+    """
+    try:
+        from gateway.lifecycle_ledger import sample_memory
+        return sample_memory() or {}
+    except Exception:
+        return {}
+
+
+def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -> Optional[int]:
+    """Memory-derived default for ``kanban.max_in_progress`` when unset.
+
+    ``clamp(MemTotal / MEMORY_GUARD_MB_PER_WORKER, FLOOR, CEILING)`` — e.g.
+    a 1 GiB VM derives 2, a 4 GiB VM derives 8. Returns ``None`` (no cap,
+    pre-fix behaviour) when total memory can't be determined, so dev
+    machines on macOS/Windows are unaffected.
+    """
+    if sample is None:
+        sample = _system_memory_sample()
+    total_kib = sample.get("mem_total_kib")
+    if isinstance(total_kib, bool) or not isinstance(total_kib, int) or total_kib <= 0:
+        return None
+    workers = (total_kib // 1024) // MEMORY_GUARD_MB_PER_WORKER
+    return max(
+        DERIVED_MAX_IN_PROGRESS_FLOOR,
+        min(workers, DERIVED_MAX_IN_PROGRESS_CEILING),
+    )
+
+
+def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
+    """Return the effective global concurrency cap for a dispatch tick.
+
+    An explicit operator-configured value always wins. When unset, fall back
+    to the memory-derived default (see :func:`derive_default_max_in_progress`).
+    Callers that parse config (gateway dispatcher, ``hermes kanban dispatch``)
+    should route through this so both paths agree.
+    """
+    if configured is not None:
+        return configured
+    return derive_default_max_in_progress()
+
+
+def configured_max_in_progress() -> Optional[int]:
+    """Read ``kanban.max_in_progress`` from config, or None when unset/invalid.
+
+    Small shared parser so every dispatch entry point (gateway watcher, CLI
+    dispatch, standalone daemon) agrees on what "explicitly configured"
+    means: a positive integer wins, anything else falls through to the
+    memory-derived default via :func:`resolve_max_in_progress`.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get(
+            "max_in_progress"
+        )
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        ival = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return ival if ival >= 1 else None
+
+
+def count_running_tasks(conn: sqlite3.Connection) -> int:
+    """Return the number of tasks currently in ``status='running'``.
+
+    Used by the gateway's multi-board sweep to account for workers on
+    OTHER boards against the host-level concurrency budget (OOF-30): the
+    memory-derived cap bounds the machine, so each board's tick must see
+    the machine's total, not just its own. Fails open to 0 — a broken
+    board must not brick dispatch on healthy ones (corruption is handled
+    separately by the watcher's quarantine logic).
+    """
+    try:
+        return int(
+            conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0]
+        )
+    except Exception:
+        return 0
+
+
+def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
+    """Total ``running`` tasks across every board EXCEPT ``board``.
+
+    The concurrency caps bound the HOST (workers are OS processes sharing
+    one machine's memory), but each board's dispatch tick only sees its own
+    DB. Without this, a memory-derived cap of N gets multiplied by the
+    number of active boards — reproduced in review of OOF-30: two boards
+    each spawned N workers on a derived N-worker host budget.
+
+    Boards are matched by resolved DB path, so the ``HERMES_KANBAN_DB``
+    override (which pins every board to one file) naturally yields 0.
+    Fails open per board: one broken/corrupt board must not brick dispatch
+    on the healthy ones.
+    """
+    try:
+        current_path = str(kanban_db_path(board=board).expanduser().resolve())
+    except Exception:
+        current_path = None
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception:
+        return 0
+    total = 0
+    for meta in boards:
+        slug = meta.get("slug") or DEFAULT_BOARD
+        try:
+            path = kanban_db_path(board=slug).expanduser()
+            resolved = str(path.resolve())
+            if current_path is not None and resolved == current_path:
+                continue
+            if not path.exists():
+                continue
+            other = connect(board=slug)
+            try:
+                total += count_running_tasks(other)
+            finally:
+                try:
+                    other.close()
+                except Exception:
+                    pass
+        except Exception:
+            continue
+    return total
+
+
+def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
+    """Classify current system memory pressure: ok/elevated/critical/unknown.
+
+    Reuses :func:`gateway.memory_status.classify_pressure` so the dispatcher's
+    idea of "critical" matches the memory banner users see on the dashboard
+    and the lifecycle ledger's OOM-suspicion heuristics (NS-608/NS-656).
+    ``unknown`` (non-Linux, read failure) imposes no restriction — the guard
+    must never brick dispatch on hosts where /proc isn't available.
+    """
+    if sample is None:
+        sample = _system_memory_sample()
+    if not sample:
+        return "unknown"
+    try:
+        from gateway.memory_status import classify_pressure
+        return classify_pressure(
+            sample.get("mem_available_kib"), sample.get("mem_total_kib")
+        )
+    except Exception:
+        return "unknown"
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -9640,6 +9926,13 @@ def _dispatch_once_locked(
     a 60-second tick interval could grow concurrency by N every minute on a
     busy board and accumulate without bound.
 
+    ``max_in_progress`` is a **host-level** concurrency cap (OOF-30): it
+    counts running tasks on every active board — not just this one — plus
+    this tick's spawns. Workers are OS processes sharing one machine's
+    memory, so a per-board interpretation would multiply the cap by the
+    number of active boards. ``max_spawn`` retains its historical per-board
+    semantics.
+
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
@@ -9678,14 +9971,6 @@ def _dispatch_once_locked(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
-    # Both knobs are total in-flight caps. Collapse them before either lane
-    # dispatches so ready and review workers consume the same budget without
-    # subtracting the already-running count twice.
-    if max_in_progress is not None and (
-        max_spawn is None or max_in_progress < max_spawn
-    ):
-        max_spawn = max_in_progress
-
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
     # rationale; the short version is that a 60-second tick interval with a
@@ -9694,18 +9979,101 @@ def _dispatch_once_locked(
     # they sit in status='running' until the worker calls
     # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
+    spawn_budget: Optional[int] = None
+    if max_spawn is not None or max_in_progress is not None:
+        running_count = count_running_tasks(conn)
+
+    # Convert any concurrency caps into a shared additional-spawns budget
+    # for this tick. Both ready and review loops consume from the same
+    # budget so the total number of new workers stays bounded.
     if max_spawn is not None:
-        running_count = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-            ).fetchone()[0]
+        if running_count >= max_spawn:
+            return result
+        spawn_budget = max_spawn - running_count
+
+    # Honour kanban.max_in_progress across both ready and review queues: if
+    # the board already has enough running tasks, skip this tick entirely.
+    # When there is room left, intersect the remaining in-progress budget
+    # with any explicit max_spawn cap above.
+    #
+    # max_in_progress is a HOST-level cap, not a per-board one (OOF-30):
+    # workers are OS processes sharing one machine's memory, so running
+    # workers on every other board count against the same budget. Without
+    # this, N active boards multiply the cap by N — exactly the fan-out
+    # the memory-derived default exists to prevent.
+    if max_in_progress is not None:
+        total_running = running_count + count_running_tasks_other_boards(board)
+        if total_running >= max_in_progress:
+            return result
+        remaining = max_in_progress - total_running
+        if spawn_budget is None or spawn_budget > remaining:
+            spawn_budget = remaining
+
+    # Memory-pressure guard (OOF-30/OOF-77): even a well-chosen static cap
+    # can't see the host's actual memory state (other tenants, bloated
+    # long-lived workers, dashboard growth). Under observed pressure the
+    # dispatcher stops adding load: critical -> spawn nothing this tick;
+    # elevated -> at most one new worker. Reclaim/promotion above already
+    # ran, so board bookkeeping stays live either way, and deferred tasks
+    # simply wait for a later tick. "unknown" imposes no restriction.
+    pressure = _memory_pressure_level()
+    if pressure == "critical":
+        result.memory_pressure = pressure
+        _log.warning(
+            "kanban dispatch: system memory pressure is critical; "
+            "spawning no new workers this tick (deferred, not dropped)"
         )
+        return result
+    if pressure == "elevated":
+        result.memory_pressure = pressure
+        if spawn_budget is None or spawn_budget > 1:
+            _log.warning(
+                "kanban dispatch: system memory pressure is elevated; "
+                "limiting to at most 1 new worker this tick"
+            )
+            spawn_budget = 1
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    # Review rows are enumerated up front (not after the ready loop) so the
+    # budget split below can see whether review work exists at all.
+    review_rows = []
+    if review_dispatch_enabled():
+        review_rows = conn.execute(
+            "SELECT id, assignee FROM tasks "
+            "WHERE status = 'review' AND claim_lock IS NULL "
+            "ORDER BY priority DESC, created_at ASC"
+        ).fetchall()
+    # Review-lane reservation (OOF-30 review finding): the ready loop runs
+    # first and used to consume the ENTIRE shared budget, so a sustained
+    # ready backlog permanently starved autonomous reviews — completed work
+    # sat in 'review' forever while new work kept spawning. When spawnable
+    # review work exists and the tick has any budget, hold one slot back
+    # from the ready loop so the review lane always gets a spawn
+    # opportunity. The reservation is per-tick and self-releasing: with no
+    # spawnable review work (or no cap at all) the ready loop keeps the
+    # full budget. "Spawnable" mirrors the review loop's own gate
+    # (assigned + real profile) so a review column full of human-pulled
+    # control-plane lanes doesn't permanently tax ready throughput.
+    def _any_spawnable_review() -> bool:
+        if not review_rows:
+            return False
+        try:
+            from hermes_cli.profiles import profile_exists as _rpe
+        except Exception:
+            # Profiles module unavailable (test stubs, exotic envs) —
+            # assume spawnable, matching the review loop's own fallback.
+            return any(row["assignee"] for row in review_rows)
+        return any(
+            row["assignee"] and _rpe(row["assignee"]) for row in review_rows
+        )
+
+    ready_budget = spawn_budget
+    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review():
+        ready_budget = max(spawn_budget - 1, 0)
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
@@ -9744,7 +10112,7 @@ def _dispatch_once_locked(
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
     for row in ready_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if ready_budget is not None and spawned >= ready_budget:
             break
         row_assignee = row["assignee"]
         if not row_assignee:
@@ -9941,15 +10309,15 @@ def _dispatch_once_locked(
     # ``sdlc-review`` skill and reviewer workers can now approve, request
     # changes without block-loop accounting, or escalate a genuine blocker.
     # Human-only boards can disable it with ``kanban.review_dispatch``.
-    review_rows = []
-    if review_dispatch_enabled():
-        review_rows = conn.execute(
-            "SELECT id, assignee FROM tasks "
-            "WHERE status = 'review' AND claim_lock IS NULL "
-            "ORDER BY priority DESC, created_at ASC"
-        ).fetchall()
+    #
+    # ``review_rows`` was enumerated before the ready loop; when it is
+    # non-empty the ready loop ran against ``ready_budget`` (one slot held
+    # back) so this lane cannot be permanently starved by a sustained
+    # ready backlog. The review loop itself still checks the FULL shared
+    # ``spawn_budget`` — the reservation caps the ready lane, it does not
+    # grant the review lane extra capacity.
     for row in review_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if spawn_budget is not None and spawned >= spawn_budget:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
@@ -10571,6 +10939,11 @@ def run_daemon(
     on SIGINT / SIGTERM so ``hermes kanban daemon`` is systemd-friendly.
     ``stop_event`` (a :class:`threading.Event`) and ``on_tick`` (a
     callable receiving the :class:`DispatchResult`) are test hooks.
+
+    Each tick resolves ``kanban.max_in_progress`` (explicit config, else
+    the memory-derived default) exactly like the gateway-embedded
+    dispatcher and ``hermes kanban dispatch`` — the standalone daemon must
+    not be the one uncapped entry point (OOF-30).
     """
     import signal
     import threading
@@ -10594,10 +10967,22 @@ def run_daemon(
 
     while not stop_event.is_set():
         try:
+            # Resolve the global concurrency cap the same way the gateway
+            # dispatcher and `hermes kanban dispatch` do (OOF-30): explicit
+            # kanban.max_in_progress wins, otherwise the memory-derived
+            # default applies. The standalone daemon previously passed no
+            # cap at all — the shipped systemd path could still fan out an
+            # entire backlog in one tick even with the derived default in
+            # place everywhere else. Re-resolved every tick (config load is
+            # mtime-cached) so operator edits apply without a restart.
+            max_in_progress = resolve_max_in_progress(
+                configured_max_in_progress()
+            )
             with contextlib.closing(connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
+                    max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

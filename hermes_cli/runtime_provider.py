@@ -134,6 +134,11 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     # providers.is_official_openai_host for the spoof-rejection contract.
     if is_official_openai_host(base_url):
         return "codex_responses"
+    # Meta Model API: prompt caching only on Responses API (0% on
+    # chat/completions vs 93-99% on /responses with retention). Exact
+    # hostname per #32243.
+    if hostname == "api.meta.ai":
+        return "codex_responses"
     if hostname == "api.actual.inc":
         return "codex_responses"
     # Direct native Anthropic host: realign with providers.determine_api_mode,
@@ -185,6 +190,7 @@ def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> 
     Responses path after upgrades or /reset.
     """
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    # Note: api.meta.ai is handled by _detect_api_mode_for_url (returns codex_responses), so the suppression guard below does not fire for Meta.
     detected_mode = _detect_api_mode_for_url(base_url)
 
     if configured_mode == "codex_responses" and detected_mode != "codex_responses":
@@ -646,6 +652,18 @@ def _try_resolve_from_custom_pool(
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         if not pool_api_key:
             return None
+        if not has_usable_secret(pool_api_key) and _loopback_hostname(base_url_hostname(base_url)):
+            # Legacy configs commonly used short/placeholder keys ('123',
+            # 'm', ...) for local no-auth services like Ollama -- fine for
+            # the endpoint itself, but has_usable_secret's 4-char floor
+            # (added after these configs were written) now rejects them
+            # here with no migration path. Every OTHER resolution path in
+            # this file already substitutes "no-key-required" for a
+            # loopback endpoint with no usable secret (the config-based
+            # custom_providers fallback a few hundred lines below, and the
+            # "actual" provider's local-offline exemption further down) --
+            # this pool path was the one gap (issue #86864).
+            pool_api_key = "no-key-required"
         return {
             "provider": provider_label,
             "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
@@ -739,7 +757,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             if not is_provider_enabled(entry):
                 continue
             # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
+            key_env = str(
+                entry.get("key_env") or entry.get("api_key_env") or ""
+            ).strip()
             resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:

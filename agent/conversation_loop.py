@@ -91,11 +91,13 @@ from agent.retry_utils import (
     jittered_backoff,
     zai_coding_overload_retry_ceiling,
 )
+from agent.repetition_guard import is_repetition_dominated
 from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
 # finalizer at turn end.
 from agent.turn_finalizer import finalize_turn
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent import empty_response_guard as _empty_guard
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
@@ -333,6 +335,19 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         }
         if not visible:
             placeholder["display_kind"] = "hidden"
+            # Keep the transcript hidden and empty, but give the historical
+            # API projection a non-empty neutral assistant turn so the
+            # pre-call sanitizer (repair_empty_non_final_messages) does not
+            # re-heal this row on every later call (#88955). display_kind is
+            # stripped before sanitization, while api_content is projected
+            # back into content for historical assistant rows. Use the
+            # canonical neutral interruption placeholder, never
+            # _INTERRUPT_SCAFFOLD_MARKER: replaying the scaffold as assistant
+            # text made the model echo it and self-replicate ghost rows
+            # (#81841).
+            from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+            placeholder["api_content"] = _INTERRUPTED_PLACEHOLDER
         append_message(messages, placeholder)
         append_message(
             messages,
@@ -783,6 +798,84 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+        # Bot Chat capability epoch: an eternal bot session must adopt
+        # user-initiated capability changes (skills/toolsets/MCP/SOUL/roster)
+        # on the next message, not at /new or compression. The stored prompt
+        # embeds a fingerprint of the capability surface; a mismatch against
+        # disk is a deliberate, once-per-change rebuild — the /model
+        # exception applied to capabilities. Prompts without the stamp
+        # (every non-Bot-Chat session) never take this branch, and the check
+        # fails closed to "reuse" so a probe failure can't burn cache.
+        _bot_stale = False
+        try:
+            from tools.bot_mode_probe import (
+                BOT_CHAT_TITLE,
+                stored_bot_chat_prompt_needs_upgrade,
+                stored_prompt_capability_stale,
+            )
+
+            _home_for_epoch = None
+            try:
+                from agent.system_prompt import _agent_home
+
+                _home_for_epoch = _agent_home(agent)
+            except Exception:
+                pass
+            _bot_stale = stored_prompt_capability_stale(stored_prompt, _home_for_epoch)
+            if not _bot_stale and getattr(agent, "_bot_mode_protocol", True):
+                # Legacy upgrade: a Bot Chat whose prompt predates the epoch
+                # mechanism (no stamp, no protocol) gets ONE migration
+                # rebuild — otherwise pre-existing bots would never learn
+                # the messaging protocol. Title-gated so ordinary unstamped
+                # sessions (i.e. all of them) never take this path; the
+                # rebuilt prompt carries the stamp, so it cannot re-fire.
+                _t = str(getattr(agent, "_session_title_hint", "") or "").strip()
+                if not _t and agent._session_db and agent.session_id:
+                    try:
+                        _t = str(agent._session_db.get_session_title(agent.session_id) or "").strip()
+                    except Exception:
+                        _t = ""
+                if _t == BOT_CHAT_TITLE:
+                    _bot_stale = stored_bot_chat_prompt_needs_upgrade(stored_prompt, _home_for_epoch)
+        except Exception:
+            _bot_stale = False
+        if _bot_stale:
+            logger.info(
+                "Bot Chat capability epoch changed for session %s; rebuilding "
+                "system prompt to adopt the new capability surface (one-time "
+                "prefix-cache break).",
+                agent.session_id,
+            )
+            agent._session_title_hint = "Bot Chat"
+            # The skills index inside the prompt comes from a two-layer cache
+            # (in-process LRU + disk snapshot) that doesn't watch the skills
+            # dir; a capability refresh must rebuild THROUGH it or a freshly
+            # installed skill stays invisible in the new prompt.
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+
+                clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
+            agent._cached_system_prompt = agent._build_system_prompt(system_message)
+            agent._bot_capability_refreshed = True
+            # Persist the refreshed prompt so the NEXT turn restores the new
+            # bytes verbatim — the cache break is once per capability change,
+            # never per turn. (on_session_start deliberately not re-fired:
+            # this is a continuation, not a new session.)
+            if agent._session_db:
+                try:
+                    agent._session_db.update_system_prompt(
+                        agent.session_id, agent._cached_system_prompt
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Session DB update_system_prompt failed after Bot Chat "
+                        "capability refresh (session=%s): %s. The refresh will "
+                        "re-fire next turn.",
+                        agent.session_id, exc,
+                    )
+            return
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
@@ -2068,8 +2161,28 @@ def run_conversation(
             # from every outgoing copy so strict OpenAI-compatible backends
             # don't reject the request after a model switch or resumed typed
             # event row enters the live history.
-            api_msg.pop("display_kind", None)
+            _display_kind = api_msg.pop("display_kind", None)
             api_msg.pop("display_metadata", None)
+
+            # Legacy hidden redirect placeholders (#88955): rows persisted
+            # BEFORE the writer-side api_content stamp in
+            # _apply_active_turn_redirect are content="" with no sidecar.
+            # Once display_kind is stripped the pre-call sanitizer
+            # (repair_empty_non_final_messages) would re-heal such a row on
+            # every call forever, since the durable transcript is never
+            # mutated. Give the wire copy the same neutral payload here so
+            # old sessions converge too. Never the interrupt scaffold —
+            # replaying scaffold bytes as assistant text is #81841.
+            if (
+                _display_kind == "hidden"
+                and api_msg.get("role") == "assistant"
+                and not _api_content
+                and not (api_msg.get("content") or "").strip()
+                and not api_msg.get("tool_calls")
+            ):
+                from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+
+                api_msg["content"] = _INTERRUPTED_PLACEHOLDER
 
             # Durable row identity stamped by _rows_to_conversation so the
             # desktop can address a specific persisted message (reactions).
@@ -3541,6 +3654,60 @@ def run_conversation(
                             "completed": False,
                             "partial": True,
                             "error": _exhaust_error,
+                        }
+
+                    # ── Detect repetition-dominated truncation (#86581) ──
+                    # A model in a degenerate repetition loop can spend its
+                    # ENTIRE output budget echoing one fragment.  The
+                    # continuation nudge below would then stitch the
+                    # pathological fragment into the final response — in the
+                    # #86581 incident one turn produced a 60,698-char
+                    # response delivered as 31 Discord messages.  Abort with
+                    # a clear user-facing error instead, mirroring the
+                    # _thinking_exhausted guard above.  Reasoning blocks are
+                    # stripped first (repeated scratchpad lines are not
+                    # evidence of a degenerate visible response).
+                    _visible_trunc = (
+                        agent._strip_think_blocks(_trunc_content)
+                        if isinstance(_trunc_content, str)
+                        else _trunc_content
+                    )
+                    _repetition_dominated = (
+                        not _trunc_has_tool_calls
+                        and bool(_visible_trunc)
+                        and is_repetition_dominated(_visible_trunc)
+                    )
+                    if _repetition_dominated:
+                        _rep_error = (
+                            "Model output entered a repetition loop and was "
+                            "truncated mid-loop; refusing to continue a "
+                            "degenerate response."
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}🔁 Response dominated by "
+                            f"repeated text — stopping instead of "
+                            f"continuing a degenerate response.",
+                            force=True,
+                        )
+                        _rep_response = (
+                            "⚠️ **Response Stopped — Repetition Detected**\n\n"
+                            "The model fell into a repetition loop while "
+                            "writing this response, so continuing would only "
+                            "produce more repeated text. The partial response "
+                            "was discarded.\n\n"
+                            "→ Switch to a different model with `/model`\n"
+                            "→ Or resend your message (your conversation "
+                            "history is preserved)"
+                        )
+                        agent._cleanup_task_resources(effective_task_id)
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": _rep_response,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "error": _rep_error,
                         }
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
@@ -7495,7 +7662,36 @@ def run_conversation(
                         _has_structured
                         and agent._thinking_prefill_retries >= 2
                     )
-                    if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
+                    _empty_candidate = _truly_empty and (
+                        not _has_structured or _prefill_exhausted
+                    )
+                    if _empty_candidate:
+                        # NS-503: every empty attempt re-sends the full
+                        # conversation input at full price. Record the
+                        # attempt (usage/finish_reason signature) so
+                        # deterministic empties — e.g. unsignaled
+                        # provider refusals with zero output tokens —
+                        # stop burning paid retries reproducing the
+                        # same empty. Fails open: missing usage or
+                        # any generated tokens keep the full budget.
+                        _empty_guard.record_empty_attempt(
+                            agent,
+                            finish_reason=finish_reason,
+                            response=response,
+                        )
+                    _empty_retry_budget = (
+                        _empty_guard.empty_retry_budget(agent, response)
+                        if _empty_candidate
+                        else _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
+                    )
+                    _deterministic_empty = _empty_candidate and (
+                        _empty_guard.deterministic_empty(agent)
+                    )
+                    if (
+                        _empty_candidate
+                        and agent._empty_content_retries < _empty_retry_budget
+                        and not _deterministic_empty
+                    ):
                         agent._empty_content_retries += 1
                         wait_time = jittered_backoff(
                             agent._empty_content_retries,
@@ -7504,12 +7700,19 @@ def run_conversation(
                         )
                         logger.warning(
                             "Empty response (no content or reasoning) — "
-                            "retry %d/3 in %.1fs (model=%s)",
-                            agent._empty_content_retries, wait_time, agent.model,
+                            "retry %d/%d in %.1fs (model=%s)",
+                            agent._empty_content_retries,
+                            _empty_retry_budget, wait_time, agent.model,
+                        )
+                        _budget_note = (
+                            " — high-cost request, reduced retry budget"
+                            if _empty_retry_budget < _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
+                            else ""
                         )
                         agent._buffer_status(
                             f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3) in {wait_time:.0f}s"
+                            f"({agent._empty_content_retries}/{_empty_retry_budget}) "
+                            f"in {wait_time:.0f}s{_budget_note}"
                         )
                         # Sleep in small increments to stay responsive to interrupts
                         sleep_end = time.time() + wait_time
@@ -7519,7 +7722,7 @@ def run_conversation(
                                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during empty-response retry wait, aborting.", force=True)
                                 _interrupt_text = (
                                     f"Operation interrupted: retrying empty response from model "
-                                    f"(retry {agent._empty_content_retries}/3)."
+                                    f"(retry {agent._empty_content_retries}/{_empty_retry_budget})."
                                 )
                                 close_interrupted_tool_sequence(messages, _interrupt_text)
                                 agent._persist_session(messages, conversation_history)
@@ -7535,10 +7738,24 @@ def run_conversation(
                             _backoff_touch_counter += 1
                             if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
                                 agent._touch_activity(
-                                    f"empty response retry backoff ({agent._empty_content_retries}/3), "
+                                    f"empty response retry backoff ({agent._empty_content_retries}/{_empty_retry_budget}), "
                                     f"{int(sleep_end - time.time())}s remaining"
                                 )
                         continue
+
+                    if _truly_empty and _deterministic_empty:
+                        logger.warning(
+                            "Deterministic empty response detected "
+                            "(consecutive zero-output completions, "
+                            "model=%s provider=%s finish_reason=%s) — "
+                            "skipping remaining retries",
+                            agent.model, agent.provider, finish_reason,
+                        )
+                        agent._buffer_status(
+                            "⚠️ Model is deterministically returning empty "
+                            "(zero output tokens) — skipping further retries "
+                            "to avoid repeat charges"
+                        )
 
                     # ── Exhausted retries — try fallback provider ──
                     # Before giving up with "(empty)", attempt to
@@ -7586,6 +7803,17 @@ def run_conversation(
                     # "(empty)" terminal.
                     # Surface the buffered retry/fallback trace so the
                     # user can see what was attempted before "(empty)".
+                    # NS-503: if we know roughly what the empty streak
+                    # cost (each attempt re-billed the full input), say
+                    # so — an unexplained charge for "no answer" is the
+                    # core of the complaint.
+                    _streak_cost = _empty_guard.streak_cost_usd(agent)
+                    if _streak_cost is not None:
+                        agent._buffer_status(
+                            f"ℹ️ Estimated cost of these empty attempts: "
+                            f"~${_streak_cost:.2f} (input tokens are billed "
+                            f"per attempt even when no answer is produced)"
+                        )
                     agent._flush_status_buffer()
                     _turn_exit_reason = "empty_response_exhausted"
                     reasoning_text = agent._extract_reasoning(assistant_message)

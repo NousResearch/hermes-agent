@@ -1078,6 +1078,7 @@ import sys
 TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
 
 Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), sed/awk (use patch), or echo/heredoc file creation (use write_file). Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
+NEVER pipe a build/test command through tail/head/cat to shorten output (e.g. `cargo build | tail -20`): output is auto-truncated with the full text saved to a file, and the pipe makes exit_code report the LAST pipeline command's status (tail's 0), masking real failures. Run the command bare; the same applies to `cmd || echo failed`, which also masks the exit code.
 Environment state persists: activate a virtualenv or export variables once per session, not before every command.
 
 Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
@@ -2290,6 +2291,61 @@ atexit.register(_atexit_cleanup)
 # wastes a turn investigating something that just means "no matches".
 # This lookup adds a human-readable note so the agent can move on.
 
+# Signal-death notes for the lethal signals seen in practice. Keyed by
+# signum; used for both the ``-signum`` (subprocess) and ``128+signum``
+# (shell) encodings. Curated rather than exhaustive so we never mislabel a
+# legitimate application exit code (e.g. 130/SIGINT is handled by the
+# executor's interrupt-marker path and excluded here).
+_SIGNAL_EXIT_NOTES: dict[int, str] = {
+    3:  "SIGQUIT (quit from keyboard)",
+    4:  "SIGILL (illegal instruction — corrupt binary or wrong architecture)",
+    6:  "SIGABRT (abort — assertion failure, fatal runtime error, or glibc abort)",
+    7:  "SIGBUS (bus error — misaligned or unmapped memory access)",
+    8:  "SIGFPE (fatal arithmetic error, e.g. integer division by zero)",
+    9:  "SIGKILL — often the kernel OOM killer on memory exhaustion, "
+        "or an explicit kill -9",
+    11: "SIGSEGV (segmentation fault — the program crashed)",
+    13: "SIGPIPE (wrote to a closed pipe — e.g. output piped to a reader that exited)",
+    15: "SIGTERM (terminated — kill/timeout or shutdown requested it to stop)",
+    24: "SIGXCPU (CPU time limit exceeded)",
+    25: "SIGXFSZ (file size limit exceeded)",
+}
+
+
+def _interpret_signal_exit(exit_code: int) -> str | None:
+    """Map signal-termination exit codes to a human-readable note.
+
+    Returns None when ``exit_code`` does not look like a signal death.
+    Negative codes are Python ``subprocess`` semantics (definite); codes in
+    the 128+signum band are the shell convention (very likely but not
+    guaranteed, so those notes hedge with "usually").
+    """
+    if exit_code < 0:
+        signum = -exit_code
+        if signum == 2:  # SIGINT — executor's interrupt-marker path owns it
+            return None
+        note = _SIGNAL_EXIT_NOTES.get(signum)
+        if note:
+            return f"Command terminated by signal {signum}: {note}"
+        try:
+            import signal as _signal
+            name = _signal.Signals(signum).name
+        except (ValueError, ImportError):
+            name = f"signal {signum}"
+        return f"Command terminated by {name} (signal {signum})"
+
+    if exit_code > 128:
+        signum = exit_code - 128
+        note = _SIGNAL_EXIT_NOTES.get(signum)
+        if note:
+            return (
+                f"Exit code {exit_code} usually means the command was "
+                f"terminated by signal {signum}: {note}"
+            )
+
+    return None
+
+
 def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     """Return a human-readable note when a non-zero exit code is non-erroneous.
 
@@ -2299,6 +2355,21 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     """
     if exit_code == 0:
         return None
+
+    # Signal terminations (ported from Kilo-Org/kilocode#12698, adapted to
+    # Python semantics). Two shapes reach the model:
+    #   * negative codes — subprocess.Popen reports a signal-killed process
+    #     as ``-signum`` (definite signal death), and
+    #   * 128+signum — the conventional shell encoding when bash reports a
+    #     signal-killed child (heuristic: a program *can* ``exit 139``, so
+    #     these notes say "usually").
+    # Without a note the model sees a bare ``exit_code=-9`` or ``137`` and
+    # burns turns re-running or mis-diagnosing (137 = OOM kill is the big
+    # one). 130/SIGINT is deliberately absent: the executor has bespoke
+    # interrupt-marker handling for rc=130.
+    signal_note = _interpret_signal_exit(exit_code)
+    if signal_note is not None:
+        return signal_note
 
     # Extract the last command in a pipeline/chain — that determines the
     # exit code.  Handles  `cmd1 && cmd2`, `cmd1 | cmd2`, `cmd1; cmd2`.
@@ -2896,18 +2967,25 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
-        # Non-bypassable: rewriting the local checkout backing this interpreter
-        # can mix module versions. Remote backends cannot reach that checkout.
+        # Windows-only: NTFS locks loaded module files, so rewriting the local
+        # checkout backing this interpreter can corrupt the running process.
+        # POSIX keeps old inodes alive for open handles, so the guard is off
+        # there. Remote backends cannot reach that checkout.
         if env_type == "local":
-            from tools.self_repo_guard import detect_self_repo_git_mutation
+            from tools.self_repo_guard import (
+                detect_self_repo_git_mutation,
+                guard_active,
+            )
 
             guard_cwd = _resolve_command_cwd(
                 workdir=workdir,
                 default_cwd=cwd,
                 session_key=session_key,
             )
-            _self_repo_hit, _self_repo_msg = detect_self_repo_git_mutation(
-                command, guard_cwd
+            _self_repo_hit, _self_repo_msg = (
+                detect_self_repo_git_mutation(command, guard_cwd)
+                if guard_active()
+                else (False, None)
             )
             if _self_repo_hit:
                 logger.warning(
@@ -3421,6 +3499,19 @@ def terminal_tool(
                 try:
                     from tools.terminal_hints import annotate_failure
                     failure_hint = annotate_failure(command, returncode, output)
+                except Exception:
+                    failure_hint = None
+            elif returncode == 0:
+                # Masked-success backstop: `cargo build | tail -20` returns
+                # tail's exit 0 even when the build failed (bash reports the
+                # last pipeline command's status; same for `cmd || echo ...`).
+                # When the command shape can mask an upstream failure AND the
+                # output carries strong failure indicators, warn the model so
+                # exit_code 0 isn't read as a success signal. Advisory only —
+                # the exit code itself is never modified.
+                try:
+                    from tools.terminal_hints import annotate_masked_success
+                    failure_hint = annotate_masked_success(command, output)
                 except Exception:
                     failure_hint = None
 

@@ -2451,6 +2451,9 @@ def compress_context(
     _lock_db = getattr(agent, "_session_db", None)
     _lock_sid = agent.session_id or ""
     _lock_holder: Optional[str] = None
+    # Watermark captured at compression start (#75316); None = fall back to
+    # archive-everything (no concurrent-tail preservation this cycle).
+    _commit_watermark: Optional[int] = None
     # Probe whether the lock subsystem is actually available on this
     # SessionDB instance. A process running mismatched module versions can have
     # this call site while its long-lived SessionDB instance predates the lock
@@ -2555,6 +2558,27 @@ def compress_context(
                 _lock_acquired = _try_acquire_lock(
                     _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
                 )
+                if _lock_acquired:
+                    # Watermark (#75316): MAX(id) of active rows at compression
+                    # START. Appends are NOT blocked while the slow provider
+                    # summary runs — any row landing after this point is
+                    # concurrent tail, and archive_and_compact() re-sequences
+                    # it after the compacted set instead of archiving it.
+                    try:
+                        _commit_watermark = _lock_db.get_active_message_watermark(
+                            _lock_sid
+                        )
+                    except Exception as _wm_err:
+                        # Watermark capture is safety-additive: without it the
+                        # commit falls back to archive-everything (historical
+                        # behavior), so failure here must not abort compression.
+                        logger.warning(
+                            "compression watermark capture failed for "
+                            "session=%s (%s) — concurrent appends this cycle "
+                            "will be archived with the snapshot",
+                            _lock_sid, _wm_err,
+                        )
+                        _commit_watermark = None
             except Exception as _lock_err:
                 # The method exists and entered its implementation but failed.
                 # Do not mistake an internal AttributeError or TypeError for
@@ -3422,6 +3446,8 @@ def compress_context(
                         model_config_patch={
                             PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None,
                         },
+                        watermark=_commit_watermark,
+                        lock_holder=_lock_holder,
                     )
                     split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are
@@ -3450,6 +3476,13 @@ def compress_context(
                     # the current-turn user message before preflight runs, so
                     # messages[:idx] is exactly the persisted prefix; only the
                     # current turn's new messages get written.
+                    #
+                    # Bound to old_session_id, hoisted above the flush: the
+                    # ``except`` handler below keys its in-memory rollback off
+                    # this name, so anything that fails from here on rolls the
+                    # transcript back instead of leaving the failed attempt's
+                    # compacted snapshot in place.
+                    old_session_id = agent.session_id
                     current_idx = getattr(agent, "_persist_user_message_idx", None)
                     persisted_history = (
                         messages[:current_idx]
@@ -3457,6 +3490,61 @@ def compress_context(
                         and 0 <= current_idx <= len(messages)
                         else None
                     )
+                    # The #47202 flush below is a DURABLE append to the parent
+                    # and it is NOT undone when the rotation aborts: the
+                    # ``except`` handler restores the in-memory transcript and
+                    # keeps agent.session_id on the parent, but the rows it just
+                    # wrote stay. Survivable for a one-off failure; pathological
+                    # for a STICKY one. A parent row that already carries
+                    # ``ended_at`` fails publish_compression_child on every
+                    # attempt and nothing in this path clears it, so each
+                    # auto-compaction appends another copy of the current turn to
+                    # the transcript it was supposed to shrink — the session grows
+                    # until the provider rejects the request outright (#88197:
+                    # 303 unique messages stored as 2,611 rows after 7 aborted
+                    # attempts, ~1.66M tokens, HTTP 400).
+                    #
+                    # So check that one precondition BEFORE writing. It is a plain
+                    # read of the row the publish is about to read anyway, it
+                    # raises the publish's own message so the log line, telemetry
+                    # and rollback path are all unchanged, and it cannot mask a
+                    # real rotation — a live parent reaches the flush exactly as
+                    # before. Deliberately NOT extended to the compression lease:
+                    # a lease is re-acquirable, so a transient miss here would
+                    # abort a rotation that would otherwise have committed.
+                    _parent_row_reader = getattr(agent._session_db, "get_session", None)
+                    _parent_already_ended = False
+                    if callable(_parent_row_reader):
+                        try:
+                            _parent_row = _parent_row_reader(old_session_id) or {}
+                            _parent_already_ended = (
+                                _parent_row.get("ended_at") is not None
+                            )
+                        except Exception:
+                            # Fail OPEN: an unreadable row must not turn a cheap
+                            # guard into a new way to lose compression.
+                            _parent_already_ended = False
+                    if _parent_already_ended:
+                        raise RuntimeError(
+                            f"Compression parent already ended: {old_session_id}"
+                        )
+                    # Foreign-tail ceiling (#75316): the flush below writes OUR
+                    # OWN input transcript to the parent — those rows are
+                    # already represented in the compacted handoff and must
+                    # not be cloned into the child. Everything at or below
+                    # this MAX(id) but above the start-watermark is a foreign
+                    # concurrent append; everything above it is our flush.
+                    try:
+                        _foreign_tail_ceiling = (
+                            agent._session_db.get_active_message_watermark(
+                                agent.session_id
+                            )
+                        )
+                    except Exception:
+                        # Without a trustworthy ceiling the clone could
+                        # duplicate the handoff — fall back to historical
+                        # behavior (no tail preservation this rotation).
+                        _foreign_tail_ceiling = None
                     try:
                         agent._flush_messages_to_session_db(
                             messages,
@@ -3480,7 +3568,6 @@ def compress_context(
                     except Exception:
                         _profile_for_child = None
                     old_title = agent._session_db.get_session_title(agent.session_id)
-                    old_session_id = agent.session_id
                     new_session_id = (
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
                         f"{uuid.uuid4().hex[:6]}"
@@ -3498,6 +3585,12 @@ def compress_context(
                         profile_name=_profile_for_child,
                         compression_lock_holder=_lock_holder,
                         require_compression_lease=_lock_holder is not None,
+                        watermark=(
+                            _commit_watermark
+                            if _foreign_tail_ceiling is not None
+                            else None
+                        ),
+                        watermark_ceiling=_foreign_tail_ceiling,
                     )
                     agent.session_id = new_session_id
                     try:

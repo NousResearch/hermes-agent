@@ -7,11 +7,12 @@ import type { ProfileInfo } from '@/types/hermes'
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
 const ensureGatewayForProfile = vi.fn(async () => undefined)
+const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
-vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForProfile, openGatewayForProfile }))
+vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile }))
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
@@ -19,8 +20,14 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles } =
-  await import('./profile')
+const {
+  $activeGatewayProfile,
+  $profiles,
+  ensureGatewayProfile,
+  invalidateProfileListFetches,
+  prewarmProfileBackend,
+  refreshProfiles
+} = await import('./profile')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -170,5 +177,65 @@ describe('refreshProfiles shared rail list (#49289)', () => {
     await expect(refreshProfiles()).rejects.toThrow('backend unavailable')
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
+  })
+})
+
+describe('stale profile-list fetches across a backend switch (#85731)', () => {
+  it('a late response from the previous backend cannot clobber the new backend list', async () => {
+    // The disappearing-rail mechanism: /api/profiles is in flight against
+    // backend A when the user applies a different remote/Cloud connection.
+    // The soft re-home fetches backend B's list, then A's late (often empty /
+    // default-only) response lands LAST and collapses the rail.
+    let resolveOld: (value: { profiles: ProfileInfo[] }) => void = () => undefined
+    vi.mocked(getProfiles).mockImplementationOnce(() => new Promise(resolve => (resolveOld = resolve)))
+
+    const oldFetch = refreshProfiles() // in flight against backend A
+
+    // Connection apply → soft re-home strands in-flight fetches...
+    invalidateProfileListFetches()
+
+    // ...and the new backend's list arrives.
+    vi.mocked(getProfiles).mockResolvedValueOnce({
+      profiles: [profile('default', true), profile('eric'), profile('coder')]
+    })
+    await refreshProfiles()
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'eric', 'coder'])
+
+    // Backend A's stale response finally lands: it must NOT overwrite $profiles.
+    resolveOld({ profiles: [profile('default', true)] })
+    await oldFetch
+
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'eric', 'coder'])
+  })
+
+  it('a normal refresh still writes the cache after prior invalidations', async () => {
+    invalidateProfileListFetches()
+    vi.mocked(getProfiles).mockResolvedValueOnce({ profiles: [profile('default', true), profile('solo')] })
+
+    await refreshProfiles()
+
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'solo'])
+  })
+
+  it('strands in-flight fetches when the active gateway profile swaps backends', async () => {
+    // Sibling site of the same class: a live profile swap moves /api/profiles
+    // routing to another backend mid-fetch. The $activeGatewayProfile
+    // subscriber must bump the epoch exactly like the connection-apply wipe.
+    let resolveOld: (value: { profiles: ProfileInfo[] }) => void = () => undefined
+    vi.mocked(getProfiles).mockImplementationOnce(() => new Promise(resolve => (resolveOld = resolve)))
+
+    const oldFetch = refreshProfiles() // in flight against the old profile's backend
+
+    $activeGatewayProfile.set('coder') // swap → subscriber invalidates
+
+    vi.mocked(getProfiles).mockResolvedValueOnce({
+      profiles: [profile('default', true), profile('coder')]
+    })
+    await refreshProfiles()
+
+    resolveOld({ profiles: [] })
+    await oldFetch
+
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'coder'])
   })
 })

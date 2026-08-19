@@ -415,6 +415,27 @@ describe('applyUpdates terminal state', () => {
     expect($updateApply.get().error).toBe('rebuild-failed')
   })
 
+  it('preserves structured safe blockers for the close-and-update prompt', async () => {
+    const blockers = [
+      {
+        pid: 47484,
+        name: 'python.exe',
+        cmdline: 'python.exe -m http.server 8766',
+        kind: 'local-preview' as const,
+        safeToStop: true,
+        label: 'Example Preview',
+        port: 8766
+      }
+    ]
+
+    applyMock.mockResolvedValue({ ok: false, error: 'venv-blocked', message: 'blocked', blockers })
+
+    await applyUpdates()
+
+    expect($updateApply.get().error).toBe('venv-blocked')
+    expect($updateApply.get().blockers).toEqual(blockers)
+  })
+
   it('keeps the manual command state for CLI installs with no staged updater', async () => {
     applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update' })
 

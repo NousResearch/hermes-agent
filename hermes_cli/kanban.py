@@ -2643,6 +2643,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_in_progress_per_profile")
         )
         max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
+        # Memory-derived default when unset (OOF-30/OOF-77) — same
+        # fallback the gateway-embedded dispatcher applies, so behaviour
+        # matches regardless of which path runs the tick.
+        max_in_progress = kb.resolve_max_in_progress(max_in_progress)
         # CLI --max overrides config kanban.max_spawn when both are present;
         # CLI is the more explicit signal so it wins.
         cli_max = getattr(args, "max", None)
@@ -3217,9 +3221,20 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     removed_ws = 0
     with kb.connect_closing() as conn:
         rows = conn.execute(
-            "SELECT id, workspace_kind, workspace_path FROM tasks WHERE status = 'archived'"
+            "SELECT id, workspace_kind, workspace_path, branch_name FROM tasks "
+            "WHERE status = 'archived'"
         ).fetchall()
     for row in rows:
+        if row["workspace_kind"] == "worktree":
+            # Backstop for worktrees that escaped the completion/archive hook
+            # (e.g. tasks archived before that hook existed). Same safety
+            # predicate: only clean, fully-pushed worktrees are removed.
+            wt_path = row["workspace_path"]
+            if wt_path and Path(wt_path).is_dir():
+                kb._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"])
+                if not Path(wt_path).is_dir():
+                    removed_ws += 1
+            continue
         if row["workspace_kind"] != "scratch":
             continue
         path = Path(row["workspace_path"] or (scratch_root / row["id"]))

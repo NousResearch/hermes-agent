@@ -2947,6 +2947,8 @@ def run_doctor(args):
                 check_ok(f"{_active_memory_provider} provider active")
             elif _provider:
                 check_warn(f"{_active_memory_provider} configured but not available", "run: hermes memory status")
+            elif _active_memory_provider in ("", "builtin"):
+                check_ok("built-in memory active")
             else:
                 check_warn(f"{_active_memory_provider} plugin not found", "run: hermes memory setup")
         except Exception as _e:

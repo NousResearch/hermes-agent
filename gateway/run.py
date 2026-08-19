@@ -13481,6 +13481,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._gateway_loop = None
         if self._gateway_loop is not None:
             self._start_loop_liveness_guards(self._gateway_loop)
+        # The event loop is confirmed live: the startup-liveness watchdog's
+        # job is done and the loop-liveness watchdog (armed just above)
+        # takes over from here (OOF-298). Disarm even when the loop guards
+        # are config-disabled — the startup watchdog only covers the
+        # pre-loop window, never adapter connects or steady-state.
+        try:
+            from gateway.startup_watchdog import disarm_startup_watchdog
+
+            disarm_startup_watchdog()
+        except Exception:
+            logger.debug("Startup watchdog disarm failed", exc_info=True)
         logger.info("Session storage: %s", self.config.sessions_dir)
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain
@@ -33421,7 +33432,7 @@ def main():
     os.environ.setdefault("AI_AGENT", "hermes-agent")
     os.environ.setdefault("HERMES_AGENT", "true")
 
-    # Positive process identity: ledger registration + Windows job-object
+# Positive process identity: ledger registration + Windows job-object
     # self-attach, so update-time reapers can identify this gateway (and its
     # child tree dies with it on Windows). Best-effort — never blocks startup.
     try:
@@ -33432,6 +33443,17 @@ def main():
 
         register_self("gateway")
         attach_self_to_kill_on_close_job()
+    except Exception:
+        pass
+
+    # Startup-liveness watchdog (OOF-298): armed before ANY other startup
+    # work — config load, imports, DB opens — so a deadlock anywhere in the
+    # pre-event-loop window still gets the process respawned by the service
+    # supervisor instead of wedging as a live-PID zombie. Disarmed by
+    # GatewayRunner once the event loop is confirmed live.
+    try:
+        from gateway.startup_watchdog import arm_startup_watchdog
+        arm_startup_watchdog()
     except Exception:
         pass
 

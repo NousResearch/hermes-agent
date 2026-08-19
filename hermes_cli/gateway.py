@@ -6441,6 +6441,19 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
 
+    # Startup-liveness watchdog (OOF-298): armed before config load, imports,
+    # and DB opens so a deadlock anywhere in the pre-event-loop window still
+    # gets the process respawned by the service supervisor instead of wedging
+    # as a live-PID zombie that s6/systemd will never restart. Disarmed by
+    # GatewayRunner once the event loop is confirmed live. Placed after the
+    # process-conflict guards: a --replace loser exiting above must not have
+    # armed a watchdog first.
+    try:
+        from gateway.startup_watchdog import arm_startup_watchdog
+        arm_startup_watchdog()
+    except Exception:
+        pass
+
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still
     # needs to obey the banner's "Press Ctrl+C to stop" contract.

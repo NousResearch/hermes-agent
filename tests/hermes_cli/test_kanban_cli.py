@@ -70,6 +70,24 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_cli_log_rejects_non_positive_tail(kanban_home):
+    out = kc.run_slash("log t_beef --tail -1")
+    assert "usage error" in out.lower()
+    assert "--tail" in out
+    assert "positive integer" in out
+
+
+def test_cli_log_accepts_positive_tail(kanban_home):
+    log_dir = kanban_home / "kanban" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "t_beef.log").write_bytes(b"alpha\nomega\n")
+
+    out = kc.run_slash("log t_beef --tail 6")
+
+    assert "omega" in out
+    assert "alpha" not in out
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

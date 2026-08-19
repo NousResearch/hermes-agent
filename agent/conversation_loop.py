@@ -5255,7 +5255,15 @@ def run_conversation(
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
                 _should_fallback = (
                     is_rate_limited
-                    or (_is_transport_failure and retry_count >= 2)
+                    # Transport/timeout: with api_max_retries=1 the old
+                    # ``retry_count >= 2`` gate never fired before the exhausted
+                    # path, so a failed transport never reached the fallback
+                    # chain. Allow failover once we've used our retry budget
+                    # (or after 2 tries when the budget is higher).
+                    or (
+                        _is_transport_failure
+                        and retry_count >= min(2, max(1, max_retries))
+                    )
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
@@ -5577,19 +5585,32 @@ def run_conversation(
                             api_messages, tools=agent.tools or None,
                         )
                         local_available_out = old_ctx - request_input_estimate
+                        # ── Aggressive max_tokens reduction ──────────────
+                        # The old -64-per-retry approach needs ~500 attempts to
+                        # converge from a 65K cap to a 32K one — far more than
+                        # any configured max_compression_attempts, so the retry
+                        # exhausts its budget and gives up (a "death spiral":
+                        # compression/retry fails 3+ times and the request never
+                        # lands). Jump straight to the configured model.max_tokens
+                        # (or the provider-reported budget) on the FIRST retry,
+                        # with a small safety margin, so a workable output cap is
+                        # reached immediately. Fixes #43547.
+                        configured_max = getattr(agent, "max_tokens", None) or 4096
                         if local_available_out > 0:
-                            safe_out = max(1, min(available_out, local_available_out) - 64)
+                            _budget = min(available_out, local_available_out)
                         else:
                             # The rough local estimate can overshoot the real
                             # request size.  Fall back to the provider-reported
                             # budget, which is authoritative for the failed
                             # request.
-                            safe_out = max(1, available_out - 64)
+                            _budget = available_out
+                        safe_out = max(1, min(_budget, configured_max) - 64)
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(
                             f"⚠️  Output cap too large for current prompt — "
                             f"retrying with max_tokens={safe_out:,} "
                             f"(provider_available={available_out:,}, "
+                            f"configured_max={configured_max:,}, "
                             f"estimated_request_tokens={request_input_estimate:,}; "
                             f"context_length unchanged at {old_ctx:,})"
                         )

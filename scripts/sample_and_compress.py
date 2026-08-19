@@ -78,11 +78,25 @@ def load_dataset_from_hf(dataset_name: str) -> List[Dict[str, Any]]:
 _TOKENIZER = None
 
 
-def _init_tokenizer_worker(tokenizer_name: str):
-    """Initialize tokenizer in worker process."""
+def _init_tokenizer_worker(tokenizer_name: str, trust_remote_code: bool = False):
+    """Initialize tokenizer in worker process.
+
+    SECURITY: ``trust_remote_code`` makes HuggingFace execute arbitrary Python
+    shipped in the tokenizer repo. It defaults to False here so a stray/hostile
+    ``tokenizer_name`` cannot silently run code; callers opt in explicitly and
+    the choice is logged.
+    """
     global _TOKENIZER
     from transformers import AutoTokenizer
-    _TOKENIZER = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
+    if trust_remote_code:
+        print(
+            f"⚠️  SECURITY: loading tokenizer '{tokenizer_name}' with "
+            "trust_remote_code=True — this EXECUTES arbitrary Python from that "
+            "repo. Only proceed if you trust its source."
+        )
+    _TOKENIZER = AutoTokenizer.from_pretrained(
+        tokenizer_name, trust_remote_code=trust_remote_code
+    )
 
 
 def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
@@ -120,11 +134,12 @@ def sample_from_datasets(
     min_tokens: int = 16000,
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking",
     seed: int = 42,
-    num_proc: int = 8
+    num_proc: int = 8,
+    trust_remote_code: bool = False
 ) -> List[Dict[str, Any]]:
     """
     Load all datasets, filter by token count, then randomly sample from combined pool.
-    
+
     Args:
         datasets: List of HuggingFace dataset names
         total_samples: Total number of samples to collect
@@ -132,6 +147,8 @@ def sample_from_datasets(
         tokenizer_name: HuggingFace tokenizer for counting tokens
         seed: Random seed for reproducibility
         num_proc: Number of parallel processes for tokenization
+        trust_remote_code: Allow the tokenizer repo to run arbitrary code
+            (SECURITY: keep False unless you fully trust ``tokenizer_name``)
         
     Returns:
         List of sampled trajectory entries
@@ -173,7 +190,7 @@ def sample_from_datasets(
     with Pool(
         processes=num_proc,
         initializer=_init_tokenizer_worker,
-        initargs=(tokenizer_name,)
+        initargs=(tokenizer_name, trust_remote_code)
     ) as pool:
         # Process in chunks and show progress
         chunk_size = 1000
@@ -323,6 +340,7 @@ def main(
     min_tokens: int = 16000,
     num_proc: int = 8,
     skip_download: bool = False,
+    trust_remote_code: bool = False,
 ):
     """
     Sample trajectories from HuggingFace datasets and run compression.
@@ -337,6 +355,9 @@ def main(
         min_tokens: Minimum token count to filter trajectories (default: 16000)
         num_proc: Number of parallel workers for tokenization (default: 8)
         skip_download: Skip download and use existing sampled data
+        trust_remote_code: Allow the tokenizer repo to run arbitrary code during
+            token counting (SECURITY: keep False unless you fully trust the
+            tokenizer source; default: False)
     """
     print("=" * 70)
     print("📊 TRAJECTORY SAMPLING AND COMPRESSION")
@@ -369,10 +390,11 @@ def main(
         # Step 1: Download, filter by token count, and sample from combined pool
         samples = sample_from_datasets(
             dataset_list, 
-            total_samples, 
+            total_samples,
             min_tokens=min_tokens,
             seed=seed,
-            num_proc=num_proc
+            num_proc=num_proc,
+            trust_remote_code=trust_remote_code
         )
         
         if not samples:

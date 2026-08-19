@@ -1432,6 +1432,27 @@ def get_profile_export_path(name: str, *, timestamp: Optional[str] = None) -> Pa
     return export_dir / f"{canon}-{stamp}.tar.gz"
 
 
+def _non_exportable_entries(directory: str, contents: list) -> set:
+    """Entries under *directory* that must never reach an export archive: ``__pycache__``,
+    ``*.sock``/``*.tmp`` names, and anything that is not a regular file, directory, or symlink.
+    :func:`shutil.copytree` cannot copy special files, so a single live Unix socket without a
+    ``.sock`` name (or a FIFO, or a device node) would abort the whole export with
+    ``[Errno 6] No such device or address``. Symlinks survive — copytree recreates them."""
+    ignored: set = set()
+    for entry in contents:
+        if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
+            ignored.add(entry)
+            continue
+        try:
+            mode = os.lstat(os.path.join(directory, entry)).st_mode
+        except OSError:
+            ignored.add(entry)  # vanished mid-walk — copytree would fail on it anyway
+            continue
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+            ignored.add(entry)
+    return ignored
+
+
 def _default_export_ignore(root_dir: Path):
     """copytree ignore for the default-profile export: root-level allow-list
     (``_DEFAULT_EXPORT_INCLUDE_ROOT``) plus universal exclusions. Surviving text files are
@@ -1441,17 +1462,14 @@ def _default_export_ignore(root_dir: Path):
     survive. Everything else (such as an unrelated ``x11-dev/`` directory in a Docker deployment where
     HERMES_HOME equals the cwd) is excluded. Blacklisting was tried first and proved unable to anticipate
     every non-Hermes file the user may have lying alongside HERMES_HOME (#58394). * **Universal exclusions
-    at any depth** — ``__pycache__``, sockets, temp files; plus npm lockfiles, which may appear at the root.
+    at any depth** — ``__pycache__``, sockets and other special files, temp files
+    (:func:`_non_exportable_entries`); plus npm lockfiles, which may appear at the root.
     """
 
     def _ignore(directory: str, contents: list) -> set:
         # Universal exclusions (any depth) plus npm lockfiles that can appear at root.
-        ignored: set = {
-            entry for entry in contents
-            if entry == "__pycache__"
-            or entry.endswith((".sock", ".tmp"))
-            or entry in {"package.json", "package-lock.json"}
-        }
+        ignored = _non_exportable_entries(directory, contents)
+        ignored.update({"package.json", "package-lock.json"} & set(contents))
         if Path(directory) == root_dir:
             ignored.update(entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT)
         return ignored
@@ -1516,9 +1534,14 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
 
     # The default profile IS ~/.hermes (dir name ".hermes"), so both paths stage a filtered
     # copy under a temp dir named after the canonical id: root allow-list for default,
-    # credential exclusion for named profiles.
+    # credential exclusion for named profiles. The universal exclusions apply to both:
+    # profiles accumulate Unix sockets in normal operation (e.g. an agent-browser control
+    # socket under ``home/.agent-browser/``), and a single one aborts copytree — and with
+    # it the whole export.
     def _ignore_credentials(directory: str, contents: list) -> set:
-        return _EXPORT_CREDENTIAL_FILES & set(contents)
+        ignored = _non_exportable_entries(directory, contents)
+        ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        return ignored
 
     ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials
     with tempfile.TemporaryDirectory() as tmpdir:

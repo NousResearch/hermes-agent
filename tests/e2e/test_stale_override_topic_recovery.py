@@ -605,17 +605,88 @@ async def test_recovered_busy_quick_exec_uses_canonical_busy_route_without_shell
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["/stop", "/new"])
+async def test_recovered_busy_quick_alias_preserves_typed_identity(
+    tmp_path, monkeypatch, target
+):
+    """A quick alias is generic busy input, never its control-command target."""
+    runner, raw_source, canonical_key, active_agent, adapter = (
+        _busy_topic_command_runner(
+            tmp_path,
+            monkeypatch,
+            quick_commands={"shortcut": {"type": "alias", "target": target}},
+        )
+    )
+    runner._handle_reset_command = AsyncMock(
+        side_effect=AssertionError("busy alias dispatched /new")
+    )
+    runner._interrupt_and_clear_session = AsyncMock(
+        side_effect=AssertionError("busy alias dispatched a control target")
+    )
+
+    result = await runner._handle_message(
+        MessageEvent(text="/shortcut keep this", source=raw_source)
+    )
+
+    assert result is None
+    assert active_agent.steered == ["/shortcut keep this"]
+    assert runner._peek_session_state(canonical_key).turn.agent is active_agent
+    runner._handle_reset_command.assert_not_awaited()
+    runner._interrupt_and_clear_session.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_text", "quick_commands"),
+    [
+        ("/quick now", {"quick": {"type": "exec", "command": "false"}}),
+        ("/plugin mutate", None),
+        ("/unknown value", None),
+    ],
+)
+async def test_recovered_busy_non_builtin_never_touches_plugin_discovery(
+    tmp_path, monkeypatch, command_text, quick_commands
+):
+    runner, raw_source, _canonical_key, active_agent, _adapter = (
+        _busy_topic_command_runner(
+            tmp_path,
+            monkeypatch,
+            quick_commands=quick_commands,
+        )
+    )
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("plugin discovery touched before busy decision")
+
+    monkeypatch.setattr("hermes_cli.commands.is_gateway_known_command", _forbidden)
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_commands", _forbidden)
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", _forbidden)
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _forbidden)
+    monkeypatch.setattr("hermes_cli.plugins.PluginManager.discover_and_load", _forbidden)
+
+    result = await runner._handle_message(
+        MessageEvent(text=command_text, source=raw_source)
+    )
+
+    assert result is None
+    assert active_agent.steered == [command_text]
+
+
+@pytest.mark.asyncio
 async def test_recovered_busy_plugin_command_never_calls_handler_or_returns_ack(
     tmp_path, monkeypatch
 ):
-    """Plugin lookup may classify the sink; the handler itself stays inert."""
+    """Plugin discovery and the handler both stay inert before busy routing."""
     runner, raw_source, _canonical_key, active_agent, adapter = (
         _busy_topic_command_runner(tmp_path, monkeypatch)
     )
     plugin_handler = MagicMock(return_value="optimistic plugin acknowledgement")
+    plugin_lookup = MagicMock(
+        side_effect=AssertionError("busy plugin command triggered discovery")
+    )
     monkeypatch.setattr(
-        "hermes_cli.plugins.get_plugin_command_handler",
-        lambda name: plugin_handler if name == "side-effect" else None,
+        "hermes_cli.plugins.get_plugin_command_handler", plugin_lookup
     )
 
     result = await runner._handle_message(
@@ -623,6 +694,7 @@ async def test_recovered_busy_plugin_command_never_calls_handler_or_returns_ack(
     )
 
     assert result is None
+    plugin_lookup.assert_not_called()
     plugin_handler.assert_not_called()
     assert active_agent.steered == ["/side_effect mutate"]
     adapter.send.assert_not_awaited()
@@ -666,12 +738,12 @@ async def test_stripped_topic_dynamic_skill_preserves_busy_mode(
     )
 
     monkeypatch.setattr(
-        "agent.skill_commands.get_skill_commands",
-        lambda: {"race-skill": {"name": "race-skill"}},
+        "agent.skill_commands._skill_commands",
+        {"/race-skill": {"name": "race-skill"}},
     )
     monkeypatch.setattr(
-        "agent.skill_commands.resolve_skill_command_key",
-        lambda command: "race-skill" if command == "race-skill" else None,
+        "agent.skill_commands.get_skill_commands",
+        lambda: {"/race-skill": {"name": "race-skill"}},
     )
     monkeypatch.setattr(
         "agent.skill_commands.build_skill_invocation_message",
@@ -680,6 +752,20 @@ async def test_stripped_topic_dynamic_skill_preserves_busy_mode(
     monkeypatch.setattr(
         "agent.skill_utils.get_disabled_skill_names", lambda **_kwargs: set()
     )
+    forbidden_discovery = MagicMock(
+        side_effect=AssertionError("dynamic busy routing touched plugin discovery")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_command_handler", forbidden_discovery
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_commands", forbidden_discovery)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.PluginManager.discover_and_load", forbidden_discovery
+    )
+    monkeypatch.setattr(
+        "hermes_cli.commands.is_gateway_known_command", forbidden_discovery
+    )
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", forbidden_discovery)
 
     class ActiveAgent:
         def __init__(self):
@@ -728,6 +814,56 @@ async def test_stripped_topic_dynamic_skill_preserves_busy_mode(
     assert raw_key not in adapter._pending_messages
     runner._handle_message_with_agent.assert_not_awaited()
     assert runner._peek_session_state(canonical_key).turn.agent is active_agent
+    forbidden_discovery.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stripped_topic_dynamic_bundle_expands_once_without_discovery(
+    tmp_path, monkeypatch
+):
+    runner, raw_source, canonical_key, active_agent, adapter = (
+        _busy_topic_command_runner(tmp_path, monkeypatch, busy_mode="steer")
+    )
+    monkeypatch.setattr(
+        "agent.skill_bundles._bundles_cache",
+        {"/race-bundle": {"name": "race-bundle"}},
+    )
+    build_bundle = MagicMock(
+        return_value=("loaded dynamic bundle prompt", ["one"], [])
+    )
+    monkeypatch.setattr(
+        "agent.skill_bundles.build_bundle_invocation_message", build_bundle
+    )
+    forbidden_discovery = MagicMock(
+        side_effect=AssertionError("bundle busy routing touched plugin discovery")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_command_handler", forbidden_discovery
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_commands", forbidden_discovery)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.PluginManager.discover_and_load", forbidden_discovery
+    )
+    monkeypatch.setattr(
+        "hermes_cli.commands.is_gateway_known_command", forbidden_discovery
+    )
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", forbidden_discovery)
+
+    result = await runner._handle_message(
+        MessageEvent(text="/race-bundle inspect", source=raw_source)
+    )
+
+    assert result is None
+    assert active_agent.steered == ["loaded dynamic bundle prompt"]
+    assert runner._peek_session_state(canonical_key).turn.agent is active_agent
+    build_bundle.assert_called_once_with(
+        "/race-bundle",
+        "inspect",
+        task_id=canonical_key,
+        platform="telegram",
+    )
+    forbidden_discovery.assert_not_called()
+    adapter.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -221,6 +221,23 @@ class TestLiveCatalog:
         monkeypatch.delenv("XAI_IMAGE_MODEL", raising=False)
         assert xai_mod._resolve_edit_model() == "grok-imagine-image-quality"
 
+    def test_edit_model_honors_caller_kwarg(self, monkeypatch):
+        """The dispatched model kwarg reaches the edit path too."""
+        import plugins.image_gen.xai as xai_mod
+
+        live = {
+            "grok-imagine-image-2.0": {"input_modalities": ["text", "image"], "aliases": []},
+            "grok-imagine-image-quality": {"input_modalities": ["text", "image"], "aliases": []},
+        }
+        monkeypatch.setattr(xai_mod, "_fetch_live_models", lambda: live)
+        monkeypatch.setattr(xai_mod, "_LIVE_CACHE", None)
+        monkeypatch.delenv("XAI_IMAGE_MODEL", raising=False)
+        assert xai_mod._resolve_edit_model("grok-imagine-image-2.0") == "grok-imagine-image-2.0"
+        # Text-only caller model must not hijack the edit path.
+        live["grok-imagine-image-2.0"]["input_modalities"] = ["text"]
+        monkeypatch.setattr(xai_mod, "_LIVE_CACHE", None)
+        assert xai_mod._resolve_edit_model("grok-imagine-image-2.0") == "grok-imagine-image-quality"
+
 
 # ---------------------------------------------------------------------------
 # Generate tests

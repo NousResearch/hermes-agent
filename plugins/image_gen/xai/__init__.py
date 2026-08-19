@@ -225,15 +225,15 @@ def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, A
     return DEFAULT_MODEL, catalog.get(DEFAULT_MODEL, _MODELS[DEFAULT_MODEL])
 
 
-def _resolve_edit_model() -> str:
+def _resolve_edit_model(caller_model: Optional[str] = None) -> str:
     """Model for ``/v1/images/edits`` requests.
 
-    An explicitly selected model (env or config) that accepts image input
-    is honored for edits; otherwise fall back to the quality model, which
-    xAI documents as the edit-capable baseline.
+    An explicitly selected model (caller kwarg, env, or config) that accepts
+    image input is honored for edits; otherwise fall back to the quality
+    model, which xAI documents as the edit-capable baseline.
     """
     catalog = _catalog()
-    explicit = os.environ.get("XAI_IMAGE_MODEL") or (
+    explicit = caller_model or os.environ.get("XAI_IMAGE_MODEL") or (
         _load_xai_config().get("model") if isinstance(_load_xai_config().get("model"), str) else None
     )
     if explicit and explicit in catalog:
@@ -430,7 +430,7 @@ class XAIImageGenProvider(ImageGenProvider):
             # is honored; otherwise the documented quality baseline is used.
             # The source image may be a public URL or a base64 data URI;
             # local file paths are converted to a data URI here.
-            edit_model = _resolve_edit_model()
+            edit_model = _resolve_edit_model(kwargs.get("model"))
             try:
                 image_fields = [_xai_image_field(source) for source in source_images]
             except Exception as exc:

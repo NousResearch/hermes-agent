@@ -1288,14 +1288,24 @@ class TestCmdUpdateStayOnBranch:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
-    def test_default_switches_back_to_feature_branch(self, mock_run, _mock_which):
-        """Without --stay-on-branch, an update from a feature branch returns to it."""
+    def test_default_parked_fully_merged_stays_on_target(self, mock_run, _mock_which):
+        """A fully-merged parked branch stays on the update target.
+
+        Regression for the 2026-08-17 incident fix landed on main: after an
+        update, re-parking the checkout on a stale (fully merged) feature
+        branch was exactly the failure mode that left a live box days behind
+        while printing "✓ Code updated!". The parked-branch guard now keeps
+        the checkout on the target branch for the default path too. This PR's
+        ``--stay-on-branch`` adds the stash-preservation contract on top —
+        see ``test_stay_on_branch_keeps_stash_for_manual_recovery``.
+        """
         commands = self._capture_git_commands("feat/aide-squared-evolution", "main", stay=False)
         checkouts = self._checkout_commands(commands)
 
-        # Switched to main for the update AND switched back to the feature branch.
+        # Switched to main for the update; the fully-merged parked branch is
+        # NOT re-checked-out (2026-08-17 guard), so the checkout ends on main.
         assert any("checkout main" in c for c in checkouts), checkouts
-        assert any("checkout feat/aide-squared-evolution" in c for c in checkouts), checkouts
+        assert not any("checkout feat/aide-squared-evolution" in c for c in checkouts), checkouts
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

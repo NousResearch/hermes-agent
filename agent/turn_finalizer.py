@@ -603,12 +603,23 @@ def finalize_turn(
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
+            _skipped_valid = 0
             for _hook_result in _transform_results:
-                if isinstance(_hook_result, str) and _hook_result:
-                    _pre_transform_response = final_response
-                    final_response = _hook_result
-                    _response_transformed = True
-                    break  # First non-empty string wins
+                if not (isinstance(_hook_result, str) and _hook_result):
+                    continue
+                if _response_transformed:
+                    _skipped_valid += 1
+                    continue
+                _pre_transform_response = final_response
+                final_response = _hook_result
+                _response_transformed = True
+            if _response_transformed and _skipped_valid:
+                logger.warning(
+                    "transform_llm_output: skipped %d valid replacement(s) "
+                    "after the first result in registration order won "
+                    "(run-all-then-pick-first, #64714 skipped-transform rule)",
+                    _skipped_valid,
+                )
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 

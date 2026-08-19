@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -89,6 +90,34 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     assert "OPENAI_API_KEY=" in result["output"]
     assert "sk-pro" in result["output"]  # prefix marker from _mask_token
     assert "abc123def456" not in result["output"]  # secret body is gone
+
+
+def test_skipped_valid_results_log_runtime_warning(monkeypatch, tmp_path, caplog):
+    # The #64714 skipped-transform rule: a valid-but-losing replacement must
+    # surface in logs, never be silently shadowed.
+    with caplog.at_level(logging.WARNING, logger=terminal_tool_module.logger.name):
+        result, _mock_env = _run_terminal(
+            monkeypatch,
+            tmp_path,
+            output="original",
+            invoke_hook=lambda hook_name, **kwargs: [None, "first", "second"],
+        )
+    assert result["output"] == "first"
+    warnings = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "skipped 1 valid" in warnings[0]
+
+    # A lone winner is not a conflict: no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=terminal_tool_module.logger.name):
+        result, _mock_env = _run_terminal(
+            monkeypatch,
+            tmp_path,
+            output="original",
+            invoke_hook=lambda hook_name, **kwargs: ["only"],
+        )
+    assert result["output"] == "only"
+    assert not [r for r in caplog.records if "skipped" in r.getMessage()]
 
 
 def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(

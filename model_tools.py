@@ -1576,10 +1576,23 @@ def handle_function_call(
                     error_type=error_type,
                     error_message=error_message,
                 )
+                _skipped_valid = 0
+                _winner_found = False
                 for hook_result in hook_results:
-                    if isinstance(hook_result, str):
-                        result = hook_result
-                        break
+                    if not isinstance(hook_result, str):
+                        continue
+                    if _winner_found:
+                        _skipped_valid += 1
+                        continue
+                    result = hook_result
+                    _winner_found = True
+                if _winner_found and _skipped_valid:
+                    logger.warning(
+                        "transform_tool_result: skipped %d valid replacement(s) "
+                        "after the first result in registration order won "
+                        "(run-all-then-pick-first, #64714 skipped-transform rule)",
+                        _skipped_valid,
+                    )
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 

@@ -3448,10 +3448,24 @@ def terminal_tool(
                     task_id=effective_task_id or "",
                     env_type=env_type,
                 )
+                _skipped_valid = 0
+                _winner_found = False
                 for hook_result in hook_results:
-                    if isinstance(hook_result, str):
-                        output = hook_result
-                        break
+                    if not isinstance(hook_result, str):
+                        continue
+                    if _winner_found:
+                        _skipped_valid += 1
+                        continue
+                    output = hook_result
+                    _winner_found = True
+                if _winner_found and _skipped_valid:
+                    logger.warning(
+                        "transform_terminal_output: skipped %d valid "
+                        "replacement(s) after the first result in registration "
+                        "order won (run-all-then-pick-first, #64714 "
+                        "skipped-transform rule)",
+                        _skipped_valid,
+                    )
             except Exception:
                 pass
             

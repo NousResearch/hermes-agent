@@ -120,8 +120,7 @@ const $focusedAwaitingResponse = focusedTurnFlag(
  */
 const $focusedSessionProfile = computed(
   [$focusedStoredSessionId, $sessions, $activeGatewayProfile],
-  (focused, sessions, activeProfile) =>
-    normalizeProfileKey(rememberedSessionProfile(sessions, focused, activeProfile))
+  (focused, sessions, activeProfile) => normalizeProfileKey(rememberedSessionProfile(sessions, focused, activeProfile))
 )
 
 export interface PluginProfileRoute {

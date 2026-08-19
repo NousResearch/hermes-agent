@@ -18,6 +18,7 @@ import asyncio
 import atexit
 import contextlib
 import errno
+import glob
 import hashlib
 import json
 import logging
@@ -11359,9 +11360,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 p.unlink(missing_ok=True)
             except OSError:
                 pass
-        # request_dump files use session_id as a prefix component
+        # request_dump files use session_id as a prefix component.
+        # Escape the ID so caller-controlled glob metacharacters (*, ?, [])
+        # stay literal — otherwise session_id="*" expands to every dump.
         try:
-            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
+            literal_sid = glob.escape(session_id)
+            for p in sessions_dir.glob(f"request_dump_{literal_sid}_*.json"):
                 try:
                     p.unlink(missing_ok=True)
                 except OSError:

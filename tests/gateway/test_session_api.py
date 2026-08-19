@@ -83,6 +83,48 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_fork_rejects_path_unsafe_id_before_cleanup_can_escape(
+    adapter, session_db, tmp_path
+):
+    source_id = session_db.create_session("fork-source", "api_server")
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    outside_transcript = tmp_path / "outside.json"
+    outside_transcript.write_text("keep", encoding="utf-8")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            f"/api/sessions/{source_id}/fork",
+            json={"id": "../outside"},
+        )
+        assert resp.status == 400
+        data = await resp.json()
+
+    assert data["error"]["code"] == "invalid_session_id"
+    assert session_db.get_session("../outside") is None
+    assert session_db.delete_session("../outside", sessions_dir=sessions_dir) is False
+    assert outside_transcript.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_fork_accepts_safe_id(adapter, session_db):
+    source_id = session_db.create_session("safe-fork-source", "api_server")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            f"/api/sessions/{source_id}/fork",
+            json={"id": "safe-fork"},
+        )
+        assert resp.status == 201
+        data = await resp.json()
+
+    assert data["session"]["id"] == "safe-fork"
+    assert session_db.get_session("safe-fork")["parent_session_id"] == source_id
+
+
+@pytest.mark.asyncio
 async def test_session_messages_default_to_latest_bounded_page(adapter, session_db):
     session_id = session_db.create_session("bounded-messages", "api_server")
     session_db.replace_messages(

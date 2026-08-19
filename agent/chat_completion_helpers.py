@@ -469,6 +469,14 @@ def _codex_wait_notice_recovery(*, stale_timeout: float, ttfb_enabled: bool, ttf
 # provider is swapped (switch_model / try_activate_fallback /
 # restore_primary_runtime — the streak measured the OLD provider). Past the
 # give-up threshold, calls abort immediately with an actionable error.
+#
+# Half-open recovery (#89587): an unattended single-provider session has no
+# human to switch models and no fallback chain to swap to, so a tripped
+# breaker used to latch failed forever even after the provider recovered.
+# Once per ``HERMES_STREAM_STALE_PROBE_INTERVAL_S`` window, one real probe
+# attempt is allowed through instead of raising; success clears the streak
+# via the existing completed-call resets, a stale probe re-bumps it and the
+# window re-arms at probe-attempt time.
 
 def _stale_streak(agent) -> int:
     try:
@@ -485,9 +493,73 @@ def _bump_stale_streak(agent) -> None:
 def _reset_stale_streak(agent) -> None:
     with contextlib.suppress(Exception):
         agent._consecutive_stale_streams = 0
+        # A future fresh trip should start un-armed: its first over-threshold
+        # call insta-fails and arms the probe window, rather than inheriting a
+        # long-expired window and burning a stale-timeout wait immediately.
+        agent._stale_probe_after = 0.0
+
+
+def _is_responsive_provider_error(error) -> bool:
+    """True when *error* carries an authoritative HTTP response from the
+    provider — a real status code (429/503/401/…) proves the provider is
+    reachable, however unhappy. Timeouts, socket drops, and the locally
+    built TimeoutErrors of the stale detectors carry no status and stay
+    False. Shapes covered: openai/anthropic ``APIStatusError``
+    (``.status_code``), ``httpx.HTTPStatusError`` (``.response.status_code``),
+    botocore ``ClientError`` (dict ``.response`` with ResponseMetadata)."""
+    if error is None:
+        return False
+    if isinstance(getattr(error, "status_code", None), int):
+        return True
+    resp = getattr(error, "response", None)
+    if resp is None:
+        return False
+    if isinstance(getattr(resp, "status_code", None), int):
+        return True
+    if isinstance(resp, dict):
+        try:
+            meta = resp.get("ResponseMetadata") or {}
+            return isinstance(meta.get("HTTPStatusCode"), int)
+        except Exception:
+            return False
+    return False
+
+
+def _resolve_stale_on_responsive_error(agent, error) -> None:
+    """Any authoritative provider response resolves the stale/no-response
+    condition this breaker represents: a prompt 429/503/401 proves the
+    provider is reachable again, so the breaker must not mask that newer,
+    more accurate state by short-circuiting the normal retry/rate-limit/
+    fallback machinery's next attempt as "provider unresponsive". Streak
+    and probe window both clear; subsequent handling belongs to the normal
+    HTTP error policy. A timeout / no-byte / stale outcome carries no
+    status, so it leaves the breaker open (the stale kill paths bump the
+    streak themselves)."""
+    try:
+        if _stale_streak(agent) and _is_responsive_provider_error(error):
+            logger.info("Stale give-up breaker cleared: provider answered with a real HTTP response (%s) — "
+                        "no longer unresponsive; normal retry policy owns the error.", type(error).__name__)
+            _reset_stale_streak(agent)
+    except Exception:
+        logger.debug("stale resolve-on-response failed", exc_info=True)
 
 
 _INTERRUPTED_WAIT_STALE_SECONDS = 30.0
+
+# Half-open probe window for the tripped give-up breaker (#89587). Worst
+# case a probe against a still-wedged LOCAL endpoint burns up to the 900s
+# local stale ceiling, so 300s bounds the duty cycle to one wedged wait per
+# ~15 min while cloud providers (180s stale timeout) recover within ~5 min.
+_STALE_PROBE_INTERVAL_S = 300.0
+
+# Serializes the check-elapsed → arm-next-window → admit-probe transition in
+# _check_stale_giveup: concurrent callers reaching an expired window boundary
+# must not each observe it elapsed and all claim the same probe opportunity —
+# at most one call per window reaches provider dispatch. Module-level (not
+# per-agent) because lazy per-agent lock creation would itself race; the
+# critical section is a few attribute reads/writes, so cross-agent contention
+# is negligible.
+_stale_probe_claim_lock = threading.Lock()
 
 
 def _record_interrupted_provider_wait(agent, elapsed: float, *, response_started: bool) -> bool:
@@ -525,17 +597,65 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
         logger.debug("stale activity touch failed", exc_info=True)
 
 
-def _check_stale_giveup(agent) -> None:
+def _check_stale_giveup(agent, *, allow_probe: bool = True) -> None:
     """Raise immediately when the consecutive-stale streak is past the
-    give-up threshold — no network attempt, no stale-timeout wait."""
+    give-up threshold — no network attempt, no stale-timeout wait.
+
+    Half-open recovery (#89587): when ``allow_probe`` is True (the
+    pre-network entry guards), one real probe attempt per
+    ``HERMES_STREAM_STALE_PROBE_INTERVAL_S`` window is allowed through
+    instead of raising, so an unattended session can self-heal once the
+    provider recovers. The window is armed at probe-ATTEMPT time, so a
+    probe that itself wedges (a full stale-timeout wait) cannot be
+    followed by another until the next window. ``allow_probe=False``
+    (the Bedrock mid-call escalation) keeps the unconditional raise —
+    that site is already ending the call as stale, so an admitted probe
+    there could never dispatch: it would only consume the window's single
+    claim and push real recovery out by another full cooldown.
+    """
     _giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
     _streak = _stale_streak(agent)
-    if _giveup > 0 and _streak >= _giveup:
-        raise RuntimeError(
-            "Provider has been unresponsive (no response received) for "
-            f"{_streak} consecutive stale attempts — aborting this call to "
-            "avoid an indefinite stall. Switch models or start a new session, then retry."
-        )
+    if _giveup <= 0 or _streak < _giveup:
+        # NOTE: keep this early-out ahead of any ``_stale_probe_after``
+        # access — below-threshold agents (including bare-mock test agents)
+        # must never touch the probe state.
+        return
+    _extra = ""
+    _interval = env_float("HERMES_STREAM_STALE_PROBE_INTERVAL_S", _STALE_PROBE_INTERVAL_S)
+    if allow_probe and _interval > 0:
+        try:
+            _admitted = False
+            _now = time.monotonic()
+            # The read-decide-write on ``_stale_probe_after`` is a claim:
+            # under the lock, exactly one caller at an expired-window
+            # boundary observes it elapsed, re-arms it, and is admitted —
+            # every concurrent loser sees the freshly armed window and
+            # falls through to the fail-fast raise below.
+            with _stale_probe_claim_lock:
+                _probe_after = float(getattr(agent, "_stale_probe_after", 0.0) or 0.0)
+                if _probe_after and _now >= _probe_after:
+                    agent._stale_probe_after = _now + _interval
+                    _admitted = True
+                elif not _probe_after:
+                    # First short-circuit past the threshold (the trip call,
+                    # or an interrupt-counted overshoot that never ran this
+                    # guard): arm the window so the probe fires only after a
+                    # cooldown, never as an immediate re-wait of the stale
+                    # timeout.
+                    _probe_after = _now + _interval
+                    agent._stale_probe_after = _probe_after
+            if _admitted:
+                logger.warning("Stale give-up breaker half-open: allowing one probe attempt "
+                               "(streak=%d, next window in %.0fs).", _streak, _interval)
+                return
+            _extra = f" Next automatic probe in ~{max(0, int(_probe_after - _now))}s."
+        except Exception:
+            _extra = ""
+    raise RuntimeError(
+        "Provider has been unresponsive (no response received) for "
+        f"{_streak} consecutive stale attempts — aborting this call to "
+        "avoid an indefinite stall. Switch models or start a new session, then retry." + _extra
+    )
 
 
 def _configured_stale_base(agent) -> float:
@@ -892,7 +1012,7 @@ def direct_api_call(agent, api_kwargs: dict):
     succeeded = False
     try:
         response = _dispatch_nonstreaming_api_request(agent, api_kwargs, make_client=request.make_client)
-    except Exception:
+    except Exception as _api_exc:
         if getattr(agent, "_interrupt_requested", False):
             raise InterruptedError("Agent interrupted during API call") from None
         with request.lock:
@@ -903,6 +1023,9 @@ def direct_api_call(agent, api_kwargs: dict):
             raise TimeoutError(
                 f"Non-streaming API call timed out after {int(time.time() - call_start)}s with no response "
                 f"(threshold: {int(stale_timeout)}s)") from None
+        # A real HTTP response (429/5xx/4xx) proves the provider reachable —
+        # resolve the stale condition (see _resolve_stale_on_responsive_error).
+        _resolve_stale_on_responsive_error(agent, _api_exc)
         raise
     else:
         if getattr(agent, "_interrupt_requested", False):
@@ -1287,6 +1410,11 @@ class _NonStreamRequest:
             if agent._interrupt_requested:
                 self._interrupt(elapsed)
         if self.result["error"] is not None:
+            # A real HTTP response (429/5xx/4xx) proves the provider reachable —
+            # resolve the stale/no-response condition so the tripped breaker
+            # cannot short-circuit the normal retry policy's next attempt as
+            # "provider unresponsive".
+            _resolve_stale_on_responsive_error(agent, self.result["error"])
             raise self.result["error"]
         # Success — the provider proved responsive: clear the breaker (#58962).
         if self.result["response"] is not None:
@@ -2584,7 +2712,11 @@ class _BedrockStream:
         self.last_event = time.time()
         # Raises RuntimeError past HERMES_STREAM_STALE_GIVEUP; otherwise end
         # THIS call with a TimeoutError and let the streak carry forward.
-        _check_stale_giveup(agent)
+        # Mid-call: never probe — this path is already ending the call as
+        # stale (TimeoutError below), so an admitted probe could never
+        # dispatch; it would only consume the window's single claim and
+        # delay real recovery by a full cooldown.
+        _check_stale_giveup(agent, allow_probe=False)
         self.result["error"] = TimeoutError(
             f"Bedrock stream produced no events for {int(stale_elapsed)}s (threshold {int(self.stale_timeout)}s) "
             f"— aborting stalled stream so the retry/fallback path can recover.")
@@ -2603,6 +2735,10 @@ class _BedrockStream:
         # (on_interrupt_check), so the in-loop raise may never fire. Re-check (#59999 area).
         self._raise_if_interrupted("Agent interrupted during Bedrock API call (post-worker)")
         if self.result["error"] is not None:
+            # Mirrors the non-streaming path: an authoritative Bedrock HTTP
+            # response resolves the stale condition (see
+            # _resolve_stale_on_responsive_error).
+            _resolve_stale_on_responsive_error(self.agent, self.result["error"])
             raise self.result["error"]
         # Success clears the cross-turn breaker (#58962).
         if self.result["response"] is not None:
@@ -3544,6 +3680,10 @@ class _StreamingCall:
         if self.result["error"] is not None:
             if self.deltas_were_sent["yes"]:
                 return self._partial_stream_stub()
+            # Mirrors the non-streaming path: an authoritative provider HTTP
+            # response resolves the stale condition (see
+            # _resolve_stale_on_responsive_error).
+            _resolve_stale_on_responsive_error(self.agent, self.result["error"])
             raise self.result["error"]
         if self.result["response"] is not None:
             _reset_stale_streak(self.agent)  # provider proved responsive: clear the breaker

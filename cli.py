@@ -4858,6 +4858,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         api_key: str = None,
         base_url: str = None,
         max_turns: int = None,
+        run_budget: float = None,
         verbose: Optional[bool] = None,
         compact: bool = False,
         resume: str = None,
@@ -5125,6 +5126,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self.max_turns = 500
         else:
             self.max_turns = 500
+
+        # Wall-clock run budget: CLI flag wins over config; both optional.
+        # None keeps the feature fully off (AIAgent stays dormant).
+        if run_budget is not None:
+            self.run_budget_seconds = run_budget
+        else:
+            self.run_budget_seconds = CLI_CONFIG["agent"].get("run_budget_seconds")
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -20174,6 +20182,7 @@ def main(
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
+    run_budget: float = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
     compact: bool = False,
@@ -20370,6 +20379,7 @@ def main(
         api_key=api_key,
         base_url=base_url,
         max_turns=max_turns,
+        run_budget=run_budget,
         verbose=verbose,
         compact=compact,
         resume=resume,

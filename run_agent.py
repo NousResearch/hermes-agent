@@ -503,6 +503,7 @@ class AIAgent:
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
+        run_budget_seconds: Optional[float] = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
@@ -592,6 +593,7 @@ class AIAgent:
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
+            run_budget_seconds=run_budget_seconds,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
             checkpoints_enabled=checkpoints_enabled,
@@ -1452,10 +1454,40 @@ class AIAgent:
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
-            return max(stale_base, 240.0)
-        if est_tokens > 50_000:
-            return max(stale_base, 150.0)
-        return stale_base
+            timeout = max(stale_base, 240.0)
+        elif est_tokens > 50_000:
+            timeout = max(stale_base, 150.0)
+        else:
+            timeout = stale_base
+
+        # Wall-clock run budget cap: when a run budget is active, an implicit
+        # (floor-/default-derived) stale timeout is capped at half the
+        # remaining budget (>= 60s) so a single hung provider call cannot eat
+        # the whole run — e.g. deepseek-v4-pro's 600s reasoning floor inside a
+        # 900s eval ceiling. NEVER raises the timeout above what it would
+        # otherwise be, and an explicit user-configured stale_timeout_seconds
+        # (or env var) still wins untouched.
+        run_budget = getattr(self, "run_budget_seconds", None)
+        if run_budget and not self._stale_timeout_is_explicit():
+            started = getattr(self, "_run_budget_started_at", None)
+            if started:
+                remaining = float(run_budget) - (time.time() - started)
+                deadline_cap = max(60.0, remaining * 0.5)
+                if deadline_cap < timeout:
+                    timeout = deadline_cap
+        return timeout
+
+    def _stale_timeout_is_explicit(self) -> bool:
+        """True when the user explicitly configured the non-stream stale timeout.
+
+        Explicit = provider/model ``stale_timeout_seconds`` in config.yaml or
+        the ``HERMES_API_CALL_STALE_TIMEOUT`` env var. Reasoning-model floors
+        and the 90s default are implicit — they yield to the wall-clock run
+        budget cap; explicit user configuration never does.
+        """
+        if get_provider_stale_timeout(self.provider, self.model) is not None:
+            return True
+        return os.getenv("HERMES_API_CALL_STALE_TIMEOUT") is not None
 
     def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
         """Return an actionable hint when this request matches a known

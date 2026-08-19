@@ -44,6 +44,12 @@ DEFAULT_CONFIG = {
     },
     "agent": {
         "max_turns": 500,
+        # Optional wall-clock budget in seconds per conversation run.
+        # null/absent = feature fully off (zero behavior change). When set,
+        # the agent gets a one-time wrap-up notice at 80% elapsed and
+        # implicit provider stale timeouts are capped to the remaining
+        # budget. CLI one-shot equivalent: `hermes chat --run-budget N`.
+        "run_budget_seconds": None,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

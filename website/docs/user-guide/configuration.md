@@ -1031,6 +1031,28 @@ When the iteration budget is fully exhausted, the CLI shows a notification to th
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
+## Wall-Clock Run Budget
+
+Separate from the iteration budget, you can give each conversation run an optional **wall-clock** budget. This is designed for one-shot and eval-harness invocations that run under a hard external ceiling (e.g. a 900-second per-task limit): without it, a run can time out with the work essentially done — one generation short of emitting the final answer, or stuck in a single hung provider call.
+
+```yaml
+agent:
+  run_budget_seconds: null     # Optional; unset/null = feature fully off (default)
+```
+
+Or per-invocation via the CLI:
+
+```bash
+hermes chat --run-budget 850 -q "..."
+```
+
+When a budget is set, two things happen:
+
+1. **Wrap-up notice at 80%.** When 80% of the budget has elapsed, Hermes injects a **one-time** notice (delivered cache-safely, appended to the newest tool result like `/steer` messages) telling the model to stop new discovery/verification work and produce the final deliverable from the state it already has. It fires at most once per run and mirrors the existing iteration-budget wrap-up mechanism — there are no repeated pressure warnings.
+2. **Deadline-scaled stale timeouts.** Implicit non-streaming stale timeouts (the 90s default and the reasoning-model floors, e.g. 600s for DeepSeek reasoning models) are capped at `max(60, remaining_budget × 0.5)` so a single silently-hung provider call can never consume the rest of the run. The cap only ever *tightens* the timeout — it never raises it — and an explicitly configured `stale_timeout_seconds` (provider/model config or `HERMES_API_CALL_STALE_TIMEOUT`) always wins untouched.
+
+The budget is per `run_conversation` turn (it resets on each user message) and the feature is completely dormant when unset — no clock reads, no injection, no timeout changes.
+
 ## Verify-on-Stop (coding verification)
 
 When enabled, Hermes refuses to accept a final answer on a turn where the agent edited code in a workspace but produced no fresh verification evidence (a passing test run, build, lint, etc.) — it injects a synthetic follow-up asking the agent to verify or explain why it can't. Doc/markdown/skill-only edits never trigger it, and the loop is bounded so it can never trap the agent.

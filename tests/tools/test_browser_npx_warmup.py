@@ -16,6 +16,7 @@ npx PID — on timeout.
 from __future__ import annotations
 
 import subprocess
+import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
@@ -121,8 +122,8 @@ def test_merges_extended_path_so_managed_only_npx_can_find_sibling_node():
     assert kwargs["env"]["PATH"] == "/opt/hermes/node/bin:/usr/bin"
 
 
-def test_runs_in_its_own_process_group_on_posix(monkeypatch):
-    monkeypatch.setattr("os.name", "posix")
+@pytest.mark.linux_only
+def test_runs_in_its_own_process_group_on_posix():
     with patch("tools.browser_tool_install._resolve_npx_bin", return_value="/usr/bin/npx"), \
          patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:
         warm_agent_browser_npx_cache()
@@ -131,12 +132,12 @@ def test_runs_in_its_own_process_group_on_posix(monkeypatch):
     assert kwargs.get("start_new_session") is True
 
 
+@pytest.mark.windows_only
 def test_uses_new_process_group_creationflag_on_windows_instead_of_start_new_session():
     """start_new_session is a POSIX-only Popen kwarg (raises on Windows).
     The Windows equivalent for _kill_process_tree's taskkill /T to have a
     coherent tree to kill is CREATE_NEW_PROCESS_GROUP via creationflags."""
-    with patch("os.name", "nt"), \
-         patch("tools.browser_tool_install._resolve_npx_bin", return_value="C:\\npx.cmd"), \
+    with patch("tools.browser_tool_install._resolve_npx_bin", return_value="C:\\npx.cmd"), \
          patch("tools.browser_tool._build_browser_env", return_value={"PATH": "C:\\Windows"}), \
          patch("tools.browser_tool_install._merge_browser_path", side_effect=lambda p: p), \
          patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:

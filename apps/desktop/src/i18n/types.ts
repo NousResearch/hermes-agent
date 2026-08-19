@@ -629,6 +629,11 @@ export interface Translations {
       kindRemoteDesc: string
       kindCloudDesc: string
       kindSshDesc: string
+      openIsolated: string
+      openIsolatedRunning: string
+      openIsolatedDone: string
+      openIsolatedFailed: string
+      isolatedNote: string
       labelTitle: string
       labelDesc: string
       labelPlaceholder: string

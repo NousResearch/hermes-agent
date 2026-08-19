@@ -742,6 +742,12 @@ export const en: Translations = {
       kindRemoteDesc: 'A Hermes gateway reachable over HTTP(S) — LAN, Tailscale, or the internet.',
       kindCloudDesc: 'A hosted instance discovered through your Hermes Cloud account.',
       kindSshDesc: 'A Hermes install reached over SSH.',
+      openIsolated: 'Open as isolated Desktop',
+      openIsolatedRunning: 'Opening isolated Desktop…',
+      openIsolatedDone: 'Isolated Desktop launched',
+      openIsolatedFailed: 'Could not open isolated Desktop',
+      isolatedNote:
+        'This page keeps multiple sources in one shared window. Use “Open as isolated Desktop” on an SSH row for a separate app identity, or `hermes desktop instance` from the CLI.',
       labelTitle: 'Name',
       labelDesc: 'Required. Shown everywhere this instance appears; must be unique (e.g. “Homelab”, “Work laptop”).',
       labelPlaceholder: 'Homelab',

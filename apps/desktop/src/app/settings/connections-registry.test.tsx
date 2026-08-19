@@ -18,6 +18,7 @@ const remove = vi.fn()
 const setLaunchMode = vi.fn()
 const setPrimary = vi.fn()
 const test = vi.fn()
+const openIsolated = vi.fn()
 
 const registry: DesktopConnectionsRegistry = {
   connections: [
@@ -57,7 +58,7 @@ beforeEach(() => {
   test.mockResolvedValue({ ok: true, reachable: true })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { connections: { list, remove, save, setLaunchMode, setPrimary, test } }
+    value: { connections: { list, openIsolated, remove, save, setLaunchMode, setPrimary, test } }
   })
 })
 
@@ -293,6 +294,34 @@ describe('ConnectionsRegistrySection', () => {
     fireEvent.click(screen.getAllByText('Test')[0])
 
     await waitFor(() => expect(test).toHaveBeenCalled())
+  })
+
+  it('opens an SSH connection as an isolated Desktop', async () => {
+    openIsolated.mockResolvedValue({ instanceName: 'grace', launched: true, ok: true })
+    list.mockResolvedValueOnce({
+      ...registry,
+      connections: [
+        ...registry.connections,
+        {
+          host: 'grace',
+          id: 'grace',
+          kind: 'ssh',
+          label: 'Hermes Grace',
+          remoteHermesPath: '/opt/hermes/bin/hermes',
+          remoteProfile: 'default',
+          tokenPreview: null,
+          tokenSet: false
+        }
+      ]
+    })
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Hermes Grace')).toBeTruthy())
+    expect(screen.getByText('Open as isolated Desktop')).toBeTruthy()
+    expect(screen.queryAllByText('Open as isolated Desktop')).toHaveLength(1)
+    fireEvent.click(screen.getByText('Open as isolated Desktop'))
+
+    await waitFor(() => expect(openIsolated).toHaveBeenCalledWith('grace'))
   })
 })
 

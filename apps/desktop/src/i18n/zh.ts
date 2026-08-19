@@ -947,6 +947,12 @@ export const zh: Translations = {
       kindRemoteDesc: '可通过 HTTP(S) 访问的 Hermes 网关——局域网、Tailscale 或互联网。',
       kindCloudDesc: '通过你的 Hermes Cloud 账户发现的托管实例。',
       kindSshDesc: '通过 SSH 访问的 Hermes 安装。',
+      openIsolated: '作为独立 Desktop 打开',
+      openIsolatedRunning: '正在打开独立 Desktop…',
+      openIsolatedDone: '独立 Desktop 已启动',
+      openIsolatedFailed: '无法打开独立 Desktop',
+      isolatedNote:
+        '此页面在同一个共享窗口中管理多个来源。若需要独立的应用身份，请对 SSH 条目使用“作为独立 Desktop 打开”，或在命令行运行 `hermes desktop instance`。',
       labelTitle: '名称',
       labelDesc: '必填。此实例出现的所有位置都会显示该名称；必须唯一（例如“家庭服务器”、“工作笔记本”）。',
       labelPlaceholder: '家庭服务器',

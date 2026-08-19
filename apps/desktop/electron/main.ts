@@ -182,6 +182,14 @@ import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
+import {
+  assertIsolatedManifestMatches,
+  isolatedInstanceSpecFromSsh,
+  parseInstanceDeepLink,
+  resolveAppUserModelId,
+  shouldRegisterGlobalShortcuts,
+  shouldRegisterProtocolClient
+} from './isolated-desktop-instance'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
@@ -1183,7 +1191,7 @@ app.setName(APP_NAME)
 // need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
 // never firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId(resolveAppUserModelId(process.env))
 }
 
 // Seed the native About panel with the live Hermes version. This is refreshed
@@ -11209,6 +11217,9 @@ function applyHudSnapToPointer() {
 const hudSnapShortcut = createHudSnapShortcut(globalShortcut, applyHudSnapToPointer)
 
 function registerHudSnapShortcut() {
+  if (!shouldRegisterGlobalShortcuts(process.env)) {
+    return
+  }
   if (!hudSnapShortcut.register()) {
     rememberLog('[hud] snap shortcut unavailable — CommandOrControl+Shift+G may be owned by another app')
   }
@@ -11699,9 +11710,10 @@ function toggleQuickEntryWindow() {
 const quickEntryShortcut = createQuickEntryShortcut(globalShortcut, toggleQuickEntryWindow)
 
 function applyQuickEntrySettings(settings) {
-  const state = quickEntryShortcut.apply(settings)
+  const gated = shouldRegisterGlobalShortcuts(process.env) ? settings : { ...settings, enabled: false }
+  const state = quickEntryShortcut.apply(gated)
 
-  if (!settings.enabled) {
+  if (!gated.enabled) {
     // Turning the feature off must not leave an orphan always-on-top window.
     if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
       quickEntryWindow.close()
@@ -12352,6 +12364,149 @@ ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testD
 // the registry lands separately; these handlers only manage the persisted
 // list, so they are safe to ship ahead of the switchover.
 ipcMain.handle('hermes:connections:list', async () => sanitizeConnectionsRegistry())
+
+function resolveCanonicalHermesRoot() {
+  const home = resolveHermesHome()
+  const marker = `${path.sep}desktop-instances${path.sep}`
+  const idx = home.toLowerCase().lastIndexOf(marker.toLowerCase())
+
+  return idx === -1 ? home : home.slice(0, idx)
+}
+
+function resolveLocalHermesCli() {
+  const explicit = process.env.HERMES_DESKTOP_HERMES
+
+  if (explicit && fs.existsSync(explicit)) {
+    return explicit
+  }
+
+  const root = process.env.HERMES_DESKTOP_HERMES_ROOT || resolveCanonicalHermesRoot()
+  const names = process.platform === 'win32' ? ['hermes.exe', 'hermes.cmd', 'hermes'] : ['hermes']
+
+  const dirs = [
+    path.join(root, 'bin'),
+    path.join(root, 'hermes-agent', 'bin'),
+    path.join(root, 'venv', 'Scripts'),
+    path.join(root, 'venv', 'bin'),
+    path.join(root, '.venv', 'Scripts'),
+    path.join(root, '.venv', 'bin'),
+    ...String(process.env.PATH || '').split(path.delimiter)
+  ]
+
+  for (const dir of dirs) {
+    if (!dir) {
+      continue
+    }
+
+    for (const name of names) {
+      const candidate = path.join(dir, name)
+
+      if (fs.existsSync(candidate)) {
+        return candidate
+      }
+    }
+  }
+
+  return null
+}
+
+function runHermesDesktopInstance(args) {
+  const cli = resolveLocalHermesCli()
+
+  if (!cli) {
+    throw new Error('The local hermes CLI was not found. Isolated Desktop actions need the shared Hermes install.')
+  }
+
+  return new Promise((resolve, reject) => {
+    execFile(cli, ['desktop', 'instance', ...args], { windowsHide: true }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error((stderr || stdout || error.message || '').trim()))
+
+        return
+      }
+
+      resolve(String(stdout || ''))
+    })
+  })
+}
+
+async function launchIsolatedInstanceByName(name, remainder) {
+  try {
+    const args = ['launch', name]
+
+    if (remainder) {
+      args.push('--deep-link', remainder)
+    }
+
+    await runHermesDesktopInstance(args)
+  } catch (error) {
+    rememberLog(`[isolated-instance] launch ${name} failed: ${error.message}`)
+    throw error
+  }
+
+  if (remainder) {
+    rememberLog(`[isolated-instance] forwarded deep link remainder to ${name}`)
+  }
+}
+
+ipcMain.handle('hermes:connections:open-isolated', async (_event, id) => {
+  const registry = readDesktopConnectionsRegistry()
+  const connection = (registry.connections || []).find(item => item.id === id)
+
+  if (!connection) {
+    throw new Error('That connection was not found.')
+  }
+
+  const spec = isolatedInstanceSpecFromSsh(connection)
+  const root = resolveCanonicalHermesRoot()
+  const manifestPath = path.join(root, 'desktop-instances', spec.name, 'instance.json')
+
+  if (fs.existsSync(manifestPath)) {
+    const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    assertIsolatedManifestMatches({
+      connectionId: String(raw.connection_id || ''),
+      dialIdentity: JSON.stringify({
+        host: String(raw.ssh_host || ''),
+        keyPath: String(raw.ssh_key_path || ''),
+        port: Number(raw.ssh_port || 22),
+        remoteHermesPath: String(raw.remote_hermes_path || ''),
+        remoteProfile: String(raw.remote_profile || ''),
+        user: String(raw.ssh_user || '')
+      })
+    }, spec)
+  } else {
+    const args = [
+      'create',
+      spec.name,
+      '--ssh-host',
+      spec.sshHost,
+      '--remote-hermes-path',
+      spec.remoteHermesPath,
+      '--remote-profile',
+      spec.remoteProfile,
+      '--display-name',
+      spec.displayName,
+      '--connection-id',
+      spec.connectionId,
+      '--ssh-port',
+      String(spec.sshPort)
+    ]
+
+    if (spec.sshUser) {
+      args.push('--ssh-user', spec.sshUser)
+    }
+
+    if (spec.sshKeyPath) {
+      args.push('--ssh-key-path', spec.sshKeyPath)
+    }
+
+    await runHermesDesktopInstance(args)
+  }
+
+  await runHermesDesktopInstance(['launch', spec.name])
+
+  return { instanceName: spec.name, launched: true, ok: true }
+})
 ipcMain.handle('hermes:connections:save', async (_event, payload) => {
   const saved = await saveRegistryConnection(payload)
 
@@ -14544,6 +14699,24 @@ function handleDeepLink(url) {
     return
   }
 
+  const instanceLink = parseInstanceDeepLink(url)
+  const thisInstance = String(process.env.HERMES_DESKTOP_INSTANCE || '').trim()
+
+  if (instanceLink) {
+    if (thisInstance && thisInstance !== instanceLink.instanceName) {
+      rememberLog(`[deeplink] ignoring ${url} — this shell is ${thisInstance}`)
+      return
+    }
+
+    if (!thisInstance) {
+      rememberLog(`[deeplink] forwarding ${url} to isolated instance ${instanceLink.instanceName}`)
+      void launchIsolatedInstanceByName(instanceLink.instanceName, instanceLink.remainder)
+      return
+    }
+
+    url = instanceLink.remainder
+  }
+
   let parsed
 
   try {
@@ -14608,6 +14781,10 @@ ipcMain.handle('hermes:deep-link-ready', () => {
 })
 
 function registerDeepLinkProtocol() {
+  if (!shouldRegisterProtocolClient(process.env)) {
+    rememberLog('[deeplink] skipping protocol registration in isolated Desktop instance')
+    return
+  }
   try {
     if (process.defaultApp && process.argv.length >= 2) {
       // Dev: register with the electron exec path + entry script so the OS can
@@ -14701,7 +14878,10 @@ app.whenReady().then(() => {
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
-
+  const pendingIsolatedLink = process.env.HERMES_DESKTOP_PENDING_DEEP_LINK
+  if (pendingIsolatedLink) {
+    handleDeepLink(pendingIsolatedLink)
+  }
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()

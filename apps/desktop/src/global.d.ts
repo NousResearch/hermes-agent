@@ -152,6 +152,7 @@ declare global {
         // Fan out `hermes update` to every eligible registered connection;
         // cloud entries are skipped (platform-managed), each row independent.
         updateAll?: () => Promise<{ ok: boolean; results: DesktopConnectionUpdateResult[] }>
+        openIsolated?: (id: string) => Promise<{ ok: boolean; instanceName: string; launched: boolean }>
         // Registry lifecycle push: fired when a connection is removed or
         // materially edited so the renderer can dispose (and re-dial) the
         // secondary gateways scoped to it. Optional: older Electron mains

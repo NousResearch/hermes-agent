@@ -238,6 +238,7 @@ export function ConnectionsRegistrySection() {
   // Inline duplicate rejection from the save path (dedupe is also enforced in
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
+  const [openingIsolatedId, setOpeningIsolatedId] = useState<null | string>(null)
 
   const bridge = window.hermesDesktop?.connections
 
@@ -482,6 +483,28 @@ export function ConnectionsRegistrySection() {
     }
   }, [bridge, s.updateAllDone, s.updateAllFailed, s.updateSkippedCloud])
 
+  const openIsolated = useCallback(
+    async (conn: DesktopRegistryConnection) => {
+      if (!bridge?.openIsolated) {
+        notifyError(new Error('Isolated Desktop is not available in this app build.'), s.openIsolatedFailed)
+
+        return
+      }
+
+      setOpeningIsolatedId(conn.id)
+
+      try {
+        const result = await bridge.openIsolated(conn.id)
+        notify({ title: result.instanceName || conn.label, message: s.openIsolatedDone })
+      } catch (err) {
+        notifyError(err, s.openIsolatedFailed)
+      } finally {
+        setOpeningIsolatedId(null)
+      }
+    },
+    [bridge, s.openIsolatedDone, s.openIsolatedFailed]
+  )
+
   const kindMeta: Record<DesktopConnectionKind, { label: string; desc: string }> = {
     cloud: { desc: s.kindCloudDesc, label: s.kindCloud },
     local: { desc: s.kindLocalDesc, label: s.kindLocal },
@@ -542,6 +565,9 @@ export function ConnectionsRegistrySection() {
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.stagedNote}
       </p>
+      <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        {s.isolatedNote}
+      </p>
 
       {!loading && showSearch && (
         <Input
@@ -600,6 +626,23 @@ export function ConnectionsRegistrySection() {
                   {!isPrimary && (
                     <Button disabled={busy} onClick={() => void makePrimary(conn.id)} size="sm" variant="outline">
                       {s.makePrimary}
+                    </Button>
+                  )}
+                  {conn.kind === 'ssh' && (
+                    <Button
+                      disabled={openingIsolatedId === conn.id || !bridge?.openIsolated}
+                      onClick={() => {
+                        triggerHaptic('selection')
+                        void openIsolated(conn)
+                      }}
+                      size="sm"
+                      variant="outline"
+                    >
+                      {openingIsolatedId === conn.id ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        s.openIsolated
+                      )}
                     </Button>
                   )}
                   {conn.kind !== 'local' && (

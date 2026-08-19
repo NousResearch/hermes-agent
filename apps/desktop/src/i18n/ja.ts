@@ -229,6 +229,14 @@ export const ja = defineLocale({
   },
 
   settings: {
+    connections: {
+      openIsolated: '独立した Desktop として開く',
+      openIsolatedRunning: '独立 Desktop を開いています…',
+      openIsolatedDone: '独立 Desktop を起動しました',
+      openIsolatedFailed: '独立 Desktop を開けませんでした',
+      isolatedNote:
+        'このページは複数のソースを同じ共有ウィンドウで管理します。別のアプリ識別が必要な SSH 行では「独立した Desktop として開く」を使うか、CLI で `hermes desktop instance` を実行してください。'
+    },
     closeSettings: '設定を閉じる',
     exportConfig: '設定を書き出す',
     importConfig: '設定を読み込む',

@@ -25,6 +25,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/cli',
         'user-guide/tui',
         'user-guide/desktop',
+        'user-guide/isolated-desktop-instances',
         'user-guide/bot-mode',
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',

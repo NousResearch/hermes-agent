@@ -297,6 +297,14 @@ export const ar = defineLocale({
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    connections: {
+      openIsolated: 'فتح كسطح مكتب معزول',
+      openIsolatedRunning: 'جارٍ فتح سطح المكتب المعزول…',
+      openIsolatedDone: 'تم تشغيل سطح المكتب المعزول',
+      openIsolatedFailed: 'تعذر فتح سطح المكتب المعزول',
+      isolatedNote:
+        'تُبقي هذه الصفحة مصادر متعددة في نافذة مشتركة واحدة. استخدم «فتح كسطح مكتب معزول» على صف SSH لهوية تطبيق منفصلة، أو شغّل `hermes desktop instance` من سطر الأوامر.'
+    },
     closeSettings: 'إغلاق الإعدادات',
     exportConfig: 'تصدير الإعدادات',
     importConfig: 'استيراد الإعدادات',

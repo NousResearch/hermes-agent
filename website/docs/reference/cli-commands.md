@@ -94,7 +94,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes import-agent` | Import a Claude Code (`~/.claude`) or Codex CLI (`~/.codex`) setup. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes serve` | Start the Hermes backend server (headless; powers the desktop app and remote backends). |
-| `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
+| `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. `hermes desktop instance` manages isolated Desktop shells. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
 | `hermes version` | Show version information. |
@@ -1668,6 +1668,25 @@ hermes dashboard --port 8080 --no-open
 # profile preselected in the sidebar switcher (attach if running)
 worker dashboard
 ```
+
+## `hermes desktop`
+
+```bash
+hermes desktop [options]
+hermes desktop instance <subcommand>
+```
+
+Build and launch the native Electron desktop app. Bare `hermes desktop` is unchanged. `instance` manages **isolated Desktop shells** — separate Electron `userData`, `HERMES_HOME`, and process identity, sharing the canonical install. This is not Settings → Connections. See [Isolated Desktop instances](/user-guide/isolated-desktop-instances).
+
+| Subcommand | Description |
+|------------|-------------|
+| `instance create <name> --ssh-host HOST --remote-hermes-path PATH --remote-profile PROFILE` | Register an isolated shell and install its Desktop shortcut. |
+| `instance list` | List registered isolated instances. |
+| `instance show <name>` | Print the non-secret manifest. |
+| `instance launch <name> [--deep-link URL]` | Launch or focus that isolated Desktop. Optional `hermes://` remainder. |
+| `instance shortcut <name>` | Recreate the OS shortcut. |
+| `instance repair [<name> \| --all]` | Refresh named hardlinks after a local Desktop update. |
+| `instance remove <name> [--purge-local] [--force]` | Remove launcher and shortcut. Never deletes remote state. |
 
 ## `hermes profile`
 

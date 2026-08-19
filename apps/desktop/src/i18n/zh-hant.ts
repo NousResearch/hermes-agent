@@ -223,6 +223,14 @@ export const zhHant = defineLocale({
   },
 
   settings: {
+    connections: {
+      openIsolated: '以獨立 Desktop 開啟',
+      openIsolatedRunning: '正在開啟獨立 Desktop…',
+      openIsolatedDone: '已啟動獨立 Desktop',
+      openIsolatedFailed: '無法開啟獨立 Desktop',
+      isolatedNote:
+        '此頁面在同一個共用視窗中管理多個來源。若需要獨立的應用程式身分，請對 SSH 列使用「以獨立 Desktop 開啟」，或在命令列執行 `hermes desktop instance`。'
+    },
     closeSettings: '關閉設定',
     exportConfig: '匯出設定',
     importConfig: '匯入設定',

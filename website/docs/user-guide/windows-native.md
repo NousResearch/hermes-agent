@@ -49,6 +49,8 @@ A thin GUI installer is also available — useful if you'd rather double-click a
 
 Use the desktop installer when you want a familiar Windows install experience or you're handing Hermes to a non-developer; use the PowerShell one-liner when you're already in a terminal.
 
+To open a **second, independent Desktop window** for a remote SSH agent (separate settings and Chromium profile, same install), use [`hermes desktop instance`](./isolated-desktop-instances.md) rather than adding that host to Settings → Connections.
+
 ### Dependency bootstrap (`dep_ensure`)
 
 On first launch (and on demand when a missing tool is detected), Hermes runs a small Python bootstrapper — `hermes_cli/dep_ensure.py` — that checks for and lazily installs the non-Python dependencies it needs. On Windows, the relevant ones are:

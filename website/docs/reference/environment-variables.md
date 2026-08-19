@@ -558,6 +558,13 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 | `HERMES_DESKTOP_HERMES_ROOT` | Desktop source-checkout override used by `hermes desktop --hermes-root`; checked before the packaged first-launch install or an existing `hermes` on `PATH`. |
 | `HERMES_DESKTOP_IGNORE_EXISTING` | Set to `1` to make Desktop ignore an existing `hermes` on `PATH` during backend resolution. Equivalent to `hermes desktop --ignore-existing`. |
 | `HERMES_DESKTOP_CWD` | Initial project directory for Desktop chat sessions. Set by `hermes desktop --cwd`. |
+| `HERMES_DESKTOP_USER_DATA_DIR` | Isolated Electron `userData` root. Set by `hermes desktop instance` for a named shell; do not set this globally. |
+| `HERMES_DESKTOP_APP_NAME` | Isolated Desktop process / single-instance name. Set by `hermes desktop instance`; do not set this globally. |
+| `HERMES_DESKTOP_INSTANCE` | Isolated instance slug. Set by `hermes desktop instance`; do not set this globally. |
+| `HERMES_DESKTOP_AUMID` | Windows AppUserModelID override (`com.nousresearch.hermes.instance.<name>`). Set by `hermes desktop instance`. |
+| `HERMES_DESKTOP_DISABLE_GLOBAL_SHORTCUTS` | Set to `1` so this process does not register the quick-entry / HUD-snap hotkeys. Isolated shells set this automatically. |
+| `HERMES_DESKTOP_SKIP_PROTOCOL_REGISTER` | Set to `1` so this process does not claim the OS `hermes://` handler. Isolated shells set this automatically. |
+| `HERMES_DESKTOP_PENDING_DEEP_LINK` | One-shot `hermes://` URL delivered after an isolated shell starts. Set by `hermes desktop instance launch --deep-link`. |
 | `HERMES_DESKTOP_PYTHON` | Absolute path to a Python interpreter for the backend, checked before Electron auto-resolves one for the source checkout. Used by worktree dev helpers (see [TUI & Desktop from Worktrees](../developer-guide/worktree-ui-dev.md)) to reuse a shared venv. |
 | `HERMES_DESKTOP_DEV_SERVER` | Vite dev-server URL the Electron shell loads instead of the packaged bundle (e.g. `http://127.0.0.1:5174`). Set automatically by `npm run dev`; only relevant when hacking on the app. |
 | `HERMES_DESKTOP_CDP_PORT` | Overrides the Chrome DevTools Protocol port the renderer exposes on `127.0.0.1` for DOM/CSS inspection tooling (default `9222`). Dev-server runs (`npm run dev`, `hgui`) open it automatically; a packaged app never does, and no value here changes that. Set to `off` to disable it on a dev run. Anything that can reach the port can execute code in the renderer. |

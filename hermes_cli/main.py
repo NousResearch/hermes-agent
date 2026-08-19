@@ -8785,7 +8785,10 @@ def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
     except Exception:
         uv_bin = None
     if uv_bin:
-        env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        from hermes_constants import project_venv_dir
+
+        venv_dir = project_venv_dir(PROJECT_ROOT) or PROJECT_ROOT / "venv"
+        env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)}
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)
@@ -8838,10 +8841,11 @@ def _is_windows() -> bool:
 
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
+    from hermes_constants import project_venv_dir, venv_bin_dir
+
+    venv_dir = project_venv_dir(PROJECT_ROOT)
+    if venv_dir is None:
         return None
-    from hermes_constants import venv_bin_dir
 
     scripts = venv_bin_dir(venv_dir, windows=_is_windows())
     return scripts if scripts.is_dir() else None

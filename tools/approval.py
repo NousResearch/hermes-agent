@@ -5250,13 +5250,15 @@ def check_execute_code_guard(code: str, env_type: str,
             )
 
             if choice == "timeout":
+                breaker_addendum = _denial_breaker_addendum(session_key)
                 return {
                     "approved": False,
                     "message": (
                         "BLOCKED: Action timed out without user response. The "
                         "user has NOT consented to this action. Do NOT retry "
                         "it, do NOT rephrase it, and do NOT attempt the same "
-                        "outcome via a different path. Silence is not consent."
+                        "outcome via a different path. Silence is not "
+                        f"consent.{breaker_addendum}"
                     ),
                     "pattern_key": pattern_key,
                     "description": description,
@@ -5264,7 +5266,12 @@ def check_execute_code_guard(code: str, env_type: str,
                     "user_consent": False,
                 }
             if choice == "deny":
-                _record_denial(session_key)
+                # No _record_denial() here: the breaker counts consecutive
+                # *guardian LLM* DENY verdicts (see _record_denial), not
+                # deliberate human denials. Both sibling CLI tails
+                # (check_all_command_guards, _run_approval_gate) read the
+                # tally without incrementing it on a human deny; this arm
+                # matches them.
                 breaker_addendum = _denial_breaker_addendum(session_key)
                 return {
                     "approved": False,

@@ -51,8 +51,12 @@ def _clean_approval_env(monkeypatch):
     approval_module._session_approved.clear()
     approval_module._permanent_approved.clear()
     approval_module._pending.clear()
+    # The consecutive-denial breaker is process-global; a tally left behind by
+    # another test would leak its escalated addendum into these assertions.
+    approval_module._denial_tally.clear()
     set_approval_callback(None)
     yield
+    approval_module._denial_tally.clear()
     set_approval_callback(None)
 
 
@@ -154,6 +158,73 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
         assert result.get("approved") is False
         assert result.get("status") == "pending_approval"
         assert result.get("approval_pending") is True
+
+    def test_cli_callback_used_for_platform_marker_leak_without_exec_ask(
+        self, monkeypatch
+    ):
+        """The other half of the leak: a session platform marker, no ask-mode.
+
+        ``_is_gateway_approval_context()`` is true whenever
+        ``HERMES_SESSION_PLATFORM`` is set, so the whole-script gate is
+        reached with ``HERMES_EXEC_ASK`` entirely absent. That path must
+        show the CLI panel too, not a silent pending approval.
+        """
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        calls = []
+
+        def _cb(command, description, **kwargs):
+            calls.append((command, description))
+            return "once"
+
+        set_approval_callback(_cb)
+        result = check_execute_code_guard("print('marker')", "local")
+
+        assert calls, "CLI approval callback was never invoked"
+        assert result.get("approved") is True
+        assert result.get("status") != "pending_approval"
+        assert result.get("approval_pending") is not True
+
+
+class TestExecuteCodeGuardCliDenialBreakerParity:
+    """The CLI fall-through must match its sibling guards' breaker semantics.
+
+    The consecutive-denial breaker counts *guardian LLM* DENY verdicts, so a
+    deliberate human deny must not advance the tally; and once the tally has
+    tripped, the escalated addendum belongs on the timeout message too (the
+    same function's gateway arm and ``check_all_command_guards``' CLI tail
+    both include it).
+    """
+
+    def test_human_deny_does_not_advance_the_guardian_breaker(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        set_approval_callback(lambda command, description, **kwargs: "deny")
+
+        for _ in range(3):
+            result = check_execute_code_guard("print('hi')", "local")
+            assert result.get("outcome") == "denied"
+
+        assert not approval_module._denial_tally, (
+            "a human deny must not advance the guardian-verdict breaker "
+            "(check_all_command_guards does not)"
+        )
+
+    def test_timeout_message_carries_breaker_addendum_once_tripped(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        session_key = approval_module.get_current_session_key()
+        threshold = approval_module._get_denial_breaker_threshold()
+        for _ in range(threshold):
+            approval_module._record_denial(session_key)
+        expected = approval_module._denial_breaker_addendum(session_key)
+        assert expected, "breaker should be tripped for this fixture"
+
+        set_approval_callback(lambda command, description, **kwargs: "timeout")
+        result = check_execute_code_guard("print('hi')", "local")
+
+        assert result.get("outcome") == "timeout"
+        assert expected in (result.get("message") or "")
 
 
 class TestGatewayRunImportDoesNotSetExecAsk:

@@ -100,6 +100,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             platform TEXT NOT NULL,
             chat_id TEXT NOT NULL,
             thread_id TEXT,
+            reply_to TEXT,
             content TEXT NOT NULL,
             state TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
@@ -110,6 +111,21 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             last_error TEXT
         )"""
     )
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")
+    }
+    if "reply_to" not in columns:
+        try:
+            conn.execute("ALTER TABLE delivery_obligations ADD COLUMN reply_to TEXT")
+        except sqlite3.OperationalError:
+            # Multiple gateway profiles can open the shared DB concurrently
+            # during an upgrade. Accept a migration won by another process.
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(delivery_obligations)")
+            }
+            if "reply_to" not in columns:
+                raise
 
 
 @contextmanager
@@ -209,6 +225,7 @@ def record_obligation(
     chat_id: str,
     thread_id: Optional[str],
     content: str,
+    reply_to: Optional[str] = None,
 ) -> None:
     """Record a final response as owed to the platform (state='pending')."""
     now = time.time()
@@ -216,12 +233,13 @@ def record_obligation(
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO delivery_obligations
-               (obligation_id, session_key, platform, chat_id, thread_id,
+               (obligation_id, session_key, platform, chat_id, thread_id, reply_to,
                 content, state, attempts, created_at, updated_at,
                 owner_pid, owner_started_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
             (obligation_id, session_key, platform, str(chat_id),
-             str(thread_id) if thread_id else None, content, now, now,
+             str(thread_id) if thread_id else None,
+             str(reply_to) if reply_to is not None else None, content, now, now,
              pid, started),
         )
     _prune()
@@ -276,12 +294,12 @@ def sweep_recoverable(
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
-                      content, state, attempts, created_at,
+                      reply_to, content, state, attempts, created_at,
                       owner_pid, owner_started_at
                FROM delivery_obligations
                WHERE state IN ('pending', 'attempting', 'failed')"""
         ).fetchall()
-        for (oid, session_key, platform, chat_id, thread_id, content, state,
+        for (oid, session_key, platform, chat_id, thread_id, reply_to, content, state,
              attempts, created_at, owner_pid, owner_started_at) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
@@ -313,6 +331,7 @@ def sweep_recoverable(
                     "platform": platform,
                     "chat_id": chat_id,
                     "thread_id": thread_id,
+                    "reply_to": reply_to,
                     "content": content,
                     # pending = send never started, redeliver plainly;
                     # attempting/failed = ambiguous or rejected, carry marker.

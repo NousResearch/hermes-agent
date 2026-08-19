@@ -22,6 +22,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import type { TourAction, TourStep } from '@/lib/tour'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
@@ -1454,6 +1455,48 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
+      } else if (event.type === 'tour.request') {
+        // tour tool: run one guided-tour action (highlight/step/discover) via
+        // driver.js — on the app's own DOM or inside the preview pane's guest
+        // page — and answer with the outcome. Dynamic import keeps driver.js
+        // and the preview injection payload off the boot path. Active session
+        // only: a background turn must never paint overlays on the user's
+        // screen (desktop AGENTS.md: offer, don't hijack).
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const answer = (result: unknown) =>
+            $gateway.get()?.request('tour.respond', {
+              request_id: requestId,
+              text: result ? JSON.stringify(result) : ''
+            })
+
+          if (isActiveEvent) {
+            void import('@/lib/tour')
+              .then(({ runTour }) =>
+                runTour(
+                  {
+                    kind: (payload?.action ?? 'stop') as TourAction['kind'],
+                    selector: payload?.selector,
+                    side: payload?.side as TourStep['side'],
+                    startAt: payload?.step_index,
+                    steps: payload?.steps as TourStep[] | undefined,
+                    text: payload?.text,
+                    title: payload?.title
+                  },
+                  payload?.surface === 'preview' ? 'preview' : 'app'
+                )
+              )
+              .then(answer, error =>
+                answer({ error: error instanceof Error ? error.message : String(error), success: false })
+              )
+          } else {
+            void answer({
+              error: 'Tours only run in the session the user is looking at.',
+              success: false
+            })
+          }
+        }
       } else if (event.type === 'pane.reveal') {
         // Agent revealed a pane via the desktop-gated focus_pane tool, in
         // response to an explicit user request. Active session only — a

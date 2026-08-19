@@ -3551,6 +3551,7 @@ def _block(
         "preview.read.request",
         "window.read.request",
         "mcp.setup.request",
+        "tour.request",
     }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
@@ -6306,6 +6307,17 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {"server": server, "action": action, "reason": reason},
             timeout=600,
+        ),
+        # tour tool (desktop GUI): the renderer drives driver.js — highlighting
+        # elements in the app's own DOM or injecting the engine into the
+        # preview pane's webview — and answers tour.respond with the outcome
+        # (did the selector match, which step is active). Generous timeout: a
+        # preview tour's first action loads the engine into a live page.
+        "tour_callback": lambda payload: _block(
+            "tour.request",
+            sid,
+            dict(payload),
+            timeout=45,
         ),
     }
 

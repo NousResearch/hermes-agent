@@ -7836,10 +7836,21 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_BOOT_FAKE"] = "1"
     if getattr(args, "ignore_existing", False):
         env["HERMES_DESKTOP_IGNORE_EXISTING"] = "1"
+    # Git Bash / MSYS hands the CLI POSIX-style paths (`--cwd ~` expands to
+    # `/c/Users/x` before Python ever sees it; MSYS2's path conversion is
+    # disabled for native executables). Translate the MSYS/Cygwin/WSL
+    # drive-root spellings to native Windows form first — no-op elsewhere —
+    # same fix as `--in` (#85865).
+    from tools.environments.local import _msys_to_windows_path
+
     if getattr(args, "hermes_root", None):
-        env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
+        env["HERMES_DESKTOP_HERMES_ROOT"] = str(
+            Path(_msys_to_windows_path(args.hermes_root)).expanduser().resolve()
+        )
     if getattr(args, "cwd", None):
-        env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
+        env["HERMES_DESKTOP_CWD"] = str(
+            Path(_msys_to_windows_path(args.cwd)).expanduser().resolve()
+        )
     else:
         env["HERMES_DESKTOP_CWD"] = os.getcwd()
 

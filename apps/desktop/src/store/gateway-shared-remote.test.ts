@@ -132,12 +132,14 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
 
     await ensureGatewayForProfile('worker')
 
-    expect(gatewayMocks.setConnection).toHaveBeenCalledOnce()
-    expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
+    // #79005 contract: the first dial failed, so the profile is NOT marked
+    // active and no connection sync runs (the old path synced a dead socket).
+    expect(gatewayMocks.setConnection).not.toHaveBeenCalled()
 
     await ensureActiveGatewayOpen()
 
-    expect(gatewayMocks.setConnection).toHaveBeenCalledTimes(2)
+    // The reconnect succeeds; openSecondary publishes the live connection.
+    expect(gatewayMocks.setConnection).toHaveBeenCalledOnce()
     expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
   })
 })

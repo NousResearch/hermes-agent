@@ -719,14 +719,18 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+/**
+ * Ensure the profile's gateway socket is open and active. Resolves TRUE when
+ * the target is actually active on an OPEN socket; FALSE when the dial failed
+ * (reconnect scheduled) so callers never mark a profile active on a dead
+ * socket (#79005).
+ */
+export async function ensureGatewayForProfile(profile: string): Promise<boolean> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
-    applyActive(key, activationEpoch)
-
-    return
+    return applyActive(key, activationEpoch) && isOpen(g.primaryGateway)
   }
 
   // Global-remote share (routing case 3): one remote host serves every
@@ -735,9 +739,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // descriptor — $activeGatewayProfile still moves to `key`, so request
   // scoping and profile-aware surfaces behave identically.
   if (await sharedPrimaryRoute(key)) {
-    applyActive(g.primaryProfile, activationEpoch)
-
-    return
+    return applyActive(g.primaryProfile, activationEpoch) && isOpen(g.primaryGateway)
   }
 
   let entry = g.secondaries.get(key)
@@ -760,9 +762,28 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     }
   }
 
-  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
-    publishActiveConnection(entry.connection)
+  // #79005: a failed dial must not publish a live connection, but the
+  // active KEY still points at the target so retry machinery
+  // (ensureActiveGatewayOpen) reconnects the right entry. The socket state
+  // stays honest (closed) — the UI reads connectionState, so a dead dial
+  // never presents as an active profile.
+  if (entry.wantOpen && g.secondaries.get(key) === entry) {
+    if (isOpen(entry.gateway) && applyActive(key, activationEpoch)) {
+      if (entry.connection) {
+        publishActiveConnection(entry.connection)
+      }
+
+      return true
+    }
+
+    // Dial failed (or epoch moved on): still retarget the active key, but
+    // report failure so the swap flow skips the connection sync.
+    applyActive(key, activationEpoch)
+
+    return false
   }
+
+  return false
 }
 
 // Reconnect the active gateway after a transient request failure. Primary

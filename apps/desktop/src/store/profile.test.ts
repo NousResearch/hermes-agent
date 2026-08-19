@@ -6,10 +6,10 @@ import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
-const ensureGatewayForProfile = vi.fn(async () => undefined)
+const ensureGatewayForProfile = vi.fn(async () => true)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
-const $gateway = atom<unknown>({ id: 'live-socket' })
+const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
 const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile }))
@@ -55,7 +55,7 @@ beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
   openGatewayForProfile.mockClear()
-  $gateway.set({ id: 'live-socket' })
+  $gateway.set({ id: 'live-socket', connectionState: 'open' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
@@ -237,5 +237,22 @@ describe('stale profile-list fetches across a backend switch (#85731)', () => {
     await oldFetch
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'coder'])
+  })
+})
+
+
+describe('#79005 dead-socket swap guard', () => {
+  it('does not no-op when the active socket is non-null but closed', async () => {
+    const { $gateway } = await import('@/store/gateway')
+
+    // Same profile, but the socket died: the old non-null guard no-oped here
+    // and left the UI showing a live profile on a dead dial.
+    $activeGatewayProfile.set('vps-remote')
+    $gateway.set({ connectionState: 'closed' } as never)
+
+    const { ensureGatewayProfile } = await import('@/store/profile')
+
+    await ensureGatewayProfile('vps-remote')
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
   })
 })

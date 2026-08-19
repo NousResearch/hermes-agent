@@ -10,7 +10,7 @@ import type { ProfileInfo } from '@/types/hermes'
 vi.mock('@/store/gateway', () => ({
   $gateway: atom<unknown>(null),
   ensureGatewayForAgent: vi.fn(async () => undefined),
-  ensureGatewayForProfile: vi.fn(async () => undefined),
+  ensureGatewayForProfile: vi.fn(async () => true),
   openGatewayForProfile: vi.fn(async () => undefined)
 }))
 vi.mock('@/hermes', () => ({

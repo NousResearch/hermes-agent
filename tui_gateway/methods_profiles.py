@@ -109,6 +109,7 @@ def _(rid, params: dict) -> dict:
                 return {
                     "id": session_id,
                     "resolved_id": tip,
+                    "root_title": row.get("title") or "",
                     "title": tip_row.get("title") or "",
                     "preview": preview,
                     "started_at": tip_row.get("started_at") or row.get("started_at") or 0,

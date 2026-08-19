@@ -33,7 +33,7 @@ function loadOpenPath({ openSession, request }) {
   return { ...context.__open, saved, requests, host: context.host }
 }
 
-const HISTORY = { id: 'hist-1', title: 'Weekly review', preview: 'history preview', last_active: 1000 }
+const HISTORY = { id: 'hist-1', title: 'Bot Chat', preview: 'history preview', last_active: 1000 }
 
 // ── grandfather: no pin + existing history adopts the previewed session ────
 
@@ -49,6 +49,23 @@ test('grandfather: no pin + history opens and pins THAT session, no new chat', a
   assert.deepEqual(runtime.saved, [{ name: 'ops', patch: { chat: 'hist-1' } }])
   assert.equal(runtime.requests.some(r => r.method === 'session.create'), false,
     'must not mint a new chat when the previewed session can be adopted')
+})
+
+test('safety: no pin + ordinary latest history creates a Bot Chat instead of claiming it', async () => {
+  const runtime = loadOpenPath({
+    openSession: async () => undefined,
+    request: async method =>
+      method === 'session.create'
+        ? { stored_session_id: 'safe-bot-chat', session_id: 'safe-bot-chat-runtime' }
+        : {}
+  })
+
+  const ordinary = { ...HISTORY, id: 'ordinary-1', title: '生产调度会优化' }
+  const result = await runtime.openBotCanonicalChat('ops', null, ordinary)
+
+  assert.equal(result, 'safe-bot-chat')
+  assert.deepEqual(runtime.saved, [{ name: 'ops', patch: { chat: 'safe-bot-chat' } }])
+  assert.equal(runtime.requests.some(r => r.method === 'session.create'), true)
 })
 
 test('grandfather: no pin + no history keeps the creation flow', async () => {
@@ -122,6 +139,32 @@ test('pin: preferred_session present opens the resolved session and keeps the pi
   assert.equal(runtime.requests.some(r => r.method === 'session.list'), false)
 })
 
+test('safety: a pinned ordinary session is rejected and replaced with a Bot Chat', async () => {
+  const runtime = loadOpenPath({
+    openSession: async () => undefined,
+    request: async method => {
+      if (method === 'profiles.list') {
+        return {
+          profiles: [{
+            name: 'ops',
+            preferred_session: { id: 'ordinary-3', resolved_id: 'ordinary-3', title: '生产调度会优化' }
+          }]
+        }
+      }
+      if (method === 'session.create') return { stored_session_id: 'safe-pinned-chat', session_id: 'safe-pinned-runtime' }
+      return {}
+    }
+  })
+
+  const result = await runtime.openBotCanonicalChat('ops', 'ordinary-3', HISTORY)
+
+  assert.equal(result, 'safe-pinned-chat')
+  assert.deepEqual(runtime.saved, [
+    { name: 'ops', patch: { chat: null } },
+    { name: 'ops', patch: { chat: 'safe-pinned-chat' } }
+  ])
+})
+
 test('pin: compression-rotated pin opens the live tip, keeps the durable pin', async () => {
   const opened = []
   const runtime = loadOpenPath({
@@ -132,7 +175,7 @@ test('pin: compression-rotated pin opens the live tip, keeps the durable pin', a
           profiles: [{
             name: 'ops',
             preferred_session: {
-              id: 'root-1', resolved_id: 'tip-9', title: 'Bot Chat',
+              id: 'root-1', resolved_id: 'tip-9', root_title: 'Bot Chat', title: 'Bot Chat (continued)',
               preview: 'post-compression', started_at: 1, last_active: 9, message_count: 42
             }
           }]
@@ -165,6 +208,27 @@ test('pin: definitively gone pin re-pins to the previewed session, not rows[0]',
   assert.equal(result, 'hist-1')
   assert.deepEqual(runtime.saved, [{ name: 'ops', patch: { chat: 'hist-1' } }])
   assert.equal(runtime.requests.some(r => r.method === 'session.create'), false)
+})
+
+test('safety: a dead pin does not re-anchor on an ordinary latest session', async () => {
+  const runtime = loadOpenPath({
+    openSession: async () => undefined,
+    request: async method => {
+      if (method === 'profiles.list') return { profiles: [{ name: 'ops', preferred_session: null }] }
+      if (method === 'session.create') return { stored_session_id: 'safe-replacement', session_id: 'safe-replacement-runtime' }
+      return {}
+    }
+  })
+
+  const ordinary = { ...HISTORY, id: 'ordinary-2', title: '生产调度会优化' }
+  const result = await runtime.openBotCanonicalChat('ops', 'dead-pin', ordinary)
+
+  assert.equal(result, 'safe-replacement')
+  assert.deepEqual(runtime.saved, [
+    { name: 'ops', patch: { chat: null } },
+    { name: 'ops', patch: { chat: 'safe-replacement' } }
+  ])
+  assert.equal(runtime.requests.some(r => r.method === 'session.create'), true)
 })
 
 test('pin: gone pin + no history clears the pin and creates', async () => {

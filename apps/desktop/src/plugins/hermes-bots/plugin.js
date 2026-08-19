@@ -439,17 +439,50 @@ function fallbackSelectionAfterHide(name) {
  *  setter is a no-op on already-hidden rows) and feature-detected: older
  *  gateways lack session.set_hidden and simply keep the rows visible. */
 function hideOwnedBotSessions() {
-  const canonical = Object.values($botMeta.get())
-    .map(m => m && m.chat)
-    .filter(Boolean)
+  const canonical = Object.entries($botMeta.get())
+    .map(([name, meta]) => ({ name, id: meta && meta.chat }))
+    .filter(entry => Boolean(entry.id))
   const rooms = Object.values($groupChats.get())
     .flatMap(room => Object.values(room?.sessions || {}))
     .filter(sid => Boolean(sid) && sid !== true)
-  const ids = [...new Set([...canonical, ...rooms])]
 
-  const known = Promise.all(
-    ids.map(sid =>
-      Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden: true })).catch(() => undefined)
+  // A stale local/server pointer must not be trusted merely because it looks
+  // like a session id. Resolve every canonical pointer through the backend and
+  // require the canonical Bot Chat title before the hide write. This is
+  // deliberately fail-closed: an unavailable/old gateway may leave an old
+  // Bot Chat visible, but it must never hide an unrelated user conversation.
+  const verifiedCanonical = Promise.resolve()
+    .then(() =>
+      host.request('profiles.list', {
+        include_sessions: true,
+        preferred_session_ids: Object.fromEntries(canonical.map(entry => [entry.name, entry.id]))
+      })
+    )
+    .then(res => {
+      const profiles = Array.isArray(res?.profiles) ? res.profiles : []
+      const valid = []
+
+      for (const entry of canonical) {
+        const profile = profiles.find(item => item?.name === entry.name)
+        const preferred = profile?.preferred_session
+        const ids = [preferred?.id, preferred?.resolved_id, preferred?.session_id, preferred?.session_key]
+          .filter(Boolean)
+          .map(String)
+
+        if (String(preferred?.title || '').trim() === 'Bot Chat' && ids.includes(String(entry.id))) {
+          valid.push(entry.id)
+        }
+      }
+
+      return valid
+    })
+    .catch(() => [])
+
+  const known = verifiedCanonical.then(validCanonical =>
+    Promise.all(
+      [...new Set([...validCanonical, ...rooms])].map(sid =>
+        Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden: true })).catch(() => undefined)
+      )
     )
   )
 
@@ -3363,19 +3396,28 @@ function createCanonicalChat(name) {
  *
  *  Identity rules (hermes-agent#88200 — the row must open the session its
  *  preview describes):
- *  - grandfather: no pin + existing history adopts the previewed session
+ *  - grandfather: no pin + an existing Bot Chat adopts the previewed session
  *    (`history`, the roster's last_session for this bot) instead of minting
- *    a new empty chat;
+ *    a new empty chat. Ordinary user conversations are never adopted;
+ *    `last_session` is only a recency hint, not an ownership proof;
  *  - a live pin is verified through the backend's precise preferred_session
  *    resolver (hidden rows still resolve; compression lineages resolve to
  *    the live tip) — never inferred from a paginated, hidden-excluding
  *    session.list window, which misjudged real hidden pins as gone;
  *  - transient lookup failures keep the pin: try the stored id as-is, and
  *    only a rejected open enters recovery. */
+function isCanonicalBotChatHistory(history) {
+  const rootTitle = String(history?.root_title || '').trim()
+  const title = String(history?.title || '').trim()
+  return rootTitle === 'Bot Chat' || (!rootTitle && title === 'Bot Chat')
+}
+
 async function openBotCanonicalChat(name, pinned, history) {
   if (!pinned) {
-    // Grandfather: adopt the conversation the row already previews.
-    const adoptId = history?.id
+    // Grandfather only an actual Bot Chat. `last_session` is merely the most
+    // recent row for the profile; adopting it blindly can claim an unrelated
+    // user conversation and the hide sweep would then hide that conversation.
+    const adoptId = isCanonicalBotChatHistory(history) ? history.id : null
     if (adoptId && typeof host.openSession === 'function') {
       await openStoredBotChat(name, adoptId, history)
       saveBotMeta(name, { chat: adoptId })
@@ -3411,7 +3453,7 @@ async function openBotCanonicalChat(name, pinned, history) {
     return openStoredBotChat(name, pinned, history)
   }
 
-  if (preferred) {
+  if (preferred && isCanonicalBotChatHistory(preferred)) {
     try {
       await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred)
       return pinned
@@ -3424,9 +3466,19 @@ async function openBotCanonicalChat(name, pinned, history) {
     }
   }
 
+  if (preferred) {
+    // The stored pointer resolved to a real session, but not to Bot Mode's
+    // plumbing session. Treat it as corrupted metadata rather than opening or
+    // hiding the user's ordinary conversation.
+    await saveBotMeta(name, { chat: null })
+    return createCanonicalChat(name)
+  }
+
   // Definitively gone (db reset, or the lineage was rewritten past
   // recovery): re-anchor on the previewed session when there is one.
-  const recoveryId = history?.id
+  // A previewed row is safe to re-anchor only when it is Bot Mode plumbing.
+  // Otherwise a stale pin must not steal the profile's ordinary latest chat.
+  const recoveryId = isCanonicalBotChatHistory(history) ? history.id : null
   if (recoveryId && typeof host.openSession === 'function') {
     await openStoredBotChat(name, recoveryId, history)
     saveBotMeta(name, { chat: recoveryId })

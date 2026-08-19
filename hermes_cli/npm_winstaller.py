@@ -1,9 +1,12 @@
 """Detect electron-winstaller Unix install-script failures."""
-import sys
-import subprocess
 
-def _is_electron_winstaller_unix_failure(result):
+import sys
+
+
+def _is_electron_winstaller_unix_failure(result) -> bool:
     if sys.platform == "win32":
+        return False
+    if getattr(result, "returncode", 1) == 0:
         return False
     text = (result.stderr or "") + (result.stdout or "")
     if "select-7z-arch.js" in text:

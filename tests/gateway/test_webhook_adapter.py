@@ -650,14 +650,70 @@ class TestEventIdempotency:
         )
         assert key == ""
 
-    def test_extract_event_key_embedded_id_when_no_semantic(self):
-        """A 3+ segment delivery id (ai-coach style) IS the event identity
-        when the payload carries no semantic fields."""
+    def test_extract_event_key_rejects_per_attempt_timestamp_delivery_id(self):
+        """A 3+ segment delivery id ending in a per-attempt epoch timestamp
+        (the ai-coach ``ai-coach-<type>-<ts>`` shape) is NOT a stable event
+        identity: every retry gets a fresh timestamp, so returning the full
+        id would silently fail to dedup.  Payloads with no semantic fields
+        must get NO event key for this shape (ai-coach sends trigger_type +
+        data anyway, which the composite fingerprint handles)."""
         adapter = _make_adapter()
         key = adapter._extract_event_key(
             "ai-coach-workout-1785939000", "unknown", {"note": "x"}
         )
-        assert key == "ai-coach-workout-1785939000"
+        assert key == ""
+
+    def test_extract_event_key_embedded_msg_id_when_no_semantic(self):
+        """A delivery id embedding a svix ``msg_*`` id IS a stable event
+        identity when the payload carries no semantic fields."""
+        adapter = _make_adapter()
+        key = adapter._extract_event_key(
+            "evt_abc-msg_2xabc", "unknown", {"note": "x"}
+        )
+        assert key == "msg_2xabc"
+
+    def test_extract_event_key_embedded_uuid_when_no_semantic(self):
+        """A delivery id that IS a UUID is a stable event identity."""
+        adapter = _make_adapter()
+        key = adapter._extract_event_key(
+            "1e8f9c0a-2b3c-4d5e-8f90-abcd12345678", "push",
+            {"ref": "main"},
+        )
+        assert key == "1e8f9c0a-2b3c-4d5e-8f90-abcd12345678"
+
+    def test_extract_event_key_bare_id_with_data_not_suppressed(self):
+        """A bare entity ``id`` must NOT collapse distinct events sharing
+        that id: two different payloads with the same row id but different
+        data must fingerprint differently."""
+        adapter = _make_adapter()
+        k1 = adapter._extract_event_key(
+            "delivery-1", "update",
+            {"id": "row-42", "data": {"a": 1}},
+        )
+        k2 = adapter._extract_event_key(
+            "delivery-2", "update",
+            {"id": "row-42", "data": {"a": 2}},
+        )
+        assert k1 != k2
+
+    def test_extract_event_key_bare_id_no_data_no_key(self):
+        """A bare entity ``id`` with no semantic fields and an opaque
+        delivery id gets NO event key — ``id`` alone is not a stable event
+        identity."""
+        adapter = _make_adapter()
+        key = adapter._extract_event_key(
+            "delivery-abc", "update", {"id": "row-42"}
+        )
+        assert key == ""
+
+    def test_extract_event_key_stable_id_still_used(self):
+        """A payload ``id`` whose VALUE is a stable event id (``msg_*`` /
+        UUID) is still accepted as an event identity."""
+        adapter = _make_adapter()
+        key = adapter._extract_event_key(
+            "delivery-abc", "update", {"id": "msg_2xabc"}
+        )
+        assert key == "msg_2xabc"
 
     @pytest.mark.asyncio
     async def test_same_event_fresh_delivery_id_suppressed(self):
@@ -751,9 +807,43 @@ class TestEventIdempotency:
         now = 1000.0
         assert adapter._record_event("evt-1", 3600, now) is True
         assert adapter._record_event("evt-1", 3600, now + 100) is False
-        assert adapter._seen_events["evt-1"] == now
+        assert adapter._seen_events["evt-1"] == (now, 3600)
         # After the TTL elapses the event is processable again.
         assert adapter._record_event("evt-1", 3600, now + 3601) is True
+
+    def test_prune_seen_events_uses_per_entry_ttl(self):
+        """Entries recorded under different route TTLs must expire on THEIR
+        OWN ttl, not the global default.  A 120s route entry must be pruned
+        well before the 24h global TTL would expire it."""
+        adapter = _make_adapter()  # global event_dedup_ttl = 24h
+        now = 1000.0
+        adapter._record_event("short-route", 120, now)
+        adapter._record_event("long-route", 24 * 3600, now)
+        # Force a prune at now + 200: the 120s entry is stale, the 24h entry
+        # is not.
+        adapter._prune_seen_events(now + 200, force=True)
+        assert "short-route" not in adapter._seen_events
+        assert "long-route" in adapter._seen_events
+
+    def test_record_event_force_prunes_when_cap_exceeded(self):
+        """Crossing the cap must prune immediately (per-entry expiry), not
+        wait for the next scheduled prune window — a map full of already-
+        expired entries cannot grow unboundedly past max(rate_limit*2, 128)."""
+        adapter = _make_adapter(rate_limit=2)  # cap = max(4, 128) = 128
+        now = 1000.0
+        # 130 ALREADY-EXPIRED entries (recorded 1000s ago with a 60s TTL).
+        # The scheduled prune gate is in the future, so a non-forced prune
+        # would skip them entirely.
+        adapter._seen_events = {
+            f"k-{i}": (now - 1000, 60) for i in range(130)
+        }
+        adapter._seen_events_next_prune_at = now + 3600
+        assert len(adapter._seen_events) == 130  # over cap
+        # Recording one fresh event trips the cap: force prune drops the
+        # expired entries instead of letting the map keep growing.
+        assert adapter._record_event("fresh", 3600, now) is True
+        assert len(adapter._seen_events) == 1
+        assert "fresh" in adapter._seen_events
 
 
 # ===================================================================

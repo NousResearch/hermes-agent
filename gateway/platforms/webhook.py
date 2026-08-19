@@ -140,6 +140,31 @@ def _peek_session_id(store, session_key: str):
             store._ensure_loaded()
     entry = (getattr(store, "_entries", {}) or {}).get(session_key)
     return getattr(entry, "session_id", None) if entry else None
+# Stable event-id shapes.  A value that matches one of these is a
+# sender-declared identifier that survives retries (svix ``msg_*`` message
+# ids, ``evt_*`` event ids, UUIDs).  Anything else — a bare entity/row id,
+# a per-attempt timestamp, an opaque short token — is NOT a stable event
+# identity: reusing it as an event key would either suppress distinct events
+# that happen to share an entity id (false positive) or fail to dedup retries
+# whose per-attempt component changes (false negative).
+_STABLE_EVENT_ID_RE = re.compile(
+    r"^(?:"
+    r"msg_[A-Za-z0-9_]+"          # svix-style message id
+    r"|evt_[A-Za-z0-9_]+"         # generic event id prefix
+    r"|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"  # UUID
+    r")$"
+)
+
+
+def _is_stable_event_id(value: str) -> bool:
+    """True when ``value`` looks like a stable sender-declared event id.
+
+    This gates BOTH the payload ``id`` fallback and the delivery-id embedding
+    heuristic.  A per-attempt timestamp suffix (the ai-coach
+    ``<type>-<epoch-ts>`` delivery shape) or a generic row id fails the check
+    so it can never become a silently-suppressing event key.
+    """
+    return bool(_STABLE_EVENT_ID_RE.match(value.strip()))
 
 
 def check_webhook_requirements() -> bool:
@@ -218,7 +243,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # second time.  Default TTL 24h, overridable per route
         # (``event_dedup_ttl``) or globally (``platforms.webhook.extra.
         # event_dedup_ttl``).
-        self._seen_events: Dict[str, float] = {}
+        self._seen_events: Dict[str, tuple] = {}  # event_key -> (seen_at, ttl)
         self._event_dedup_ttl: int = int(
             extra.get("event_dedup_ttl", 24 * 3600)
         )
@@ -353,6 +378,13 @@ class WebhookAdapter(BasePlatformAdapter):
     # Event-level idempotency
     # ------------------------------------------------------------------
 
+    # Fields whose value is a sender-declared STABLE event identity.  The
+    # value is used as-is only when it matches a stable shape
+    # (``msg_*`` / ``evt_*`` / UUID) — see ``_is_stable_event_id``.  Bare
+    # ``id`` (a generic entity/row id) is deliberately NOT trusted on its
+    # own: distinct events for the same entity routinely share it, and using
+    # it as an event key would silently suppress the later ones within the
+    # TTL.
     _EVENT_KEY_PAYLOAD_FIELDS = (
         "dedup_key", "event_id", "eventId", "id",
     )
@@ -371,8 +403,12 @@ class WebhookAdapter(BasePlatformAdapter):
         the parts that survive retries:
 
         1. An explicit event identity in the payload — ``dedup_key``,
-           ``event_id``, ``eventId``, or ``id`` (the sender's own stable
-           event id, e.g. ai-coach's ``dedup_key`` / a svix ``msg_*`` id).
+           ``event_id``, ``eventId`` (the sender's own stable event id,
+           e.g. ai-coach's ``dedup_key`` / a svix ``msg_*`` id).  Bare ``id``
+           is accepted ONLY when its value itself matches a stable shape
+           (``msg_*`` / ``evt_*`` / UUID): a generic entity/row id is
+           routinely reused across DISTINCT events for the same entity, so it
+           must never become a suppress-everything key.
         2. A composite body fingerprint over ``(trigger_type, data)`` — the
            ai-coach backend identifies events by ``trigger_type`` + ``data``
            (its delivery id ``ai-coach-<type>-<per-attempt-ts>`` changes on
@@ -384,9 +420,15 @@ class WebhookAdapter(BasePlatformAdapter):
            never become a 24h suppress-everything key.
         3. The embedded message ID inside the delivery ID (``svix-id`` /
            ``X-GitHub-Delivery`` style) when the payload carries NO semantic
-           identity at all — e.g. ``ai-coach-sleep_ready-1785938387``.  This
-           mirrors delivery-level dedup for senders that identify events
-           solely by their delivery id.
+           identity at all.  Only a trailing segment that looks like a
+           stable sender-declared id (``msg_*`` / ``evt_*`` / a UUID) is
+           used.  The ai-coach delivery shape
+           (``ai-coach-<type>-<per-attempt-epoch-ts>``) is REJECTED: its
+           per-attempt timestamp changes on every retry, so returning the
+           full id would silently fail to dedup (each retry would get a
+           fresh key).  Payloads from ai-coach carry ``trigger_type`` +
+           ``data`` anyway, so the composite fingerprint in step 2 is the
+           correct identity for that shape.
 
         Returns ``""`` when NO stable identity can be derived (generic
         delivery-ID-only POSTs with no payload id and an opaque delivery id
@@ -405,8 +447,18 @@ class WebhookAdapter(BasePlatformAdapter):
                 continue
             value = payload.get(field)
             if isinstance(value, str) and value.strip():
+                # ``id`` is a generic entity/row id that many senders reuse
+                # across distinct events for the same entity.  Only treat it
+                # as an event identity when its value itself looks like a
+                # stable sender-declared event id; the explicitly named
+                # dedup fields (dedup_key / event_id / eventId) are trusted
+                # as-is.
+                if field == "id" and not _is_stable_event_id(value):
+                    continue
                 return value.strip()
             if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if field == "id":
+                    continue
                 return str(value)
         # 2. Composite body fingerprint — ONLY for payloads that carry
         #    event-specific semantic fields (ai-coach shape:
@@ -430,15 +482,29 @@ class WebhookAdapter(BasePlatformAdapter):
                 ).encode("utf-8")
             ).hexdigest()
         # 3. Embedded message ID inside the delivery ID.  Common shapes:
-        #    ``<prefix>-<event>-<seq>`` (ai-coach), ``msg_<id>`` (svix),
-        #    ``<uuid>`` (github).  Opaque 1-2 segment delivery ids
-        #    (``d3f8a2``, ``delivery-123``) are NOT stable event identities —
-        #    they change per attempt.
+        #    ``msg_<id>`` (svix), ``evt_<id>``, ``<uuid>`` (github).
+        #    Opaque 1-2 segment delivery ids (``d3f8a2``,
+        #    ``delivery-123``) are NOT stable event identities — they change
+        #    per attempt.  Per-attempt ids with 3+ segments are rejected too:
+        #    the ai-coach delivery shape
+        #    ``ai-coach-<type>-<per-attempt-epoch-ts>`` ends in a fresh
+        #    timestamp on every retry, so returning the full id would
+        #    silently fail to dedup (each retry would get a fresh key) while
+        #    claiming to dedup.  Only a delivery id that IS a stable
+        #    sender-declared event id (a bare ``msg_*`` / ``evt_*`` / UUID)
+        #    or that embeds one as its trailing segment is used.
         did = (delivery_id or "").strip()
         if did:
-            segments = [s for s in did.replace("/", "-").split("-") if s]
-            if len(segments) >= 3:
+            # The whole delivery id may itself be a stable event id — a
+            # bare UUID (``1e8f9c0a-2b3c-...``) or a bare ``msg_*`` /
+            # ``evt_*`` token.
+            if _is_stable_event_id(did):
                 return did
+            # Otherwise look for a stable trailing segment embedded in a
+            # prefixed delivery id (svix ``evt_abc-msg_2xabc``).
+            segments = [s for s in did.replace("/", "-").split("-") if s]
+            if segments and _is_stable_event_id(segments[-1]):
+                return segments[-1]
         return ""
 
     def _event_dedup_ttl_for_route(self, route_config: dict) -> int:
@@ -451,17 +517,30 @@ class WebhookAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             return self._event_dedup_ttl
 
-    def _prune_seen_events(self, now: float) -> None:
-        """Drop expired event identities without scanning every POST."""
-        if now < self._seen_events_next_prune_at:
+    def _prune_seen_events(self, now: float, *, force: bool = False) -> None:
+        """Drop expired event identities.
+
+        Each entry records its OWN ttl (routes may override the global
+        ``event_dedup_ttl``), so the cutoff is per-entry — an entry stored
+        with a 120s route TTL must not live for the 24h global default.
+        The time gate (``_seen_events_next_prune_at``) bounds how often we
+        scan; ``force=True`` bypasses it so a map that has actually exceeded
+        its cap is pruned immediately instead of growing unboundedly
+        between windows.
+        """
+        if not force and now < self._seen_events_next_prune_at:
             return
-        cutoff = now - self._event_dedup_ttl
-        stale = [k for k, t in self._seen_events.items() if t < cutoff]
+        stale = [
+            k
+            for k, (seen_at, ttl) in self._seen_events.items()
+            if now - seen_at >= ttl
+        ]
         for k in stale:
             self._seen_events.pop(k, None)
-        self._seen_events_next_prune_at = now + min(
-            3600.0, max(60.0, self._event_dedup_ttl / 10)
-        )
+        if not force:
+            self._seen_events_next_prune_at = now + min(
+                3600.0, max(60.0, self._event_dedup_ttl / 10)
+            )
 
     def _record_event(self, event_key: str, ttl: int, now: float) -> bool:
         """Return True when this EVENT should be processed (first sight).
@@ -470,14 +549,17 @@ class WebhookAdapter(BasePlatformAdapter):
         original timestamp untouched (so the 24h window is measured from
         first sight, not extended by each retry).
         """
-        seen_at = self._seen_events.get(event_key)
-        if seen_at is not None and now - seen_at < ttl:
-            return False
-        if seen_at is not None:
+        entry = self._seen_events.get(event_key)
+        if entry is not None:
+            seen_at, entry_ttl = entry
+            if now - seen_at < entry_ttl:
+                return False
             self._seen_events.pop(event_key, None)
-        self._seen_events[event_key] = now
+        self._seen_events[event_key] = (now, ttl)
         if len(self._seen_events) > max(self._rate_limit * 2, 128):
-            self._prune_seen_events(now)
+            # Cap exceeded: prune NOW (per-entry expiry), not whenever the
+            # next scheduled prune window happens to roll around.
+            self._prune_seen_events(now, force=True)
         return True
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

@@ -1089,6 +1089,43 @@ class RelayAdapter(BasePlatformAdapter):
             raw_response=result,
         )
 
+    def _format_hints(self) -> Optional[Dict[str, bool]]:
+        """Block-formatting hints for outbound text frames, or None.
+
+        Native Slack reads ``platforms.slack.extra.rich_blocks`` /
+        ``markdown_blocks`` and renders Block Kit locally; on the relay lane
+        the CONNECTOR owns the Slack API call, so the gateway can only signal
+        intent. Hints are stamped ONLY when (a) the connector advertises
+        ``supports_block_formatting`` in its descriptor — an old connector
+        never receives dead metadata — and (b) the operator enabled at least
+        one knob under the relay's per-platform sub-block
+        (``platforms.relay.extra.slack.rich_blocks`` / ``markdown_blocks``,
+        same seam and same _coerce_flag semantics as reply_in_thread).
+        Both knobs default OFF, matching native's opt-in posture.
+        """
+        if not getattr(self.descriptor, "supports_block_formatting", False):
+            return None
+        try:
+            extra = self._relay_slack_extra()
+        except Exception:  # noqa: BLE001 - config shape is operator-owned
+            return None
+        hints: Dict[str, bool] = {}
+        for knob in ("rich_blocks", "markdown_blocks"):
+            if self._coerce_flag(extra.get(knob), False):
+                hints[knob] = True
+        return hints or None
+
+    def _with_format_hints(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Return metadata with ``format_hints`` stamped when applicable."""
+        hints = self._format_hints()
+        if not hints:
+            return metadata
+        merged = dict(metadata or {})
+        merged.setdefault("format_hints", hints)
+        return merged
+
     async def send(
         self,
         chat_id: str,
@@ -1121,7 +1158,9 @@ class RelayAdapter(BasePlatformAdapter):
                 "chat_id": chat_id,
                 "content": content,
                 "reply_to": effective_reply_to,
-                "metadata": self._with_scope(chat_id, send_metadata),
+                "metadata": self._with_scope(
+                    chat_id, self._with_format_hints(send_metadata)
+                ),
             },
             platform=self._platform_by_chat.get(str(chat_id)),
         )
@@ -1359,7 +1398,13 @@ class RelayAdapter(BasePlatformAdapter):
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "content": content,
-                "metadata": self._with_scope(chat_id, metadata),
+                # Same format_hints as send: a streamed reply's FINAL edit is
+                # the frame that carries the finished markdown, so the edit
+                # lane must signal block rendering too or streams would seal
+                # as plain text (boundary rule: every text egress lane).
+                "metadata": self._with_scope(
+                    chat_id, self._with_format_hints(metadata)
+                ),
             },
             platform=self._platform_by_chat.get(str(chat_id)),
         )

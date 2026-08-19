@@ -72,6 +72,15 @@ class CapabilityDescriptor:
     # that never sends this keeps today's thread behavior — additive within
     # contract_version 1.
     supports_inchannel_continuable: bool = False
+    # Whether the connector's platform sender can render block-level
+    # formatting from raw markdown (Slack: rich_text lists, Block Kit
+    # tables/markdown blocks). When True AND the operator enables the
+    # rich_blocks/markdown_blocks knobs, the gateway stamps ``format_hints``
+    # into outbound send/edit metadata; the connector renders blocks and
+    # keeps the plain text as fallback. Default False — old connectors never
+    # receive hints, old gateways never send them. Additive within
+    # contract_version 1.
+    supports_block_formatting: bool = False
     # Op-level capability discovery (Phase 1 parity): the outbound op names the
     # connector's sender for this platform actually implements (e.g.
     # ["send", "edit", "typing", "follow_up", "get_chat_info"]). Empty tuple =

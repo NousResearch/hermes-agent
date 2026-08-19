@@ -340,16 +340,16 @@ web:
   extract_backend: "firecrawl"  # used by web_extract
 ```
 
-When per-capability keys are empty, both fall through to `web.backend`. When `web.backend` is also empty, the backend is auto-detected from whichever API key/URL is present.
+When per-capability keys are empty, both fall through to `web.backend`. Only when no web selection has ever been written is the backend auto-detected from whichever API key/URL is present — once a selection exists, the runtime always uses it, and adding a key to `.env` does not reroute web traffic.
 
 **Priority order (per capability):**
 1. `web.search_backend` / `web.extract_backend` (explicit per-capability)
-2. `web.backend` (shared fallback)
-3. Auto-detect from environment variables
+2. `web.backend` (shared fallback; `nous` = managed Tool Gateway)
+3. Auto-detect from environment variables (never-configured setups only)
 
 ### Auto-detection
 
-If no backend is explicitly configured, Hermes picks the first available one based on which credentials are set:
+If no backend has **ever** been selected (no `web.backend` / per-capability key written by you or `hermes tools`), Hermes picks the first available one based on which credentials are set:
 
 | Credential present | Auto-selected backend |
 |--------------------|-----------------------|

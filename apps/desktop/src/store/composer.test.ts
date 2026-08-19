@@ -7,16 +7,19 @@ import {
   addComposerAttachment,
   adoptGoneSessionDraft,
   announceGoneSessionDraft,
+  clearComposerTerminalSelections,
   clearSessionDraft,
   type ComposerAttachment,
   createComposerAttachmentOccurrenceId,
   createComposerAttachmentScope,
+  freezeComposerTransportPayload,
   mainComposerScope,
   migrateSessionDraft,
   removeComposerAttachment,
   requestVoiceConversationStart,
   revokeAttachmentPreviewUrls,
   SESSION_DRAFTS_STORAGE_KEY,
+  setComposerTerminalSelection,
   stashSessionDraft,
   takeSessionDraft,
   takeVoiceConversationStart,
@@ -375,5 +378,59 @@ describe('session drafts', () => {
 
     clearSessionDraft(null)
     clearSessionDraft('to')
+  })
+})
+
+describe('freezeComposerTransportPayload', () => {
+  afterEach(() => {
+    clearComposerTerminalSelections()
+  })
+
+  it('leaves ordinary text unchanged', () => {
+    const frozen = freezeComposerTransportPayload('just a question')
+
+    expect(frozen.transportText).toBe('just a question')
+    expect(frozen.displayText).toBe('just a question')
+    expect(frozen.missingLabels).toEqual([])
+  })
+
+  it('freezes @terminal chips into fenced transport and keeps chips for display', () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
+    const frozen = freezeComposerTransportPayload('look at @terminal:`zsh:23-58`')
+
+    expect(frozen.transportText).toBe('```terminal\nselected terminal lines\n```\n\nlook at')
+    expect(frozen.displayText).toBe('look at @terminal:`zsh:23-58`')
+    expect(frozen.missingLabels).toEqual([])
+  })
+
+  it('does not expand a second time when transport is already frozen', () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
+    const once = freezeComposerTransportPayload('look at @terminal:`zsh:23-58`')
+    const twice = freezeComposerTransportPayload(once.transportText)
+
+    expect(twice.transportText).toBe(once.transportText)
+    expect(twice.displayText).toBe(once.transportText)
+    expect((once.transportText.match(/```terminal/g) ?? []).length).toBe(1)
+  })
+
+  it('reports unresolved chips instead of sending a bare token', () => {
+    const frozen = freezeComposerTransportPayload('look at @terminal:`zsh:23-58`')
+
+    expect(frozen.missingLabels).toEqual(['zsh:23-58'])
+    expect(frozen.transportText).toBe('look at @terminal:`zsh:23-58`')
+    expect(frozen.displayText).toBe('look at @terminal:`zsh:23-58`')
+  })
+
+  it('freezes multiple selections in document order', () => {
+    setComposerTerminalSelection('zsh:10-12', 'first block')
+    setComposerTerminalSelection('bash:3-9', 'second block')
+
+    const frozen = freezeComposerTransportPayload('compare @terminal:`bash:3-9` with @terminal:`zsh:10-12`')
+
+    expect(frozen.transportText).toBe('```terminal\nsecond block\n```\n\n```terminal\nfirst block\n```\n\ncompare with')
+    expect(frozen.displayText).toBe('compare @terminal:`bash:3-9` with @terminal:`zsh:10-12`')
+    expect(frozen.missingLabels).toEqual([])
   })
 })

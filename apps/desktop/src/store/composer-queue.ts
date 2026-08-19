@@ -311,7 +311,7 @@ export const promoteQueuedPrompt = (key: string | null | undefined, id: string):
 export const updateQueuedPrompt = (
   key: string | null | undefined,
   id: string,
-  update: { text: string; attachments?: ComposerAttachment[] }
+  update: { text: string; attachments?: ComposerAttachment[]; displayText?: string | null }
 ): boolean => {
   const sid = sidOf(key)
 
@@ -329,7 +329,14 @@ export const updateQueuedPrompt = (
 
     const attachments = update.attachments ? cloneAttachments(update.attachments) : entry.attachments
 
-    if (entry.text === update.text && !update.attachments) {
+    const nextDisplay =
+      update.displayText === undefined ? undefined : update.displayText === null ? undefined : update.displayText
+
+    if (
+      entry.text === update.text &&
+      !update.attachments &&
+      (update.displayText === undefined || nextDisplay === entry.displayText)
+    ) {
       return entry
     }
 
@@ -341,10 +348,15 @@ export const updateQueuedPrompt = (
 
     // The user rewrote the text, so any display projection it carried (a
     // `/skill` invocation standing in for the expanded body) no longer
-    // describes it — what they typed is now what sends.
+    // describes it — unless the caller froze a new chip/display pair.
     const { displayText: _dropped, ...rest } = entry
 
-    return { ...rest, text: update.text, attachments }
+    return {
+      ...rest,
+      text: update.text,
+      attachments,
+      ...(nextDisplay ? { displayText: nextDisplay } : {})
+    }
   })
 
   if (!changed) {

@@ -319,6 +319,7 @@ The bundled Langfuse plugin demonstrates direct hook-based observability for
 turns, provider requests, and tool calls.
 
 The native NeMo Relay SDK integration maps Hermes session, turn, LLM, and tool
-lifecycles to Relay. Explicit Relay plugin configuration can add ATOF or ATIF
+lifecycles to Relay. Explicit Relay plugin configuration can add
+[ATOF, ATIF, or OTEL](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about)
 exporters and execution middleware; see
 [Relay shared metrics](relay-shared-metrics.md).

@@ -535,6 +535,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             names = lib.attrNames units;
             execOf = name: units.${name}.serviceConfig.ExecStart;
             activation = cfg.system.activationScripts."hermes-agent-setup".text;
+            mainConfigMergeLine = lib.findFirst (
+              line:
+              lib.hasInfix "hermes-config-merge" line
+              && lib.hasInfix "/var/lib/hermes/.hermes/config.yaml" line
+            ) null (lib.splitString "\n" activation);
 
             failures =
               lib.optional (names != [
@@ -552,7 +557,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ) "gateway and backend must share one HERMES_HOME"
               ++ lib.optional (
                 !lib.hasInfix "/var/lib/hermes/.hermes/SOUL.md" activation
-              ) "hermesHomeFiles must install into HERMES_HOME";
+              ) "hermesHomeFiles must install into HERMES_HOME"
+              ++ lib.optional (
+                mainConfigMergeLine == null
+                || !lib.hasInfix "runuser -u hermes -g hermes --" mainConfigMergeLine
+              ) "activation must merge the main runtime-writable config as the unprivileged service user";
 
             # You cannot use container mode and the backend together. The
             # module says so with an assertion. Without the assertion it
@@ -666,8 +675,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 !lib.hasInfix "runuser -u hermes -g hermes -- mkdir -p /var/lib/hermes/.hermes/profiles/coder" activation
               ) "activation must create the coder profile home as the unprivileged service user"
               ++ lib.optional (
-                !lib.hasInfix "runuser -u hermes -g hermes -- chmod 0640 /var/lib/hermes/.hermes/profiles/coder/config.yaml" activation
-              ) "activation must manage generated profile config as the unprivileged service user"
+                !lib.hasInfix "/var/lib/hermes/.hermes/profiles/coder/config.yaml 0640" activation
+              ) "activation must atomically install generated profile config with its final mode"
+              ++ lib.optional (
+                lib.hasInfix "runuser -u hermes -g hermes -- chmod 0640 /var/lib/hermes/.hermes/profiles/coder/config.yaml" activation
+              ) "activation must not chmod a generated profile config that an interactive group member may own"
               ++ lib.optional (
                 !lib.hasInfix "/run/hermes-agent-profile-env.XXXXXX" activation
               ) "activation must stage root-readable profile environment files outside user-writable state"
@@ -1202,6 +1214,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           nativeBuildInputs = [ pkgs.jq ];
         } ''
           set -e
+          umask 0022
           export HOME=$(mktemp -d)
           ERRORS=""
 
@@ -1230,6 +1243,9 @@ json.dump(load_config(), sys.stdout, default=str)
             || fail "A: model not set from Nix"
           echo "$A_CONFIG" | jq -e '.mcp_servers."nix-server".command == "echo"' > /dev/null \
             || fail "A: MCP nix-server missing"
+          if [ "$(stat -c %a "$A_HOME/config.yaml")" != 644 ]; then
+            fail "A: two-argument merge did not preserve normal create-mode semantics"
+          fi
           echo "PASS: Scenario A"
 
           # ═══════════════════════════════════════════════════════════════
@@ -1337,6 +1353,23 @@ json.dump(load_config(), sys.stdout, default=str)
           echo "PASS: Scenario G"
 
           # ═══════════════════════════════════════════════════════════════
+          # Scenario H: Atomic replacement with an explicit final mode
+          # ═══════════════════════════════════════════════════════════════
+          echo "=== Scenario H: Atomic replacement and mode ==="
+          H_HOME=$(mktemp -d)
+          install -m 0660 ${fixtureD} "$H_HOME/config.yaml"
+          ln "$H_HOME/config.yaml" "$H_HOME/previous-inode"
+          ${configMergeScript} ${nixSettings} "$H_HOME/config.yaml" 0640
+
+          if [ "$(stat -c %a "$H_HOME/config.yaml")" != 640 ]; then
+            fail "H: merged config did not receive requested mode 0640"
+          fi
+          if ! cmp -s ${fixtureD} "$H_HOME/previous-inode"; then
+            fail "H: merge rewrote the existing inode instead of replacing it atomically"
+          fi
+          echo "PASS: Scenario H"
+
+          # ═══════════════════════════════════════════════════════════════
           # Report
           # ═══════════════════════════════════════════════════════════════
           if [ -n "$ERRORS" ]; then
@@ -1347,7 +1380,7 @@ json.dump(load_config(), sys.stdout, default=str)
           fi
 
           echo ""
-          echo "=== All 7 merge scenarios passed ==="
+          echo "=== All 8 merge scenarios passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

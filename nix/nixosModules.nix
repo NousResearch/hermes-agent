@@ -656,6 +656,7 @@
                     inherit pkgs cfg hermesHome;
                     workingDirectory = cfg.workingDirectory;
                     configWorkingDirectory = effectiveWorkDir;
+                    configRun = runAsProfileUser;
                     owner = "${cfg.user}:${cfg.group}";
                     stateDirs = common.stateSubdirs;
                     modes = {

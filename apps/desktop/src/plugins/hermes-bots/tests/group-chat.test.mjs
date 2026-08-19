@@ -124,7 +124,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -324,6 +324,88 @@ test('concurrent groups sharing one member keep sessions, deltas, and context is
   assert.equal(betaSession.messages.some(message => String(message.content).includes('ALPHA_ONLY')), false)
 })
 
+test('recreating a same-name group after disband mints fresh member sessions', async () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  // First incarnation of the room.
+  gc.updateGroupChat('Alpha', r => {
+    r.roomId = 'r-one'
+    return r
+  })
+  const first = await gc.ensureGroupChatSession('Alpha', member)
+
+  // Disband: the room record is gone; the member's gateway session survives.
+  const rooms = { ...gc.$groupChats.get() }
+  delete rooms.Alpha
+  gc.$groupChats.set(rooms)
+
+  // Recreate under the same display name with a freshly minted roomId.
+  gc.updateGroupChat('Alpha', r => {
+    r.roomId = 'r-two'
+    return r
+  })
+  const second = await gc.ensureGroupChatSession('Alpha', member)
+
+  assert.notEqual(first.stored, second.stored, 'the recreated room must not resume the old member session')
+  assert.equal(gc.sessions.get(first.stored).title, 'Group: r-one')
+  assert.equal(gc.sessions.get(second.stored).title, 'Group: r-two')
+})
+
+test('group session titles are pinned to the roomId, with a legacy fallback to the display name', async () => {
+  const gc = load(() => '(pass)')
+
+  // Rooms persisted before roomIds keep name-based titles so their existing
+  // "Group: <name>" sessions keep resolving after an upgrade.
+  gc.updateGroupChat('Legacy', r => r)
+  const legacy = await gc.ensureGroupChatSession('Legacy', { name: 'research', title: '' })
+  assert.equal(gc.sessions.get(legacy.stored).title, 'Group: Legacy')
+
+  // New rooms pin the title to the immutable roomId, never the display name.
+  gc.updateGroupChat('New', r => {
+    r.roomId = 'r-abc'
+    return r
+  })
+  const fresh = await gc.ensureGroupChatSession('New', { name: 'research', title: '' })
+  assert.equal(gc.sessions.get(fresh.stored).title, 'Group: r-abc')
+})
+
+test('same-name group dedup reserves suffix length at the 64-char cap', () => {
+  const gc = load(() => '(pass)')
+
+  assert.equal(gc.uniqueGroupChatName('Team', new Set(['Other'])), 'Team')
+
+  // Slicing the joined string would chop the " 2"/" 3" suffix off a
+  // max-length base and collide with the original forever.
+  const base = 'x'.repeat(64)
+  const taken = new Set([base, `${base.slice(0, 62)} 2`])
+
+  const next = gc.uniqueGroupChatName(base, taken)
+
+  assert.notEqual(next, base)
+  assert.equal(next.length, 64)
+  assert.equal(next, `${base.slice(0, 62)} 3`)
+})
+
+test('roomId persists with the room record and survives disband of other rooms', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.updateGroupChat('Keep', r => {
+    r.roomId = 'r-keep'
+    return r
+  })
+  gc.updateGroupChat('Gone', r => {
+    r.roomId = 'r-gone'
+    return r
+  })
+
+  await gc.disbandGroupChat('Gone', [{ name: 'builder' }])
+
+  const durable = gc.storageWrites.get('group-chats')
+  assert.equal(durable.Keep.roomId, 'r-keep', 'roomId survives disband of another room')
+  assert.ok(!('Gone' in durable), 'disbanded room not persisted')
+})
+
 test('needs-you: a member reply mentioning @user badges the group; user send clears it', async () => {
   const gc = load(profile => (profile === 'research' ? 'Blocked on billing access — @user which account?' : '(pass)'))
 
@@ -352,7 +434,7 @@ test('turn transport is gateway-native (session RPCs) and hostile text rides ver
   assert.equal(call.prompt.includes('hello "there" `whoami` $(id)'), true)
   // The per-group session is created with the room title.
   assert.match(pluginSource, /title,\n/)
-  assert.match(pluginSource, /const title = `Group: \$\{group\}`/)
+  assert.match(pluginSource, /const title = `Group: \$\{room\.roomId \|\| group\}`/)
 })
 
 test('log trimming keeps watermarks consistent', () => {
@@ -767,7 +849,9 @@ test('source contract: the working line names the member on turn', () => {
 
 test('source contract: creating a group with a taken name mints a fresh room, never reopens the old log', () => {
   assert.match(pluginSource, /const taken = new Set\(Object\.keys\(\$groupChats\.get\(\)\)\)/)
-  assert.match(pluginSource, /while \(taken\.has\(`\$\{groupName\} \$\{n\}`\)\)/)
+  assert.match(pluginSource, /const groupName = uniqueGroupChatName\(base, taken\)/)
+  assert.match(pluginSource, /const roomId = mintGroupRoomId\(\)/)
+  assert.match(pluginSource, /room\.roomId = roomId/)
 })
 
 test('turn prompt: results are full quality — only chatter is asked to stay short', () => {

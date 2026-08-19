@@ -4137,6 +4137,8 @@ function updateGroupChat(group, mutate) {
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
+        // Immutable room identity: the member-session title for new rooms.
+        roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null
       }
@@ -4154,7 +4156,7 @@ function updateGroupChat(group, mutate) {
  *  membership list (the metadata syncs cross-machine via ui_meta), drop the
  *  room log from the atom + plugin storage, and close the room view if it's
  *  open. Other group memberships and the members' per-group gateway sessions
- *  ("Group: <name>") are intentionally KEPT. */
+ *  ("Group: <roomId>", or legacy "Group: <name>") are intentionally KEPT. */
 async function disbandGroupChat(group, members) {
   // Invalidate any in-flight round-robin FIRST: bump the epoch so a running
   // drive bails at its next member boundary instead of appending to a room
@@ -4196,6 +4198,7 @@ async function disbandGroupChat(group, members) {
           watermarks: room.watermarks,
           sessions: room.sessions || {},
           members: Array.isArray(room.members) ? room.members : [],
+          roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
           image: room.image || null
         }
       }
@@ -4238,9 +4241,11 @@ function setGroupChatImage(group, image) {
 /** Rename a group chat. The group's NAME is its identity everywhere — the
  *  room-map key, each local member's ui_meta membership list, and derived
  *  state — so a rename re-keys all of them. Member gateway sessions are kept
- *  as-is: stored sids keep resuming, so no history is lost (only a member
- *  whose sid is later lost falls back to a fresh "Group: <new name>" title
- *  lookup). Returns the new name, or null when the target name is taken. */
+ *  as-is: stored sids keep resuming, so no history is lost. The room's
+ *  immutable roomId (the member-session title) is preserved across the
+ *  rename, so even a member whose sid is later lost falls back to the same
+ *  "Group: <roomId>" title lookup instead of a fresh "Group: <new name>".
+ *  Returns the new name, or null when the target name is taken. */
 async function renameGroupChat(oldName, newName, members) {
   const next = String(newName || '').trim().slice(0, 64)
 
@@ -4348,6 +4353,33 @@ function appendGroupChatEntry(group, from, text, thread, images) {
   return entry
 }
 
+/** Fresh room identity for a group. Independent of the editable display
+ *  name: a disbanded-and-recreated group mints a new roomId even when the
+ *  display name is identical, so member sessions never resume by title. */
+function mintGroupRoomId() {
+  return `r${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+/** Unique display name for a NEW group. Collisions get a " 2", " 3", …
+ *  suffix; the BASE is truncated (never the joined string), so a 64-char
+ *  base keeps its suffix instead of colliding with the original. */
+function uniqueGroupChatName(base, taken) {
+  if (!taken.has(base)) {
+    return base
+  }
+
+  for (let n = 2; n < 100; n++) {
+    const suffix = ` ${n}`
+    const candidate = base.slice(0, 64 - suffix.length) + suffix
+
+    if (!taken.has(candidate)) {
+      return candidate
+    }
+  }
+
+  throw new Error('No free name for the group.')
+}
+
 /** Ensure the member's per-group session exists and return a LIVE runtime
  *  session id for it. Gateway-native: session.create mints the session
  *  (lazy until its first message), session.resume by stored id — or by
@@ -4355,8 +4387,11 @@ function appendGroupChatEntry(group, from, text, thread, images) {
  *  it after restarts. Cross-connection members route to their OWN source
  *  via requestForBot; the window's gateway never switches. */
 async function ensureGroupChatSession(group, member) {
-  const title = `Group: ${group}`
   const room = $groupChats.get()[group] || {}
+  // New rooms title member sessions by their immutable roomId so a
+  // same-name recreate never resumes the old room's sessions by title;
+  // legacy rooms without a roomId fall back to the display name.
+  const title = `Group: ${room.roomId || group}`
   const key = groupMemberKey(member)
   const known = room.sessions && room.sessions[key]
 
@@ -4721,7 +4756,7 @@ async function harvestStrandedGroupReply(group, member) {
   try {
     const stored = room.sessions?.[memberKey]
     state = await requestForBot(member, 'session.resume', {
-      session_id: stored || `Group: ${group}`,
+      session_id: stored || `Group: ${room.roomId || group}`,
       profile: member.name
     })
   } catch {
@@ -8577,9 +8612,9 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
 
   const create = () => {
-    let groupName = (name.trim() || placeholder).slice(0, 64)
+    const base = (name.trim() || placeholder).slice(0, 64)
 
-    if (selected.length < 2 || !groupName) {
+    if (selected.length < 2 || !base) {
       return
     }
 
@@ -8587,7 +8622,10 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
     // group under an existing name (easy — the default name is just the
     // member names) silently reopens the old room with its full log, which
     // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
-    // both live rooms and any bot's current grouping.
+    // both live rooms and any bot's current grouping, then mint a fresh
+    // roomId: member sessions are titled by that roomId, so a
+    // disbanded-and-recreated group with the SAME display name still gets
+    // new sessions instead of resuming the old room's by title.
     const taken = new Set(Object.keys($groupChats.get()))
 
     for (const meta of Object.values($botMeta.get() || {})) {
@@ -8596,15 +8634,8 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
       }
     }
 
-    if (taken.has(groupName)) {
-      let n = 2
-
-      while (taken.has(`${groupName} ${n}`)) {
-        n += 1
-      }
-
-      groupName = `${groupName} ${n}`.slice(0, 64)
-    }
+    const groupName = uniqueGroupChatName(base, taken)
+    const roomId = mintGroupRoomId()
 
     for (const bot of selected) {
       if (!bot.remoteSource) {
@@ -8619,6 +8650,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
 
     updateGroupChat(groupName, room => {
       room.members = roomMembers
+      room.roomId = roomId
 
       if (image) {
         room.image = image
@@ -10614,6 +10646,7 @@ export default {
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
                   stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
                   members: Array.isArray(room.members) ? room.members : [],
+                  roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   epoch: 0,
                   running: false

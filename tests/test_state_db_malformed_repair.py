@@ -643,3 +643,140 @@ def test_backup_false_still_skips_backup_and_repairs(tmp_path):
     assert report["repaired"] is True
     assert report["backup_path"] is None
     assert not list(tmp_path.glob("state.db.malformed-backup-*"))
+
+
+# ---------------------------------------------------------------------------
+# Journal-mode restore after surgery (#89674): corruption drops the WAL bit
+# from the header, the repair strategies rebuild the file in the default
+# (delete) mode, and nothing used to record the flip. The configured
+# database.journal_mode must be re-applied, with a WARNING naming it.
+# ---------------------------------------------------------------------------
+
+
+def _mode_of(db_path) -> str:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    finally:
+        conn.close()
+
+
+def _configure_journal_mode(monkeypatch, tmp_path, mode) -> None:
+    import yaml
+
+    home = tmp_path / "hermes-home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"database": {"journal_mode": mode}}), encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: False,
+    )
+
+
+def test_repair_restores_configured_wal_after_surgery(
+    tmp_path, caplog, monkeypatch
+):
+    """A repaired file left in delete mode must return to the configured WAL.
+
+    Simulates the reported sequence: corruption drops the WAL bit (the file
+    reads back as delete), surgery heals the schema, and the store must end
+    up in the canonical database.journal_mode again — with a WARNING so the
+    operator sees the mode moved."""
+    import logging
+
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    _build_healthy_db(db_path)
+    assert _mode_of(db_path) == "wal"
+    # Downgrade while the file is still healthy (the damaged file rejects
+    # every statement — see test_duplicate_fts_makes_every_statement_fail),
+    # simulating the header state the reporter's corruption storm left: the
+    # WAL bit is gone and the file reads back as delete.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    assert _mode_of(db_path) == "delete"
+    _corrupt_duplicate_fts(db_path)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert _mode_of(db_path) == "wal"
+    assert any(
+        "changed journal_mode" in r.getMessage() for r in caplog.records
+    ), f"expected the mode flip to be logged; got: {[r.getMessage() for r in caplog.records]}"
+
+
+def test_repair_logs_nothing_when_mode_already_matches(
+    tmp_path, caplog, monkeypatch
+):
+    """FTS-only corruption keeps the WAL bit; the restore is then a no-op and
+    must not emit a mode-flip WARNING."""
+    import logging
+
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert _mode_of(db_path) == "wal"
+    assert not any(
+        "changed journal_mode" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_repair_restore_failure_is_nonfatal_and_logged(
+    tmp_path, caplog, monkeypatch
+):
+    """When the post-surgery WAL switch is refused (locked/unsupported fs),
+    the repair result stands and a WARNING names the modes and the config
+    key — never an exception out of the repair path."""
+    import logging
+    from unittest.mock import patch
+
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    _corrupt_duplicate_fts(db_path)
+
+    def _refused(conn, mode):
+        raise sqlite3.OperationalError("database is locked")
+
+    with (
+        patch.object(hermes_state, "_set_journal_mode_no_wait", _refused),
+        caplog.at_level(logging.WARNING, logger="hermes_state"),
+    ):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert _mode_of(db_path) == "delete"
+    assert any(
+        "could not" in r.getMessage() and "restored" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_repair_honors_configured_delete_mode(tmp_path, monkeypatch):
+    """An explicit database.journal_mode=delete store stays delete after
+    repair — the restore applies the operator's setting, not a hard-coded
+    WAL."""
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "delete")
+    _build_healthy_db(db_path)
+    assert _mode_of(db_path) == "delete"
+    _corrupt_duplicate_fts(db_path)
+
+    report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert _mode_of(db_path) == "delete"

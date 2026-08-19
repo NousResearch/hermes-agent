@@ -262,6 +262,14 @@ export function projectIdForCwd(cwd: string): null | string {
   return best
 }
 
+// True when `id` is the synthetic Home bucket (the tree's "no project" node)
+// rather than a real project. The sentinel value itself lives in
+// `workspace-groups`; callers should ask through here instead of comparing
+// against the raw string, so renaming the marker only touches one place.
+export function isHomeProjectId(id: null | string): boolean {
+  return id === NO_PROJECT_ID
+}
+
 // The display NAME of the explicit, named project owning `cwd` (longest path
 // match), or null when the cwd sits in no named project. The status bar reads
 // this to label the workspace by project instead of the bare cwd leaf. We skip
@@ -588,6 +596,31 @@ interface WorkspaceMovePayload {
 // (so the tree's grouping follows) and re-anchors any live agent bound to the
 // row; here we mirror the move into the `$sessions` cache so both the flat list
 // and the grouped tree reflect it before the next authoritative refresh.
+// Re-home a stored session to the Home bucket (no project) by pointing its
+// workspace at the user home dir — a path outside every project folder, so
+// the tree's grouping drops it into Home. Mirrors moveSessionToProject but
+// uses "~" as the cwd (the backend expands it to the real home dir).
+export async function moveSessionToHome(
+  sessionId: string,
+  profile?: null | string
+): Promise<void> {
+  const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
+    cwd: '~',
+    session_key: sessionId,
+    ...(profile ? { profile } : {})
+  })
+
+  const moved = res.cwd || '~'
+  setSessions(prev =>
+    prev.map(s =>
+      sessionMatchesStoredId(s, sessionId)
+        ? { ...s, cwd: moved, git_branch: res.branch ?? null, git_repo_root: res.git_repo_root ?? null }
+        : s
+    )
+  )
+  void refreshProjectTree()
+}
+
 export async function moveSessionToProject(
   sessionId: string,
   projectId: string,

@@ -605,6 +605,15 @@ def build_turn_context(
     # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
     agent.iteration_budget = IterationBudget(agent.max_iterations)
 
+    # Wall-clock run budget: per-run_conversation clock. Only stamped when a
+    # budget is configured so the default path stays clock-free; the wrap-up
+    # latch resets each turn (one notice per run, not per session).
+    if getattr(agent, "run_budget_seconds", None):
+        agent._run_budget_started_at = time.time()
+    else:
+        agent._run_budget_started_at = None
+    agent._run_budget_wrapup_injected = False
+
     # Log conversation turn start for debugging/observability.
     _preview_text = summarize_user_message_for_log(user_message)
     _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text

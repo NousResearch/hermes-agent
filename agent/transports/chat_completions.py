@@ -84,13 +84,21 @@ def _add_prompt_cache_key(
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
-    """Return the model's wire-compatible reasoning config."""
+    """Return the model's wire-compatible reasoning config.
+
+    Hermes' internal effort set extends the wire vocabulary with ``ultra``
+    (the /reasoning command documents none..xhigh|max|ultra). OpenAI-
+    compatible wires — OpenRouter chief among them — accept exactly
+    max|xhigh|high|medium|low|minimal|none and reject the extension with
+    HTTP 400, so an ``ultra`` configured for an Anthropic default leaks
+    untranslated when a per-job/per-turn override pins a non-Anthropic
+    model on this transport and the whole call fails (#89503). Map the
+    extension to its wire cap for every model on this path; the Anthropic
+    adapter keeps its own richer mapping.
+    """
     if not isinstance(reasoning_config, dict):
         return reasoning_config
-    if (
-        "gpt-5.6" in (model or "").lower()
-        and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
-    ):
+    if str(reasoning_config.get("effort") or "").strip().lower() == "ultra":
         normalized = dict(reasoning_config)
         normalized["effort"] = "max"
         return normalized
@@ -559,11 +567,36 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _kimi_thinking_off:
-                _kimi_effort = "medium"
+                # K3 accepts low/high/max only (default high) — "medium" and
+                # Hermes' upper-ladder levels 400 or silently degrade. Mirror
+                # the kimi-coding plugin's _K3_EFFORT_MAP; older Kimi models
+                # keep the low/medium/high vocabulary with the stronger
+                # Hermes levels capped at high instead of being dropped
+                # (dropping them inverted the ladder: ultra sent the
+                # "medium" default, weaker than an explicit high).
+                _e = ""
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _kimi_effort = _e
+                if "k3" in (model or "").lower():
+                    _kimi_effort = {
+                        "minimal": "low",
+                        "low": "low",
+                        "medium": "high",
+                        "high": "high",
+                        "xhigh": "max",
+                        "max": "max",
+                        "ultra": "max",
+                    }.get(_e, "high")
+                else:
+                    _kimi_effort = {
+                        "minimal": "low",
+                        "low": "low",
+                        "medium": "medium",
+                        "high": "high",
+                        "xhigh": "high",
+                        "max": "high",
+                        "ultra": "high",
+                    }.get(_e, "medium")
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
@@ -574,11 +607,22 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _tokenhub_thinking_off:
+                # TokenHub accepts low/medium/high. Map Hermes' full ladder
+                # onto that set instead of dropping unknown levels to the
+                # "high" default — dropping inverted the ladder for
+                # "minimal" (asked for the least, got the most).
                 _tokenhub_effort = "high"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _tokenhub_effort = _e
+                    _tokenhub_effort = {
+                        "minimal": "low",
+                        "low": "low",
+                        "medium": "medium",
+                        "high": "high",
+                        "xhigh": "high",
+                        "max": "high",
+                        "ultra": "high",
+                    }.get(_e, "high")
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
         # LM Studio: top-level reasoning_effort. Only emit when the model

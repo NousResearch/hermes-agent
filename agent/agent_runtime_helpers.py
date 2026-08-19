@@ -3863,6 +3863,37 @@ def looks_like_codex_intermediate_ack(
     return user_targets_workspace or assistant_targets_workspace
 
 
+# Conservative "trailing continue-intent" detector for the said-continue-but-
+# stopped stall guard (agent.stall_guards). Matches only when the message TAIL
+# announces an immediate next action ("Let me now…", "I will now…",
+# "Next, I…"), which is the observed stall shape: the model narrates the next
+# step and then ends the turn with no tool call. Kept deliberately narrow so
+# ordinary answers that merely contain "I will" mid-sentence never trip it.
+_TRAILING_CONTINUE_INTENT_RE = re.compile(
+    r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
+    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
+    r"[^.!?\n]{0,100}[.:\u2026]?\s*$",
+    re.IGNORECASE,
+)
+
+# Content longer than this is a substantive reply, not a dangling ack.
+_TRAILING_CONTINUE_INTENT_MAX_CHARS = 400
+
+
+def trailing_continue_intent(text: str) -> bool:
+    """Whether ``text`` is a short reply ENDING on an announced next action.
+
+    Used by the stall-guard extension of the intent-ack continuation path in
+    ``agent.conversation_loop``: when a turn is about to end with this shape
+    (no tool calls, short content, trailing intent), the loop re-prompts via
+    the existing bounded continuation mechanism instead of stopping.
+    """
+    t = (text or "").strip()
+    if not t or len(t) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
+        return False
+    return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
+
+
 def intent_ack_continuation_mode(agent) -> str:
     """Classify the resolved intent-ack continuation mode for this turn.
 

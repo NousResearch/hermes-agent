@@ -530,14 +530,44 @@ _managed_fal_video_client_lock = threading.Lock()
 
 
 def _resolve_managed_fal_video_gateway():
-    """Return managed fal-queue gateway config when the user prefers the gateway
-    or direct FAL credentials are absent."""
-    from tools.tool_backend_helpers import fal_key_is_configured, prefers_gateway
+    """Resolve the FAL video route from the stored selection.
 
-    if fal_key_is_configured() and not prefers_gateway("video_gen"):
-        return None
+    Plain switch on the stored ``video_gen`` provider string — mirrors the
+    image FAL resolver: ``"nous"`` (or legacy ``use_gateway: true``) →
+    managed only (unentitled ⇒ selection-naming error); any other stored
+    provider → direct only (missing FAL_KEY ⇒ selection-naming error);
+    never-configured category → legacy credential autodetect.
+    """
     from tools.managed_tool_gateway import resolve_managed_tool_gateway
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        fal_key_is_configured,
+        read_selection,
+        selection_error,
+    )
 
+    selected = read_selection("video_gen")
+    if selected == NOUS_MANAGED_PROVIDER:
+        gateway = resolve_managed_tool_gateway("fal-queue")
+        if gateway is None:
+            raise ValueError(selection_error(
+                "video_gen",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        return gateway
+    if selected is not None:
+        if not fal_key_is_configured():
+            raise ValueError(selection_error(
+                "video_gen",
+                selected,
+                "FAL_KEY is not set",
+            ))
+        return None
+    # Never-configured category: legacy credential autodetect (do NOT persist).
+    if fal_key_is_configured():
+        return None
     return resolve_managed_tool_gateway("fal-queue")
 
 
@@ -598,12 +628,28 @@ def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
 
 
 def _check_fal_video_available() -> bool:
-    """True if the FAL.ai video backend is reachable (direct key or managed gateway)."""
-    from tools.tool_backend_helpers import fal_key_is_configured
+    """True if the FAL video backend selected via `hermes tools` (or, on a
+    never-configured install, any FAL backend) is reachable.
 
+    Never raises — a stored-but-broken selection reports False here; the
+    honest selection-naming error surfaces at call time from
+    ``_resolve_managed_fal_video_gateway``.
+    """
+    from tools.managed_tool_gateway import resolve_managed_tool_gateway
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        fal_key_is_configured,
+        read_selection,
+    )
+
+    selected = read_selection("video_gen")
+    if selected == NOUS_MANAGED_PROVIDER:
+        return resolve_managed_tool_gateway("fal-queue") is not None
+    if selected is not None:
+        return fal_key_is_configured()
     if fal_key_is_configured():
         return True
-    return _resolve_managed_fal_video_gateway() is not None
+    return resolve_managed_tool_gateway("fal-queue") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +812,20 @@ class FALVideoGenProvider(VideoGenProvider):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         if not _check_fal_video_available():
+            from tools.tool_backend_helpers import read_selection
+
+            if read_selection("video_gen") is not None:
+                # A stored selection that cannot run gets the honest
+                # selection-naming error from the strict resolver.
+                try:
+                    _resolve_managed_fal_video_gateway()
+                except ValueError as exc:
+                    return error_response(
+                        error=str(exc),
+                        error_type="auth_required",
+                        provider="fal",
+                        prompt=prompt,
+                    )
             return error_response(
                 error=(
                     "No FAL backend available. Either set FAL_KEY "

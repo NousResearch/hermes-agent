@@ -464,7 +464,10 @@ export const host = {
       throw new Error('This Desktop build has no connection registry. Update Hermes Desktop.')
     }
 
-    return bridge.list()
+    const registryPayload = await bridge.list()
+    const rows = Array.isArray(registryPayload?.connections) ? registryPayload.connections : []
+
+    return rows.map(connection => ({ ...connection, primary: connection.id === registryPayload.primary }))
   },
 
   /** The union agent roster across every registered connection: one row per
@@ -496,6 +499,7 @@ export const host = {
   ensureAgent: async (connectionId: null | string, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default'),
 
+  /** Open a stored session — optionally pre-activating its profile first. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
     const profile = (options.profile ?? '').trim()

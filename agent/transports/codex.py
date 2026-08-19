@@ -432,10 +432,14 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
-        if "gpt-5.6" in (model or "").lower():
-            # Ultra is the Codex product tier; the Responses API wire value is max.
-            _effort_clamp["ultra"] = "max"
+        # "ultra" is Hermes-internal ladder vocabulary (the Codex product
+        # tier); no Responses-API backend accepts it verbatim, so the
+        # baseline maps it to its wire cap "max" for EVERY model — the old
+        # gpt-5.6-only guard leaked "ultra" untranslated to sibling models
+        # and the request 400'd (same class as #89503 on the
+        # chat-completions transport). Backend-specific branches below
+        # override the baseline where the ceiling is narrower.
+        _effort_clamp = {"minimal": "low", "ultra": "max"}
         if params.get("is_xai_responses", False):
             from agent.model_metadata import is_grok_46_family
 

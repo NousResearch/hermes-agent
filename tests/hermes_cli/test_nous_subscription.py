@@ -150,9 +150,8 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
 
 
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
-    """apply_nous_managed_defaults must write video_gen.provider and
-    video_gen.use_gateway when a Nous subscriber selects video_gen
-    without a direct FAL_KEY."""
+    """apply_nous_managed_defaults must store the managed 'nous' selection
+    when a Nous subscriber selects video_gen without a direct FAL_KEY."""
     monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
     monkeypatch.delenv("FAL_KEY", raising=False)
     monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
@@ -167,8 +166,8 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
     )
 
     assert "video_gen" in changed
-    assert config["video_gen"]["provider"] == "fal"
-    assert config["video_gen"]["use_gateway"] is True
+    assert config["video_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["video_gen"]
 
 
 # ---------------------------------------------------------------------------

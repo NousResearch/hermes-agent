@@ -1,72 +1,212 @@
-/* Theme bridge for the APP surface's tour popovers: driver.js ships a fixed
-   light palette, so repaint it with the app's own tokens and it follows every
-   theme (including custom skins) for free. Scoped to driver.js's classes.
+/* Hermes surface treatment for the APP surface's tour popovers.
 
-   The preview surface keeps the stock look on purpose — it renders inside a
-   guest page where these variables don't exist. */
+   driver.js ships a fixed light palette, a heavy drop shadow, and 19px/14px
+   type — none of which is how this app draws a floating popover. Repaint it
+   with the popover primitive's own recipe (components/ui/popover.tsx): a glass
+   fill over --ui-bg-elevated, a single --ui-stroke-secondary hairline, and NO
+   shadow. Radius and type follow the app scale, which is near-square
+   (--radius-scalar: 0.2) and 12px-based.
+
+   The scrim and the cutout geometry are config, not CSS — see TOUR_STYLE in
+   run-tour.ts.
+
+   The preview surface keeps the stock look on purpose: it renders inside a
+   guest page where none of these variables exist. */
 
 .driver-popover {
-  background-color: var(--color-popover);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-nous);
-  color: var(--color-popover-foreground);
+  --tour-surface: color-mix(in srgb, var(--ui-bg-elevated) 92%, transparent);
+
+  backdrop-filter: blur(12px);
+  background-color: var(--tour-surface);
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+  color: var(--foreground);
   font-family: var(--font-sans);
+  max-width: 20rem;
+  min-width: 15rem;
+  padding: 0.75rem;
 }
 
 .driver-popover-title {
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  line-height: 1.4;
+  letter-spacing: -0.01em;
+  line-height: 1rem;
+}
+
+.driver-popover-title[style*='block'] + .driver-popover-description {
+  margin-top: 0.25rem;
 }
 
 .driver-popover-description {
-  color: var(--color-muted-foreground);
-  font-size: 0.8125rem;
+  color: var(--ui-text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.15rem;
+}
+
+.driver-popover-footer {
+  gap: 0.75rem;
+  margin-top: 0.75rem;
 }
 
 .driver-popover-progress-text {
-  color: var(--color-muted-foreground);
-  font-size: 0.75rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .driver-popover-close-btn {
-  color: var(--color-muted-foreground);
+  color: var(--ui-text-tertiary);
+  transition: color 100ms;
 }
 
 .driver-popover-close-btn:hover,
 .driver-popover-close-btn:focus {
-  color: var(--color-foreground);
+  color: var(--foreground);
 }
 
+/* Matches the Button `secondary` + `xs` shape: 12px/1rem medium, 2.5px radius. */
 .driver-popover-footer-btn {
-  background-color: var(--color-secondary);
-  border-color: var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-secondary-foreground);
+  background-color: var(--ui-bg-quaternary);
+  border: none;
+  border-radius: 2.5px;
+  color: var(--foreground);
   font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+  padding: 0.1875rem 0.5rem;
   text-shadow: none;
+  transition: background-color 100ms;
 }
 
 .driver-popover-footer-btn:hover,
 .driver-popover-footer-btn:focus {
-  background-color: var(--color-accent);
-  color: var(--color-accent-foreground);
+  background-color: var(--ui-control-hover-background);
 }
 
-/* Each arrow variant paints exactly one border edge; the rest are transparent. */
+.driver-popover-navigation-btns button + button {
+  margin-left: 0.25rem;
+}
+
+/* The arrow is a CSS border triangle, so it can't share the body's
+   backdrop-blur — paint it with the opaque token underneath the glass instead.
+   Each variant colors exactly one edge; the rest stay transparent. */
 .driver-popover-arrow-side-left {
-  border-left-color: var(--color-popover);
+  border-left-color: var(--ui-bg-elevated);
 }
 
 .driver-popover-arrow-side-right {
-  border-right-color: var(--color-popover);
+  border-right-color: var(--ui-bg-elevated);
 }
 
 .driver-popover-arrow-side-top {
-  border-top-color: var(--color-popover);
+  border-top-color: var(--ui-bg-elevated);
 }
 
 .driver-popover-arrow-side-bottom {
-  border-bottom-color: var(--color-popover);
+  border-bottom-color: var(--ui-bg-elevated);
+}
+
+/* THE FADE — everything that isn't the spotlight recedes.
+
+   Two layers, both themed, both live-editable here:
+   1. driver.js's own scrim path, repainted from the app background so light
+      mode fades toward white and dark toward near-black (no mode branch —
+      --background already resolves per theme).
+   2. The companion layer (spotlight-blur.ts), which carries the feathered
+      edge and desaturates what's behind it. */
+.driver-overlay path {
+  fill: var(--background) !important;
+  opacity: 0.8;
+}
+
+#__hermes-tour-spotlight-blur {
+  backdrop-filter: grayscale(1) opacity(0.55);
+  -webkit-backdrop-filter: grayscale(1) opacity(0.55);
+}
+
+/* Popover entrance, in two flavors — both slide AND fade.
+
+   The tour ARRIVES by settling DOWN into place. Every step after slides in
+   from the LEFT, so the sideways nudge reads as "next" (like turning a page)
+   rather than repeating the arrival.
+
+   Easing is the app's own enter curve (`thread-jump-in`, the transform
+   transitions, the opacity fades) — NOT expo. Expo-out dumps ~70% of the
+   travel in the first ~50ms and crawls through the rest, which is why a
+   longer distance felt snappy-then-sludgy and the fade looked like it wasn't
+   happening at all: opacity was ~0.95 before the eye caught it.
+
+   driver.js builds a fresh popover node per step, so both re-trigger for free.
+
+   `!important` because driver's own `.driver-fade .driver-popover` rule sets a
+   plain fade on the same element and would otherwise win on order. */
+.driver-popover {
+  --tour-pop-travel: 10px;
+  /* Centered steps have no neighbour to measure against — see the side rules. */
+  --tour-pop-travel-centered: 5px;
+  --tour-pop-duration: 340ms;
+  --tour-pop-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes tour-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--tour-pop-travel) * -1));
+  }
+}
+
+/* One keyframe, direction supplied by the vars below. */
+@keyframes tour-pop-next {
+  from {
+    opacity: 0;
+    transform: translate(var(--tour-pop-x, 0), var(--tour-pop-y, 0));
+  }
+}
+
+/* Enter from the side the popover LANDED on, so the motion agrees with the
+   layout instead of fighting it: a popover to the left of its target drifts in
+   from the left, one below its target rises up into it. driver.js sets these
+   side classes as it positions each step, so the rule follows placement
+   automatically — including when it flips a step to avoid a screen edge.
+
+   The centered case (`side-over`, an element-less narration step) gets its own
+   shorter travel. With no target beside it, nothing anchors the eye, so the
+   same 10px that reads as a nudge next to an element reads as a real slide out
+   in the open. */
+.driver-popover.tour-pop-next.driver-popover-side-left {
+  --tour-pop-x: calc(var(--tour-pop-travel) * -1);
+}
+
+.driver-popover.tour-pop-next.driver-popover-side-right {
+  --tour-pop-x: var(--tour-pop-travel);
+}
+
+.driver-popover.tour-pop-next.driver-popover-side-top {
+  --tour-pop-y: calc(var(--tour-pop-travel) * -1);
+}
+
+.driver-popover.tour-pop-next.driver-popover-side-bottom {
+  --tour-pop-y: var(--tour-pop-travel);
+}
+
+.driver-popover.tour-pop-next.driver-popover-side-over {
+  --tour-pop-y: var(--tour-pop-travel-centered);
+}
+
+.driver-popover.tour-pop-in {
+  animation: tour-pop-in var(--tour-pop-duration) var(--tour-pop-ease) !important;
+}
+
+.driver-popover.tour-pop-next {
+  animation: tour-pop-next var(--tour-pop-duration) var(--tour-pop-ease) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .driver-popover.tour-pop-in,
+  .driver-popover.tour-pop-next {
+    animation: none;
+  }
 }

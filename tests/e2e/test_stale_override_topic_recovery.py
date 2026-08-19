@@ -1,5 +1,6 @@
 """Real-ingress regression for stale notices in Telegram DM topic mode."""
 
+import asyncio
 import dataclasses
 import time
 from types import SimpleNamespace
@@ -355,3 +356,247 @@ async def test_stripped_topic_fallthrough_command_reenters_canonical_busy_path(
     assert preserved.turn.agent is active_agent
     assert preserved.conversation.model_override is original_override
     assert runner._peek_session_state(raw_key) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy_mode", ["queue", "steer"])
+async def test_stripped_topic_dynamic_skill_preserves_busy_mode(
+    tmp_path, monkeypatch, busy_mode
+):
+    """No-CommandDef skill turns must queue/steer under the canonical key."""
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="e2e-test-token")
+        },
+        sessions_dir=hermes_home / "sessions",
+    )
+    store = SessionStore(config.sessions_dir, config)
+    canonical_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="topic-chat",
+        chat_type="dm",
+        user_id="topic-user",
+        thread_id="42",
+    )
+    canonical_entry = store.get_or_create_session(canonical_source)
+    canonical_key = canonical_entry.session_key
+    raw_source = dataclasses.replace(canonical_source, thread_id=None)
+    raw_key = build_session_key(raw_source)
+    db = store._db
+    db.enable_telegram_topic_mode(chat_id="topic-chat", user_id="topic-user")
+    db.bind_telegram_topic(
+        chat_id="topic-chat",
+        thread_id="42",
+        user_id="topic-user",
+        session_key=canonical_key,
+        session_id=canonical_entry.session_id,
+    )
+
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: {"race-skill": {"name": "race-skill"}},
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.resolve_skill_command_key",
+        lambda command: "race-skill" if command == "race-skill" else None,
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.build_skill_invocation_message",
+        lambda *_args, **_kwargs: "loaded dynamic skill prompt",
+    )
+    monkeypatch.setattr(
+        "agent.skill_utils.get_disabled_skill_names", lambda **_kwargs: set()
+    )
+
+    class ActiveAgent:
+        def __init__(self):
+            self.steered = []
+
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+        def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    runner = _runner_with_store(config, store, db)
+    runner._busy_input_mode = busy_mode
+    active_agent = ActiveAgent()
+    active_state = runner._session_state(canonical_key)
+    active_state.turn.agent = active_agent
+    active_state.turn.started_ts = time.time() - 10
+    adapter = TelegramAdapter(config.platforms[Platform.TELEGRAM])
+    adapter._busy_text_mode = "queue"
+    adapter._busy_text_debounce_seconds = 0
+    adapter._busy_text_hard_cap_seconds = 0
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("dynamic skill dispatched a second turn")
+    )
+    runner._claim_active_session_slot = MagicMock(
+        side_effect=AssertionError("dynamic skill reached session claim")
+    )
+
+    result = await runner._handle_message(
+        MessageEvent(text="/race-skill inspect", source=raw_source)
+    )
+    await asyncio.sleep(0)
+
+    assert result is None
+    if busy_mode == "queue":
+        await adapter._flush_text_debounce_now(canonical_key)
+        assert adapter._pending_messages[canonical_key].text == (
+            "loaded dynamic skill prompt"
+        )
+        assert active_agent.steered == []
+    else:
+        assert canonical_key not in adapter._pending_messages
+        assert active_agent.steered == ["loaded dynamic skill prompt"]
+    assert raw_key not in adapter._pending_messages
+    runner._handle_message_with_agent.assert_not_awaited()
+    assert runner._peek_session_state(canonical_key).turn.agent is active_agent
+
+
+@pytest.mark.asyncio
+async def test_claim_race_routes_to_existing_canonical_agent(tmp_path, monkeypatch):
+    """A turn appearing during a late await wins without sentinel corruption."""
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config = GatewayConfig(sessions_dir=hermes_home / "sessions")
+    store = SessionStore(config.sessions_dir, config)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="race-chat",
+        chat_type="dm",
+        user_id="race-user",
+    )
+    key = store.get_or_create_session(source).session_key
+    runner = _runner_with_store(config, store, store._db)
+    runner._busy_input_mode = "steer"
+    runner.adapters[Platform.TELEGRAM] = TelegramAdapter(
+        PlatformConfig(enabled=True, token="e2e-test-token")
+    )
+    original_override = {"provider": "test", "model": "original"}
+    runner._session_state(key).conversation.model_override = original_override
+
+    class ActiveAgent:
+        def __init__(self):
+            self.steered = []
+
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+        def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    winner = ActiveAgent()
+
+    async def _late_notice(_event, _key):
+        state = runner._session_state(key)
+        state.turn.agent = winner
+        state.turn.started_ts = time.time()
+        return False, None
+
+    runner._maybe_handle_stale_override_notice = _late_notice
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("claim race dispatched a second turn")
+    )
+    result = await runner._handle_message(
+        MessageEvent(text="race follow-up", source=source)
+    )
+
+    assert result is None
+    assert winner.steered == ["race follow-up"]
+    runner._handle_message_with_agent.assert_not_awaited()
+    state = runner._peek_session_state(key)
+    assert state.turn.agent is winner
+    assert state.turn.lease is None
+    assert state.conversation.model_override is original_override
+    assert state.persistent.run_generation == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejection", ["lobby", "drain", "stale", "limit"])
+async def test_rejected_moa_never_installs_temporary_override(
+    tmp_path, monkeypatch, rejection
+):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config = GatewayConfig(sessions_dir=hermes_home / "sessions")
+    store = SessionStore(config.sessions_dir, config)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="moa-chat",
+        chat_type="dm",
+        user_id="moa-user",
+    )
+    key = store.get_or_create_session(source).session_key
+    runner = _runner_with_store(config, store, store._db)
+    original_override = {"provider": "test", "model": "original"}
+    runner._session_state(key).conversation.model_override = original_override
+    cached_agent = object()
+    runner._agent_cache = {key: cached_agent}
+    runner._evict_cached_agent = MagicMock()
+    runner._is_telegram_topic_root_lobby = MagicMock(
+        return_value=rejection == "lobby"
+    )
+    if rejection == "drain":
+        runner._external_drain_active = True
+    if rejection == "stale":
+        runner._maybe_handle_stale_override_notice = AsyncMock(
+            return_value=(True, "held")
+        )
+    if rejection == "limit":
+        runner._claim_active_session_slot = MagicMock(
+            return_value=(None, "session limit")
+        )
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("rejected MoA reached dispatch")
+    )
+
+    await runner._handle_message(MessageEvent(text="/moa compare", source=source))
+
+    assert runner._session_state(key).conversation.model_override is original_override
+    assert runner._agent_cache == {key: cached_agent}
+    runner._evict_cached_agent.assert_not_called()
+    runner._handle_message_with_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_accepted_moa_applies_only_inside_claimed_restore_scope(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config = GatewayConfig(sessions_dir=hermes_home / "sessions")
+    store = SessionStore(config.sessions_dir, config)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="moa-chat",
+        chat_type="dm",
+        user_id="moa-user",
+    )
+    key = store.get_or_create_session(source).session_key
+    runner = _runner_with_store(config, store, store._db)
+    original_override = {"provider": "test", "model": "original"}
+    runner._session_state(key).conversation.model_override = original_override
+    runner._evict_cached_agent = MagicMock()
+
+    async def _agent(_event, _source, session_key, _generation):
+        active_override = runner._session_state(
+            session_key
+        ).conversation.model_override
+        assert active_override["provider"] == "moa"
+        return "accepted"
+
+    runner._handle_message_with_agent = _agent
+    result = await runner._handle_message(
+        MessageEvent(text="/moa compare", source=source)
+    )
+
+    assert result == "accepted"
+    assert runner._session_state(key).conversation.model_override is original_override
+    assert runner._evict_cached_agent.call_count == 2

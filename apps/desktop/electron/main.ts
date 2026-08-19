@@ -11246,14 +11246,37 @@ function startHudCursorFeed(win: BrowserWindow) {
     return
   }
 
+  // CDX local fix (X11/GNOME/ARM64, Electron 40): setIgnoreMouseEvents(false)
+  // does NOT restore the input region once a window has ignored the mouse —
+  // verified live: with main forcing false every poll tick and the cursor
+  // parked on the bar, the X server still hit-tested the window behind the
+  // HUD, permanently. Since ignore is a one-way door on this stack, the HUD
+  // must never walk through it: the window stays solid for its whole life
+  // (see the companion veto in the hermes:hud:ignore-mouse handler). The
+  // faded band above the composer eats clicks inside the HUD rect — coarser
+  // than upstream's per-element click-through, but every control works and
+  // the bar stays draggable.
+  rememberLog('[hud-cursor] feed armed (solid-HUD mode: ignore-mouse disabled on this platform)')
+  try {
+    win.setIgnoreMouseEvents(false)
+  } catch {
+    // best effort
+  }
+
   let last: string | null = null
 
   const timer = setInterval(() => {
-    if (win.isDestroyed() || !win.isVisible()) {
+    if (win.isDestroyed()) {
       return
     }
 
-    const point = cursorPointInWindow(screen.getCursorScreenPoint(), win.getBounds(), win.webContents.getZoomFactor())
+    let point: { x: number; y: number } | null = null
+    try {
+      point = cursorPointInWindow(screen.getCursorScreenPoint(), win.getBounds(), win.webContents.getZoomFactor())
+    } catch (err) {
+      rememberLog(`[hud-cursor] poll failed: ${(err as Error)?.message || err}`)
+      return
+    }
 
     // Off-window is a real answer (it is what hands the mouse back), so it is
     // sent — once. Only an unchanged answer is dropped, to keep an idle cursor
@@ -11270,6 +11293,11 @@ function startHudCursorFeed(win: BrowserWindow) {
 
   win.on('closed', () => clearInterval(timer))
 }
+
+// Whether main's cursor poll currently sees the pointer inside the HUD rect
+// (Linux only). While true, renderer requests to IGNORE the mouse are vetoed
+// — they are based on a cursor point the renderer never received.
+let hudCursorInside = false
 
 function hudBounds() {
   // Remembered spot first — validated against the LIVE displays so a HUD
@@ -12294,6 +12322,13 @@ ipcMain.handle('hermes:hud:vibrancy', (_event, on) => {
 // reaches the bar.
 ipcMain.on('hermes:hud:ignore-mouse', (_event, ignore) => {
   if (hudWindow && !hudWindow.isDestroyed()) {
+    // CDX local fix (Linux): ignore-mouse is a ONE-WAY DOOR on this
+    // X11/Electron stack — setIgnoreMouseEvents(false) cannot restore the
+    // input region afterwards (verified live; see startHudCursorFeed). Veto
+    // every ignore request so the HUD stays a normal solid window.
+    if (process.platform === 'linux' && Boolean(ignore)) {
+      return
+    }
     hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
   }
 })

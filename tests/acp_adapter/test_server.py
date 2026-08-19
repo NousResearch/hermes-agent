@@ -402,32 +402,39 @@ class TestPrompt:
         assert captured.get("child") == resp.session_id
 
     @pytest.mark.parametrize(
-        ("last_prompt_tokens", "expected_input_tokens"),
-        [(123, 123), (None, 0), (-1, 0)],
+        ("latest_usage", "expected_input_tokens"),
+        [
+            ({"last_prompt_tokens": 123}, 123),
+            ({"last_prompt_tokens": None}, 0),
+            ({"last_prompt_tokens": -1}, 0),
+            ({}, 0),
+        ],
+        ids=("current", "none", "compression-sentinel", "missing"),
     )
     @pytest.mark.asyncio
     async def test_prompt_uses_bounded_latest_prompt_tokens_for_usage(
         self,
         agent,
-        last_prompt_tokens,
+        latest_usage,
         expected_input_tokens,
     ):
-        """ACP inputTokens should describe current context, never lifetime usage."""
+        """ACP inputTokens should describe current context while totals remain cumulative."""
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
         state.agent.model = "test-model"
         state.agent.provider = "openrouter"
 
-        state.agent.run_conversation = MagicMock(return_value={
+        result = {
             "final_response": "usage attached",
             "messages": [],
             "prompt_tokens": 12_345,
-            "last_prompt_tokens": last_prompt_tokens,
             "completion_tokens": 45,
             "total_tokens": 12_390,
             "reasoning_tokens": 7,
             "cache_read_tokens": 11,
-        })
+        }
+        result.update(latest_usage)
+        state.agent.run_conversation = MagicMock(return_value=result)
 
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()

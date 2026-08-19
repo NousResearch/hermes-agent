@@ -2542,12 +2542,18 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
+        # Sanitize env to prevent credential leakage — shell.exec runs in the
+        # gateway process which carries API keys and other secrets in os.environ.
+        # Use hermes_subprocess_env(inherit_credentials=False) so both stripping
+        # tiers apply (always-stripped + provider/tool credentials). Resolved
+        # from server.py globals after HandlerRegistry.install rebinds this body.
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
             # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash
             # the gateway thread on locale-mismatched Windows (#53137).
             encoding="utf-8", errors="replace",
             stdin=subprocess.DEVNULL,
+            env=hermes_subprocess_env(inherit_credentials=False),
             creationflags=windows_hide_flags(),
         )
         return _ok(

@@ -7578,6 +7578,7 @@ def _prompt_model_selection(
     If *unavailable_models* is provided, those models are shown grayed out
     and unselectable, with an upgrade link to *portal_url*.
     """
+    from hermes_cli.cli_output import line_input
     from hermes_cli.models import (
         _format_price_per_mtok,
         compute_sale_discount,
@@ -7794,7 +7795,7 @@ def _prompt_model_selection(
             return _confirmed_selection(ordered[idx])
         elif idx == len(ordered):
             try:
-                custom = input("Enter model name: ").strip()
+                custom = line_input("Enter model name: ").strip()
             except (EOFError, KeyboardInterrupt):
                 return None
             return _confirmed_selection(custom) if custom else None
@@ -7838,7 +7839,7 @@ def _prompt_model_selection(
             if 1 <= idx <= n:
                 return _confirmed_selection(ordered[idx - 1])
             elif idx == n + 1:
-                custom = input("Enter model name: ").strip()
+                custom = line_input("Enter model name: ").strip()
                 return _confirmed_selection(custom) if custom else None
             elif idx == n + 2:
                 return None

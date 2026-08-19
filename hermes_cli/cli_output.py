@@ -5,6 +5,8 @@ functions previously duplicated across setup.py, tools_config.py,
 mcp_config.py, and memory_setup.py.
 """
 
+import sys
+
 from hermes_cli.colors import Colors, color
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -38,6 +40,26 @@ def print_header(text: str) -> None:
 
 
 # ─── Input Prompts ────────────────────────────────────────────────────────────
+
+
+def line_input(prompt_text: str) -> str:
+    """Read non-secret text with normal cursor-editing keys on a real TTY.
+
+    Setup and model-selection commands run outside the interactive chat's
+    prompt-toolkit application, so they can safely use a short-lived prompt
+    here. Redirected input and output retain the built-in ``input`` behavior
+    used by scripts, tests, and numbered fallbacks.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return input(prompt_text)
+
+    try:
+        from prompt_toolkit import prompt as prompt_toolkit_prompt
+        from prompt_toolkit.formatted_text import ANSI
+    except ImportError:
+        return input(prompt_text)
+
+    return prompt_toolkit_prompt(ANSI(prompt_text))
 
 
 def prompt(

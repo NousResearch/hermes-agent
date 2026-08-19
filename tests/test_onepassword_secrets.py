@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.secret_sources import onepassword as op  # noqa: E402
+from agent.secret_sources.base import redact_provider_output  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +53,61 @@ def _ok(value: str):
 
 def _err(code: int, stderr: str):
     return mock.Mock(returncode=code, stdout="", stderr=stderr)
+
+
+def test_provider_redaction_long_esc_nonmatch_is_bounded():
+    """A malformed provider escape payload cannot cause regex blow-up."""
+    text = "provider: \x1b" + ("x" * 50_000) + "; ordinary diagnostic"
+    started = time.perf_counter()
+
+    result = redact_provider_output(text, ("not-present",))
+
+    assert time.perf_counter() - started < 1.0
+    assert "ordinary diagnostic" in result
+
+
+def test_provider_redaction_bridges_arbitrarily_long_malformed_esc_payload():
+    """A long malformed escape cannot split a known credential past a bound."""
+    secret = "ops.synthetic-long-esc-token-77468"
+    text = f"provider rejected {secret[:8]}\x1b[" + ("A" * 512) + secret[8:]
+
+    result = redact_provider_output(text, (secret,))
+
+    assert secret not in result
+    assert "<redacted>" in result
+
+
+def test_provider_redaction_repeated_malformed_esc_fragments_are_bounded():
+    """Repeated malformed fragments stay finite without regex backtracking."""
+    secret = ("A" * 40) + "Z"
+    text = "provider: " + (("\x1b" + ("A" * 65)) * 8)
+    started = time.perf_counter()
+
+    result = redact_provider_output(text, (secret,))
+
+    assert time.perf_counter() - started < 1.0
+    assert secret not in result
+
+
+def test_provider_redaction_does_not_rescan_replacement_marker():
+    """A one-character credential must not corrupt the replacement marker."""
+    assert redact_provider_output("prefix c suffix", ("c",)) == (
+        "prefix <redacted> suffix"
+    )
+
+
+def test_provider_redaction_preserves_private_use_diagnostic_text():
+    """Provider-controlled private-use characters are not redaction markers."""
+    secret = "ops.synthetic-private-use-77468"
+    private_use = "".join(chr(codepoint) for codepoint in range(0xE000, 0xF900))
+
+    result = redact_provider_output(
+        f"before {private_use} after {secret}", (secret,)
+    )
+
+    assert result.count("<redacted>") == 1
+    assert "\ue000" in result
+    assert secret not in result
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +164,60 @@ def test_fetch_happy_path(monkeypatch, tmp_path):
     assert warnings == []
 
 
+def test_op_child_env_preserves_auth_but_not_unrelated_credentials(
+    monkeypatch, tmp_path
+):
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    token = "ops.synthetic-op-env-77468"
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", token)
+    monkeypatch.setenv("OP_SESSION_example", "session-value")
+    network_values = {
+        "HTTP_PROXY": "http://proxy.example:8080",
+        "http_proxy": "http://proxy.lower.example:8080",
+        "NO_PROXY": "localhost,.internal",
+        "REQUESTS_CA_BUNDLE": "/etc/hermes/custom-ca.pem",
+    }
+    for key, value in network_values.items():
+        monkeypatch.setenv(key, value)
+    for key in ("OPENAI_API_KEY", "GH_TOKEN", "AUXILIARY_WEB_API_KEY"):
+        monkeypatch.setenv(key, f"sentinel-{key}")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs["env"])
+        return _ok("resolved-value")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    secrets, warnings = op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"},
+        binary=fake_op,
+        use_cache=False,
+    )
+
+    assert secrets == {"K": "resolved-value"}
+    assert warnings == []
+    assert captured["OP_SERVICE_ACCOUNT_TOKEN"] == token
+    assert captured["OP_SESSION_example"] == "session-value"
+    for key, value in network_values.items():
+        assert captured[key] == value
+    for key in ("OPENAI_API_KEY", "GH_TOKEN", "AUXILIARY_WEB_API_KEY"):
+        assert key not in captured
+
+
+def test_op_child_env_preserves_session_over_stale_default_token(monkeypatch):
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "stale-service-token")
+    monkeypatch.setenv("OP_SESSION_example", "active-session")
+
+    session_env = op._op_child_env("")
+    explicit_env = op._op_child_env("configured-service-token")
+
+    assert "OP_SERVICE_ACCOUNT_TOKEN" not in session_env
+    assert session_env["OP_SESSION_example"] == "active-session"
+    assert explicit_env["OP_SERVICE_ACCOUNT_TOKEN"] == "configured-service-token"
+
+
 
 
 
@@ -128,6 +238,94 @@ def test_fetch_read_failure_becomes_warning(monkeypatch, tmp_path):
     assert "\x1b" not in warnings[0]
     assert "[31m" not in warnings[0]
     assert "not signed in" in warnings[0]
+
+
+def test_fetch_read_failure_redacts_service_account_token(monkeypatch, tmp_path):
+    token = "ops.synthetic-op-read-77468"
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", token)
+    monkeypatch.setattr(
+        op.subprocess,
+        "run",
+        lambda *a, **k: _err(1, f"provider rejected {token}; invalid token"),
+    )
+
+    secrets, warnings = op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"},
+        binary=fake_op,
+        use_cache=False,
+    )
+
+    assert secrets == {}
+    assert len(warnings) == 1
+    assert token not in warnings[0]
+    assert "provider rejected <redacted>" in warnings[0]
+    assert "invalid token" in warnings[0]
+
+
+def test_fetch_read_failure_redacts_c1_csi_split_service_account_token(
+    monkeypatch, tmp_path
+):
+    token = "ops.synthetic-op-c1-read-77468"
+    split_token = f"{token[:8]}\x9b31m{token[8:]}\x9b0m"
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", token)
+    monkeypatch.setattr(
+        op.subprocess,
+        "run",
+        lambda *a, **k: _err(1, f"provider rejected {split_token}; invalid token"),
+    )
+
+    secrets, warnings = op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, binary=fake_op, use_cache=False
+    )
+
+    assert secrets == {}
+    assert len(warnings) == 1
+    assert token not in warnings[0]
+    assert "provider rejected <redacted>" in warnings[0]
+    assert "\x9b" not in warnings[0]
+
+
+@pytest.mark.parametrize(
+    "auth_env",
+    ["OP_SERVICE_ACCOUNT_TOKEN", "OP_SESSION_demo", "OP_CONNECT_TOKEN"],
+)
+@pytest.mark.parametrize(
+    "control", ["\x00", "\x09", "\x0d", "\x1b", "\x1b["]
+)
+def test_fetch_read_failure_redacts_every_op_auth_value_split_by_controls(
+    monkeypatch, tmp_path, auth_env, control
+):
+    """Every auth value passed to op is redacted before read warnings surface."""
+    auth = f"ops.synthetic-{auth_env.lower()}-77468"
+    monkeypatch.setenv(auth_env, auth)
+    if auth_env == "OP_CONNECT_TOKEN":
+        monkeypatch.setenv("OP_CONNECT_HOST", "https://connect.example")
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    split_auth = f"{auth[:8]}{control}{auth[8:]}"
+    monkeypatch.setattr(
+        op.subprocess,
+        "run",
+        lambda *a, **k: _err(
+            1,
+            f"provider rejected {split_auth}; account=acct host=https://connect.example",
+        ),
+    )
+
+    secrets, warnings = op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, binary=fake_op, use_cache=False
+    )
+
+    assert secrets == {}
+    assert len(warnings) == 1
+    assert auth not in warnings[0]
+    assert "provider rejected <redacted>" in warnings[0]
+    assert "account=acct host=https://connect.example" in warnings[0]
+    assert "\x1b" not in warnings[0]
 
 
 
@@ -295,7 +493,3 @@ def test_apply_never_overrides_token_var(monkeypatch, tmp_path):
     assert "OP_SERVICE_ACCOUNT_TOKEN" in result.skipped
     assert os.environ["OP_SERVICE_ACCOUNT_TOKEN"] == "original"
     assert calls["n"] == 0
-
-
-
-

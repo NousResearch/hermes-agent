@@ -45,7 +45,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from agent.secret_sources._cache import (
     CachedFetch as _CachedFetch,
@@ -54,7 +54,11 @@ from agent.secret_sources._cache import (
     is_valid_env_name as _is_valid_env_name,
 )
 from agent.secret_sources.base import ErrorKind, SecretSource
-from agent.secret_sources.base import get_source_environment
+from agent.secret_sources.base import (
+    build_minimal_provider_env,
+    get_source_environment,
+    redact_provider_output,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -638,7 +642,9 @@ def fetch_bitwarden_secrets(
     return secrets, warnings
 
 
-def _summarize_bws_stderr(raw: str) -> str:
+def _summarize_bws_stderr(
+    raw: str, *, secret_values: Iterable[str] = ()
+) -> str:
     """Reduce a bws (Rust color-eyre) error dump to its cause line(s).
 
     bws failures look like::
@@ -654,7 +660,7 @@ def _summarize_bws_stderr(raw: str) -> str:
     user.  Keep the numbered cause lines (joined), drop the rest, and
     fall back to the stripped raw text when the shape is unrecognized.
     """
-    text = raw.replace("\x1b", "").strip()
+    text = redact_provider_output(raw, secret_values).strip()
     if not text:
         return text
     causes: List[str] = []
@@ -678,22 +684,19 @@ def _run_bws_list(
     # bws child intentionally receives the access token.  Under a profile-local
     # fetch it must not inherit sibling credentials from process-global env.
     source_env = get_source_environment()
-    if source_env is os.environ:
-        from tools.environments.local import build_subprocess_env
-
-        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    else:
-        env = dict(source_env)
-    env["BWS_ACCESS_TOKEN"] = access_token
-    # Make sure we're not echoing telemetry / colour codes into json.
-    env.setdefault("NO_COLOR", "1")
+    extra_env = {"BWS_ACCESS_TOKEN": access_token}
     # Region / self-hosted support.  bws defaults to https://vault.bitwarden.com
     # (US Cloud); EU Cloud users need https://vault.bitwarden.eu, and
-    # self-hosted users need their own URL.  When unset, fall back to whatever
-    # BWS_SERVER_URL the caller already had in their shell env (preserved by
-    # the copy above) so manual overrides keep working too.
+    # self-hosted users need their own URL.  When unset, fall back to the
+    # allowlisted BWS_SERVER_URL from the caller's environment so manual
+    # overrides keep working too.
     if server_url:
-        env["BWS_SERVER_URL"] = server_url
+        extra_env["BWS_SERVER_URL"] = server_url
+    env = build_minimal_provider_env(
+        source_env,
+        allow_env=("BWS_SERVER_URL",),
+        extra_env=extra_env,
+    )
 
     try:
         proc = subprocess.run(  # noqa: S603 — bws path is trusted
@@ -716,7 +719,9 @@ def _run_bws_list(
         # dump (color-eyre): an "Error:" header, indented cause lines, then
         # "Location:" / "Backtrace omitted" noise.  Strip ANSI and boil it
         # down to the meaningful cause line(s) before surfacing.
-        err = _summarize_bws_stderr(proc.stderr or proc.stdout or "")
+        err = _summarize_bws_stderr(
+            proc.stderr or proc.stdout or "", secret_values=(access_token,)
+        )
         raise RuntimeError(
             f"bws exited {proc.returncode}: {err[:200]}"
         )
@@ -745,8 +750,9 @@ def _run_bws_list(
         if not isinstance(key, str) or not isinstance(value, str):
             continue
         if not _is_valid_env_name(key):
+            safe_key = redact_provider_output(key, (access_token,))
             warnings.append(
-                f"Skipping secret {key!r}: not a valid env-var name"
+                f"Skipping secret {safe_key!r}: not a valid env-var name"
             )
             continue
         secrets[key] = value

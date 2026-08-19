@@ -1681,7 +1681,10 @@ export function ChatSidebar({
                 grouping={showArchived || rankedGlobally ? 'none' : grouping === 'status' ? 'status' : 'date'}
                 groups={displayAgentGroups}
                 headerAction={
-                  <>
+                  // One cluster, not a fragment: the header is justify-between,
+                  // so two children (mark-all + the rest) park the check-all in
+                  // the middle as a blank 24px hole until hover.
+                  <div className="flex shrink-0 items-center gap-0.5">
                     {unreadCount > 0 && (
                       <Tip label={s.markAllRead}>
                         <Button
@@ -1731,7 +1734,7 @@ export function ChatSidebar({
                         </div>
                       </div>
                     ) : (
-                      <div className="flex shrink-0 items-center gap-0.5">
+                      <>
                         {!showAllProfiles ? (
                           <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
                             <Button
@@ -1756,9 +1759,9 @@ export function ChatSidebar({
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />
                         </div>
-                      </div>
+                      </>
                     )}
-                  </>
+                  </div>
                 }
                 label={sessionsLabel}
                 labelMeta={

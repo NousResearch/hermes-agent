@@ -394,13 +394,7 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   return <ClarifyToolSinglePending fromArgs={fromArgs} request={request} />
 }
 
-function ClarifyToolSinglePending({
-  fromArgs,
-  request
-}: {
-  fromArgs: ClarifyArgs
-  request: ClarifyRequest | null
-}) {
+function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs; request: ClarifyRequest | null }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
@@ -1011,6 +1005,7 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
   const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
     setStaged(current => {
       const stage = current[question.qid] ?? emptyStage
+
       const next = question.multiSelect
         ? stage.choices.includes(choice)
           ? stage.choices.filter(value => value !== choice)

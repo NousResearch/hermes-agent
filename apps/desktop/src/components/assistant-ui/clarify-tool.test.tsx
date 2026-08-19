@@ -453,10 +453,7 @@ describe('ClarifyTool pending marker', () => {
 
 function batchArgs(): { questions: { question: string; choices?: string[] }[] } {
   return {
-    questions: [
-      { choices: ['red', 'blue'], question: 'Color?' },
-      { question: 'Name?' }
-    ]
+    questions: [{ choices: ['red', 'blue'], question: 'Color?' }, { question: 'Name?' }]
   }
 }
 

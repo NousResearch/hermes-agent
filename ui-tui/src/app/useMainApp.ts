@@ -35,7 +35,13 @@ import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../l
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
-import { buildToolTrailLine, formatAbandonedClarify, formatAbandonedClarifyBatch, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+import {
+  buildToolTrailLine,
+  formatAbandonedClarify,
+  formatAbandonedClarifyBatch,
+  sameToolTrailGroup,
+  toolTrailLabel
+} from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'

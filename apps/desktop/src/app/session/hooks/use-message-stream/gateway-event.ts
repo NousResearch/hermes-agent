@@ -25,7 +25,13 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
-import { clearClarifyRequest, normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import {
+  clearClarifyRequest,
+  normalizeChoices,
+  normalizeQuestions,
+  setClarifyRequest,
+  warnDroppedChoices
+} from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
@@ -1169,6 +1175,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // on the wire. `answers` rides along only on reconnect replay, carrying
         // the per-question locks the server already accepted.
         const questions = normalizeQuestions(payload?.questions)
+
         const lockedAnswers =
           typeof payload?.answers === 'object' && payload?.answers !== null
             ? Object.fromEntries(

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { clarifyBatchRevisitState, formatAbandonedClarify, formatAbandonedClarifyBatch, stripTrailingPasteNewlines } from './text.js'
+import {
+  clarifyBatchRevisitState,
+  formatAbandonedClarify,
+  formatAbandonedClarifyBatch,
+  stripTrailingPasteNewlines
+} from './text.js'
 
 describe('stripTrailingPasteNewlines', () => {
   it('removes trailing newline runs from pasted text', () => {
@@ -63,9 +68,7 @@ describe('formatAbandonedClarifyBatch', () => {
       'timed out'
     )
 
-    expect(out).toBe(
-      ['ask (2 questions)', '  ✓ One? → alpha', '  · Two? (no answer)', '  (timed out)'].join('\n')
-    )
+    expect(out).toBe(['ask (2 questions)', '  ✓ One? → alpha', '  · Two? (no answer)', '  (timed out)'].join('\n'))
   })
 
   it('treats an empty locked answer as unanswered in the record', () => {

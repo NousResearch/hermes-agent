@@ -1646,7 +1646,10 @@ describe('createGatewayEventHandler', () => {
       payload: {
         choices: ['x', 'y'],
         question: 'Fallback?',
-        questions: [{ qid: '', question: 'no qid' }, { qid: 'q1', question: '   ' }],
+        questions: [
+          { qid: '', question: 'no qid' },
+          { qid: 'q1', question: '   ' }
+        ],
         request_id: 'req-bad'
       },
       type: 'clarify.request'

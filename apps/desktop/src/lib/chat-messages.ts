@@ -619,6 +619,7 @@ function collectToolMatchValues(query: string, context: string, preview: string)
 
 function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): string[] {
   const payloadArgs = liveToolArgs(payload)
+
   // `question` is clarify's identifying arg: a synthetic row hydrated from
   // `clarify.request` (a fresh request id) must correlate with the `tool.start`
   // row (the model's tool_call_id) so the two ids don't produce a duplicate
@@ -627,6 +628,7 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
   const query =
     firstStringField(payloadArgs, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path']) ||
     batchClarifyMatchValue(payloadArgs.questions)
+
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
   const preview = typeof payload?.preview === 'string' ? payload.preview.trim() : ''
 
@@ -668,9 +670,11 @@ function toolPartMatchValues(part: ChatMessagePart): string[] {
   }
 
   const args = part.args as Record<string, unknown>
+
   const query =
     firstStringField(args, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path']) ||
     batchClarifyMatchValue(args.questions)
+
   const context = typeof args.context === 'string' ? args.context.trim() : ''
   const preview = typeof args.preview === 'string' ? args.preview.trim() : ''
 

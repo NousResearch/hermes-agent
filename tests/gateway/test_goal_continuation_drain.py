@@ -87,6 +87,9 @@ def hermes_home(tmp_path, monkeypatch):
     from hermes_cli import goals
 
     goals._DB_CACHE.clear()
+    # Same SessionDB pre-warm as test_goal_verdict_send.py: loop-thread
+    # GoalManager.set() otherwise drops the write on a loaded CI runner.
+    goals._get_session_db()
     yield home
     goals._DB_CACHE.clear()
 

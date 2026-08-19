@@ -17574,19 +17574,120 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _denied is not None:
                 return _denied
 
-        # pre_command observer hook (#64204): fires for every recognized
-        # slash command BEFORE core handling, mirroring the CLI fire-site in
-        # cli.py process_command. Observer-only in v1 (returns ignored).
-        #
-        # Placement matters: this cold-path dispatch is only reached when NO
-        # agent is running for the session. The running-agent intercept path
-        # above (/stop, /approve, busy_policy dispatch via
-        # _dispatch_busy_slash_command) deliberately does NOT fire this hook —
-        # those are control-plane operations on an in-flight run, and giving
-        # plugins an observation (and eventually veto) point there would let
-        # a slow or hostile plugin interfere with the operator's escape
-        # hatches for a live agent.
-        if command and is_gateway_known_command(canonical):
+        if canonical == "new":
+            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
+                return self._telegram_topic_root_new_message()
+
+        if canonical == "topic":
+            return await self._handle_topic_command(event)
+
+        # Slash commands retain their raw Telegram lane through /topic (and the
+        # raw-only /new lobby handling above). This is the single post-management
+        # boundary: recover the authoritative source/key and decide busy state
+        # before hooks or any remaining command sink can acknowledge or mutate.
+        # Idle commands keep their established raw-context handlers. A recovered
+        # dynamic skill/bundle is the sole busy exception: it may perform its
+        # pure prompt expansion, with hooks suppressed, before the existing late
+        # router applies canonical queue/steer semantics to the expanded prompt.
+        _busy_command_text = event.text or _raw_inbound_text
+        _recovered_canonical_busy = False
+        if (
+            command
+            and source.platform == Platform.TELEGRAM
+            and not _source_canonicalized_early
+        ):
+            _command_canonical_source = await asyncio.to_thread(
+                self._normalize_source_for_session_key,
+                source,
+            )
+            if _command_canonical_source is not source:
+                _command_canonical_key = self._session_key_for_source(
+                    _command_canonical_source
+                )
+                if self._is_session_running(_command_canonical_key):
+                    _recovered_canonical_busy = True
+                    logger.info(
+                        "telegram topic recovery before busy command dispatch: "
+                        "chat=%s user=%s %r -> %s",
+                        source.chat_id,
+                        source.user_id,
+                        source.thread_id,
+                        _command_canonical_source.thread_id,
+                    )
+                    source = _command_canonical_source
+                    event.source = _command_canonical_source
+                    _quick_key = _command_canonical_key
+                    _source_canonicalized_early = True
+
+                    # Quick and plugin handlers have side effects and must see
+                    # the same generic busy behavior as adapter-level canonical
+                    # routing. Dynamic skills/bundles are different: their pure
+                    # expansion is required before queue/steer so the active turn
+                    # receives the loaded prompt, not the slash spelling.
+                    if isinstance(self.config, dict):
+                        _busy_quick_commands = (
+                            self.config.get("quick_commands", {}) or {}
+                        )
+                    else:
+                        _busy_quick_commands = (
+                            getattr(self.config, "quick_commands", {}) or {}
+                        )
+                    _busy_has_quick = (
+                        isinstance(_busy_quick_commands, dict)
+                        and command in _busy_quick_commands
+                    )
+                    _busy_has_plugin = False
+                    if _cmd_def is None and not _busy_has_quick:
+                        try:
+                            from hermes_cli.plugins import get_plugin_command_handler
+
+                            _busy_has_plugin = bool(
+                                get_plugin_command_handler(command.replace("_", "-"))
+                            )
+                        except Exception:
+                            # Discovery failure is not permission to execute a
+                            # possibly side-effectful sink under the raw key.
+                            _busy_has_plugin = False
+
+                    _busy_dynamic_agent_command = False
+                    if (
+                        _cmd_def is None
+                        and not _busy_has_quick
+                        and not _busy_has_plugin
+                    ):
+                        try:
+                            from agent.skill_bundles import resolve_bundle_command_key
+                            from agent.skill_commands import resolve_skill_command_key
+
+                            _busy_dynamic_agent_command = bool(
+                                resolve_bundle_command_key(command) is not None
+                                or resolve_skill_command_key(command) is not None
+                            )
+                        except Exception:
+                            _busy_dynamic_agent_command = False
+
+                    if not _busy_dynamic_agent_command:
+                        _canonical_busy_handled, _canonical_busy_response = (
+                            await self._route_late_canonical_busy_message(
+                                event,
+                                source=source,
+                                session_key=_quick_key,
+                                command_def=_cmd_def,
+                                raw_text=_busy_command_text,
+                            )
+                        )
+                        if _canonical_busy_handled:
+                            return _canonical_busy_response
+
+        # pre_command observer hook (#64204): fires for every recognized idle
+        # slash command before core handling, mirroring cli.py. Recovered busy
+        # dynamic commands deliberately skip it: hooks are not pure expansion
+        # and must never run before canonical queue/steer routing.
+        if (
+            command
+            and not _recovered_canonical_busy
+            and is_gateway_known_command(canonical)
+        ):
             try:
                 from hermes_cli.plugins import fire_pre_command_hook
                 fire_pre_command_hook(
@@ -17603,14 +17704,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pre_cmd_err,
                 )
 
-        # Fire the ``command:<canonical>`` hook for any recognized slash
-        # command — built-in OR plugin-registered. Handlers can return a
-        # dict with ``{"decision": "deny" | "handled" | "rewrite", ...}``
-        # to intercept dispatch before core handling runs. This replaces
-        # the previous fire-and-forget emit(): return values are now
-        # honored, but handlers that return nothing behave exactly as
-        # before (telemetry-style hooks keep working).
-        if command and is_gateway_known_command(canonical):
+        # Fire the ``command:<canonical>`` decision hook only on the idle path.
+        # A recovered canonical busy session must reach its busy policy before a
+        # hook can deny, handle, rewrite, acknowledge, or perform side effects.
+        if (
+            command
+            and not _recovered_canonical_busy
+            and is_gateway_known_command(canonical)
+        ):
             raw_args = event.get_command_args().strip()
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
@@ -17656,20 +17757,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     command = event.get_command()
                     _cmd_def = _resolve_cmd(command) if command else None
                     canonical = _cmd_def.name if _cmd_def else command
+                    _busy_command_text = event.text or _raw_inbound_text
                     break
-
-        # Keep the command form produced by alias/hook rewriting for a possible
-        # late-canonical busy dispatch. Fall-through handlers below may replace
-        # event.text with an agent prompt, but /queue and /steer still need to
-        # parse the command payload as it stood after command routing.
-        _busy_command_text = event.text or _raw_inbound_text
 
         if canonical == "pause":
             return await self._handle_pause_command(event)
 
         if canonical == "new":
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                return self._telegram_topic_root_new_message()
             async def _do_reset():
                 return await self._handle_reset_command(event)
             return await self._maybe_confirm_destructive_slash(
@@ -17682,55 +17776,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
                 execute=_do_reset,
             )
-
-        if canonical == "topic":
-            return await self._handle_topic_command(event)
-
-        # Slash commands retain their raw Telegram lane through /topic (and the
-        # raw-only /new lobby handling above). Before any remaining registered
-        # command can acknowledge or mutate persistent state, perform the
-        # authoritative busy decision against a recovered topic session. Only
-        # replace the source when that canonical session is busy; idle commands
-        # keep their established raw-context handlers. Dynamic skill/bundle
-        # commands still expand first and use the existing late busy routing so
-        # queue/steer receives the loaded prompt rather than the slash text.
-        if (
-            command
-            and _cmd_def is not None
-            and source.platform == Platform.TELEGRAM
-            and not _source_canonicalized_early
-        ):
-            _command_canonical_source = await asyncio.to_thread(
-                self._normalize_source_for_session_key,
-                source,
-            )
-            if _command_canonical_source is not source:
-                _command_canonical_key = self._session_key_for_source(
-                    _command_canonical_source
-                )
-                if self._is_session_running(_command_canonical_key):
-                    logger.info(
-                        "telegram topic recovery before busy command dispatch: "
-                        "chat=%s user=%s %r -> %s",
-                        source.chat_id,
-                        source.user_id,
-                        source.thread_id,
-                        _command_canonical_source.thread_id,
-                    )
-                    source = _command_canonical_source
-                    event.source = _command_canonical_source
-                    _quick_key = _command_canonical_key
-                    _canonical_busy_handled, _canonical_busy_response = (
-                        await self._route_late_canonical_busy_message(
-                            event,
-                            source=source,
-                            session_key=_quick_key,
-                            command_def=_cmd_def,
-                            raw_text=_busy_command_text,
-                        )
-                    )
-                    if _canonical_busy_handled:
-                        return _canonical_busy_response
         
         if canonical == "help":
             return await self._handle_help_command(event)

@@ -1330,29 +1330,40 @@ def setup_terminal_backend(config: dict):
     print()
 
     current_backend = cfg_get(config, "terminal", "backend", default="local")
-    is_linux = _platform.system() == "Linux"
+    system = _platform.system()
+    is_windows = system == "Windows"
+    is_linux = system == "Linux"
 
     # Build backend choices with descriptions
-    terminal_choices = [
-        "Local - run directly on this machine (default)",
-        "Docker - isolated container with configurable resources",
-        "Modal - serverless cloud sandbox",
-        "SSH - run on a remote machine",
-        "Daytona - persistent cloud development environment",
-        "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
-    ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
+    terminal_choices = []
+    idx_to_backend = {}
+    backend_to_idx = {}
 
-    next_idx = 6
+    def add_backend(label: str, backend: str):
+        idx = len(terminal_choices)
+        terminal_choices.append(label)
+        idx_to_backend[idx] = backend
+        backend_to_idx[backend] = idx
+
+    add_backend("Local - run directly on this machine (default)", "local")
+    add_backend("Docker - isolated container with configurable resources", "docker")
+    if is_windows:
+        add_backend(
+            "WSL2 - Windows Subsystem for Linux (native, no Docker overhead)",
+            "wsl",
+        )
+    add_backend("Modal - serverless cloud sandbox", "modal")
+    add_backend("SSH - run on a remote machine", "ssh")
+    add_backend("Daytona - persistent cloud development environment", "daytona")
+    add_backend(
+        "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
+        "vercel_sandbox",
+    )
     if is_linux:
-        terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
-        idx_to_backend[next_idx] = "singularity"
-        backend_to_idx["singularity"] = next_idx
-        next_idx += 1
+        add_backend("Singularity/Apptainer - HPC-friendly container", "singularity")
 
     # Add keep current option
-    keep_current_idx = next_idx
+    keep_current_idx = len(terminal_choices)
     terminal_choices.append(f"Keep current ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
 
@@ -1551,6 +1562,12 @@ def setup_terminal_backend(config: dict):
         config["terminal"].setdefault(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
+
+    elif selected_backend == "wsl":
+        print_success("Terminal backend: WSL2")
+        print_info("Commands and file tools run inside your WSL2 distribution.")
+        print_info("Use Linux paths; Windows drives are mounted under /mnt/<drive>/.")
+        config["terminal"].pop("cwd", None)
 
     elif selected_backend == "vercel_sandbox":
         print_success("Terminal backend: Vercel Sandbox")

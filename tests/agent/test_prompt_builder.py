@@ -767,6 +767,27 @@ class TestPromptBuilderConstants:
 
 class TestEnvironmentHints:
 
+    def test_wsl_backend_hint_is_distribution_agnostic(self):
+        import agent.prompt_builder as _pb
+
+        hint = _pb._WSL_BACKEND_HINT
+
+        assert "Linux" in hint
+        assert "/mnt/c/" in hint
+        assert "PowerShell" in hint
+        assert "Debian" not in hint
+        assert "apt-get" not in hint
+
+    def test_build_environment_hints_on_wsl(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "/mnt/" in result
+        assert "WSL" in result
+        # WSL block still carries the always-on host info ahead of it.
+        assert "User home directory:" in result
 
 
 
@@ -1011,5 +1032,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

@@ -105,25 +105,96 @@ BROWSER_CONTROL_CAPABILITIES = frozenset(
     }
 )
 
+#: Privileged capabilities (Phase 8 Task 30) that are never negotiable through
+#: the base allowlist. ``browser_evaluate`` executes JavaScript in the page
+#: context; ``browser_cdp`` is raw CDP. Both are fail-closed unless the broker
+#: runs in Developer Mode (``browser.extension_control.developer_mode``) AND
+#: the controller explicitly negotiated the capability.
+BROWSER_CONTROL_DEVELOPER_CAPABILITIES = frozenset(
+    {
+        "browser_cdp",
+        "browser_evaluate",
+    }
+)
+
+#: Artifact-transport capabilities (Phase 8 Task 29). These are regular
+#: (non-developer) capabilities because upload/download of bounded, validated
+#: artifacts is a safe surface; the payloads are never carried in controller
+#: frames. Artifact actions are dispatched only after the broker validates the
+#: referenced artifact id against the attached store ("approved artifact id
+#: only").
+BROWSER_CONTROL_ARTIFACT_CAPABILITIES = frozenset(
+    {
+        "browser_artifact_download",
+        "browser_artifact_upload",
+    }
+)
+
+#: The complete set a controller may negotiate: base + artifact. Developer
+#: capabilities are admitted by :func:`filter_browser_control_capabilities`
+#: only when Developer Mode is enabled.
+BROWSER_CONTROL_ALL_CAPABILITIES = frozenset(
+    BROWSER_CONTROL_CAPABILITIES
+    | BROWSER_CONTROL_ARTIFACT_CAPABILITIES
+    | BROWSER_CONTROL_DEVELOPER_CAPABILITIES
+)
+
 
 def browser_control_protocol_supported(value: Any) -> bool:
     """Return whether ``value`` names the exact supported wire version."""
     return type(value) is int and value == BROWSER_CONTROL_PROTOCOL_VERSION
 
 
-def filter_browser_control_capabilities(value: Any) -> frozenset:
+def browser_control_developer_mode(config: Optional[dict] = None) -> bool:
+    """Return the explicit Developer Mode flag (disabled by default).
+
+    Reads ``browser.extension_control.developer_mode`` from the global
+    config. Developer Mode is the *additional* gate for ``browser_evaluate``
+    and raw CDP; it never widens the base action allowlist on its own.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            return False
+    if not isinstance(config, dict):
+        return False
+    browser = config.get("browser")
+    if not isinstance(browser, dict):
+        return False
+    extension_control = browser.get("extension_control")
+    if not isinstance(extension_control, dict):
+        return False
+    return extension_control.get("developer_mode", False) is True
+
+
+def filter_browser_control_capabilities(
+    value: Any,
+    *,
+    developer_mode: Optional[bool] = None,
+) -> frozenset:
     """Return the permitted subset of a JSON/RPC capability list.
 
     A malformed non-list value has no capabilities. Unknown or non-string
     entries are ignored; registration rejects an empty returned set.
+
+    Base and artifact capabilities always pass. Developer capabilities
+    (``browser_evaluate``, ``browser_cdp``) pass only when Developer Mode
+    is explicitly enabled — either passed in or read from the live config.
     """
     if not isinstance(value, list):
         return frozenset()
+    allowed = frozenset(BROWSER_CONTROL_CAPABILITIES | BROWSER_CONTROL_ARTIFACT_CAPABILITIES)
+    if developer_mode is None:
+        developer_mode = browser_control_developer_mode()
+    if developer_mode is True:
+        allowed = frozenset(allowed | BROWSER_CONTROL_DEVELOPER_CAPABILITIES)
     return frozenset(
         capability
         for capability in value
-        if isinstance(capability, str)
-        and capability in BROWSER_CONTROL_CAPABILITIES
+        if isinstance(capability, str) and capability in allowed
     )
 
 #: Wire method names for controller frames. Transport-neutral by contract:
@@ -251,6 +322,7 @@ class BrowserControlBroker:
         ticket_ttl: float = DEFAULT_TICKET_TTL,
         command_timeout: float = DEFAULT_COMMAND_TIMEOUT,
         clock: Optional[Callable[[], float]] = None,
+        developer_mode: Optional[bool] = None,
     ) -> None:
         self._ticket_ttl = ticket_ttl
         self._command_timeout = command_timeout
@@ -259,6 +331,29 @@ class BrowserControlBroker:
         self._tickets: Dict[str, _TicketRecord] = {}
         self._controllers: Dict[ControllerScope, _Controller] = {}
         self._pending: Dict[str, _PendingCommand] = {}
+        # Developer Mode gates privileged capabilities (browser_evaluate,
+        # browser_cdp). None defers to the live config on every dispatch so
+        # a mid-process config change is honored without restart; an explicit
+        # bool pins the gate for tests and multi-tenant hosts.
+        if developer_mode is None:
+            developer_mode = browser_control_developer_mode()
+        self._developer_mode = developer_mode is True
+        self._artifact_store: Any = None
+
+    def attach_artifact_store(self, store: Any) -> None:
+        """Attach the process artifact store for "approved artifact id only".
+
+        ``store`` must expose ``validate(artifact_id, *, scope) -> receipt``
+        raising the artifacts module's :class:`ArtifactError` subclasses.
+        None clears the reference; dispatching an artifact action without a
+        store fails closed.
+        """
+        self._artifact_store = store
+
+    @property
+    def developer_mode(self) -> bool:
+        """Whether privileged capabilities may be selected/dispatched."""
+        return self._developer_mode
 
     # ------------------------------------------------------------------
     # Registration tickets
@@ -403,7 +498,16 @@ class BrowserControlBroker:
         matches the stable identity fields, then checks the attached
         controller's current negotiated capability set. Offline controllers
         preserve old pending work but never accept new dispatches.
+
+        Privileged capabilities (``browser_evaluate``, ``browser_cdp``) are
+        additionally gated on Developer Mode: with the gate off they are
+        never selectable, even when a controller somehow negotiated them.
         """
+        if (
+            capability in BROWSER_CONTROL_DEVELOPER_CAPABILITIES
+            and not self._developer_mode
+        ):
+            return None
         with self._lock:
             matches = [
                 controller
@@ -520,6 +624,14 @@ class BrowserControlBroker:
 
         Exactly one pending command exists per command id; ``complete`` is
         single-shot, so a command can never resolve twice.
+
+        Artifact actions (``browser_artifact_upload`` /
+        ``browser_artifact_download``) additionally require an attached
+        artifact store and a live, scope-bound artifact reference: the
+        ``arguments`` mapping must carry an ``artifact_id`` whose validation
+        passes against the store ("approved artifact id only").  The payload
+        is never carried in the frame — only the id travels to the
+        controller.
         """
         controller = self.select(scope, action)
         if controller is None:
@@ -527,13 +639,17 @@ class BrowserControlBroker:
                 f"no controller for scope {scope!r} with capability {action!r}"
             )
 
+        arguments = dict(arguments or {})
+        if action in BROWSER_CONTROL_ARTIFACT_CAPABILITIES:
+            self._validate_artifact_reference(scope, action, arguments)
+
         command_id = secrets.token_hex(16)
         frame = {
             "method": FRAME_COMMAND,
             "params": {
                 "command_id": command_id,
                 "action": action,
-                "arguments": dict(arguments or {}),
+                "arguments": arguments,
                 "controller_id": scope.controller_id,
                 "browser_profile_id": scope.browser_profile_id,
                 "tool_call_id": tool_call_id,
@@ -697,6 +813,36 @@ class BrowserControlBroker:
         pending.done = True
         del self._pending[pending.command_id]
         pending.event.set()
+
+    def _validate_artifact_reference(
+        self,
+        scope: ControllerScope,
+        action: str,
+        arguments: dict,
+    ) -> None:
+        """Fail closed unless ``arguments`` carries an approved artifact id.
+
+        The store is consulted through the duck-typed ``validate`` contract
+        (raises :class:`ArtifactError` subclasses on any problem), so the
+        broker never guesses at artifact validity: missing store, missing id,
+        traversal, expiry, checksum, or scope mismatch all surface as
+        :class:`ControllerRejected` before any frame is emitted.
+        """
+        if self._artifact_store is None:
+            raise ControllerRejected(
+                f"{action} requires an attached artifact store"
+            )
+        artifact_id = arguments.get("artifact_id")
+        if not isinstance(artifact_id, str) or not artifact_id.strip():
+            raise ControllerRejected(f"{action} requires a non-empty artifact_id")
+        try:
+            self._artifact_store.validate(artifact_id.strip(), scope=scope)
+        except ControllerRejected:
+            raise
+        except Exception as exc:
+            raise ControllerRejected(
+                f"{action} rejected artifact reference {artifact_id!r}: {exc}"
+            ) from exc
 
     @staticmethod
     def _cancel_frame(pending: _PendingCommand) -> dict:

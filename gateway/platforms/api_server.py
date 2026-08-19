@@ -78,6 +78,21 @@ _api_request_browser_control_transport_family: ContextVar[str] = ContextVar(
     "api_server_browser_control_transport_family", default=""
 )
 
+#: Minimal scope shape accepted by :func:`gateway.browser_control_artifacts
+#: .artifact_scope_key`: principal + session + transport family.  The API
+#: server authenticates the caller itself, so the facade carries only the
+#: server-derived principal and the loopback/remote family.
+class _ArtifactScopeFacade:
+    __slots__ = ("principal_id", "session_id", "transport_family")
+
+    def __init__(self, principal_id: str, *, session_id: str = "", transport_family: str = ""):
+        self.principal_id = principal_id
+        self.session_id = session_id
+        self.transport_family = transport_family
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"_ArtifactScopeFacade(principal={self.principal_id!r})"
+
 #: Browser-extension control protocol version advertised in capabilities and
 #: echoed in registration responses. Strict validation is centralized in the
 #: broker's ``browser_control_protocol_supported`` helper.
@@ -109,10 +124,22 @@ from gateway.platforms.base import (
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
+from gateway.browser_control_artifacts import (
+    ArtifactError,
+    ArtifactRateLimiter,
+    ArtifactStore,
+    ArtifactTooLarge,
+    DEFAULT_ALLOWED_MIME_TYPES,
+    DEFAULT_MAX_ARTIFACT_BYTES,
+    DEFAULT_ARTIFACT_TTL_SECONDS,
+)
 from gateway.browser_control_broker import (
+    BROWSER_CONTROL_ARTIFACT_CAPABILITIES,
     BROWSER_CONTROL_CAPABILITIES,
+    BROWSER_CONTROL_DEVELOPER_CAPABILITIES,
     ControllerScope,
     TicketInvalid,
+    browser_control_developer_mode,
     browser_control_protocol_supported,
     filter_browser_control_capabilities,
     get_browser_control_broker,
@@ -1556,6 +1583,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # and command lifecycle shared with the dashboard Gateway transport. This adapter only maps HTTP registration and the
         # controller WebSocket onto the broker; it owns no broker state.
         self._browser_control_broker = get_browser_control_broker()
+        # One-shot artifact transport (Phase 8 Task 29). Lazy store + limiter
+        # are created on first authenticated artifact use; tests inject their
+        # own store/limiter via _inject_browser_control_artifacts().
+        self._browser_control_artifacts: Optional[ArtifactStore] = None
+        self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
 
     def active_agent_work_count(self) -> int:
         """Return all live agent work owned by this API adapter.
@@ -2161,6 +2193,12 @@ class APIServerAdapter(BasePlatformAdapter):
             # and API-key auth (see the handlers for the exact status ladder).
             ("POST", "/v1/browser-control/register", self._handle_browser_control_register),
             ("GET", "/v1/browser-control/ws", self._handle_browser_control_ws),
+            # One-shot artifact transport (Phase 8 Task 29): bounded, SHA-256
+            # validated HTTPS upload/download bound to a browser-control
+            # scope. Gated identically to registration (feature flag + API
+            # key) plus per-principal rate limits.
+            ("POST", "/v1/artifacts/upload", self._handle_artifact_upload),
+            ("GET", "/v1/artifacts/download/{artifact_id}", self._handle_artifact_download),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
@@ -3299,6 +3337,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     "enabled": self._browser_control_enabled(),
                     "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
                     "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
+                    "artifact_capabilities": sorted(BROWSER_CONTROL_ARTIFACT_CAPABILITIES),
+                    "developer_capabilities": sorted(BROWSER_CONTROL_DEVELOPER_CAPABILITIES),
+                    "developer_mode": self._browser_control_developer_mode(),
+                    "artifact_transport": {
+                        "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
+                        "download": {
+                            "method": "GET",
+                            "path": "/v1/artifacts/download/{artifact_id}",
+                        },
+                        "max_bytes": DEFAULT_MAX_ARTIFACT_BYTES,
+                        "ttl_seconds": DEFAULT_ARTIFACT_TTL_SECONDS,
+                        "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES),
+                    },
                     "real_browser_actions": True,
                     "transports": {
                         "local_vps": "websocket-subprotocol-ticket",
@@ -3333,6 +3384,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_model_lock": {"method": "POST", "path": "/api/sessions/{session_id}/model"},
                 "browser_control_register": {"method": "POST", "path": "/v1/browser-control/register"},
                 "browser_control_ws": {"method": "GET", "path": "/v1/browser-control/ws"},
+                "artifact_upload": {"method": "POST", "path": "/v1/artifacts/upload"},
+                "artifact_download": {
+                    "method": "GET",
+                    "path": "/v1/artifacts/download/{artifact_id}",
+                },
             },
         })
 
@@ -3437,7 +3493,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         profile = _api_request_profile.get() or "default"
         capabilities = filter_browser_control_capabilities(
-            payload.get("capabilities")
+            payload.get("capabilities"),
+            developer_mode=self._browser_control_developer_mode(),
         )
         if not capabilities:
             return web.json_response(
@@ -3446,6 +3503,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     code="browser_control_no_capabilities",
                 ),
                 status=400,
+            )
+        # Developer capabilities may only be negotiated while the broker
+        # itself runs in Developer Mode (fail closed even if a registration
+        # somehow slipped through the filter).
+        if (
+            capabilities & BROWSER_CONTROL_DEVELOPER_CAPABILITIES
+            and not self._browser_control_developer_mode()
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Developer Mode is required for browser_evaluate and raw CDP.",
+                    code="browser_control_developer_mode_required",
+                ),
+                status=403,
             )
         scope = ControllerScope(
             principal_id=self._derive_browser_control_principal(profile),
@@ -3660,6 +3731,270 @@ class APIServerAdapter(BasePlatformAdapter):
         if host in ("127.0.0.1", "::1", "localhost"):
             return "local-api"
         return "remote-api"
+
+    def _browser_control_developer_mode(self) -> bool:
+        """Developer Mode flag; False unless explicitly enabled.
+
+        Mirrors the broker's gate for ``browser_evaluate`` and raw CDP.
+        Tests monkeypatch this method directly to force the gate on/off.
+        """
+        try:
+            return browser_control_developer_mode()
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # One-shot artifact transport (Phase 8 Task 29)
+    # ------------------------------------------------------------------
+
+    def _artifact_store_for(self, profile: str) -> ArtifactStore:
+        """Return the profile-scoped artifact store, creating it lazily.
+
+        The store root lives under the profile's data directory
+        (``<HERMES_HOME>/plugin-data/.../artifacts``-style controlled root),
+        so artifacts never escape the profile boundary.  The root itself is
+        created on first use; TTL cleanup runs on every store/load/prune.
+        """
+        if self._browser_control_artifacts is not None:
+            return self._browser_control_artifacts
+        try:
+            from hermes_cli.profiles import get_profile_dir
+
+            profile_root = get_profile_dir(profile or "default")
+            root = Path(profile_root) / "artifacts" / "browser-control"
+        except Exception:
+            # Unscoped fallback used only when profile resolution is
+            # unavailable (tests/manual wiring): keep the controlled root
+            # under the Hermes home.
+            try:
+                from hermes_state import get_hermes_home
+
+                root = Path(get_hermes_home()) / "artifacts" / "browser-control"
+            except Exception:
+                raise ArtifactError("no artifact root is resolvable") from None
+        store = ArtifactStore(
+            root,
+            ttl_seconds=DEFAULT_ARTIFACT_TTL_SECONDS,
+            max_bytes=DEFAULT_MAX_ARTIFACT_BYTES,
+            allowed_mime_types=DEFAULT_ALLOWED_MIME_TYPES,
+        )
+        store.prune_expired()
+        self._browser_control_artifacts = store
+        # Share the store with the broker so artifact actions dispatched to a
+        # controller validate their artifact reference against the same
+        # controlled root ("approved artifact id only").
+        try:
+            self._browser_control_broker.attach_artifact_store(store)
+        except Exception:
+            logger.debug("could not attach artifact store to broker", exc_info=True)
+        return store
+
+    def _artifact_limiter(self) -> ArtifactRateLimiter:
+        """Return the per-principal artifact route limiter (lazy)."""
+        if self._browser_control_artifact_limiter is None:
+            self._browser_control_artifact_limiter = ArtifactRateLimiter(
+                window_seconds=60.0,
+                max_requests=30,
+            )
+        return self._browser_control_artifact_limiter
+
+    def _inject_browser_control_artifacts(
+        self,
+        store: Optional[ArtifactStore],
+        limiter: Optional[ArtifactRateLimiter] = None,
+    ) -> None:
+        """Inject a store/limiter (tests, diagnostics)."""
+        self._browser_control_artifacts = store
+        if limiter is not None:
+            self._browser_control_artifact_limiter = limiter
+
+    @staticmethod
+    def _artifact_auth_fail(request: "web.Request", status: int, code: str, message: str):
+        return web.json_response(
+            _openai_error(
+                message,
+                err_type="gateway_auth_error" if status == 401 else "invalid_request_error",
+                code=code,
+            ),
+            status=status,
+        )
+
+    async def _handle_artifact_upload(self, request: "web.Request") -> "web.Response":
+        """POST /v1/artifacts/upload — one-shot bounded artifact upload.
+
+        Authenticated with the same Bearer API key as every other API-server
+        route and gated on browser.extension_control.enabled.  The body is
+        read as raw bytes with an exact size cap; ``Content-Type`` must name
+        an allowed MIME type and ``X-Artifact-Filename`` supplies the
+        display-only name.  On success returns a provenance receipt carrying
+        the server-minted artifact id, SHA-256, size, TTL, and download path
+        — never a filesystem path.
+
+        Status ladder: 404 feature disabled, 403 no API key configured, 401
+        bad/missing Bearer, 429 rate limited, 413 too large, 415 MIME
+        rejected, 400 missing filename/scope, 201 success.
+        """
+        if not self._browser_control_enabled():
+            return web.json_response(
+                _openai_error(
+                    "Browser control is not enabled on this server.",
+                    code="browser_control_disabled",
+                ),
+                status=404,
+            )
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Artifact transport requires a configured API key.",
+                    err_type="gateway_auth_error",
+                    code="browser_control_auth_required",
+                ),
+                status=403,
+            )
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        profile = _api_request_profile.get() or "default"
+        principal = self._derive_browser_control_principal(profile)
+        limiter = self._artifact_limiter()
+        if not limiter.allow(f"upload:{principal}"):
+            return web.json_response(
+                _openai_error(
+                    "Artifact upload rate limit exceeded.",
+                    err_type="rate_limit_error",
+                    code="rate_limit_exceeded",
+                ),
+                status=429,
+                headers={"Retry-After": "1"},
+            )
+
+        content_type = request.headers.get("Content-Type", "")
+        filename = request.headers.get("X-Artifact-Filename", "").strip()
+        if not filename:
+            return web.json_response(
+                _openai_error("X-Artifact-Filename header is required."),
+                status=400,
+            )
+
+        # Bounded read: cap at the store's byte cap + 1 so an oversize body
+        # is detected and rejected without buffering unbounded data.
+        try:
+            store = self._artifact_store_for(profile)
+        except ArtifactError as exc:
+            return web.json_response(_openai_error(str(exc), code="artifact_rejected"), status=500)
+        max_bytes = store.max_bytes
+        try:
+            data = await request.content.read(max_bytes + 1)
+        except Exception:
+            return web.json_response(_openai_error("Failed to read request body."), status=400)
+        if len(data) > max_bytes:
+            return web.json_response(
+                _openai_error(
+                    f"Artifact exceeds the {max_bytes}-byte cap.",
+                    code="artifact_too_large",
+                ),
+                status=413,
+            )
+        if not data:
+            return web.json_response(_openai_error("Empty artifact body."), status=400)
+
+        try:
+            receipt = store.store(
+                data,
+                filename=filename,
+                content_type=content_type,
+                scope=_ArtifactScopeFacade(
+                    principal,
+                    transport_family=self._browser_control_transport_family(request),
+                ),
+            )
+        except ArtifactTooLarge as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="artifact_too_large"), status=413
+            )
+        except ArtifactError as exc:
+            code = "artifact_mime_rejected" if "allowlist" in str(exc) else "artifact_rejected"
+            status = 415 if "allowlist" in str(exc) else 400
+            return web.json_response(_openai_error(str(exc), code=code), status=status)
+
+        return web.json_response(
+            receipt.to_dict(download_path=f"/v1/artifacts/download/{receipt.artifact_id}"),
+            status=201,
+        )
+
+    async def _handle_artifact_download(self, request: "web.Request") -> "web.Response":
+        """GET /v1/artifacts/download/{artifact_id} — one-shot download.
+
+        Authenticated and gated identically to upload.  The artifact is
+        consumed on success: the second download of the same id returns 404.
+        The response streams the verified bytes with the recorded content
+        type and a ``X-Artifact-Sha256`` header for client-side validation.
+
+        Status ladder: 404 feature disabled / unknown artifact, 403 no API
+        key, 401 bad/missing Bearer, 429 rate limited, 410 expired, 400
+        invalid id / scope mismatch, 200 success.
+        """
+        if not self._browser_control_enabled():
+            raise web.HTTPNotFound()
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Artifact transport requires a configured API key.",
+                    err_type="gateway_auth_error",
+                    code="browser_control_auth_required",
+                ),
+                status=403,
+            )
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        profile = _api_request_profile.get() or "default"
+        principal = self._derive_browser_control_principal(profile)
+        limiter = self._artifact_limiter()
+        if not limiter.allow(f"download:{principal}"):
+            return web.json_response(
+                _openai_error(
+                    "Artifact download rate limit exceeded.",
+                    err_type="rate_limit_error",
+                    code="rate_limit_exceeded",
+                ),
+                status=429,
+                headers={"Retry-After": "1"},
+            )
+
+        artifact_id = request.match_info.get("artifact_id", "")
+        try:
+            store = self._artifact_store_for(profile)
+            data, receipt = store.load(
+                artifact_id,
+                scope=_ArtifactScopeFacade(
+                    principal,
+                    transport_family=self._browser_control_transport_family(request),
+                ),
+            )
+        except ArtifactError as exc:
+            message = str(exc)
+            if "expired" in message:
+                return web.json_response(
+                    _openai_error(message, code="artifact_expired"), status=410
+                )
+            status = 400 if "scope" in message or "invalid" in message else 404
+            return web.json_response(
+                _openai_error(message, code="artifact_not_found"), status=status
+            )
+
+        return web.Response(
+            body=data,
+            status=200,
+            content_type=receipt.content_type,
+            headers={
+                "X-Artifact-Sha256": receipt.sha256,
+                "X-Artifact-Id": receipt.artifact_id,
+                "Content-Disposition": f'attachment; filename="{receipt.filename}"',
+            },
+        )
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.

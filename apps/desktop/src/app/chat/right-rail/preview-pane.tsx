@@ -906,6 +906,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             onBack={goBack}
             onForward={goForward}
             onNavigate={navigateTo}
+            onOpenExternal={() => void window.hermesDesktop?.openExternal(currentUrl)}
             onReload={reloadPreview}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}

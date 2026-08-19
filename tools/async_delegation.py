@@ -410,18 +410,20 @@ def recover_abandoned_delegations() -> int:
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
+            # Routing origin persisted at dispatch (see _capture_routing_origin):
+            # restores scope_id/user_id for the reconstructed SessionSource so
+            # relay egress priming works after a restart.  MUST run before the
+            # durable redaction snapshot below — the snapshot is what gets
+            # persisted, so adding these after it silently drops them.
+            for _k in ("scope_id", "user_id", "user_name"):
+                if task.get(_k):
+                    event[_k] = task[_k]
             durable_event = _redact_durable_value(event)
             durable_result = {
                 "status": durable_event.get("status", "unknown"),
                 "summary": durable_event.get("summary"),
                 "error": durable_event.get("error"),
             }
-            # Routing origin persisted at dispatch (see _capture_routing_origin):
-            # restores scope_id/user_id for the reconstructed SessionSource so
-            # relay egress priming works after a restart.
-            for _k in ("scope_id", "user_id", "user_name"):
-                if task.get(_k):
-                    event[_k] = task[_k]
             result = {"status": "unknown", "summary": None, "error": event["error"]}
             conn.execute(
                 """UPDATE async_delegations SET state='unknown', completed_at=?,

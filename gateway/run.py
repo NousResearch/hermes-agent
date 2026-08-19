@@ -16052,6 +16052,86 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_loop_command(event)
         return "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
 
+    # ── Image-lab channel trigger helpers ─────────────────────────────────
+    # The dedicated image-generation channel lets Sahil submit a plain
+    # natural-language prompt ("img a cartoon Toonami Viking...") and receive
+    # the generated image back in the same channel.  The trigger reuses the
+    # existing /generate-image handler and the full pipeline; no parallel
+    # image logic.  Channel id comes from env IMAGE_LAB_CHANNEL_ID (fallback:
+    # any free-response channel).
+
+    def _image_lab_channel_id(self) -> Optional[str]:
+        import os as _os
+        return (_os.getenv("IMAGE_LAB_CHANNEL_ID") or "").strip() or None
+
+    async def _is_image_lab_message(self, event: "MessageEvent") -> bool:
+        """True when this message is a plain-text image prompt in the lab channel.
+
+        Rules: the message starts with ``img`` (case-insensitive) followed by
+        whitespace or is exactly ``img``, and the channel matches
+        IMAGE_LAB_CHANNEL_ID when configured.  Without a configured channel,
+        the trigger only fires when the adapter reports free-response for the
+        source channel (so it never hijacks normal @-mention chat).
+        """
+        text = (event.text or "").strip()
+        if not text.lower().startswith("img"):
+            return False
+        if len(text) > 3 and not text[3].isspace():
+            return False
+        # Channel-scope guard.
+        lab_id = self._image_lab_channel_id()
+        source_chat = str(getattr(event.source, "chat_id", "") or "")
+        if lab_id:
+            return source_chat == lab_id
+        # No explicit channel: only fire in free-response channels.
+        try:
+            adapter = self._adapter_for_source(event.source)
+            if adapter is None:
+                return False
+            free_channels = adapter._discord_free_response_channels()
+            return source_chat in [str(c) for c in free_channels]
+        except Exception:
+            return False
+
+    def _image_lab_event(self, event: "MessageEvent", prompt: str) -> "MessageEvent":
+        """Return a synthetic event whose command args feed /generate-image.
+
+        The synthetic args carry the prompt plus safe lab defaults so the
+        handler's inline path runs (confirm → execute → post-back).  The
+        source is the original message's channel, so the image is posted back
+        to the same channel.
+        """
+        import time as _time
+        import uuid as _uuid
+        lab_id = self._image_lab_channel_id() or str(getattr(event.source, "chat_id", ""))
+        job_id = f"lab-{_uuid.uuid4().hex[:10]}"
+        stage_root = f"/tmp/gi-lab-{lab_id.replace('#', '')}"
+        args = (
+            f"prompt={prompt}|"
+            f"style=mythic-tech-codex|"
+            f"backend=codex|"
+            f"stage_root={stage_root}|"
+            f"job_id={job_id}|"
+            f"aspect_ratio=landscape"
+        )
+        # Copy the event and override get_command_args.  The event is a
+        # lightweight dataclass; build a shallow copy via object.__new__ +
+        # __dict__ copy to avoid deep-copy costs on a hot path.
+        clone = object.__new__(type(event))
+        clone.__dict__ = dict(getattr(event, "__dict__", {}))
+        setattr(clone, "_gi_lab_args", args)
+        original = getattr(event, "get_command_args", None)
+        if original is not None:
+            import types as _types
+            def _args_override(self_obj):  # noqa: ANN001
+                return getattr(self_obj, "_gi_lab_args", "")
+            clone.get_command_args = _types.MethodType(_args_override, clone)
+        else:
+            # Fallback: attach a method on the instance.
+            setattr(clone, "_gi_lab_args", args)
+            clone.get_command_args = lambda: args  # type: ignore[method-assign]
+        return clone
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -16576,6 +16656,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # on to a different slash command and the wizard should not
                 # swallow it or linger to intercept later normal replies.
                 _gi_mod.clear(_quick_key)
+
+        # Image-lab channel trigger (plain-text natural language):
+        # in the dedicated image-generation channel (free-response), a
+        # non-slash message starting with "img" is routed to the existing
+        # /generate-image handler with the text as the prompt.  This reuses
+        # the full pipeline (prepare → stage → Codex → post-back) and the
+        # extended style menu; no parallel image logic exists here.
+        try:
+            if await self._is_image_lab_message(event):
+                _img_prompt = (event.text or "").strip()
+                if _img_prompt and not _img_prompt.startswith("/"):
+                    _img_synthetic = self._image_lab_event(event, _img_prompt)
+                    _img_result = await self._handle_generate_image_command(_img_synthetic)
+                    # The handler sends its own replies (questions, confirm,
+                    # or the final image post-back).  Consume the message.
+                    return _img_result or ""
+        except Exception as _img_exc:  # noqa: BLE001 — never break normal dispatch
+            self._logger.warning("image-lab trigger failed: %s", _img_exc)
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -17408,20 +17506,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import dispatch_plugin_command, get_plugin_command_handler
+                from hermes_cli.plugins import get_plugin_command_handler
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = dispatch_plugin_command(
-                        get_plugin_manager(),
-                        command.replace("_", "-"),
-                        user_args,
-                        session_id=str(getattr(event, "session_id", "") or getattr(source, "session_id", "") or ""),
-                        platform=str(source.platform.value if getattr(source, "platform", None) else ""),
-                    )
+                    # The handler is already resolved above via
+                    # get_plugin_command_handler (discovery layer). Call it
+                    # directly — dispatching through the plugin manager's
+                    # registry here would miss commands surfaced through the
+                    # discovery layer and duplicates the lookup.
+                    result = plugin_handler(user_args)
                     if asyncio.iscoroutine(result):
                         result = await result
                     return str(result) if result else None
@@ -18263,12 +18360,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
     def _install_plugin_message_injector(self) -> None:
-        """Publish this live gateway's plugin message scheduler."""
-        from hermes_cli.plugins import get_plugin_manager
+        """Publish this live gateway's plugin message scheduler.
+
+        Two registrations are needed because PluginContext.inject_message
+        routes through the host-owned ``_INJECTION_ROUTERS`` module registry
+        (surface name -> router) and never reads the manager instance's
+        injector directly.  Registering only the manager injector (the
+        historical behaviour) left gateway plugin message injection dead:
+        inject_message always returned False on the gateway.
+        """
+        from hermes_cli.plugins import get_plugin_manager, register_injection_router
 
         get_plugin_manager().set_gateway_message_injector(
             self,
             self._schedule_plugin_message_injection,
+        )
+        try:
+            register_injection_router("gateway", self._plugin_injection_router)
+        except Exception:
+            logger.warning("gateway injection router registration failed", exc_info=True)
+
+    def _plugin_injection_router(
+        self,
+        content: str,
+        role: str = "user",
+        *,
+        mode: str = "queue",
+        target_session=None,
+        plugin_id: str = "",
+    ) -> bool:
+        """Router registered into hermes_cli.plugins._INJECTION_ROUTERS.
+
+        Signature matches PluginContext.inject_message's expectation
+        (router(content, role, *, mode, target_session, plugin_id) -> bool).
+        Delegates to the manager injector installed by
+        ``_install_plugin_message_injector`` so both seams stay in sync.
+        The scheduler only accepts (session_key, content, plugin_id) — the
+        plugin context passes an opaque target_session, so extract the
+        session key from it when provided.
+        """
+        from hermes_cli.plugins import get_plugin_manager
+
+        session_key = None
+        if target_session is not None:
+            if isinstance(target_session, str):
+                session_key = target_session
+            else:
+                session_key = getattr(target_session, "session_key", None)
+        if session_key is None:
+            return False
+        return bool(
+            get_plugin_manager().inject_gateway_message(
+                session_key=session_key,
+                content=content,
+                plugin_id=plugin_id,
+            )
         )
 
     def _clear_plugin_message_injector(self) -> None:
@@ -18276,6 +18422,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from hermes_cli.plugins import get_plugin_manager
 
         get_plugin_manager().clear_gateway_message_injector(self)
+        # Host-owned router registry: only clear the gateway surface router if
+        # we still own it.  A newer owner may have replaced the router.
+        try:
+            from hermes_cli import plugins as _plugins_mod
+
+            current = _plugins_mod._INJECTION_ROUTERS.get("gateway")
+            if current is not None and getattr(current, "__self__", None) is self:
+                _plugins_mod._INJECTION_ROUTERS.pop("gateway", None)
+        except Exception:
+            pass
 
     def _schedule_plugin_message_injection(
         self,

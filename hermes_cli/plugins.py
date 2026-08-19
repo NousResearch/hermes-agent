@@ -2055,7 +2055,10 @@ class PluginContext:
                     content,
                     role=role,
                     mode=mode,
-                    target_session=target_session,
+                    # session_key is the caller-facing exact-session token;
+                    # the router contract calls it target_session.  Forward
+                    # either so callers using the public keyword work.
+                    target_session=target_session if target_session is not None else session_key,
                     plugin_id=plugin_id,
                 ):
                     return True

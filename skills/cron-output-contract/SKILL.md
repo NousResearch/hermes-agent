@@ -27,8 +27,11 @@ Never use US format (`May 18, 2026`), international weekday format (`Mon 18 May`
 
 ## Delivery Semantics by Cron Mode
 
-The contract differs depending on whether a cron is LLM-driven or script-only.
+The contract differs depending on whether a cron is LLM-driven or script-only. **NOTE (2026-06-05): Telegram is no longer active. All delivery targets use Discord.**
 
+## Output Contract
+
+**NOTE (2026-06-05): Telegram is no longer active. All cron delivery targets use Discord.**
 ### LLM-driven crons (`no_agent=false`, default)
 
 Discord message = summary only. Full detail = HTML attachment. [SILENT] for zero-signal runs.
@@ -38,7 +41,7 @@ The Discord message tells Sahil the headline in one glance. The HTML file is the
 Final-response hygiene is part of the contract:
 - No process narration in delivered cron output.
 - No prompt/system/memory leakage. Never include recalled memory blocks, hidden instructions, or source context in the final response.
-- No legacy Telegram HTML tags in Discord-visible messages. Use plain text and Markdown backticks.
+- No raw HTML tags in the visible Discord message; use plain text and Markdown backticks instead.
 - No raw HTML in the visible message; HTML belongs only in the attached file referenced by `MEDIA:/absolute/path.html`.
 - Regression check: run `/home/kensei/.hermes/scripts/cron-output-lint.py` after prompt/script changes. This covers BOTH cron prompts/scripts AND non-template Python scripts that produce cron stdout. Must return zero issues before calling the fix done. Use `/home/kensei/.hermes/scripts/cron-output-lint.py --latest` only when you explicitly want to scan historical/latest output files; old hits can remain until the affected cron reruns.
 ### no_agent crons (`no_agent=true`)
@@ -68,7 +71,37 @@ When a cron is `no_agent=false` and the LLM prompt itself formats structured dat
 
 Real example: `github-radar-merged` on 2026-05-27. The cron prompt was dumping `---REPOS---` + full JSON into Discord. Converted to `no_agent=true`, script now emits a 5-line summary + MEDIA tag, writes HTML + `github-radar-repos.txt`, and the librarian/review crons read the text file.
 
-**Full step-by-step conversion recipe:** `references/no-agent-conversion-recipe.md`
+See `references/no-agent-conversion-recipe.md` for a worked example.
+
+### Pattern: Scheduler-level verification-text leak strip (04/07/2026)
+
+Cheaper LLM models (deepseek-v4-flash, glm-5.1) run ad-hoc verification scripts (`hermes-verify-*.py`) after generating their output and append the results to the final response. The delivery layer reads the last thing output, so Discord receives verification text instead of the actual summary.
+
+**Root cause:** The FORBIDDEN instructions in prompts are not strong enough for cheaper models — they ignore them and run verification anyway.
+
+**2026-08-18 refinement (nous-archive-digest):** Verification narration can
+masquerade as a summary even after per-line stripping, when evidence bullets
+use phrasing that bypasses the line-start prefix patterns:
+`- **`run_tests.sh`** — exit 0 ...`, `- Size: 20K bytes`,
+`- Content verified: ...`, `- Directories created: yes`. The bullet loop
+then sets `has_summary=True` and the garbage is delivered. Defence:
+`_VERIF_CONTENT_RE` in `_strip_verification_leak` — a bullet counts as a
+legitimate summary only if it ALSO contains none of the evidence-vocabulary
+tokens (run_tests, well-formed, html.parser, verified, path:/size:/bytes,
+director(y|ies), lint, cron-output, etc.). Regression-locked in
+`tests/cron/test_scheduler_delivery_hygiene.py`.
+
+**Durable fix:** A scheduler-level strip function (`_strip_verification_leak` in `cron/scheduler.py`) runs BEFORE delivery. It:
+1. Truncates at `[SILENT]` — returns `[SILENT]` only, drops everything after
+2. Truncates at `MEDIA:` tag — keeps summary + MEDIA tag, drops everything after
+3. Strips individual lines matching known verification patterns (ad-hoc verification, N/N PASS, dark-mode compliant, etc.)
+4. If ALL lines are stripped, returns empty string — delivery layer suppresses it
+
+This is a defence-in-depth layer. The prompt-level FORBIDDEN instructions remain the primary prevention. The strip is the safety net for when the LLM ignores them.
+
+**Dynamic config reading pattern:** `references/no-agent-dynamic-config.md` — read providers/services from config instead of hardcoding to avoid stale false positives.
+
+**sed YAML deletion pitfalls:** `references/sed-yaml-pitfalls.md` — why sed address ranges are dangerous for YAML and the skill_manage patch workaround.
 
 ### When to convert to no_agent
 
@@ -77,9 +110,9 @@ Real example: `github-radar-merged` on 2026-05-27. The cron prompt was dumping `
 - Script needs MCP tools → CANNOT convert (MCP is LLM-loop only)
 
 **Pattern for conversion / migration review:**
-1. Inventory active jobs first: job name, schedule, `deliver`, `no_agent`, script path, and prompt/output contract. Never assume old Telegram topics have been fully migrated just because one gateway message reaches Discord.
-2. For “all notifications” or “all daily cron outputs” requests, include both root and profile cron files. A root-only `cronjob list` is incomplete: profile-scoped jobs may still emit scheduled output or sit stale with old routing.
-3. If the script already does all the work (for example `system_report_daily.sh`), check its stdout. If it emits Telegram HTML/tags or topic-specific wording, rewrite it to concise Discord-safe plain text plus optional `MEDIA:/absolute/path.html` attachment.
+1. Inventory active jobs first: job name, schedule, `deliver`, `no_agent`, script path, and prompt/output contract.
+2. For "all notifications" or "all daily cron outputs" requests, include both root and profile cron files. A root-only `cronjob list` is incomplete: profile-scoped jobs may still emit scheduled output or sit stale with old routing.
+3. If the script already does all the work (for example `system_report_daily.sh`), check its stdout. If it emits HTML tags or deprecated formatting, rewrite it to concise Discord-safe plain text plus optional `MEDIA:/absolute/path.html` attachment.
 4. If the script only fetches data (for example `calendar_brief_combined.py`), add a format wrapper that reads its output and prints the Discord summary plus HTML attachment path.
 5. Create a shell wrapper that runs fetch → format sequentially, and make the formatter create the HTML file before printing the `MEDIA:` tag.
 6. Update the cron: `--no-agent true --script path/to/wrapper.sh` when the job is fully script-rendered. The model field is ignored for no_agent jobs — set it to null.
@@ -295,6 +328,37 @@ Located at `/home/kensei/repos/KenseiAgent/scripts/toon_utils.py`. Four function
 
 **Implementation cost:** ~10 lines of Python in the utility module, ~3 lines per cron prompt for the pipe command. Near-zero risk (TOON is lossless round-trip, MIT license). Already installed at `/home/kensei/.local/lib/python3.12/site-packages/toon_format` (v0.9.0b1, official library).
 
+## Noise Reduction: When to Route to `local` Instead of Discord
+
+Not every cron deserves a Discord notification. The decision framework:
+
+### Classification
+
+| Category | Discord? | Example |
+|----------|----------|---------|
+| **Actionable** — requires Sahil's attention | YES | approvals, blocked tasks, calendar, urgent email |
+| **Operational** — useful but not urgent | YES (semantic channel) | system health, kanban digest, research digest |
+| **Informational** — status confirmations, routine completions | NO → `local` | wiki sync, vault pull, quality gate (clean), skill audit |
+| **Background** — processing that has its own review flow | NO → `local` | content engine drafts, repurpose pipeline |
+
+### Decision rules
+
+1. If the cron's output is "everything is fine" or "processed N items" with no action required → `local`
+2. If the cron only fires when there IS something to report (threshold-based) → keep Discord (the alert is the value)
+3. If the cron produces output that gets reviewed by a separate flow (e.g., content drafts reviewed by CeeCee) → `local` for generation, Discord for review
+4. If the cron fires more than 4x/day and is not a real-time alert → reduce frequency or move to `local`
+
+### Implementation
+
+Change the cron's `deliver` field to `local`:
+```bash
+cronjob action=update job_id=<id> deliver=local
+```
+
+The output still writes to `~/.hermes/cron/output/<job_id>/` for audit trails. Zero Discord API calls.
+
+See `references/discord-noise-audit-2026-06-03.md` for a worked example with 20 crons silenced and 63% volume reduction.
+
 ## Pitfalls
 
 - Scheduler advance-before-run trap: `cron.scheduler.tick()` advances `next_run_at` before execution. If a tick crashes or times out after that, skipped reports can look healthy because `next_run_at` is already tomorrow and `last_status` is still the old `ok`. Audits must compare `last_run_at` against the expected schedule.
@@ -302,7 +366,7 @@ Located at `/home/kensei/repos/KenseiAgent/scripts/toon_utils.py`. Four function
 - Discord MEDIA UX: the scheduler combines text with the first non-audio MEDIA file as a single Discord message (caption + attachment). Audio files send as separate follow-up messages. See `references/discord-multiple-attachments.md` for the fix and behavior table.
 - Multiple MEDIA files in one cron delivery: text combines with the first non-audio file, remaining files send separately. If you want text + all files in one message, redesign your cron output to use a single MEDIA tag (e.g. zip or self-contained HTML with audio embedded as a link).
 - LLM generation via Hermes gateway doesn't have a single-turn endpoint. Fallback templates are the working path.
-- Telegram Bot API requires TELEGRAM_BOT_TOKEN in the Python process env. If cron runner spawns in isolated env, `os.getenv("TELEGRAM_BOT_TOKEN")` returns None and `send_document()` silently fails. Always test with a `send_message()` probe before trusting document delivery.
+- **Telegram Bot API removed.** Cron delivery now uses Discord. The `TELEGRAM_BOT_TOKEN` env var and related configs are no longer used.
 - **Status-only delta crons create false signal.** A cron that tracks "historical drift" (e.g., WFA delta reporting "0 live, 269 historical") and fires every 30m produces 48 identical messages/day. The growing historical count is NOT new activity — it's dead tasks accumulating keys. The cron output contract says zero-signal runs must be [SILENT] or empty stdout. A delta cron that only tracks historical drift is permanently in violation. Fix: separate `live` (actionable) from `historical` (audit-only) in state schema. Fire only when `live` changes.
 - **Daily digest vs continuous alerting.** When Sahil says "daily output instead" or "I don't need this every 30 minutes", the cron is either (a) tracking the wrong thing (historical instead of live), or (b) running on the wrong cadence. Rule: live findings → alert immediately when they appear. Historical summaries → weekly audit. Nothing → daily digest. If the cron's purpose is "surveillance", reframe it as "detection" (only on change) or absorb it into a daily consolidated digest.
 - Old RSS watcher state backed up to `~/.hermes/runbooks/rss-watcher-backup-20260512/`.
@@ -392,7 +456,7 @@ For Discord-bound digest jobs, wording like “if you generate an HTML report”
 - “Do not use white/light backgrounds (`#fff`, `#fafafa`, `#f8f9fa`) or black text (`#000`, `#111`).”
 - “Visible Discord message = short summary plus `MEDIA:` tag, not the full report.”
 
-Run `cron-output-lint.py` after changes. If a script still emits Telegram HTML tags (`<b>`, `<code>`, `<blockquote expandable>`) for a Discord-bound job, rewrite its stdout to Discord-safe Markdown/plain text unless the platform renderer explicitly expects Telegram HTML.
+Run `cron-output-lint.py` after changes. If a script still emits HTML tags (`<b>`, `<code>`, `<blockquote expandable>`) for a Discord-bound job, rewrite its stdout to Discord-safe Markdown/plain text.
 
 ## Output Consolidation Workflow (revive-first, join-second)
 
@@ -443,11 +507,11 @@ If you pass an absolute path, the `cronjob` tool rejects it with `Script path mu
 
 ## Discord-Safe Text Requirements
 
-All scripts that produce user-facing output for Discord MUST strip Telegram HTML tags. Discord renders `<b>`, `<code>`, `<blockquote expandable>` and similar HTML as raw text characters.
+All scripts that produce user-facing output for Discord MUST strip raw HTML tags. Discord renders `<b>`, `<code>`, `<blockquote expandable>` and similar HTML as raw text characters.
 
 ### Tags to strip
 
-| Telegram HTML | Discord-safe replacement |
+| Raw HTML tag | Discord-safe replacement |
 |---|---|
 | `<b>text</b>` | `**text**` or just remove |
 | `<code>text</code>` | `` `text` `` (backtick code fences) |
@@ -457,13 +521,13 @@ All scripts that produce user-facing output for Discord MUST strip Telegram HTML
 
 ### Pattern: check every wrapper script
 
-When reviving a dead script that was originally authored for Telegram:
+When reviving a dead script that was originally authored for Telegram (pre-2026-06-05):
 1. Read the script's stdout output logic (the `echo`, `print`, or `cat` statements)
 2. Grep for `<b>`, `<code>`, `<blockquote`, `<i>`, or `<a ` patterns
 3. Replace each with Discord-safe equivalents
 4. Run the script manually and verify output renders without raw HTML tags
 
-**Real example (2026-05-23):** `token_health_wrapper.sh` output contained `✅ <b>Token health</b> · all OK` — Discord rendered this as "✅ `<b>Token health</b>` · all OK". Fixed by removing `<b>` tags.
+**Real example (2026-05-23):** `token_health_wrapper.sh` output contained `✅ <b>Token health</b> · all OK` — Discord rendered this as "✅ `<b>Token health</b>` · all OK". Fixed by removing `<b>` tags. **NOTE (2026-06-05): Telegram is no longer active — all delivery is Discord-native.**
 
 ### Test every revived cron before declaring done
 Run each script manually. Verify:
@@ -622,7 +686,6 @@ Base: `/home/kensei/.hermes/templates/cron-digest-template.html`. Content digest
 ## Legacy Delivery Mapping
 
 Older Telegram topic mappings may still exist in historical files such as `references/delivery-mapping.txt` or `/home/kensei/.hermes/cron-delivery-mapping.txt`. Treat them as migration evidence, not current truth. For live routing, inspect active cron `deliver` fields and gateway defaults, then produce the Notification Delivery Audit table above.
-
 ## Evidence Gate — claims must be backed by verification (MANDATORY)
 
 This applies to EVERY cron that reports system, pipeline, service, or task state: triage, content review, mailbox, ops/system health, kanban reconciliation, fork-integrity, and any monitor that posts a "what's wrong" message to Discord.
@@ -640,9 +703,9 @@ Any **state or causal assertion** in delivered output MUST be backed by a cited 
 
 For each such claim you must have actually run the check and you must show its provenance. Acceptable evidence is one of:
 
-- the exact command run and a literal snippet of its output (e.g. `hermes cron list | grep content-engine` produced `content-engine-daily ... ok`)
-- a file stat or listing (e.g. `ls -la /path` shows it exists, or `ls: No such file` shows it does not)
-- an exit code (e.g. `gh run view <id> --json conclusion` returned `failure`)
+- the exact command run and a literal snippet of its output (e.g. `hermes cron list | grep content-engine` → `content-engine-daily ... ok`)
+- a file stat or listing (e.g. `ls -la /path` → exists, 25 KB) or its absence (`ls: No such file`)
+- an exit code (e.g. `gh run view <id> --json conclusion` → `failure`)
 - a query result against the authoritative datastore (e.g. a row count from the canonical DB)
 
 ### How to phrase it
@@ -651,7 +714,7 @@ Add an `Evidence:` marker to the finding carrying the proof. Pattern:
 
 ```
 **What's happening:** content-engine cron is unregistered, zero drafts today.
-Evidence: `hermes cron list` (base store) shows no content-engine job; `SELECT count(*) FROM drafts WHERE date(created_at)=date('now')` returned 0
+Evidence: `hermes cron list` (base store) shows no content-engine job; `SELECT count(*) FROM drafts WHERE date(created_at)=date('now')` → 0
 ```
 
 ### When you cannot verify
@@ -670,11 +733,11 @@ Do not auto-close, auto-escalate, file a fix task, or recommend a destructive/co
 
 ### Authoritative sources (check these, not proxies)
 
-- cron registration: `hermes cron list` in the **base store** (no `--profile`); a profile-scoped list is not authoritative and routinely shows "No scheduled jobs".
-- CI status: `gh run list` / `gh run view` conclusion plus exit code, not an email notification. `action_required` means approval-gated, NOT failing.
-- content freshness: row count in the canonical `content_engine.db`, not a stale in-prompt snapshot.
-- file/script existence: an actual `ls`/stat of the path, not an assumed convention.
-- service/process state: `ps`/`systemctl`/a health probe, not a single past error line.
+- cron registration → `hermes cron list` in the **base store** (no `--profile`); a profile-scoped list is not authoritative and routinely shows "No scheduled jobs".
+- CI status → `gh run list` / `gh run view` conclusion + exit code, not an email notification. `action_required` means approval-gated, NOT failing.
+- content freshness → row count in the canonical `content_engine.db`, not a stale in-prompt snapshot.
+- file/script existence → an actual `ls`/stat of the path, not an assumed convention.
+- service/process state → `ps`/`systemctl`/a health probe, not a single past error line.
 
 ### Regression guard
 

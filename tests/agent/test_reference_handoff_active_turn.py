@@ -42,9 +42,11 @@ def _standalone_handoff(task: str = "finish the already-done refactor") -> dict:
     }
 
 
-def _merged_assistant_carrier() -> dict:
-    """Production merge-into-tail shape: assistant role/tool_calls survive."""
-    return {
+def _merged_assistant_carrier(
+    *, finish_reason: str = "stop", tool_calls: list[dict] | None = None
+) -> dict:
+    """Production merge-into-tail shape with the carrier's completion state."""
+    carrier = {
         "role": "assistant",
         "content": (
             f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
@@ -54,10 +56,13 @@ def _merged_assistant_carrier() -> dict:
             "User asked: 'finish the already-done refactor'\n\n"
             f"{_SUMMARY_END_MARKER}"
         ),
-        "tool_calls": [{"id": "stale-c1", "function": {"name": "terminal"}}],
+        "finish_reason": finish_reason,
         COMPRESSED_SUMMARY_METADATA_KEY: True,
         COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: True,
     }
+    if tool_calls is not None:
+        carrier["tool_calls"] = tool_calls
+    return carrier
 
 
 class TestReferenceHandoffWouldDriveNextModelCall:
@@ -97,23 +102,27 @@ class TestReferenceHandoffWouldDriveNextModelCall:
         ]
         assert reference_handoff_would_drive_next_model_call(messages) is False
 
-    def test_merged_assistant_carrier_after_completed_stop_drives(self):
-        """Completed assistant prose/tool_calls on the carrier are not a user ask."""
+    def test_completed_merged_assistant_carrier_drives_without_adjacent_stop(self):
+        """The carrier's own stop marks preserved assistant prose as completed."""
         messages = [
+            {"role": "system", "content": "system"},
             {"role": "user", "content": "please finish the refactor"},
-            {
-                "role": "assistant",
-                "content": "Refactor complete.",
-                "finish_reason": "stop",
-            },
             _merged_assistant_carrier(),
         ]
         assert reference_handoff_would_drive_next_model_call(messages) is True
 
-    def test_merged_assistant_carrier_without_completed_stop_stays_in_flight(self):
+    def test_live_tool_call_carrier_after_completed_stop_stays_in_flight(self):
+        """Pending tool_calls on the carrier are live even after an earlier stop."""
         messages = [
-            {"role": "user", "content": "please finish the refactor"},
-            _merged_assistant_carrier(),
+            {
+                "role": "assistant",
+                "content": "Earlier turn complete.",
+                "finish_reason": "stop",
+            },
+            _merged_assistant_carrier(
+                finish_reason="tool_calls",
+                tool_calls=[{"id": "live-c1", "function": {"name": "terminal"}}],
+            ),
         ]
         assert reference_handoff_would_drive_next_model_call(messages) is False
 

@@ -553,6 +553,22 @@ class TestGuardJobCredentialExfil:
         assert "blocked for safety" in str(exc.value)
 
 
+
+    def test_named_custom_loopback_alias_is_allowed(self, monkeypatch):
+        """localhost and 127.0.0.1 are the same loopback host for cron guards."""
+        import hermes_cli.runtime_provider as rp
+        from cron.scheduler import _guard_job_credential_exfil
+
+        monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
+        monkeypatch.setattr(
+            rp, "_get_named_custom_provider",
+            lambda n: {"name": "ollama-local", "base_url": "http://127.0.0.1:11434/v1",
+                       "api_key": "ollama"},
+        )
+        job = {"id": "j-loopback", "provider": "ollama-local",
+               "base_url": "http://localhost:11434/v1"}
+        assert _guard_job_credential_exfil(job) is None
+
     def test_bare_custom_is_allowed(self):
         from cron.scheduler import _guard_job_credential_exfil
 

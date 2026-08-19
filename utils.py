@@ -903,6 +903,11 @@ def model_forces_max_completion_tokens(model: str) -> bool:
     )
 
 
+def _loopback_hostnames() -> frozenset[str]:
+    """Hostnames that all refer to the local machine loopback interface."""
+    return frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
 def base_url_host_matches(base_url: str, domain: str) -> bool:
     """Return True when the base URL's hostname is ``domain`` or a subdomain.
 
@@ -910,10 +915,17 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     false-positive class documented on ``base_url_hostname``. Accepts bare
     hosts, full URLs, and URLs with paths.
 
+    Loopback aliases are treated as equivalent (``localhost`` ≡ ``127.0.0.1``
+    ≡ ``::1`` ≡ ``0.0.0.0``), so a cron job override of
+    ``http://localhost:11434/v1`` matches a named custom provider configured
+    at ``http://127.0.0.1:11434/v1`` without weakening the off-host credential
+    exfil guard.
+
         base_url_host_matches("https://api.moonshot.ai/v1", "moonshot.ai") == True
         base_url_host_matches("https://moonshot.ai", "moonshot.ai")        == True
         base_url_host_matches("https://evil.com/moonshot.ai/v1", "moonshot.ai") == False
         base_url_host_matches("https://moonshot.ai.evil/v1", "moonshot.ai")     == False
+        base_url_host_matches("http://localhost:11434/v1", "127.0.0.1")    == True
     """
     hostname = base_url_hostname(base_url)
     if not hostname:
@@ -921,4 +933,7 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     domain = (domain or "").strip().lower().rstrip(".")
     if not domain:
         return False
+    loopback = _loopback_hostnames()
+    if hostname in loopback and domain in loopback:
+        return True
     return hostname == domain or hostname.endswith("." + domain)

@@ -315,10 +315,13 @@ def _key_has_secret_keyword(key: str) -> bool:
             return True
     return False
 
-# JSON field patterns: "apiKey": "value", "token": "value", etc.
+# JSON field prefixes: "apiKey": ", "token": ", etc.  Values are scanned by
+# _redact_json_fields rather than captured by a repeated regex alternation.  CPython's
+# regex engine retains a large amount of state for ``(?:\\.|[^"\\])+`` on long
+# attacker-controlled values, while the scanner uses constant auxiliary memory.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
-_JSON_FIELD_RE = re.compile(
-    rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+_JSON_FIELD_START_RE = re.compile(
+    rf'("{_JSON_KEY_NAMES}")\s*:\s*"',
     re.IGNORECASE,
 )
 
@@ -609,6 +612,100 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
+def _json_raw_escape_len(s: str, i: int) -> int:
+    """Length of a JSON string escape starting at ``s[i]``, or ``0`` if incomplete.
+
+    Operates on the *raw* value text between quotes (backslashes still present),
+    matching what ``_JSON_FIELD_RE`` captures. ``\\uXXXX`` is 6 chars; other
+    standard escapes are 2. Unknown ``\\X`` pairs are treated as 2-char units so
+    redaction still advances past them.
+    """
+    if i >= len(s) or s[i] != "\\":
+        return 0
+    if i + 1 >= len(s):
+        return 0
+    nxt = s[i + 1]
+    if nxt == "u":
+        hex_part = s[i + 2 : i + 6]
+        if len(hex_part) == 4 and all(c in "0123456789abcdefABCDEF" for c in hex_part):
+            return 6
+        return 0
+    return 2
+
+
+def _json_raw_safe_cuts(s: str, head: int, tail: int) -> tuple[int, int]:
+    """Return prefix/suffix cuts without retaining per-character boundaries."""
+    prefix_end = 0
+    suffix_start = len(s)
+    suffix_target = len(s) - tail
+    i = 0
+    while i < len(s):
+        if s[i] == "\\":
+            elen = _json_raw_escape_len(s, i)
+            if elen == 0:
+                break
+            i += elen
+        else:
+            i += 1
+        if i <= head:
+            prefix_end = i
+        if suffix_start == len(s) and i >= suffix_target:
+            suffix_start = i
+    return prefix_end, suffix_start
+
+
+def _mask_json_field_value(value: str, *, head: int = 6, tail: int = 4, floor: int = 18) -> str:
+    """Mask a JSON string value for re-embedding inside quotes.
+
+    Like :func:`_mask_token`, but prefix/suffix cuts never split an escape
+    sequence (``\\\"``, ``\\\\``, ``\\uXXXX``, …). A naive ``value[:6]`` on
+    ``abcde\\\"long…`` ends on the backslash and yields invalid JSON when
+    wrapped as ``\"abcde\\\\…\"``.
+    """
+    if not value:
+        return "***"
+    if len(value) < floor:
+        return "***"
+    prefix_end, suffix_start = _json_raw_safe_cuts(value, head, tail)
+    if prefix_end >= suffix_start:
+        return "***"
+    return f"{value[:prefix_end]}...{value[suffix_start:]}"
+
+
+def _redact_json_fields(text: str) -> str:
+    """Mask sensitive quoted JSON fields with bounded auxiliary memory."""
+    parts: list[str] = []
+    copied_to = 0
+    search_from = 0
+    while match := _JSON_FIELD_START_RE.search(text, search_from):
+        value_start = match.end()
+        i = value_start
+        while i < len(text):
+            if text[i] == "\\":
+                if i + 1 >= len(text):
+                    i = len(text)
+                    break
+                i += 2
+                continue
+            if text[i] == '"':
+                break
+            i += 1
+        if i >= len(text):
+            break
+
+        value = text[value_start:i]
+        search_from = i + 1
+        if _ENV_LOOKUP_VALUE_RE.match(value):
+            continue
+        parts.extend((text[copied_to:value_start], _mask_json_field_value(value)))
+        copied_to = i
+
+    if not parts:
+        return text
+    parts.append(text[copied_to:])
+    return "".join(parts)
+
+
 def _redact_query_string(query: str) -> str:
     """Redact sensitive parameter values in a URL query string.
 
@@ -887,15 +984,7 @@ def redact_sensitive_text(
 
         # JSON fields: "apiKey": "***"  (skip for code files — false positives)
         if ":" in text and '"' in text:
-            def _redact_json(m):
-                key, value = m.group(1), m.group(2)
-                # Same programmatic-env-lookup exception as _redact_env above
-                # (issue #2852): "apiKey": "os.getenv('X')" is a code snippet,
-                # not a leaked secret value.
-                if _ENV_LOOKUP_VALUE_RE.match(value):
-                    return m.group(0)
-                return f'{key}: "{_mask_token(value)}"'
-            text = _JSON_FIELD_RE.sub(_redact_json, text)
+            text = _redact_json_fields(text)
 
         # Unquoted YAML / colon config: password: ***  (after JSON so quoted
         # values are handled there; the lookahead in _YAML_ASSIGN_RE skips

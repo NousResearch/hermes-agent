@@ -1,6 +1,8 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
+import json
 import logging
+import tracemalloc
 
 import pytest
 
@@ -250,6 +252,55 @@ class TestJsonFields:
         text = '{"name": "John", "model": "gpt-4"}'
         result = redact_sensitive_text(text)
         assert result == text
+
+    def test_json_escaped_quote_masks_whole_value(self):
+        # Escape-aware value match: naive [^"]+ stops at \" and leaks the suffix
+        # while corrupting shape to `"***"bar_secret_value"`.
+        # Non-raw literal: structural JSON quotes are plain "; only the embedded
+        # value escape is written as \\" so the input bytes are foo\"bar...
+        text = '{"password": "foo\\"bar_secret_value"}'
+        result = redact_sensitive_text(text)
+        assert "bar_secret_value" not in result
+        assert '"***"bar' not in result
+        assert result.startswith('{"password": "')
+        assert result.endswith('"}')
+
+    def test_json_escaped_quote_short_value_fully_masked(self):
+        text = '{"password": "a\\"b"}'
+        result = redact_sensitive_text(text)
+        assert result == '{"password": "***"}'
+
+    def test_json_escaped_backslash_masks_whole_value(self):
+        text = '{"api_key": "opaque\\\\secret_value_long_enough"}'
+        result = redact_sensitive_text(text)
+        assert "secret_value_long_enough" not in result
+        assert result.startswith('{"api_key": "')
+        assert result.endswith('"}')
+
+    def test_json_escaped_quote_at_mask_prefix_boundary_stays_parseable(self):
+        # _mask_token keeps 6 prefix chars; value ``abcde\"long…`` puts the
+        # cut on the backslash of ``\"``. Re-embedding that prefix must not
+        # emit a lone ``\`` (invalid JSON) and must not leak the suffix.
+        text = '{"password": "abcde\\"long_secret_value_xyz"}'
+        result = redact_sensitive_text(text, force=True)
+        assert "long_secret" not in result
+        assert '"***"long' not in result
+        parsed = json.loads(result)
+        assert "password" in parsed
+        assert "long_secret" not in parsed["password"]
+
+    def test_json_long_value_uses_bounded_auxiliary_memory(self):
+        value_size = 250_000
+        text = '{"password": "' + ("x" * value_size) + '"}'
+        tracemalloc.start()
+        try:
+            result = redact_sensitive_text(text, force=True)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert result == '{"password": "xxxxxx...xxxx"}'
+        assert peak < value_size * 12
 
 
 class TestAuthHeaders:

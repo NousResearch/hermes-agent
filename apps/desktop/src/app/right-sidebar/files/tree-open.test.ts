@@ -18,6 +18,35 @@ describe('openFileWithDefaultApp', () => {
     expect(revealPath).not.toHaveBeenCalled()
   })
 
+  it('percent-encodes # ? & in the filename (not treated as URL fragment/query)', async () => {
+    const openExternal = vi.fn(async () => undefined)
+    const revealPath = vi.fn(async () => true)
+    vi.stubGlobal('hermesDesktop', { openExternal, revealPath })
+
+    await openFileWithDefaultApp('/Users/echo/report#1.md')
+
+    // `#` must be %23, not left as a fragment delimiter.
+    expect(openExternal).toHaveBeenCalledWith('file:///Users/echo/report%231.md')
+    expect(revealPath).not.toHaveBeenCalled()
+  })
+
+  it('normalizes a Windows path into a valid file:// URL', async () => {
+    // pathToFileURL uses platform-specific path semantics: on macOS a
+    // `C:\...` string is a relative path, so this only holds on Windows.
+    if (process.platform !== 'win32') {
+      return
+    }
+    const openExternal = vi.fn(async () => undefined)
+    const revealPath = vi.fn(async () => true)
+    vi.stubGlobal('hermesDesktop', { openExternal, revealPath })
+
+    await openFileWithDefaultApp('C:\\Users\\echo\\notes\\a b.txt')
+
+    // Backslashes → forward slashes, drive letter prefixed, space encoded.
+    expect(openExternal).toHaveBeenCalledWith('file:///C:/Users/echo/notes/a%20b.txt')
+    expect(revealPath).not.toHaveBeenCalled()
+  })
+
   it('falls back to revealing in the file manager when opening fails', async () => {
     const openExternal = vi.fn(async () => {
       throw new Error('no default app')

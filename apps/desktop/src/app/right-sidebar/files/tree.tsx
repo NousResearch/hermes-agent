@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { pathToFileURL } from 'node:url'
 import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { useMemo } from 'react'
 import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type TreeApi } from 'react-arborist'
@@ -30,7 +31,13 @@ const TREE_ROW_INSET = '17px'
  */
 export async function openFileWithDefaultApp(path: string) {
   try {
-    await window.hermesDesktop?.openExternal(`file://${encodeURI(path)}`)
+    // pathToFileURL correctly percent-encodes every character (including
+    // `#`, `?`, `&`) and normalizes Windows backslashes + drive-letter
+    // prefixes into a valid file:// URL — unlike a hand-rolled
+    // `file://${encodeURI(path)}`, which leaves `#`/`?`/`&` unescaped and
+    // would misroute a filename like `report#1.md` as a URL fragment.
+    const url = pathToFileURL(path).href
+    await window.hermesDesktop?.openExternal(url)
   } catch {
     void window.hermesDesktop?.revealPath?.(path)
   }

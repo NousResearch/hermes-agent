@@ -182,6 +182,7 @@ try:
 except (ValueError, TypeError):
     _ws_orphan_reap_grace = 20.0
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
+_WS_ORPHAN_REAP_EXEMPT_SOURCES = frozenset({"desktop"})
 _TURN_SETTLE_BEFORE_CLOSE_SECONDS = 5.0
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
@@ -1047,6 +1048,8 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     if not session or session.get("_finalized"):
         return False
     if session.get("running"):
+        return False
+    if _session_source(session) in _WS_ORPHAN_REAP_EXEMPT_SOURCES:
         return False
     return session.get("transport") is _detached_ws_transport
 

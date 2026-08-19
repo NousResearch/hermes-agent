@@ -4738,6 +4738,29 @@ def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     assert server._ws_session_is_orphaned(done) is False
 
 
+def test_ws_orphan_reap_spares_desktop_session_across_window_reopen():
+    """Closing a Desktop window is not the end of its live sessions.
+
+    The Electron app and backend remain alive when the last macOS window closes.
+    A later window reconnects and resumes the same durable conversations, which
+    can take longer than the generic 20-second browser-refresh cleanup grace.
+    Desktop sessions remain bounded by the idle-TTL and live-session-cap reapers.
+    """
+    desktop = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+        source="desktop",
+    )
+    dashboard = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+        source="webui",
+    )
+
+    assert server._ws_session_is_orphaned(desktop) is False
+    assert server._ws_session_is_orphaned(dashboard) is True
+
+
 def test_ws_orphan_reap_spares_detached_session_with_running_async_delegation(monkeypatch):
     """A detached desktop session with live background delegation is parked.
 

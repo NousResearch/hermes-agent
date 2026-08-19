@@ -8476,6 +8476,78 @@ def _contains_profile_reasoning_fields(value: Any) -> bool:
     return False
 
 
+# Placeholder injected when an empty non-final assistant turn is stripped of
+# its empty ``tool_calls``. Kept byte-identical to the main-loop constant
+# (agent.agent_runtime_helpers._INTERRUPTED_PLACEHOLDER) so a model sees the
+# same signal for an interrupted turn on both paths. Importing the reference
+# would pull agent_runtime_helpers into the auxiliary import graph, so the
+# value is duplicated here with an explicit sync obligation.
+_INTERRUPTED_PLACEHOLDER = "[response interrupted]"
+
+
+def _strip_empty_tool_calls(messages: list) -> list:
+    """Drop ``tool_calls`` keys that are empty/invalid on assistant messages.
+
+    Strict OpenAI-compatible providers (DeepSeek v4, Console Go / opencode.ai
+    zen, Moonshot) reject an assistant message carrying ``tool_calls: []``
+    with HTTP 400 "Invalid 'messages[N].tool_calls': empty array. Expected an
+    array with minimum length 1, but got an empty array instead." (#58755).
+
+    The main loop strips these pre-send inside ``sanitize_api_messages``
+    (agent_runtime_helpers), but the auxiliary path — MoA aggregator and
+    reference advisors, compression, vision, title generation — goes through
+    ``auxiliary_client.call_llm`` and bypasses that chokepoint. A live-history
+    message that reaches this path with an empty array (interrupted turns,
+    dangling tool-call state after restart, consecutive-assistant merges)
+    400s the whole auxiliary call with a non-retryable error.
+
+    This is the auxiliary counterpart of the main-loop pass: normalize
+    defensively on a request-local copy so the caller's list is never mutated
+    (returning the original object when nothing needs stripping keeps the hot
+    MoA reference path zero-copy). Semantics match the main-loop pass exactly:
+    an assistant message whose ``tool_calls`` is present but not a non-empty
+    list is semantically identical to one without tool calls.
+    """
+    if not messages:
+        return messages
+    needs_strip = any(
+        isinstance(m, dict)
+        and m.get("role") == "assistant"
+        and "tool_calls" in m
+        and not (isinstance(m["tool_calls"], list) and m["tool_calls"])
+        for m in messages
+    )
+    if not needs_strip:
+        return messages
+    out = []
+    stripped = 0
+    last_idx = len(messages) - 1
+    for idx, msg in enumerate(messages):
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and "tool_calls" in msg
+            and not (isinstance(msg["tool_calls"], list) and msg["tool_calls"])
+        ):
+            msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+            # Mirror the main-loop repair semantics exactly: an empty
+            # assistant turn is only a problem NON-final — an empty final
+            # assistant message is legal ("all messages must have non-empty
+            # content except for the optional final assistant message").
+            # repair_empty_non_final_messages deliberately skips the last
+            # message, so placeholder substitution must too, or a valid
+            # final-assistant request gets altered.
+            if idx != last_idx and not str(msg.get("content") or "").strip():
+                msg["content"] = _INTERRUPTED_PLACEHOLDER
+            stripped += 1
+        out.append(msg)
+    logger.debug(
+        "Auxiliary client: stripped empty/invalid tool_calls on %d "
+        "assistant message(s)", stripped,
+    )
+    return out
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -9419,6 +9491,13 @@ def _call_llm_impl(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    # Normalize empty/invalid tool_calls ONCE up front so the SAME cleaned
+    # list reaches the primary send AND every fallback candidate
+    # (_call_fallback_candidate_sync/_async rebuild their own kwargs from
+    # this parameter; per-kwargs stripping below would leave them poisoned).
+    # Strict providers reject tool_calls: [] with HTTP 400 (#84169).
+    messages = _strip_empty_tool_calls(messages)
+
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
     _set_relay_auxiliary_route(
@@ -9476,6 +9555,9 @@ def _call_llm_impl(
             # completed response into a one-chunk delta iterator at its
             # boundary.
             return client.chat.completions.create(**kwargs)
+        _record_route_info(
+            route_info, _fallback_provider_from_label(request_provider), final_model
+        )
         return _relay_sync_stream(
             client,
             kwargs,
@@ -9503,7 +9585,7 @@ def _call_llm_impl(
         # ``first_err`` and the existing fallback handling unchanged. Unified home
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
-            return _validate_llm_response(
+            result = _validate_llm_response(
                 _relay_sync_completion(
                     client,
                     kwargs,
@@ -9520,6 +9602,13 @@ def _call_llm_impl(
                 ),
                 task,
                 provider=request_provider, base_url=_base_info)
+            # Record the route ONLY after a confirmed success — a caller
+            # reading route_info after an exception must not mistake the
+            # last-tried route for the route that answered.
+            _record_route_info(
+                route_info, _fallback_provider_from_label(request_provider), final_model
+            )
+            return result
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -9992,6 +10081,10 @@ def _call_llm_impl(
                     effective_extra_body=effective_extra_body,
                     reasoning_config=reasoning_config)
                 if fb_resp is not None:
+                    # Record only on success (see main-path comment).
+                    _record_route_info(
+                        route_info, _fallback_provider_from_label(fb_label), fb_model
+                    )
                     return fb_resp
                 # The candidate had a stale/unrefreshable credential and was
                 # quarantined — walk the discovery chain once more; unhealthy
@@ -10010,6 +10103,10 @@ def _call_llm_impl(
                         effective_extra_body=effective_extra_body,
                         reasoning_config=reasoning_config)
                     if fb_resp is not None:
+                        # Record only on success (see main-path comment).
+                        _record_route_info(
+                            route_info, _fallback_provider_from_label(fb_label), fb_model
+                        )
                         return fb_resp
             # All fallback layers exhausted — emit a single user-visible
             # warning so the operator knows aux task is about to fail.
@@ -10238,6 +10335,13 @@ async def _async_call_llm_impl(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    # Normalize empty/invalid tool_calls ONCE up front so the SAME cleaned
+    # list reaches the primary send AND every fallback candidate
+    # (_call_fallback_candidate_sync/_async rebuild their own kwargs from
+    # this parameter; per-kwargs stripping below would leave them poisoned).
+    # Strict providers reject tool_calls: [] with HTTP 400 (#84169).
+    messages = _strip_empty_tool_calls(messages)
+
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
     _set_relay_auxiliary_route(
@@ -10259,7 +10363,6 @@ async def _async_call_llm_impl(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
         base_url=_client_base or resolved_base_url, task=task)
-
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(request_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
@@ -10285,7 +10388,7 @@ async def _async_call_llm_impl(
             return await client.chat.completions.create(**_kwargs)
 
         try:
-            return _validate_llm_response(
+            result = _validate_llm_response(
                 await _relay_async_completion(
                     client,
                     kwargs,
@@ -10295,6 +10398,13 @@ async def _async_call_llm_impl(
                 ),
                 task,
                 provider=request_provider, base_url=_client_base)
+            # Record the route ONLY after a confirmed success — a caller
+            # reading route_info after an exception must not mistake the
+            # last-tried route for the route that answered.
+            _record_route_info(
+                route_info, _fallback_provider_from_label(request_provider), final_model
+            )
+            return result
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -10696,6 +10806,12 @@ async def _async_call_llm_impl(
                     effective_extra_body=effective_extra_body,
                     reasoning_config=reasoning_config)
                 if fb_resp is not None:
+                    # Record only on success (see main-path comment).
+                    _record_route_info(
+                        route_info,
+                        _fallback_provider_from_label(fb_label),
+                        async_fb_model or fb_model,
+                    )
                     return fb_resp
                 # Stale/unrefreshable candidate credential — quarantined; walk
                 # the discovery chain once more (unhealthy entries skipped).
@@ -10718,6 +10834,12 @@ async def _async_call_llm_impl(
                         effective_extra_body=effective_extra_body,
                         reasoning_config=reasoning_config)
                     if fb_resp is not None:
+                        # Record only on success (see main-path comment).
+                        _record_route_info(
+                            route_info,
+                            _fallback_provider_from_label(fb_label),
+                            async_fb_model or fb_model,
+                        )
                         return fb_resp
             # All fallback layers exhausted — warn before re-raising. (#26882)
             logger.warning(

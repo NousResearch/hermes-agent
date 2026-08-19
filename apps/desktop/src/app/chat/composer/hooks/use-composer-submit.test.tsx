@@ -148,6 +148,7 @@ describe('useComposerSubmit external request routing', () => {
     const visibleMain = renderSubmitHook({ sessionKey: 'session-a' })
     const hiddenMain = renderSubmitHook({ sessionKey: 'session-b', visible: false })
     const visibleTile = renderSubmitHook({ scopeTarget: 'tile:project-b', sessionKey: 'tile-session' })
+
     const hiddenTile = renderSubmitHook({
       scopeTarget: 'tile:project-c',
       sessionKey: 'other-tile',

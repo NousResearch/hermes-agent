@@ -311,8 +311,8 @@ export const requestComposerSubmit = (
   }
 
   const resolvedTarget = resolve(target)
-  const surfaceId =
-    requestedSurfaceId === undefined ? getVisibleComposerSurfaceId(resolvedTarget) : requestedSurfaceId
+
+  const surfaceId = requestedSurfaceId === undefined ? getVisibleComposerSurfaceId(resolvedTarget) : requestedSurfaceId
 
   // Fail closed: without an exact visible surface identity, broadcasting a
   // submit could make more than one keep-alive/new-chat composer claim it.

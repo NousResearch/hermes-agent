@@ -285,6 +285,7 @@ export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main
   // — never the docked open state, which a 0px track would render invisibly.
   if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
     const target = scopeTarget.trim() || 'main'
+
     const originChanged =
       ($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null) || $reviewScopeTarget.get() !== target
 

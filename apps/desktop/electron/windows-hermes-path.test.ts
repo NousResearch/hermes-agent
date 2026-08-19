@@ -46,10 +46,11 @@ test('buildPathExtCandidates: non-Windows only tries the bare name', () => {
 })
 
 test('chooseUpdaterArgs: gentle --update when both updater runtime files exist', () => {
-  assert.deepEqual(
-    chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: true, hasVenvPython: true }, 'main'),
-    ['--update', '--branch', 'main']
-  )
+  assert.deepEqual(chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: true, hasVenvPython: true }, 'main'), [
+    '--update',
+    '--branch',
+    'main'
+  ])
 })
 
 test('chooseUpdaterArgs: marker-only install uses --repair when the venv is gone', () => {
@@ -60,14 +61,16 @@ test('chooseUpdaterArgs: marker-only install uses --repair when the venv is gone
 })
 
 test('chooseUpdaterArgs: partial updater runtimes use --repair', () => {
-  assert.deepEqual(
-    chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: false, hasVenvPython: true }, 'main'),
-    ['--repair', '--branch', 'main']
-  )
-  assert.deepEqual(
-    chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: true, hasVenvPython: false }, 'main'),
-    ['--repair', '--branch', 'main']
-  )
+  assert.deepEqual(chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: false, hasVenvPython: true }, 'main'), [
+    '--repair',
+    '--branch',
+    'main'
+  ])
+  assert.deepEqual(chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: true, hasVenvPython: false }, 'main'), [
+    '--repair',
+    '--branch',
+    'main'
+  ])
 })
 
 test('chooseUpdaterArgs: passes the branch through unchanged in both modes', () => {

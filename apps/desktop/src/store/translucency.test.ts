@@ -194,7 +194,7 @@ describe('glass mode', () => {
     setTranslucency(TRANSLUCENCY_MIN)
   })
 
-    it('rejects glass when the platform cannot back it', () => {
+  it('rejects glass when the platform cannot back it', () => {
     setTranslucency(50)
     setTranslucencyMode('glass')
 

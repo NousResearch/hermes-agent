@@ -17685,6 +17685,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
+
+        # Slash commands retain their raw Telegram lane through /topic (and the
+        # raw-only /new lobby handling above). Before any remaining registered
+        # command can acknowledge or mutate persistent state, perform the
+        # authoritative busy decision against a recovered topic session. Only
+        # replace the source when that canonical session is busy; idle commands
+        # keep their established raw-context handlers. Dynamic skill/bundle
+        # commands still expand first and use the existing late busy routing so
+        # queue/steer receives the loaded prompt rather than the slash text.
+        if (
+            command
+            and _cmd_def is not None
+            and source.platform == Platform.TELEGRAM
+            and not _source_canonicalized_early
+        ):
+            _command_canonical_source = await asyncio.to_thread(
+                self._normalize_source_for_session_key,
+                source,
+            )
+            if _command_canonical_source is not source:
+                _command_canonical_key = self._session_key_for_source(
+                    _command_canonical_source
+                )
+                if self._is_session_running(_command_canonical_key):
+                    logger.info(
+                        "telegram topic recovery before busy command dispatch: "
+                        "chat=%s user=%s %r -> %s",
+                        source.chat_id,
+                        source.user_id,
+                        source.thread_id,
+                        _command_canonical_source.thread_id,
+                    )
+                    source = _command_canonical_source
+                    event.source = _command_canonical_source
+                    _quick_key = _command_canonical_key
+                    _canonical_busy_handled, _canonical_busy_response = (
+                        await self._route_late_canonical_busy_message(
+                            event,
+                            source=source,
+                            session_key=_quick_key,
+                            command_def=_cmd_def,
+                            raw_text=_busy_command_text,
+                        )
+                    )
+                    if _canonical_busy_handled:
+                        return _canonical_busy_response
         
         if canonical == "help":
             return await self._handle_help_command(event)

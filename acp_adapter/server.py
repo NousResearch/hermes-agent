@@ -2071,6 +2071,17 @@ class HermesACPAgent(acp.Agent):
                     )
 
             agent._on_session_title = _notify_title_update
+            # Snapshot _session_messages' CONTENT (not just a reference --
+            # _persist_session() may mutate the same list object in place)
+            # before the turn starts, so the except-block below can tell
+            # "this turn actually persisted new progress" from "this is
+            # whatever was already sitting there" -- see the comment there.
+            try:
+                pre_turn_agent_messages = list(
+                    getattr(agent, "_session_messages", None) or []
+                )
+            except TypeError:
+                pre_turn_agent_messages = []
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -2081,7 +2092,40 @@ class HermesACPAgent(acp.Agent):
                 return result
             except Exception as e:
                 logger.exception("Agent error in session %s", session_id)
-                return {"final_response": f"Error: {e}", "messages": state.history}
+                # agent.run_conversation() builds its own working copy from
+                # conversation_history (agent/turn_context.py: messages =
+                # list(conversation_history)) and persists it independently
+                # into agent._session_messages via _persist_session(), called
+                # per tool round/API call throughout the turn -- see
+                # agent/conversation_loop.py. On a raise, that working copy is
+                # ahead of this ACP session's own state.history snapshot,
+                # which the caller only ever replaces from a successful
+                # return's "messages" key. Return the working copy instead of
+                # replaying the pre-turn snapshot on the next prompt (mirrors
+                # tui_gateway/server.py's _restore_agent_history_after_turn_error,
+                # #80770).
+                #
+                # _session_messages is ALWAYS a list (agent/agent_init.py
+                # initializes it to []), so isinstance(..., list) alone never
+                # discriminates "genuine this-turn progress" from "whatever
+                # was already sitting there" -- including stale leftover
+                # content from a conversation /reset cleared on state.history
+                # but never touched on the agent side (reset_session_state()
+                # only resets session-scoped counters/compressor state, not
+                # this cache; see _cmd_reset). Compare against the pre-turn
+                # snapshot too: only adopt the working copy when
+                # _persist_session() actually ran during THIS turn and
+                # changed it -- otherwise it's stale, and state.history (the
+                # correct post-reset/pre-turn value) is what belongs on the
+                # next prompt.
+                agent_messages = getattr(agent, "_session_messages", None)
+                recovered_history = (
+                    agent_messages
+                    if isinstance(agent_messages, list)
+                    and agent_messages != pre_turn_agent_messages
+                    else state.history
+                )
+                return {"final_response": f"Error: {e}", "messages": recovered_history}
             finally:
                 # Restore the interactive contextvar for this context.
                 if interactive_token is not None:

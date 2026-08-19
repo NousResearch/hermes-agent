@@ -1518,6 +1518,26 @@ class SessionStore:
                         "entr%s missing from state.db routing table",
                         imported, "y" if imported == 1 else "ies",
                     )
+                if imported:
+                    # Persist immediately rather than waiting for the next
+                    # natural _save() trigger: get_or_create_session()'s
+                    # per-request self-heal (below) treats a routing key
+                    # present in self._entries but ABSENT from the
+                    # gateway_routing table as purged-by-a-concurrent-prune
+                    # and drops it. An entry freshly imported from the
+                    # legacy mirror is legitimate but, until saved, is in
+                    # exactly that "in self._entries, not yet in the DB
+                    # table" state — closing the gap here keeps that
+                    # self-heal check honest instead of misfiring on
+                    # legacy-import installs (whether or not the DB table
+                    # had OTHER entries already).
+                    try:
+                        self._save()
+                    except Exception as e:
+                        logger.warning(
+                            "gateway.session: failed to persist imported "
+                            "legacy sessions.json entries: %s", e,
+                        )
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
@@ -2421,6 +2441,36 @@ class SessionStore:
             return False
         return bool(row is not None and row.get("end_reason") is not None)
 
+    def _is_routing_entry_purged(self, session_key: str) -> bool:
+        """True iff *session_key* is cached in-memory but the durable
+        gateway_routing table no longer has a row for it (#59512).
+
+        Distinct from :meth:`_is_session_ended_in_db`: that method treats a
+        missing ``sessions`` row as "keep" because it can't tell a session
+        that was never persisted from one whose row was deleted out from
+        under it — a legitimate ambiguity for that call's other purpose. This
+        check instead asks whether the routing table ITSELF still carries an
+        entry for the key. ``SessionDB.prune_sessions()`` (``hermes sessions
+        prune``, a separate process sharing the same state.db) explicitly
+        purges gateway_routing rows for session_ids it hard-deletes, so a
+        "no" answer here means a concurrent prune ran, not an unpersisted
+        entry — legacy sessions.json imports are persisted immediately on
+        load (see ``_ensure_loaded_locked``) specifically so this check
+        never sees a false positive for that case.
+
+        DB errors are non-fatal — never block routing on a failed lookup.
+        """
+        db = getattr(self, "_db", None)
+        if not db or not session_key:
+            return False
+        checker = getattr(db, "gateway_routing_entry_exists", None)
+        if not callable(checker):
+            return False
+        try:
+            return not checker(session_key, scope=self._routing_scope())
+        except Exception:
+            return False
+
     def _should_reset(self, entry: SessionEntry, source: SessionSource) -> Optional[str]:
         """
         Check if a session should be reset based on policy.
@@ -2681,9 +2731,23 @@ class SessionStore:
 
         # ---- Phase 1b: no-lock I/O -- stale check + reset policy ----
         _is_stale = False
+        _purged_by_prune = False
         _reset_reason = None
         if _entry_for_checks is not None and _stale_session_id is not None:
             _is_stale = self._is_session_ended_in_db(_stale_session_id)
+            if not _is_stale:
+                # Distinct from the ended-in-db case above: the session_id
+                # row is gone entirely (hard-deleted by a concurrent
+                # `hermes sessions prune`, not merely ended), and the DB's
+                # own gateway_routing table no longer carries this routing
+                # key either — SessionDB.prune_sessions() purges it there
+                # directly. _is_session_ended_in_db() can't distinguish this
+                # from "not yet persisted" (both read as a missing sessions
+                # row), so check the routing table itself, which prune
+                # purges but a legitimate not-yet-saved entry has not
+                # reached yet (the legacy-import path persists on load
+                # specifically so this check stays accurate) (#59512).
+                _purged_by_prune = self._is_routing_entry_purged(session_key)
             if _entry_for_checks.suspended:
                 _reset_reason = "suspended"
             elif _entry_for_checks.resume_pending:
@@ -2736,20 +2800,23 @@ class SessionStore:
                     entry, existing_session_id, canonical_existing_session_id
                 )
 
-                if _is_stale and entry.session_id == _stale_session_id:
+                if (_is_stale or _purged_by_prune) and entry.session_id == _stale_session_id:
                     # Stale routing self-heal (#54878): the in-memory entry
                     # points at a session that has ALREADY been ended in
-                    # state.db.  Drop it and fall through to recovery/create.
-                    # Recovery finder reopens ``agent_close`` and mistaken
-                    # ``ws_orphan_reap`` rows (preserving the transcript) but
-                    # returns None for other end_reasons (e.g. /new), starting
-                    # a fresh session.
+                    # state.db, or (#59512) whose row was hard-deleted by a
+                    # concurrent `hermes sessions prune` (gateway_routing no
+                    # longer carries this key either). Drop it and fall
+                    # through to recovery/create. Recovery finder reopens
+                    # ``agent_close`` and mistaken ``ws_orphan_reap`` rows
+                    # (preserving the transcript) but returns None for other
+                    # end_reasons (e.g. /new), starting a fresh session.
                     logger.warning(
-                        "gateway.session: routing key %r -> %s is ended in "
-                        "state.db but still live in sessions.json; dropping "
-                        "stale entry and recovering/recreating the session "
-                        "(#54878)",
+                        "gateway.session: routing key %r -> %s is %s; "
+                        "dropping stale entry and recovering/recreating the "
+                        "session (#54878, #59512)",
                         session_key, entry.session_id,
+                        "ended in state.db" if _is_stale
+                        else "no longer present in gateway_routing (pruned)",
                     )
                     self._entries.pop(session_key, None)
                     # If an expiry watcher (daily/idle reset) already finalized

@@ -140,11 +140,13 @@ export function ProjectDialog() {
       // closes, so the user is back in the menu/submenu and the toast lands
       // against the right surface. Errors here are toasted but never block
       // the dialog's own success path — the project IS created either way.
+      // The project was already created at this point, so a failure in the
+      // follow-up move must not be reported as a create failure.
       if (created && state?.onCreated) {
         try {
           await state.onCreated(created)
         } catch (err) {
-          notifyError(err, p.createFailed)
+          notifyError(err, p.moveFailed)
         }
       }
     }

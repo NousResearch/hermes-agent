@@ -99,6 +99,19 @@ class TestApprovalsSaveBroadcast:
             "re-emit session.info"
         )
 
+    def test_own_profile_named_default_broadcasts(self, client, broadcast_calls):
+        """Dashboard/desktop often send ?profile=default for this process's
+        own home. That is not an other-profile save and must still emit."""
+        resp = client.put(
+            "/api/config?profile=default",
+            json={"config": {"approvals": {"mode": "off"}}},
+        )
+        assert resp.status_code == 200
+        assert broadcast_calls, (
+            "?profile=default is this process's own HERMES_HOME; skipping "
+            "the broadcast leaves live sessions painting stale YOLO state"
+        )
+
     def test_other_profile_save_does_not_broadcast(self, client, broadcast_calls, monkeypatch, tmp_path):
         from hermes_cli import web_server
 

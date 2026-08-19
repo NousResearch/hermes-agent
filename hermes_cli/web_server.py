@@ -7067,7 +7067,13 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
 def _is_other_profile(profile: Optional[str]) -> bool:
     """True when ``profile`` names a profile other than this process's own."""
     requested = (profile or "").strip()
-    return bool(requested) and requested.lower() != "current"
+    if not requested or requested.lower() == "current":
+        return False
+    try:
+        target = _resolve_profile_dir(requested)
+    except HTTPException:
+        return True
+    return target.resolve() != get_process_hermes_home().resolve()
 
 
 def _approval_mode_of(config: Dict[str, Any]) -> str:

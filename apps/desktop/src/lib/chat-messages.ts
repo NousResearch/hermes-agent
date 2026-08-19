@@ -118,6 +118,14 @@ export type GatewayEventPayload = {
   pane?: string
   // layout.apply (agent applying a layout preset via the apply_layout tool)
   preset?: string
+  // tour.request (tour tool — agent-guided driver.js walkthrough). `action`
+  // and `steps` name the tour verb and step list; `surface` picks the app's
+  // own DOM vs the preview pane's guest page.
+  surface?: string
+  selector?: string
+  side?: string
+  steps?: unknown
+  step_index?: number
   // message.reaction (agent reacting via the react_to_message tool) — the
   // durable messages.id, that row's full reaction list after the write, and
   // the row's role so a live (not-yet-round-tripped) message can be matched.

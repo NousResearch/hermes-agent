@@ -1432,6 +1432,16 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "text", allow_expired=True)
 
 
+@method("tour.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string with the tour action's outcome (tour tool) —
+    # matched targets, the active step, or an error naming the bad selector.
+    # allow_expired=True for the same reason as terminal.read: a preview tour
+    # injecting driver.js into a slow page can lose the race with the tool's
+    # bounded wait.
+    return _respond(rid, params, "text", allow_expired=True)
+
+
 @method("mcp.setup.respond")
 def _(rid, params: dict) -> dict:
     # `result` is a JSON string of the setup card's outcome ({status, server,

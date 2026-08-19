@@ -69,6 +69,33 @@ def _int_value(value: Any) -> int:
         return 0
 
 
+def _parse_gateway_runtime(raw_model_config: Any) -> dict:
+    """Return the persisted live-routing snapshot from a session's model_config.
+
+    The gateway records the route actually serving a session — including any
+    active fallback provider — into ``model_config.gateway_runtime`` on every
+    provider switch (``provider``/``base_url``/``api_mode``/``fallback_active``).
+    ``billing_provider`` can lag that route (no accounting has landed yet, or an
+    upstream proxy omits streaming usage), so status/usage read this snapshot to
+    reflect the live provider rather than the configured default (#75535).
+
+    Accepts the raw ``model_config`` column (a JSON string or already-decoded
+    dict) and always returns a dict, empty when absent or unparseable.
+    """
+    config: Any = raw_model_config
+    if isinstance(config, str):
+        import json
+
+        try:
+            config = json.loads(config) if config else {}
+        except Exception:
+            return {}
+    if not isinstance(config, dict):
+        return {}
+    runtime = config.get("gateway_runtime")
+    return runtime if isinstance(runtime, dict) else {}
+
+
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
 
@@ -688,6 +715,17 @@ class GatewaySlashCommandsMixin:
             provider_name = _clean_str(session_row.get("billing_provider"))
             base_url = _clean_str(session_row.get("billing_base_url"))
         context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+
+        # Before the configured default, fall back to the persisted live-routing
+        # snapshot: when a session runs on a fallback provider, billing_provider
+        # is often still empty, so /status would otherwise show the configured
+        # default instead of the provider actually serving the session (#75535).
+        if not provider_name or not base_url:
+            gateway_runtime = _parse_gateway_runtime(session_row.get("model_config"))
+            if not provider_name:
+                provider_name = _clean_str(gateway_runtime.get("provider"))
+            if not base_url:
+                base_url = _clean_str(gateway_runtime.get("base_url"))
 
         user_config: dict[str, Any] = {}
         if not model_name or not provider_name or not context_total:
@@ -5308,7 +5346,7 @@ class GatewaySlashCommandsMixin:
         provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        if not provider and getattr(self, "_session_db", None) is not None:
+        if (not provider or not base_url) and getattr(self, "_session_db", None) is not None:
             try:
                 _entry_for_billing = await self.async_session_store.get_or_create_session(source)
                 persisted = await self._session_db.get_session(_entry_for_billing.session_id) or {}
@@ -5319,12 +5357,22 @@ class GatewaySlashCommandsMixin:
             except Exception:
                 persisted = {}
                 persisted_route = {}
+            # Only fill gaps — a live agent may already carry the provider while
+            # missing just the base_url (the widened guard above lets that case
+            # reach here), so never clobber an already-resolved provider/base_url.
             if persisted_route.get("billing_provider"):
-                provider = persisted_route["billing_provider"]
-                base_url = persisted_route.get("billing_base_url")
+                provider = provider or persisted_route["billing_provider"]
+                base_url = base_url or persisted_route.get("billing_base_url")
             else:
-                provider = persisted.get("billing_provider")
-                base_url = persisted.get("billing_base_url")
+                provider = provider or persisted.get("billing_provider")
+                base_url = base_url or persisted.get("billing_base_url")
+            # billing_provider (and the dominant accounted route) both lag a
+            # freshly-activated fallback, so consult the persisted live-routing
+            # snapshot before /usage gives up and shows the config default (#75535).
+            if not provider or not base_url:
+                gateway_runtime = _parse_gateway_runtime(persisted.get("model_config"))
+                provider = provider or gateway_runtime.get("provider")
+                base_url = base_url or gateway_runtime.get("base_url")
 
         if wants_reset:
             normalized_provider = str(provider or "").strip().lower()

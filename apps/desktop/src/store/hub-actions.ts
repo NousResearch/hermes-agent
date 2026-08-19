@@ -122,6 +122,17 @@ async function runHubAction(
     // …and the composer's `/` list, which caches the command catalog for an
     // hour and would otherwise keep offering the skill we just removed.
     invalidateSlashCompletions()
+
+    // A non-zero exit is a real failure — throw so the caller's catch toasts
+    // it. Before this, a failed subprocess (scan gate, network, bad
+    // identifier) just stopped silently: no flip, no toast, and the user read
+    // the unchanged skills list as "install did nothing" (Aug 2026 report).
+    // The last log lines carry the subprocess's actual error.
+    if (exitCode !== null && exitCode !== 0) {
+      const detail = ($hubActions.get()[key]?.lines ?? []).slice(-3).join('\n').trim()
+
+      throw new Error(detail || `Action exited with code ${exitCode}`)
+    }
   } catch (err) {
     // A profile switch points the next poll at the new backend, which 404s the
     // old action name — that's an abandonment, not a failure, so swallow it

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 from tools.process_registry import ProcessRegistry, ProcessSession
@@ -37,6 +37,7 @@ def _runner(adapter, *, origins=None, adapters=None):
     runner = object.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter} if adapters is None else adapters
+    runner.config = GatewayConfig()
     runner.session_store = SimpleNamespace(
         _ensure_loaded=lambda: None,
         _entries=origins or {},
@@ -265,6 +266,42 @@ def test_unparseable_key_with_persisted_source_still_delivers(
 
     assert result is True
     adapter.handle_message.assert_awaited_once()
+    record = _durable(event["delegation_id"])
+    assert record["delivery_state"] == "delivered"
+    assert record["delivery_attempts"] == 1
+
+
+@pytest.mark.parametrize("logical_platform", [Platform.SLACK, Platform.DISCORD])
+def test_relay_only_persisted_completion_route_delivers_and_acks(
+    isolated_registry, logical_platform,
+):
+    """Persisted logical routes use the injector's alias-aware relay resolver."""
+    event = _raw_async_event(f"deleg_relay_{logical_platform.value}")
+    _persist_pending_completion(event)
+
+    source = SessionSource(
+        platform=logical_platform,
+        chat_id="relay-chat",
+        chat_type="channel",
+    )
+    relay = SimpleNamespace(
+        fronts_platform=lambda platform: platform == logical_platform,
+        handle_message=AsyncMock(),
+    )
+    runner = _runner(
+        None,
+        origins={event["session_key"]: SimpleNamespace(origin=source)},
+        adapters={Platform.RELAY: relay},
+    )
+
+    result = asyncio.run(
+        runner._deliver_completion_notification("completion", dict(event))
+    )
+
+    assert result is True
+    relay.handle_message.assert_awaited_once()
+    delivered = relay.handle_message.await_args.args[0]
+    assert delivered.source.platform == logical_platform
     record = _durable(event["delegation_id"])
     assert record["delivery_state"] == "delivered"
     assert record["delivery_attempts"] == 1
@@ -1004,6 +1041,34 @@ def test_same_tick_async_batch_coalesces_into_one_turn_and_acks_all_rows(
         assert row is not None
         assert row["delivery_state"] == "delivered"
     assert isolated.empty()
+
+
+def test_unroutable_same_tick_async_batch_leaves_every_row_unclaimed(
+    monkeypatch, isolated_registry,
+):
+    """No gateway owner means no member of a coalesced batch burns an attempt."""
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    events = [
+        _raw_async_event(f"deleg_unroutable_batch_{index}")
+        for index in range(2)
+    ]
+    for event in events:
+        _persist_pending_completion(event)
+        isolated.put(dict(event))
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    adapter.handle_message.assert_not_awaited()
+    assert isolated.empty()
+    for event in events:
+        record = _durable(event["delegation_id"])
+        assert record["delivery_state"] == "pending"
+        assert record["delivery_attempts"] == 0
 
 
 def test_same_tick_async_events_for_different_sessions_do_not_coalesce(

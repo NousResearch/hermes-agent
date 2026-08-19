@@ -3168,7 +3168,6 @@ class ShellFileOperations(FileOperations):
         # so we grab generously and filter in Python.
         fetch_limit = limit + offset + 200 if context > 0 else limit + offset
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
-        
         # `set -o pipefail` so rg's exit status propagates through `| head`.
         # Without it the pipeline reports head's status (0), masking rg's
         # error code (2) and making the guard below unreachable. rg handles a
@@ -3202,11 +3201,18 @@ class ShellFileOperations(FileOperations):
         if output_mode == "files_only":
             all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
+            # The fetch was truncated by `| head -n fetch_limit` — the real
+            # total is larger than what we fetched. Run a dedicated count to
+            # report the true number of matching files (#79530).
+            if total >= fetch_limit and not limit_reason:
+                total = self._count_rg_files(pattern, path, file_glob)
+                if total < 0:
+                    total = len(all_files)  # count failed — keep estimate
             page = all_files[offset:offset + limit]
             return SearchResult(
                 files=page,
                 total_count=total,
-                truncated=bool(limit_reason),
+                truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
                 warning=_ml_note,
             )
@@ -3221,10 +3227,22 @@ class ShellFileOperations(FileOperations):
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
                             pass
+            # Same truncation correction: count-mode output is also piped
+            # through `| head`, so when we hit the fetch ceiling the true
+            # total is under-reported.
+            if len(counts) >= fetch_limit and not limit_reason:
+                counts, total = self._count_rg_matches(
+                    pattern, path, file_glob, limit, offset
+                )
+                if total < 0:
+                    # count query failed — keep the fetched estimate
+                    total = sum(counts.values()) if counts else len(counts)
+            else:
+                total = sum(counts.values())
             return SearchResult(
                 counts=counts,
-                total_count=sum(counts.values()),
-                truncated=bool(limit_reason),
+                total_count=total,
+                truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
             )
         
@@ -3264,6 +3282,16 @@ class ShellFileOperations(FileOperations):
             
             total = len(matches)
             page = matches[offset:offset + limit]
+            # Truncation correction for the default content mode (#79530):
+            # when the fetch hit the `| head` ceiling, count the true total
+            # of matches with a dedicated count query so `total_count` stops
+            # under-reporting.
+            if total >= fetch_limit and not limit_reason:
+                _counts, _total = self._count_rg_matches(
+                    pattern, path, file_glob, limit, offset
+                )
+                if _total >= 0:
+                    total = _total
             return SearchResult(
                 matches=page,
                 total_count=total,
@@ -3272,6 +3300,56 @@ class ShellFileOperations(FileOperations):
                 warning=_ml_note,
             )
     
+    def _count_rg_files(self, pattern: str, path: str, file_glob: Optional[str]) -> int:
+        """Count matching files with ripgrep (untruncated).
+
+        ``rg -l`` piped through ``head`` truncates; ``rg --files-with-matches
+        | wc -l`` counts the true total. Used to correct ``total_count`` when
+        the main fetch hit its ceiling (#79530).
+        """
+        try:
+            cmd = (
+                f"rg -l --no-messages {self._escape_shell_arg(pattern)} "
+                f"{self._escape_shell_arg(path)}"
+                + (f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else "")
+                + " | wc -l"
+            )
+            result = self._exec(cmd, timeout=60)
+            return int(result.stdout.strip() or 0)
+        except Exception:
+            return -1
+
+    def _count_rg_matches(
+        self, pattern: str, path: str, file_glob: Optional[str],
+        limit: int, offset: int,
+    ) -> tuple[dict[str, int], int]:
+        """Count per-file matches and the true total (untruncated).
+
+        ``rg --count-matches`` emits one ``file:count`` line per matching
+        file — no match content, so it is cheap and immune to the
+        ``| head`` truncation of the main fetch. Returns ``(counts, total)``
+        used to correct ``total_count`` (#79530). Falls back to ``({}, -1)``
+        so callers can detect the failure and keep the fetched estimate.
+        """
+        try:
+            cmd = (
+                f"rg --count-matches --no-messages {self._escape_shell_arg(pattern)} "
+                f"{self._escape_shell_arg(path)}"
+                + (f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else "")
+            )
+            result = self._exec(cmd, timeout=60)
+            counts: dict[str, int] = {}
+            for line in result.stdout.strip().split("\n"):
+                if ":" in line:
+                    parts = line.rsplit(":", 1)
+                    try:
+                        counts[parts[0]] = int(parts[1])
+                    except ValueError:
+                        pass
+            return counts, sum(counts.values())
+        except Exception:
+            return {}, -1
+
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""

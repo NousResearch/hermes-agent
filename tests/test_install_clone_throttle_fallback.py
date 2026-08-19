@@ -11,9 +11,16 @@ The contract pinned here:
 - The HTTPS clone is retried with backoff before giving up.
 - A failed direct attempt is retried after removing the partial clone.
 - When every direct attempt fails, the installer degrades to a blobless
-  partial clone (`--filter=blob:none`) and materializes the working tree
-  with `git reset --hard HEAD` — many small packs instead of one big one,
-  which is what gets past the throttle.
+  partial clone (`--filter=blob:none --no-checkout`) and materializes the
+  working tree with `git reset --hard HEAD` — the clone itself is
+  commits+trees only (small, passes the throttle) and the reset becomes
+  the separate blob fetch the retry can wrap (review of #89629: without
+  --no-checkout the blob fetch runs inside `git clone`'s own checkout,
+  so the throttle kills the whole clone and the fallback degrades to one
+  more failed clone).
+- Materialization fails closed: both reset attempts failing must remove
+  the checkout and report a clone failure, never report success over an
+  unusable tree.
 """
 
 from __future__ import annotations
@@ -46,8 +53,9 @@ def _https_branch() -> str:
 
 def test_https_clone_is_retried_with_backoff():
     branch = _https_branch()
-    assert re.search(r"for attempt in 1 2 3 4", branch), (
-        "the HTTPS clone must be retried a bounded number of times"
+    assert re.search(r"for attempt in \$\(seq 1 \"\$max_attempts\"\)", branch), (
+        "the HTTPS clone must be retried a bounded number of times, with the "
+        "loop bound driven by the same variable the messages report"
     )
     assert re.search(r"sleep \$\(\(attempt \* 5\)\)", branch), (
         "retries must back off between attempts"
@@ -66,9 +74,42 @@ def test_blobless_partial_clone_fallback_exists():
         "after direct attempts fail, degrade to a blobless partial clone "
         "(many small packs — what gets past the repo-scoped 429)"
     )
+    assert re.search(
+        r"git clone --depth 1 --single-branch --filter=blob:none \\\n"
+        r"\s*--no-checkout --branch \"\$BRANCH\"",
+        branch,
+    ), (
+        "the partial clone must defer the checkout (--no-checkout): the blob "
+        "fetch otherwise runs inside git clone's own checkout step, the "
+        "throttle kills the whole clone, and the fallback never engages"
+    )
     assert re.search(r"git reset --hard HEAD", branch), (
         "the partial clone's working tree must be materialized so the rest "
         "of the installer sees the normal files"
+    )
+
+
+def test_materialization_fails_closed():
+    """A failed blob materialization must not report a successful clone.
+
+    The reset on a --no-checkout clone is the step that fetches the blobs,
+    so it is the step most likely to be throttled. `|| true` plus an
+    unconditional `clone_ok=true` would hand the rest of the installer a
+    half-materialized tree while printing "Cloned via HTTPS".
+    """
+    branch = _https_branch()
+    fallback = branch.split('log_info "Direct clone throttled')[1]
+    assert "|| true" not in fallback, (
+        "the materialization retry must not swallow a hard failure"
+    )
+    m = re.search(
+        r"if \(cd \"\$INSTALL_DIR\" \\\n"
+        r"\s*&& \(git reset --hard HEAD",
+        fallback,
+    )
+    assert m is not None, (
+        "the reset must be guarded: its success is the condition that sets "
+        "clone_ok, and a failed reset must clean up the checkout"
     )
 
 

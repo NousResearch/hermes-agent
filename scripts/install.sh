@@ -1484,7 +1484,7 @@ EOF
             local clone_ok=false
             local attempt=0
             local max_attempts=4
-            for attempt in 1 2 3 4; do
+            for attempt in $(seq 1 "$max_attempts"); do
                 [ "$attempt" -gt 1 ] && log_info "Retrying HTTPS clone (attempt $attempt/$max_attempts)..."
                 if git clone --depth 1 --single-branch --branch "$BRANCH" \
                      "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
@@ -1496,18 +1496,26 @@ EOF
             done
             if [ "$clone_ok" != true ]; then
                 log_info "Direct clone throttled — trying blobless partial clone..."
+                # --no-checkout keeps the clone itself to commits+trees (small,
+                # gets past the pack throttle). Without it the blob fetch runs
+                # inside `git clone`'s own checkout step, the throttle kills
+                # the whole clone, and this fallback degrades to one more
+                # failed clone. The blobs are fetched by the reset below — a
+                # separate request the retry can actually wrap.
                 if git clone --depth 1 --single-branch --filter=blob:none \
-                     --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-                    # Materialize the working tree (fetches blobs in small
-                    # packs; one retry helps when the fetch itself is
-                    # throttled). The checkout git printed during the partial
-                    # clone shows missing-content placeholders until this
-                    # reset runs.
-                    cd "$INSTALL_DIR" 2>/dev/null || true
-                    git reset --hard HEAD >/dev/null 2>&1 \
-                        || git reset --hard HEAD >/dev/null 2>&1 \
-                        || true
-                    clone_ok=true
+                     --no-checkout --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                    # Materialize the working tree: on a --no-checkout clone
+                    # this reset is the step that fetches the blobs (several
+                    # small packs instead of one big one). Fail closed — a
+                    # half-materialized checkout must not report success and
+                    # hand the rest of the installer an unusable tree.
+                    if (cd "$INSTALL_DIR" \
+                        && (git reset --hard HEAD >/dev/null 2>&1 \
+                            || { sleep 5; git reset --hard HEAD >/dev/null 2>&1; })); then
+                        clone_ok=true
+                    else
+                        rm -rf "$INSTALL_DIR" 2>/dev/null  # unusable checkout
+                    fi
                 else
                     rm -rf "$INSTALL_DIR" 2>/dev/null
                 fi

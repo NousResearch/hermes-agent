@@ -3443,6 +3443,7 @@ def compress_context(
                     agent._session_db.archive_and_compact(
                         agent.session_id,
                         compressed,
+                        topic_id=getattr(agent, "_active_topic_id", None),
                         model_config_patch={
                             PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None,
                         },

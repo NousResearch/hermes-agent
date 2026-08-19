@@ -335,6 +335,73 @@ def _profile_name_for_home(home: Path) -> str:
         return "default"
 
 
+def _build_topic_detection_block(agent: Any) -> str:
+    """Build the session topic index and auto-detection instruction.
+
+    Returns an empty string if topic segmentation is not active or no
+    topics exist yet. Placed at the end of the system prompt so changes
+    only invalidate the last few lines of the prefix cache.
+    """
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if not db or not session_id:
+        return ""
+
+    try:
+        topics = db.get_topics(session_id)
+    except Exception:
+        return ""
+
+    topic_rows = []
+    for topic in topics:
+        if len(topic_rows) < 5:
+            topic_rows.append(topic)
+
+    lines = []
+    if topic_rows:
+        lines.append("## Session Topics")
+        lines.append("")
+        lines.append("| # | Topic | Msgs | State |")
+        lines.append("|---|-------|------|-------|")
+        for topic in topic_rows:
+            state_marker = "**active**" if topic["state"] == "active" else topic["state"]
+            lines.append(
+                f"| {topic['id']} | {topic['title']} | {topic['message_count']} | {state_marker} |"
+            )
+        total = len(topics)
+        if total > 5:
+            lines.append("")
+            lines.append(f"... and {total - 5} more archived topics.")
+        lines.append("")
+
+    # Ask agent to classify the topic as part of its response
+    lines.append(
+        "Append exactly one line to every response: TOPIC: <name>"
+    )
+    lines.append(
+        "Format rules (critical):"
+    )
+    lines.append(
+        "- The prefix MUST be the literal English word 'TOPIC:' — never "
+        "'主题：', '话题：', or any localized equivalent."
+    )
+    lines.append(
+        "- The topic <name> MUST be in English (kebab-case: "
+        "'docker-setup', 'pr-review', 'curriculum-design')."
+    )
+    lines.append(
+        "- One line, no trailing punctuation, placed at the very end of "
+        "your response."
+    )
+    lines.append(
+        "For brief asides or one-off questions, stay on the"
+        " current topic name. Only introduce a new name when"
+        " the conversation shifts to a sustained new subject."
+        " Same name for follow-ups on the same subject."
+    )
+    return "\n".join(lines)
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers.
 
@@ -854,6 +921,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.platform:
         timestamp_line += f"\nPlatform: {agent.platform}"
     volatile_parts.append(timestamp_line)
+
+    # ── Session Topic Index (auto-detection enabled) ───────────────
+    _topic_detection = _build_topic_detection_block(agent)
+    if _topic_detection:
+        volatile_parts.append(_topic_detection)
 
     return {
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),

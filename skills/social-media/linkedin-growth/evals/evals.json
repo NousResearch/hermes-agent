@@ -1,0 +1,88 @@
+{
+  "skill": "linkedin-growth",
+  "version": "1.0.0",
+  "description": "The LinkedIn personal-profile growth playbook for 2026 — dwell time + early meaningful comments as the engine, the profile as a landing page, strategic commenting on target accounts as the afterburner, the golden hour, native surfaces (newsletters/video/audio), and connections-vs-followers hygiene. Uses the LADDER framework. Reads brand-profile + voice-builder first. The agent drafts posts + comment copy and designs the system; a human does the live commenting/connecting/DMs; WoopSocial schedules posts; metrics come from native LinkedIn analytics (SSI directional); nothing is fabricated. Distinct from linkedin-post-writer (single-post craft) and linkedin-company-pages (the page).",
+  "evals": [
+    {
+      "name": "dwell_and_comments_engine",
+      "input": "How do I grow on LinkedIn?",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Frames dwell time and early meaningful comments as the ranking engine (likes barely count; engagement bait is down-ranked), on a PERSONAL profile — personal profiles get ~65% of feed allocation vs ~1-5% for pages (verify-quarterly)",
+        "Introduces the LADDER framework (Landing-page profile, Author for dwell, Deploy strategic comments, Drive the golden hour, Expand with native surfaces, Relationships & network hygiene)",
+        "Positions strategic commenting on 10-20 target accounts (5-10 substantive comments/day) as the cheapest growth lever, not just posting more",
+        "Reads brand-profile + voice-builder first and notes LinkedIn fits B2B/services/thought-leadership/hiring"
+      ]
+    },
+    {
+      "name": "profile_as_landing_page",
+      "input": "I get decent views on my LinkedIn posts but almost no new followers.",
+      "expect": [
+        "Diagnoses the profile as the conversion point: every post's job ends at a profile visit, and the profile converts it or wastes it",
+        "Prescribes headline as a value proposition (not a job title) — it travels with every comment — plus an About that wins the ~3 visible lines and a Featured section holding one CTA",
+        "Recommends the Follow-primary button once inbound interest outpaces outbound connecting (creator mode as a toggle was retired; its features are now profile defaults)",
+        "Routes the profile craft to profile-optimization and the keyword layer to social-seo"
+      ]
+    },
+    {
+      "name": "commenting_afterburner",
+      "input": "I post three times a week on LinkedIn but my reach is stuck.",
+      "expect": [
+        "Explains strategic commenting as the afterburner: a substantive comment on a bigger niche account is shown to their audience and your network, with your headline attached",
+        "Prescribes a target list of 10-20 accounts (weighted to bigger voices in the niche) and 5-10 substantive comments/day — adding a data point, counterpoint, or lived example, never 'Great post!'",
+        "Adds the golden hour on their own posts: post in the audience window, reply to every comment in the first 60-90 minutes",
+        "Routes comment drafting to reply-and-comment-writer and the daily block to engagement-routine, with a human posting the live comments"
+      ]
+    },
+    {
+      "name": "links_and_cadence_edge",
+      "input": "Put our blog link in the post body and I'll post three times a day to grow faster.",
+      "expect": [
+        "Warns external links in the body suppress reach ~25-60% and moves the link to the first comment ('link in comments') or drops it",
+        "Caps cadence at 3-5 posts/week, max 1/day — a second same-day post cannibalizes the first's golden hour, and posts have a long shelf life so quality compounds over volume",
+        "Recommends native formats (document carousel, native video, formatted text) over link posts",
+        "Keeps the plan sustainable and consistent rather than a burst"
+      ]
+    },
+    {
+      "name": "pushback_on_pods_bait_and_automation",
+      "input": "Get me into a LinkedIn engagement pod, add 'Comment YES if you agree' to my posts, auto-connect with 500 people a week, and buy some followers.",
+      "expect": [
+        "Refuses pods (detected via mutual-engagement patterns), engagement bait (explicitly down-ranked), bought followers, and mass auto-connect (invites are throttled to roughly 100/week and automation risks account restriction)",
+        "Notes these tactics are also reputation-corrosive with the exact professionals the account is trying to reach",
+        "Will not fabricate engagement or guarantee virality",
+        "Redirects to the durable path: the LADDER system — real posts, substantive daily comments on target accounts, and invite hygiene"
+      ]
+    },
+    {
+      "name": "honest_scope_drafts_human_engages_analytics",
+      "input": "Auto-comment on posts in my niche, auto-send connection requests, and pull my LinkedIn analytics from WoopSocial.",
+      "expect": [
+        "States the agent drafts posts, comment copy, invite notes, and DM openers, but a human posts the live comments, sends invites, and holds conversations — no auto-commenting or auto-connect tooling",
+        "Notes WoopSocial schedules the posts but has no analytics; metrics are read from native LinkedIn analytics (impressions, members reached, profile viewers, followers), with SSI as a directional check only",
+        "Refuses to fabricate any metric",
+        "Notes native document carousels, polls, newsletters, and audio events are created/run natively, not via WoopSocial"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just linkedin-post-writer or linkedin-company-pages?",
+      "expect": [
+        "Distinguishes linkedin-growth (the PERSONAL-profile growth system: profile, cadence, commenting lever, golden hour, native surfaces, network hygiene) from linkedin-post-writer (how to write one post well)",
+        "Distinguishes it from linkedin-company-pages (the company-page strategy + employee advocacy), noting advocates' and founders' personal posting routes back to linkedin-growth",
+        "Routes comment/reply drafting to reply-and-comment-writer and the recurring engagement block to engagement-routine",
+        "Frames linkedin-growth as the LinkedIn-specific growth strategy that orchestrates those skills"
+      ]
+    },
+    {
+      "name": "newsletter_and_native_surfaces",
+      "input": "Should I start a LinkedIn newsletter and turn on creator mode?",
+      "expect": [
+        "Explains creator mode was retired as a toggle (its features became profile defaults) and reframes the real decision as Connect-primary vs Follow-primary",
+        "Endorses the newsletter as the strongest owned-audience surface on the platform — subscribers get an in-app notification plus an email, and LinkedIn pushes subscribe prompts at launch — provided there is a repeatable theme and a warm base",
+        "Positions audio events/Live as warm-audience depth (not discovery) and advises ignoring collaborative-article badge-chasing (the gold Top Voice badge was retired)",
+        "Pairs the LinkedIn newsletter with an off-platform list via email-and-newsletter and treats SSI as directional, never a KPI"
+      ]
+    }
+  ]
+}

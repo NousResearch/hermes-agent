@@ -1,0 +1,92 @@
+{
+  "skill": "hashtag-strategy",
+  "version": "1.0.0",
+  "description": "Scenario tests for hashtag-strategy. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-discoverability",
+      "input": "What hashtags should I use for my SaaS Reel about deleting a feature?",
+      "expect": [
+        "reads brand-profile and audience first",
+        "sets the keyword/social-SEO layer first (caption + on-screen text + spoken audio) as the primary discovery lever",
+        "provides a tight, relevant hashtag set (not a 30-tag block), niche/mid-tier over generic",
+        "respects the platform's tag count/cap and recommends caption placement",
+        "suggests a branded tag where relevant and routes publishing to scheduling-and-queue",
+        "sets honest expectations that hashtags categorize/aid search, not drive reach"
+      ]
+    },
+    {
+      "name": "viral-30-pushback",
+      "input": "Give me 30 hashtags so this goes viral.",
+      "expect": [
+        "pushes back that 30 hashtags do not drive reach and that more tags is not more reach (2026 reality)",
+        "notes Instagram enforces a 5-hashtag cap, so 30 would be blocked/trimmed there anyway",
+        "redirects to the real levers: keywords/SEO, engagement, and the content/hook itself",
+        "delivers a tight relevant set instead of 30"
+      ]
+    },
+    {
+      "name": "keywords-over-hashtags",
+      "input": "How do I get found in search on TikTok and Instagram?",
+      "expect": [
+        "prioritizes keyword/social-SEO: the primary keyword in caption (front), on-screen text, and spoken audio",
+        "treats hashtags as supporting categorization signals, not the main lever",
+        "explains both platforms now function as search engines that index captions/audio/on-screen text"
+      ]
+    },
+    {
+      "name": "instagram-5-cap",
+      "input": "Give me 12 Instagram hashtags for this post.",
+      "expect": [
+        "states Instagram enforces a cap of 5 hashtags (rolled out Dec 2025) and won't allow 12",
+        "delivers ~3-5 precise, relevant tags instead",
+        "treats the number as current and flags to re-verify"
+      ]
+    },
+    {
+      "name": "relevance-over-volume-no-generic",
+      "input": "Add #love #viral #fyp #explore #instagood to everything.",
+      "expect": [
+        "declines generic mega-tags (#viral, #fyp, #explore, #instagood) as buried/useless",
+        "recommends niche/mid-tier relevant tags (roughly 10K-500K posts) instead",
+        "explains #fyp does not get content onto the For You Page"
+      ]
+    },
+    {
+      "name": "platform-specific-not-one-block",
+      "input": "Same hashtags for LinkedIn, X, and TikTok, right?",
+      "expect": [
+        "gives different approaches per platform, not one block: X ~0-2 (deprioritized), LinkedIn ~3-5 specific, TikTok ~3-5 treated as keywords",
+        "explains hashtags do different jobs on each platform",
+        "ties choices to where the audience actually is"
+      ]
+    },
+    {
+      "name": "branded-campaign-hashtag",
+      "input": "We're launching a campaign and want people to share posts.",
+      "expect": [
+        "designs a unique branded/campaign hashtag for UGC aggregation and tracking",
+        "checks the tag isn't already in use/conflicting and keeps it short/memorable",
+        "explains branded/campaign tags are a durable real use (community + tracking), distinct from discovery tags"
+      ]
+    },
+    {
+      "name": "rotate-not-copy-paste",
+      "input": "Can I just paste the same hashtag block on every post?",
+      "expect": [
+        "advises rotating 2-4 sets matched to content/pillar rather than one identical block",
+        "notes copy-pasting an identical block can read as spammy/low-effort and isn't ideal",
+        "accurately frames the shadowban claim as unconfirmed by Instagram while still recommending relevance/rotation"
+      ]
+    },
+    {
+      "name": "no-analytics-claims",
+      "input": "Which hashtags perform best for us?",
+      "expect": [
+        "does not claim WoopSocial provides hashtag analytics or performance data",
+        "points to native platform insights the user pulls (e.g., reach-from-hashtags) or qualitative review",
+        "frames hashtag testing as something to observe, not data it can supply"
+      ]
+    }
+  ]
+}

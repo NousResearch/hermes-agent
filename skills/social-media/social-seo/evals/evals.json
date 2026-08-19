@@ -1,0 +1,82 @@
+{
+  "skill": "social-seo",
+  "version": "1.0.0",
+  "description": "Scenario tests for social-seo. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-social-seo",
+      "input": "I want people to actually find my content when they search, not just hope the feed shows it. Help me with social SEO.",
+      "expect": [
+        "reads brand-profile and audience first",
+        "does keyword research using platform autocomplete / 'others searched for' / native search analytics (not invented volumes)",
+        "places the primary keyword across the platform's SEO surfaces (spoken audio, on-screen text, caption/title/description, alt text, profile)",
+        "builds toward topical clusters for evergreen discovery, not a one-off optimization",
+        "notes search optimization doubles as recommendation categorization, and judges via native search insights (not WoopSocial analytics)"
+      ]
+    },
+    {
+      "name": "platform-seo-surfaces",
+      "input": "What exactly should I optimize on YouTube vs Pinterest vs Instagram for search?",
+      "expect": [
+        "YouTube: keyword-led title, ~200-300 word description, transcript/captions, chapters/timestamps, tags",
+        "Pinterest: keyword-driven pin title + description + board names + alt text (hashtags largely deprecated there)",
+        "Instagram: caption keywords, the indexed name/display-name field, bio, alt text, on-screen text/audio",
+        "treats each platform's indexed surfaces distinctly rather than giving one generic answer"
+      ]
+    },
+    {
+      "name": "triple-mention-technique",
+      "input": "How do I optimize a single TikTok so it shows up in search?",
+      "expect": [
+        "uses the triple mention: say the primary keyword in the spoken audio (early), show it in on-screen text, and write it in the caption",
+        "notes TikTok transcribes audio and indexes on-screen text, and to write the caption like a searchable description",
+        "keeps it natural-language and aligned to one search intent"
+      ]
+    },
+    {
+      "name": "keyword-research-no-fabrication",
+      "input": "Give me the exact monthly search volumes for 'vegan meal prep' on TikTok and Instagram.",
+      "expect": [
+        "does not invent precise search-volume numbers (the agent cannot pull live in-app volume)",
+        "shows how to find real demand: platform autocomplete, 'others searched for', related searches, comments, and native search analytics / dedicated tools",
+        "is honest about the limitation while still being useful"
+      ]
+    },
+    {
+      "name": "evergreen-cluster",
+      "input": "I optimized one post for a keyword. Now what?",
+      "expect": [
+        "explains one post rarely owns a query — build a cluster of content around the topic to become the answer (topical authority)",
+        "favors evergreen, intent-answering content that compounds and surfaces for months, vs one-off feed posts",
+        "ties topical clarity to better recommendation categorization too"
+      ]
+    },
+    {
+      "name": "no-keyword-stuffing-pushback",
+      "input": "Should I cram every keyword and 30 hashtags into the caption to rank for everything?",
+      "expect": [
+        "refuses keyword stuffing / hashtag spam (signals spam, dilutes the topical signal, hurts readability and ranking)",
+        "advises natural language with the primary keyword stated clearly once or twice, plus a few niche hashtags (lead with keywords, support with hashtags)",
+        "routes hashtag specifics to hashtag-strategy"
+      ]
+    },
+    {
+      "name": "profile-as-search-asset",
+      "input": "Does my profile matter for search, or just my posts?",
+      "expect": [
+        "explains the profile is a search asset: the searchable name/display-name field, handle, headline/bio keywords, and consistent branded handle",
+        "distinguishes this (searchability) from profile-optimization (conversion), noting both matter",
+        "notes public profiles/content are increasingly indexed by Google too"
+      ]
+    },
+    {
+      "name": "boundary-with-geo-and-no-analytics",
+      "input": "I also want ChatGPT and Google's AI to cite my content. And which post ranks best?",
+      "expect": [
+        "scopes AI-search / LLM citation (GEO) as a related but separate discipline and hands it off to ai-search-optimization",
+        "does not claim WoopSocial provides SEO/search analytics",
+        "points to native platform search insights (search traffic/terms, profile visits from search) and tools/Search Console for measurement"
+      ]
+    }
+  ]
+}

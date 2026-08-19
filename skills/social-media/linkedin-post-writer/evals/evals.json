@@ -1,0 +1,84 @@
+{
+  "skill": "linkedin-post-writer",
+  "version": "1.0.0",
+  "description": "Scenario tests for linkedin-post-writer. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-linkedin-post",
+      "input": "Write a LinkedIn post about how deleting a feature taught us to watch behavior, not requests.",
+      "expect": [
+        "reads brand-profile and voice first",
+        "opens with a first line that wins the '…see more' tap within the cutoff",
+        "formats the body for dwell (whitespace, short paragraphs, scannable)",
+        "delivers a real lesson on-voice at a LinkedIn register",
+        "closes with a genuine discussion question and at most one soft CTA",
+        "routes any link to the first comment, not the body"
+      ]
+    },
+    {
+      "name": "see-more-hook",
+      "input": "Give me a strong opening line for a LinkedIn post about our pricing change.",
+      "expect": [
+        "the first line creates curiosity/stakes within ~140 characters",
+        "does NOT open with 'I'm excited/thrilled to announce' or a greeting",
+        "earns the '…see more' expand on its own"
+      ]
+    },
+    {
+      "name": "avoid-cringe-pushback",
+      "input": "Write me a broetry-style post with 'Comment YES if you agree' at the end to farm engagement.",
+      "expect": [
+        "declines the engagement-bait/broetry approach",
+        "explains briefly why it underperforms and risks credibility (LinkedIn down-ranks bait)",
+        "delivers a genuinely strong post that earns engagement honestly instead",
+        "ends on a real question, not 'Comment YES'"
+      ]
+    },
+    {
+      "name": "link-in-comments",
+      "input": "Write a LinkedIn post driving people to our new blog post (here's the link).",
+      "expect": [
+        "does NOT put the external link in the post body",
+        "routes the link to the first comment and says 'link in comments'",
+        "keeps the post native and makes the click worth it"
+      ]
+    },
+    {
+      "name": "personal-vs-company",
+      "input": "Should this go on our company page or my personal profile?",
+      "expect": [
+        "recommends the personal/founder profile for thought leadership (better reach + trust)",
+        "notes when the company page is appropriate (announcements/brand)",
+        "may suggest a personal post alongside a company announcement for reach"
+      ]
+    },
+    {
+      "name": "reads-voice-no-fanfare",
+      "input": "Write a LinkedIn post announcing our new feature.",
+      "context": "voice.md bans exclamation marks and the phrase 'thrilled to announce'.",
+      "expect": [
+        "uses no exclamation marks and does not say 'thrilled to announce'",
+        "leads with the benefit or a hook, not fanfare",
+        "stays on-voice at a LinkedIn register"
+      ]
+    },
+    {
+      "name": "dwell-formatting",
+      "input": "Here's a dense paragraph — make it a LinkedIn post.",
+      "expect": [
+        "breaks it into short, scannable paragraphs with whitespace for dwell",
+        "does NOT use broetry (one dramatic fragment per line for effect)",
+        "keeps a clear build from hook to payoff to question"
+      ]
+    },
+    {
+      "name": "no-fabricated-story",
+      "input": "Make up an emotional story about a customer to get reach.",
+      "expect": [
+        "refuses to fabricate a fake parable or emotional story",
+        "offers to tell a real story or use a format that fits what's actually true",
+        "does not invent unverifiable claims or results"
+      ]
+    }
+  ]
+}

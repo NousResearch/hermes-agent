@@ -44,6 +44,7 @@ import sys
 import tempfile
 import time
 import threading
+import unicodedata
 import uuid
 import warnings
 from typing import List, Dict, Any, Optional, Callable
@@ -3647,6 +3648,19 @@ class AIAgent:
         r"(?<![/:\w.`])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.[\w]+",
     )
 
+    # ``MEDIA:<path>`` tags are re-parsed from response text by the gateway
+    # media extractor (``MEDIA_TAG_CLEANUP_RE`` / ``MEDIA_EXTENSIONLESS_TAG_RE``
+    # in gateway/platforms/base.py, both case-insensitive).  In this footer a
+    # tag can only ever be untrusted error text, so the colon is rewritten
+    # into a visible escape no downstream parser recognises — the tag stays
+    # legible as data but can never execute as an attachment directive.
+    _FOOTER_MEDIA_TAG_RE = re.compile(r"MEDIA:", re.IGNORECASE)
+
+    # Delivery-behaviour toggles matched verbatim at the dispatch sites
+    # (gateway/run.py) and stripped by ``extract_media``.  Escaped underscores
+    # break the exact match while Markdown still renders the original text.
+    _FOOTER_MEDIA_DIRECTIVES = ("[[audio_as_voice]]", "[[as_document]]")
+
     @classmethod
     def _neutralize_footer_paths(cls, text: str) -> str:
         """Wrap bare file paths in backticks so they aren't auto-delivered.
@@ -3663,6 +3677,72 @@ class AIAgent:
         if not text:
             return text
         return cls._FOOTER_PATH_RE.sub(lambda m: f"`{m.group(0)}`", text)
+
+    @staticmethod
+    def _sanitize_file_mutation_warning_fragment(value: Any, max_len: int) -> str:
+        """Render untrusted footer text as bounded, single-line Markdown.
+
+        Delivery directives (``MEDIA:`` tags, ``[[audio_as_voice]]`` /
+        ``[[as_document]]`` toggles) are rewritten into visible,
+        non-executable forms — the response pipeline re-parses those from
+        assistant text, so untrusted error previews must never carry a
+        live one.
+        """
+
+        text = str(value)
+        text = AIAgent._FOOTER_MEDIA_TAG_RE.sub(
+            lambda m: m.group(0)[:-1] + r"\x3a", text
+        )
+        for directive in AIAgent._FOOTER_MEDIA_DIRECTIVES:
+            text = text.replace(directive, directive.replace("_", r"\_"))
+
+        def _escape(char: str) -> str:
+            if char == "`":
+                return "ˋ"
+            if char == "\n":
+                return r"\n"
+            if char == "\r":
+                return r"\r"
+            if char == "\t":
+                return r"\t"
+            if unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"}:
+                codepoint = ord(char)
+                if codepoint <= 0xFF:
+                    return f"\\x{codepoint:02x}"
+                if codepoint <= 0xFFFF:
+                    return f"\\u{codepoint:04x}"
+                return f"\\U{codepoint:08x}"
+            return char
+
+        escaped = [_escape(char) for char in text] if len(text) <= max_len else None
+        if escaped is not None and sum(map(len, escaped)) <= max_len:
+            return "".join(escaped)
+
+        separator = "…"
+        head_budget = max(0, (max_len - len(separator)) // 2)
+        tail_budget = max(0, max_len - len(separator) - head_budget)
+
+        head_tokens = escaped or [_escape(char) for char in text[:head_budget]]
+        tail_tokens = escaped or [_escape(char) for char in text[-tail_budget:]]
+
+        head: List[str] = []
+        used = 0
+        for token in head_tokens:
+            if used + len(token) > head_budget:
+                break
+            head.append(token)
+            used += len(token)
+
+        tail: List[str] = []
+        used = 0
+        for token in reversed(tail_tokens):
+            if used + len(token) > tail_budget:
+                break
+            tail.append(token)
+            used += len(token)
+        tail.reverse()
+
+        return "".join(head) + separator + "".join(tail)
 
     @classmethod
     def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
@@ -3690,12 +3770,19 @@ class AIAgent:
         for path, info in failed.items():
             if shown >= 10:
                 break
-            preview = (info.get("error_preview") or "").strip()
-            tool = info.get("tool") or "patch"
+            display_path = cls._sanitize_file_mutation_warning_fragment(path, 240)
+            preview = cls._sanitize_file_mutation_warning_fragment(
+                (info.get("error_preview") or "").strip(),
+                180,
+            )
+            tool = cls._sanitize_file_mutation_warning_fragment(
+                info.get("tool") or "patch",
+                32,
+            )
             if preview:
-                lines.append(f"  • `{path}` — [{tool}] {preview}")
+                lines.append(f"  • `{display_path}` — [{tool}] {preview}")
             else:
-                lines.append(f"  • `{path}` — [{tool}] failed")
+                lines.append(f"  • `{display_path}` — [{tool}] failed")
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:

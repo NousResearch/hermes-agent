@@ -2618,6 +2618,11 @@ export const ja = defineLocale({
   zones: {
     showHeader: 'ヘッダーを表示',
     hideHeader: 'ヘッダーを隠す',
+    showStripTab: title => `${title} を表示`,
+    hideStripTab: title => `${title} を隠す`,
+    lastTabKeptTitle: '最後のタブは残ります',
+    lastTabKeptBody: 'このゾーンには少なくとも 1 つの表示タブが必要です。先に別のタブを表示するか、サイドバー全体を折りたたんでください。',
+    toggleStripTab: title => `${title} タブを切り替え`,
     minimize: '最小化',
     restore: '復元',
     reload: '再読み込み',

@@ -2532,6 +2532,11 @@ export const zhHant = defineLocale({
   zones: {
     showHeader: '顯示標題列',
     hideHeader: '隱藏標題列',
+    showStripTab: title => `顯示 ${title}`,
+    hideStripTab: title => `隱藏 ${title}`,
+    lastTabKeptTitle: '保留最後一個分頁',
+    lastTabKeptBody: '此區域至少需要一個可見分頁。請先顯示另一個分頁，或收合整個側邊欄。',
+    toggleStripTab: title => `切換 ${title} 分頁`,
     minimize: '最小化',
     restore: '還原',
     reload: '重新載入',

@@ -29,6 +29,7 @@ import {
   removeTreePane,
   resetLayoutTree,
   revealTreePane,
+  setStripTabHidden,
   togglePaneVisible,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
@@ -38,6 +39,7 @@ import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
+import { translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import { Download, FileText, LayoutDashboard, PanelBottom, Terminal, Upload, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
@@ -155,6 +157,9 @@ registry.registerMany([
       dock: { pane: 'workspace', pos: 'left' },
       revealAliases: ['chat-sidebar'],
       showCloseButton: false,
+      // Standing chrome: no close gestures at all — the tab is shown/hidden
+      // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
+      hideOnly: true,
       width: `${SIDEBAR_DEFAULT_WIDTH}px`,
       minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
       maxWidth: `${SIDEBAR_MAX_WIDTH}px`
@@ -672,6 +677,63 @@ registry.register(
     set: () => togglePaneVisible('logs')
   })
 )
+
+// Hide-only chrome tabs (sessions / Bots) get a ⌘K toggle each — the palette
+// door onto the same show/hide the zone menu offers. Auto-registered from the
+// panes area so a plugin's hideOnly pane (Bots registers at plugin load, after
+// this module runs) gets its row for free; disposers keep it in step when a
+// plugin unloads. Registry writes during a subscriber callback are safe (the
+// registry snapshots per-area and re-notifies), and re-registering the same
+// palette id replaces the row instead of stacking duplicates.
+{
+  const stripTabToggles = new Map<string, () => void>()
+
+  const syncStripTabToggles = () => {
+    const hideOnlyPanes = registry
+      .getArea('panes')
+      .filter(c => (c.data as { hideOnly?: boolean } | undefined)?.hideOnly)
+    const wanted = new Set(hideOnlyPanes.map(c => c.id))
+
+    for (const [paneId, dispose] of stripTabToggles) {
+      if (!wanted.has(paneId)) {
+        dispose()
+        stripTabToggles.delete(paneId)
+      }
+    }
+
+    for (const pane of hideOnlyPanes) {
+      if (stripTabToggles.has(pane.id)) {
+        continue
+      }
+
+      const title = String(pane.title ?? pane.id)
+
+      stripTabToggles.set(
+        pane.id,
+        registry.register(
+          paletteToggle({
+            id: `strip-tab.${pane.id}`,
+            label: translateNow('zones.toggleStripTab', title),
+            icon: LayoutDashboard,
+            keywords: [title.toLowerCase(), 'tab', 'pane', 'sidebar', 'show', 'hide'],
+            // On-screen truth, same contract as the logs toggle above.
+            get: () => isPaneVisible(pane.id),
+            set: visible => {
+              if (visible) {
+                revealTreePane(pane.id)
+              } else {
+                setStripTabHidden(pane.id, true)
+              }
+            }
+          })
+        )
+      )
+    }
+  }
+
+  syncStripTabToggles()
+  registry.subscribeArea('panes', syncStripTabToggles)
+}
 
 // YOLO (dangerous-command approval bypass) is a status-bar zap and a /yolo
 // command; ⌘K is the third door onto the SAME store function, so a user who

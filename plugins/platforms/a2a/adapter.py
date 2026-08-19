@@ -1246,7 +1246,45 @@ class A2AAdapter(BasePlatformAdapter):
         if not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):
             # No waiter (e.g. a late chunk or out-of-band send) — drop it.
             logger.debug("A2A: send() for context %s had no pending waiter", chat_id)
+        self._maybe_cc_to_human(chat_id, content or "")
         return SendResult(success=True, message_id=message_id)
+
+    def _maybe_cc_to_human(self, context_id: str, content: str) -> None:
+        """CC notable agent-to-agent replies to a human chat (opt-in).
+
+        Agent-to-agent traffic can carry decisions a human operator wants to
+        see without joining the loop. When ``A2A_CC_KEYWORDS`` is set (comma
+        separated), any final reply containing one of those substrings is
+        forwarded as a text message to ``A2A_CC_CHAT_ID`` via the Telegram
+        bot token in ``A2A_CC_BOT_TOKEN`` (or the profile's own
+        ``TELEGRAM_BOT_TOKEN`` when unset). Disabled entirely when no
+        keywords are configured.
+        """
+        keywords = [k.strip() for k in os.getenv("A2A_CC_KEYWORDS", "").split(",") if k.strip()]
+        if not keywords or not content:
+            return
+        if not any(k in content for k in keywords):
+            return
+        chat_id = os.getenv("A2A_CC_CHAT_ID", "").strip()
+        if not chat_id:
+            return
+        bot_token = os.getenv("A2A_CC_BOT_TOKEN", "").strip()
+        if not bot_token:
+            bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        if not bot_token:
+            logger.warning("A2A CC: A2A_CC_KEYWORDS set but no bot token available")
+            return
+        text = "📋 A2A 副本（context %s）：\n%s" % (context_id, content[:1500])
+        try:
+            req = urllib.request.Request(
+                "https://api.telegram.org/bot%s/sendMessage" % bot_token,
+                data=json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=10)
+            logger.info("A2A CC: forwarded reply for context %s to %s", context_id, chat_id)
+        except Exception as exc:  # pragma: no cover - best-effort forwarding
+            logger.warning("A2A CC: forward failed for context %s: %s", context_id, exc)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Resolve the task future when processing ends without a reply send.
@@ -1267,6 +1305,12 @@ class A2AAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         return None
+
+    def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
+        """A2A is an agent-to-agent text protocol — audio replies are not
+        supported on this platform. Disable auto-TTS so real text replies
+        are not swallowed by a voice fallback error."""
+        return False
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": f"a2a:{chat_id}", "type": "dm"}

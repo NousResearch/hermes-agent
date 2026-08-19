@@ -1298,12 +1298,6 @@ export function findListedSession(
   storedSessionId: string
 ): { session: SessionInfo; slice: ListedSessionSlice } | undefined {
   const match = (session: SessionInfo) => sessionMatchesStoredId(session, storedSessionId)
-  const fromSessions = $sessions.get().find(match)
-
-  if (fromSessions) {
-    return { session: fromSessions, slice: 'sessions' }
-  }
-
   const fromMessaging = $messagingSessions.get().find(match)
 
   if (fromMessaging) {
@@ -1314,6 +1308,12 @@ export function findListedSession(
 
   if (fromCron) {
     return { session: fromCron, slice: 'cron' }
+  }
+
+  const fromSessions = $sessions.get().find(match)
+
+  if (fromSessions) {
+    return { session: fromSessions, slice: 'sessions' }
   }
 
   return undefined

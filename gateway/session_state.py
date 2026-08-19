@@ -140,6 +140,9 @@ class PersistentState:
     update_prompt_pending: bool = False
     # Image paths staged for native (inline) attachment; consumed one-shot.
     native_image_paths: List[str] = field(default_factory=list)
+    # Audio attachments staged for native (inline) attachment; consumed one-shot.
+    # Each item contains path, mime_type and modality="audio".
+    native_audio_attachments: List[Dict[str, str]] = field(default_factory=list)
     # Legacy runner-level pending message text (write-mostly; flushed to
     # disk on shutdown — see #72680).  NOTE: distinct from the adapter-level
     # ``_pending_messages`` (Dict[str, MessageEvent]) in gateway/base.py,
@@ -405,6 +408,9 @@ LEGACY_FIELD_SPECS: Dict[str, _FieldSpec] = {
     ),
     "_pending_native_image_paths_by_session": _FieldSpec(
         "persistent", "native_image_paths", list, _present_nonzero
+    ),
+    "_pending_native_audio_attachments_by_session": _FieldSpec(
+        "persistent", "native_audio_attachments", list, _present_nonzero
     ),
     "_pending_messages": _FieldSpec(
         "persistent", "pending_command_text", lambda: None, _present_not_none

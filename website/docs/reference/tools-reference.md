@@ -213,6 +213,18 @@ To give an element a durable handle of your own, mark it up:
 <div data-tour="composer">…</div>
 ```
 
+Handles are applied at the **primitive**, not the call site, so one edit names every instance. The ones that already exist:
+
+| Handle | What it names |
+|---|---|
+| `overlay-nav` | the left nav of any route overlay (settings, cron, profiles, agents) |
+| `nav-<id>` | one row in that nav — `nav-models`, `nav-appearance`, … |
+| `field-<schemaKey>` | one settings row, by its config key — `field-model`, `field-provider`, … |
+| `page-tabs` | the filter tabs on any `PageSearchShell` page (artifacts, skills, …) |
+| `artifact-card` | an artifact card in the grid |
+
+When adding a surface, tag its shared primitive the same way rather than tagging screens one by one — that keeps the tour vocabulary small and stops selectors from rotting.
+
 The same engine backs curated (non-agent) tours in the desktop app, so a feature can ship its own walkthrough:
 
 ```ts
@@ -223,6 +235,17 @@ startTour([
   { selector: '[data-tour="files"]', title: 'Files', text: 'Browse your project.' }
 ])
 ```
+
+A step can also move the app to where its target lives, and the tour puts things back when it ends:
+
+```ts
+startTour([
+  { navigate: '/artifacts', selector: '[data-tour="page-tabs"]', title: 'Filters', text: '…' },
+  { pane: 'sessions', selector: '[data-slot="sidebar"]', title: 'Sessions', text: '…' }
+])
+```
+
+`navigate` takes a route path and `pane` a desktop pane name. Both run as the step is entered, targets that mount late are waited for, and closing the tour — by any route, including Esc — returns to wherever it started.
 
 Pass `'preview'` as the second argument to run against the page in the preview pane instead of the app.
 

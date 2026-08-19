@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ClientWakeCaptureHandle } from '@/lib/wake-client-capture'
+
+vi.mock('@/lib/wake-client-capture', () => ({
+  startClientWakeCapture: vi.fn()
+}))
+
+import { startClientWakeCapture } from '@/lib/wake-client-capture'
+
 import {
   $wakeWord,
   applyWakeStartResult,
@@ -8,9 +16,12 @@ import {
   armWakeWord,
   resetWakeWordState,
   resumeWakeAfterVoice,
+  stopClientCapture,
   toggleWakeWord,
   type WakeRequester
 } from './wake-word'
+
+const mockStartClientWakeCapture = vi.mocked(startClientWakeCapture)
 
 const requester = (impl: (method: string, params?: Record<string, unknown>) => unknown) =>
   vi.fn(async (method: string, params: Record<string, unknown> = {}) =>
@@ -18,6 +29,7 @@ const requester = (impl: (method: string, params?: Record<string, unknown>) => u
   ) as unknown as WakeRequester
 
 beforeEach(() => {
+  mockStartClientWakeCapture.mockReset()
   resetWakeWordState()
 })
 
@@ -369,5 +381,73 @@ describe('resumeWakeAfterVoice (post-voice reconcile)', () => {
     await resumeWakeAfterVoice(request)
 
     expect($wakeWord.get()).toMatchObject({ available: false, listening: false })
+  })
+})
+
+/**
+ * applyWakeStartResult fires maybeStartClientCapture without awaiting it (the
+ * store update must be synchronous). A macrotask boundary (unlike a fixed
+ * count of microtask ticks) drains the entire microtask queue no matter how
+ * many `await`s are chained inside it, so it reliably waits out
+ * maybeStartClientCapture's post-resolve continuation regardless of exactly
+ * how the promises above it happen to interleave.
+ */
+const flushMicrotasks = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
+
+describe('maybeStartClientCapture race safety', () => {
+  it('discards a getUserMedia() that resolves after stopClientCapture() ran', async () => {
+    // startClientWakeCapture() (getUserMedia) can block indefinitely on a
+    // first-run OS mic-permission prompt. Model that with a promise this
+    // test controls the resolution timing of.
+    let resolveCapture!: (handle: ClientWakeCaptureHandle) => void
+    mockStartClientWakeCapture.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveCapture = resolve
+      })
+    )
+
+    applyWakeStartResult({ capture: 'client', frame_length: 1280, started: true })
+    await flushMicrotasks()
+    expect(mockStartClientWakeCapture).toHaveBeenCalledTimes(1)
+
+    // The permission dialog is still up when the user toggles wake word back
+    // off — applyWakeStopResult's stopClientCapture() runs to completion
+    // synchronously while startClientWakeCapture() is still pending.
+    applyWakeStopResult({ stopped: true })
+    expect($wakeWord.get().listening).toBe(false)
+
+    // The user grants the permission after already seeing wake word as off.
+    const handle: ClientWakeCaptureHandle = { active: true, stop: vi.fn() }
+    resolveCapture(handle)
+    await flushMicrotasks()
+
+    expect(handle.stop).toHaveBeenCalledTimes(1)
+    // A bare stopClientCapture() call afterward must not double-stop a
+    // handle this path never adopted.
+    stopClientCapture()
+    expect(handle.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a capture that resolves while still current', async () => {
+    let resolveCapture!: (handle: ClientWakeCaptureHandle) => void
+    mockStartClientWakeCapture.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveCapture = resolve
+      })
+    )
+
+    applyWakeStartResult({ capture: 'client', frame_length: 1280, started: true })
+    await flushMicrotasks()
+
+    const handle: ClientWakeCaptureHandle = { active: true, stop: vi.fn() }
+    resolveCapture(handle)
+    await flushMicrotasks()
+
+    expect(handle.stop).not.toHaveBeenCalled()
+
+    // The next stop must close THIS handle — proves it was actually adopted,
+    // not silently dropped alongside the discard path above.
+    stopClientCapture()
+    expect(handle.stop).toHaveBeenCalledTimes(1)
   })
 })

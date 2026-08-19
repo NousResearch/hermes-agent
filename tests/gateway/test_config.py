@@ -186,14 +186,18 @@ class TestDiscordTokenEnvOverride:
 
         assert any("11 chars" in record.message for record in caplog.records)
 
-    def test_compromised_discord_token_prefix_is_reported(self, monkeypatch, caplog):
+    def test_bot_id_prefix_is_not_flagged_as_compromised(self, monkeypatch, caplog):
+        # The prefix "MTUwNjAyNDQyMTEwNDgxMjI3NA" is the base64 of the bot
+        # user ID (1506024421104812274), which EVERY token for that bot
+        # shares. It is not a secret and cannot identify a compromised
+        # token, so it must NOT be reported as compromised (false positive).
         token = "MTUwNjAyNDQyMTEwNDgxMjI3NA" + ("X" * 40)
         monkeypatch.setenv("DISCORD_BOT_TOKEN", f"  {token}  ")
         caplog.set_level(logging.ERROR)
 
         _apply_env_overrides(GatewayConfig())
 
-        assert any("known compromised token" in record.message for record in caplog.records)
+        assert not any("known compromised token" in record.message for record in caplog.records)
 
 
 class TestSessionResetPolicy:

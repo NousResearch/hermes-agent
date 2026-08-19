@@ -30,7 +30,7 @@ import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
-import { registerPreviewTourRunner } from './preview-tour-runner'
+import { registerPreviewScriptRunner } from './preview-script-runner'
 
 type PreviewWebview = HTMLElement & {
   canGoBack?: () => boolean
@@ -455,15 +455,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     })
   }, [isWebPreview, tabId])
 
-  // Publish the TOUR runner for this tab (the tour tool, surface='preview'):
-  // runs injected driver.js actions inside the guest page so the agent can
-  // give guided walkthroughs of whatever web app is open here.
+  // Publish the SCRIPT runner for this tab: the one channel into the guest
+  // page, shared by the tour tool (injected driver.js walkthroughs) and the
+  // act_preview tool (clicking, typing, scrolling the page the user sees).
   useEffect(() => {
     if (!isWebPreview || !tabId) {
       return
     }
 
-    return registerPreviewTourRunner(tabId, async code => {
+    return registerPreviewScriptRunner(tabId, async code => {
       const webview = webviewRef.current
 
       if (!webview?.executeJavaScript) {

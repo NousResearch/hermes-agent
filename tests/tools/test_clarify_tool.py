@@ -8,6 +8,7 @@ from tools.clarify_tool import (
     clarify_tool,
     check_clarify_requirements,
     MAX_CHOICES,
+    MAX_QUESTIONS,
     CLARIFY_SCHEMA,
     _flatten_choice,
 )
@@ -156,6 +157,27 @@ class TestClarifySchema:
         """multi_select should default to false (not in required)."""
         # The model should treat it as false when omitted
         assert "multi_select" not in CLARIFY_SCHEMA["parameters"]["required"]
+
+
+    def test_schema_description_advertises_batching(self):
+        """The top-level description must tell the model it can batch.
+
+        The `questions` parameter description alone is not enough — the
+        model decides HOW to call from the tool description, so the batch
+        capability has to be surfaced there or it keeps asking one
+        question per call.
+        """
+        description = CLARIFY_SCHEMA["description"]
+        assert "questions" in description
+        assert "one call" in description.lower()
+
+
+    def test_schema_questions_param_is_optional_and_capped(self):
+        """`questions` stays optional (single-question calls unchanged) and
+        carries the batch cap so the model sees the limit."""
+        params = CLARIFY_SCHEMA["parameters"]
+        assert "questions" not in params["required"]
+        assert params["properties"]["questions"]["maxItems"] == MAX_QUESTIONS
 
 
 class TestClarifyToolMultiSelect:

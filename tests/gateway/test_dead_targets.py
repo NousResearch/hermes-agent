@@ -105,6 +105,37 @@ async def test_shared_registry_is_used_when_injected(isolate):
     assert adapter.calls == []
 
 
+@pytest.mark.asyncio
+async def test_photon_target_not_allowed_marks_target_dead(isolate):
+    # A shared/free-tier Photon line permanently cannot open a new outbound
+    # thread to this target (Spectrum "target_not_allowed"). Scheduled/cron
+    # delivery only sees the raised RuntimeError text (not the adapter's
+    # structured raw_response), so classify_send_error must recognize this
+    # shape from text alone or the target retries forever on every tick.
+    message = (
+        "Photon sidecar /send returned 403 (target_not_allowed, "
+        "retryable=False): shared/free-tier Photon lines cannot initiate "
+        "outbound sends to new targets — upgrade to a dedicated line or "
+        "use another delivery channel"
+    )
+    adapter = RaisingAdapter(message)
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform("photon"): adapter})
+    target = DeliveryTarget.parse("photon:900")
+
+    res1 = await router.deliver("hi", [target])
+    assert res1["photon:900"]["success"] is False
+    assert router.dead_targets.is_dead("photon", "900") is True
+    assert adapter.calls == ["900"]
+
+    # Second delivery: short-circuited, adapter NOT called again — this is
+    # the actual bug: before the fix, classify_send_error returned "unknown"
+    # for this text, so mark_dead() was never called and every cron tick
+    # re-sent to a target the sidecar had already permanently rejected.
+    res2 = await router.deliver("hi again", [target])
+    assert res2["photon:900"]["skipped"] == "dead_target"
+    assert adapter.calls == ["900"]
+
+
 # --------------------------------------------------------------------------
 # not_found blast radius: chat-level kills the chat, thread/message-level must not
 # --------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
+import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { $gateway } from '@/store/gateway'
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
@@ -50,6 +51,50 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
           text: result ? JSON.stringify(result) : ''
         })
       })
+    }
+
+    return true
+  }
+
+  if (event.type === 'preview.act.request') {
+    // act_preview tool: click/type/scroll/press inside the guest page, or
+    // drive the pane's history. Dynamic import keeps the injected engine off
+    // the boot path. Active session only: a background turn must never reach
+    // into the page the user is working in (desktop AGENTS.md: offer, don't
+    // hijack).
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (requestId) {
+      const answer = (result: unknown) =>
+        $gateway.get()?.request('preview.act.respond', {
+          request_id: requestId,
+          text: result ? JSON.stringify(result) : ''
+        })
+
+      if (isActiveEvent) {
+        void import('@/app/chat/right-rail/preview-act')
+          .then(({ actOnActivePreview }) =>
+            actOnActivePreview({
+              amount: payload?.amount,
+              key: payload?.key,
+              kind: payload?.action ?? '',
+              max: payload?.max,
+              ref: payload?.ref,
+              selector: payload?.selector,
+              submit: payload?.submit,
+              text: payload?.text,
+              to: payload?.to as PreviewActAction['to']
+            })
+          )
+          .then(answer, error =>
+            answer({ error: error instanceof Error ? error.message : String(error), success: false })
+          )
+      } else {
+        void answer({
+          error: 'The in-app browser only takes actions in the session the user is looking at.',
+          success: false
+        })
+      }
     }
 
     return true

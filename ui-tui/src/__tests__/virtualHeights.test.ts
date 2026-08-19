@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { estimatedMsgHeight, messageHeightKey, wrappedLines } from '../lib/virtualHeights.js'
+import { estimatedMsgHeight, fencedWrappedLines, messageHeightKey, wrappedLines } from '../lib/virtualHeights.js'
 import type { Msg } from '../types.js'
 
 describe('virtual height estimates', () => {
@@ -125,5 +125,12 @@ describe('virtual height estimates', () => {
 
     expect(rows).toBeLessThanOrEqual(800)
     expect(elapsed).toBeLessThan(50)
+  })
+
+  it('accounts for CopyBlox chrome and its narrower code body', () => {
+    const text = ['```python', 'x'.repeat(30), '```'].join('\n')
+
+    expect(fencedWrappedLines(text, 30, false)).toBe(4)
+    expect(fencedWrappedLines(text, 30, true)).toBe(3)
   })
 })

@@ -292,6 +292,26 @@ describe('createSlashHandler', () => {
     process.env.TMUX = tmuxBackup
   })
 
+  it('copies only a complete fenced block with the native clipboard policy', async () => {
+    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+    const writeOsc52Clipboard = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
+    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(false)
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'assistant', text: '```ts\nconst complete = true\n```' },
+          { role: 'assistant', text: '```ts\nconst partial = true' }
+        ])
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/cc 1')).toBe(true)
+    await vi.waitFor(() => expect(writeClipboardText).toHaveBeenCalledWith('const complete = true'))
+    expect(writeOsc52Clipboard).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('copied ts block #1')
+  })
+
   it('applies /reasoning hide to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
 

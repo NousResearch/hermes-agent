@@ -1429,8 +1429,8 @@ def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
     assert messages[2]["name"] == "mcp__github__create_issue"
 
 
-def test_sanitize_leaves_matching_and_unpaired_tool_result_names_alone():
-    """Directly-called tools already agree; an unpaired name is left as-is."""
+def test_sanitize_leaves_already_matching_tool_result_name_alone():
+    """A directly-called tool already agrees — nothing to rewrite."""
     from agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
@@ -1462,3 +1462,35 @@ def test_sanitize_does_not_invent_a_name_on_unnamed_tool_results():
     ]
     out = sanitize_api_messages(list(messages))
     assert out == messages
+
+
+def test_sanitize_realigns_bridged_name_when_call_id_is_padded():
+    """Ids are stripped on both sides, so a padded id still pairs."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "file an issue"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": " call_1 ", "type": "function",
+                         "function": {"name": "tool_call", "arguments": "{}"}}]},
+        {"role": "tool", "name": "mcp__github__create_issue",
+         "tool_call_id": "call_1", "content": "{}"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m["name"] for m in out if m.get("role") == "tool"] == ["tool_call"]
+
+
+def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
+    """A result cannot keep a stale name if it has no call frame to disagree
+    with: the orphan pass removes it before the realignment pass runs, so the
+    mismatch never reaches the provider."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "file an issue"},
+        # assistant tool_calls frame dropped by compression
+        {"role": "tool", "name": "mcp__github__create_issue",
+         "tool_call_id": "call_1", "content": "{}"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m.get("role") for m in out] == ["user"]

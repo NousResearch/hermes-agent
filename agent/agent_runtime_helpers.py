@@ -4570,15 +4570,21 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # name. Runs on the per-call copy, so the stored trajectory keeps the real
     # tool name for the session DB and the UI — only the wire payload changes.
     # A no-op for the native Gemini path, which already resolves the same name.
+    # A result whose assistant call frame is missing entirely never reaches
+    # here — pass 1 above drops it as an orphan — so the only results this pass
+    # sees are ones whose call name is knowable.
     call_names: Dict[str, str] = {}
     for msg in messages:
         if msg.get("role") == "assistant":
             for tc in msg.get("tool_calls") or []:
-                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                # Strip on insert to match the lookup below (and pass 1's
+                # ``result_call_ids``), so an id that arrives padded still
+                # pairs instead of silently skipping realignment.
+                cid = (_ra().AIAgent._get_tool_call_id_static(tc) or "").strip()
                 nm = _ra().AIAgent._get_tool_call_name_static(tc)
                 if cid and nm:
                     call_names[cid] = nm
-    realigned = 0
+    realigned: List[Tuple[str, str]] = []
     aligned: List[Dict[str, Any]] = []
     for msg in messages:
         if msg.get("role") == "tool":
@@ -4591,14 +4597,15 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             # must still pass through byte-identical for prompt caching.
             if expected and current and current != expected:
                 msg = {**msg, "name": expected}
-                realigned += 1
+                realigned.append((current, expected))
         aligned.append(msg)
     if realigned:
         messages = aligned
         _ra().logger.debug(
             "Pre-call sanitizer: realigned %d tool result name(s) with their "
-            "tool_call function name",
-            realigned,
+            "tool_call function name (%s)",
+            len(realigned),
+            ", ".join(f"{was} -> {now}" for was, now in realigned),
         )
     return messages
 

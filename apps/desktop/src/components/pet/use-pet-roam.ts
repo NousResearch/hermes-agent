@@ -55,6 +55,8 @@ interface PetRoamOptions {
   loopMs: number
   /** A full-screen route overlay (settings/profiles/…) is up: patrol its base. */
   overlayOpen: boolean
+  /** Overlays that never take focus (focusable:false panels) opt out of pause-on-blur. Default: true. */
+  pauseWhenUnfocused?: boolean
   /** Persist the resting position back to React state when the loop settles. */
   commit: (point: Point) => void
 }
@@ -88,6 +90,7 @@ export function usePetRoam({
   petH,
   loopMs,
   overlayOpen,
+  pauseWhenUnfocused = true,
   commit
 }: PetRoamOptions): void {
   useEffect(() => {
@@ -376,7 +379,7 @@ export function usePetRoam({
       schedule(now)
     }
 
-    pauseController = createRendererLoopPauseController(handleVisibilityChange)
+    pauseController = createRendererLoopPauseController(handleVisibilityChange, { pauseWhenUnfocused })
     schedule()
 
     return () => {
@@ -388,5 +391,5 @@ export function usePetRoam({
       // the loop stops re-asserting it.
       commit({ ...cur })
     }
-  }, [enabled, petW, petH, loopMs, overlayOpen, containerRef, isInteracting, commit])
+  }, [enabled, petW, petH, loopMs, overlayOpen, pauseWhenUnfocused, containerRef, isInteracting, commit])
 }

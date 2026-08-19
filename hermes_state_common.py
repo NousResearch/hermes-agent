@@ -119,10 +119,14 @@ _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASON
 # chain via parent_session_id but were left out of the CTE, so the
 # session list kept showing the stale root (#84870). CLI /new writes
 # ``new_session`` (not in the gateway reset set).
+#
+# Cross-surface coupling guard: ``new_session`` is CLI-specific today.
+# If a future change makes /new write into the gateway reset reasons
+# (or adds an intermediate end_reason that chains via parent_session_id),
+# it will silently join this continuation set. Do not add gateway-reset
+# reasons to _RESET_END_REASONS without revisiting this tuple — the
+# listing projection would fold deliberate resets into the lineage tip.
 _CONTINUATION_PARENT_REASONS = ("compression",) + _RESET_END_REASONS + ("new_session",)
-_CONTINUATION_PARENT_REASONS_SQL = ", ".join(
-    f"'{reason}'" for reason in _CONTINUATION_PARENT_REASONS
-)
 
 
 def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:

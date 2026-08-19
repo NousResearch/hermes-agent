@@ -271,3 +271,59 @@ def test_incapable_store_short_circuits_before_prune_scan(tmp_path: Path) -> Non
 
     assert result is messages
     assert count == 0
+
+
+def test_proactive_prune_does_not_commit_while_a_batch_compression_holds_the_lock(
+    tmp_path: Path,
+) -> None:
+    """prune_tool_results_only must not race a concurrent batch compression.
+
+    archive_and_compact soft-archives the active=1 rows and inserts a
+    replacement set. Batch compression always holds SessionDB's durable
+    compression_locks row before its own archive_and_compact call —
+    try_acquire_compression_lock's docstring says a caller MUST NOT proceed
+    without it, since a racing rotation would split the session lineage.
+    Proactive pruning calls the exact same archive_and_compact on the exact
+    same session_id and, before this fix, took no lock at all: two writers
+    committing concurrently would have the second one silently discard the
+    first's already-committed write.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_LOCK_CONTENTION"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    compressor = agent.context_compressor
+    messages = db.get_messages_as_conversation(session_id)
+    original_contents = [message["content"] for message in messages]
+
+    # Simulate a concurrent batch compression already holding the lock. Uses
+    # this test process's own pid so _compression_lock_holder_process_is_dead
+    # doesn't treat it as an abandoned lease and reclaim it out from under us.
+    other_holder = f"pid={os.getpid()}:tid=1:agent=other:nonce=deadbeef"
+    assert db.try_acquire_compression_lock(session_id, other_holder, ttl_seconds=300.0)
+
+    result, count = compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    # No-op contract: input object handed back unchanged, nothing committed.
+    assert result is messages
+    assert count == 0
+    assert [
+        message["content"] for message in db.get_messages_as_conversation(session_id)
+    ] == original_contents
+    # The other holder's lock must still be intact — a busy prune must not
+    # clobber (or accidentally release) a lock it never acquired.
+    assert db.get_compression_lock_holder(session_id) == other_holder
+
+    # Control: once the lock is free, the identical call commits normally —
+    # proves the no-op above was caused by lock contention, not some other
+    # gate silently rejecting the prune.
+    db.release_compression_lock(session_id, other_holder)
+    result2, count2 = compressor.prune_tool_results_only(messages, current_tokens=120_000)
+
+    assert count2 > 0, "prune must actually commit once the lock is free"
+    assert result2 is not messages
+    assert db.get_compression_lock_holder(session_id) is None, (
+        "the prune's own lock acquisition must be released after it commits"
+    )

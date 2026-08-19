@@ -28,6 +28,8 @@ function loadCreate() {
       }
     },
     saveBotMeta: () => {},
+    botOwner: name => ({ bot: { name }, key: name, name, route: null }),
+    requestForBot: (_bot, method, params) => context.host.request(method, params),
     window: { setTimeout: cb => cb() }
   }
   const section = source.slice(start, end).concat('\nglobalThis.__c = { createCanonicalChat };\n')
@@ -63,6 +65,9 @@ test('hideOwnedBotSessions sweeps canonical chats AND room member sessions', asy
       }
     },
     $botMeta: { get: () => ({ alpha: { chat: 'chat-a' }, beta: { chat: 'chat-b' }, gamma: {} }) },
+    $lastRoster: { get: () => [{ name: 'alpha' }, { name: 'beta' }] },
+    botMetaKey: bot => bot.name,
+    requestForBot: (_bot, method, params) => context.host.request(method, params),
     $groupChats: {
       get: () => ({
         Core: { sessions: { alpha: 'room-core-a', beta: 'room-core-b' } },
@@ -144,5 +149,5 @@ test('the Bots session browser lists with include_hidden', () => {
   // The one session.list consumer that must see the always-hidden rows.
   // (Canonical-chat recovery now goes through profiles.list
   // preferred_session_ids, whose resolver already sees hidden rows.)
-  assert.match(source, /session\.list', \{ profile: botName, limit: PROFILE_SESSION_LIST_LIMIT, include_hidden: true \}/)
+  assert.match(source, /requestForBot\(owner, 'session\.list',[\s\S]*include_hidden: true/)
 })

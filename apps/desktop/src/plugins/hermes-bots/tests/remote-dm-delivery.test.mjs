@@ -127,6 +127,61 @@ test('remote DM carries sender attribution and relays the reply', async () => {
   )
 })
 
+test('remote DM preserves a non-identity targetProfile through list, resume, create, and submit', async () => {
+  const calls = []
+  let submitted = false
+  const ctx = runtime({
+    requestProfile: async (route, method, params) => {
+      calls.push({ route, method, params })
+
+      if (method === 'profiles.list') {
+        return { profiles: [{ name: 'backend-worker', ui_meta: {} }] }
+      }
+
+      if (method === 'session.resume' && params.omit_messages) {
+        throw new Error('not found')
+      }
+
+      if (method === 'session.create') {
+        return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+      }
+
+      if (method === 'prompt.submit') {
+        submitted = true
+        return {}
+      }
+
+      if (method === 'session.resume') {
+        return submitted
+          ? { messages: [{ role: 'assistant', content: 'done' }], inflight: false, running: false }
+          : { messages: [] }
+      }
+
+      return {}
+    }
+  })
+  const route = {
+    connectionId: 'remote-a',
+    mode: 'remote',
+    profile: 'worker',
+    targetProfile: 'backend-worker'
+  }
+
+  await ctx.__dm.deliverRemoteRosterMentions(
+    [{ name: 'worker', connectionId: 'remote-a', remoteSource: true, route }],
+    'ping',
+    { name: 'Hermes', handle: 'hermes' }
+  )
+
+  assert.equal(calls.length > 0, true)
+  assert.equal(calls.every(call => call.route.profile === 'worker'), true)
+  assert.equal(calls.every(call => call.route.targetProfile === 'backend-worker'), true)
+  for (const call of calls.filter(call => ['session.resume', 'session.create'].includes(call.method))) {
+    assert.equal(call.params.profile, 'backend-worker')
+  }
+  assert.equal(calls.find(call => call.method === 'prompt.submit')?.params.session_id, 'runtime-1')
+})
+
 test('source contract: DM poll shares the group-turn shape (bounded, new-assistant-message)', () => {
   assert.match(pluginSource, /const REMOTE_DM_TIMEOUT_MS = /)
   assert.match(pluginSource, /pollRemoteDmReply/)

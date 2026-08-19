@@ -70,8 +70,7 @@ test('regression: a slow load still keeps looks from disk under a new pin', asyn
   runtime.saveBotMeta('researcher', { chat: 'sess-just-created' })
   resolveStorage({ researcher: { title: 'Research', shape: 'cloud', color: '#38bdf8' } })
   await pending
-  await Promise.resolve()
-  await Promise.resolve()
+  await new Promise(resolve => setTimeout(resolve, 0))
 
   assert.equal(runtime.$botMeta.get().researcher.chat, 'sess-just-created')
   assert.equal(runtime.$botMeta.get().researcher.shape, 'cloud')

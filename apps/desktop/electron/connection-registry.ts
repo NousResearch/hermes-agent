@@ -255,6 +255,8 @@ export interface RosterAgent {
   connectionKind: ConnectionKind
   connectionLabel: string
   profile: string
+  /** Backend profile when the registry route maps the Desktop profile name. */
+  targetProfile?: string
   /** Bare profile name, or `<profile>-<label-slug>` when the profile name
    * exists on more than one registered source (the @name-device rule). */
   handle: string
@@ -403,6 +405,7 @@ export function buildAgentRoster(
       connectionKind: connection.kind,
       connectionLabel: connection.label,
       profile,
+      targetProfile: connection.remoteProfile || profile,
       handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1)
     })
   }

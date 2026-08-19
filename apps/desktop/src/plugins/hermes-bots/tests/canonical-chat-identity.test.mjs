@@ -20,6 +20,8 @@ function loadOpenPath({ openSession, request }) {
       }
     },
     saveBotMeta: (name, patch) => saved.push({ name, patch: JSON.parse(JSON.stringify(patch)) }),
+    botOwner: name => ({ bot: { name }, key: name, name, route: null }),
+    requestForBot: (_bot, method, params) => context.host.request(method, params),
     $hideBotChats: { get: () => false },
     window: { setTimeout: callback => callback() }
   }

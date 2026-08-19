@@ -15,7 +15,14 @@ import {
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $newChatRoute,
+  ensureGatewayProfile
+} from '@/store/profile'
+import { requestGatewayForAgent } from '@/store/gateway'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
@@ -68,7 +75,13 @@ vi.mock('@/hermes', async importOriginal => ({
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
+  ensureGatewayAgent: vi.fn().mockResolvedValue(undefined),
   ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
+}))
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestGatewayForAgent: vi.fn()
 }))
 
 vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
@@ -477,6 +490,7 @@ describe('createBackendSessionForSend profile routing', () => {
   afterEach(() => {
     cleanup()
     $newChatProfile.set(null)
+    $newChatRoute.set(null)
     $activeGatewayProfile.set('default')
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
@@ -532,6 +546,40 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ cwd: '/remote/worktree' })
+  })
+
+  it('keeps a route-aware New Chat pinned when foreground activation changes before Send', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'default',
+      targetProfile: 'backend-default'
+    }
+    const ambientRequest = vi.fn(async () => ({}) as never)
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({
+      session_id: RUNTIME_SESSION_ID,
+      stored_session_id: null
+    } as never)
+
+    $newChatProfile.set(route.profile)
+    $newChatRoute.set({ ...route })
+    $activeGatewayProfile.set('other-connection-profile')
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.createBackendSessionForSend()
+    })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'default',
+      'session.create',
+      expect.objectContaining({ profile: 'backend-default', source: 'desktop' })
+    )
+    expect(ambientRequest).not.toHaveBeenCalledWith('session.create', expect.anything())
   })
 
   it('freezes the visible selector state before profile readiness and sends fast: false explicitly', async () => {
@@ -618,7 +666,13 @@ function ResumeHarness({
   sessionStateByRuntimeIdRef
 }: {
   onStateUpdate?: (sessionId: string, state: ClientSessionState) => void
-  onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
+  onReady: (
+    resume: (
+      storedSessionId: string,
+      replaceRoute?: boolean,
+      ownerRoute?: SessionProfileRoute
+    ) => Promise<unknown>
+  ) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: string | null
@@ -1700,7 +1754,108 @@ describe('resumeSession warm-cache mapping integrity', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    vi.mocked(getSession).mockReset()
+    vi.mocked(getLatestSessionMessages).mockReset().mockResolvedValue({ messages: [] } as never)
+    vi.mocked(requestGatewayForAgent).mockReset()
     vi.restoreAllMocks()
+  })
+
+  it('pins metadata, transcript, resume, activate, and usage to the captured connection', async () => {
+    const ownerRoute: SessionProfileRoute = {
+      connectionId: 'source-a',
+      mode: 'remote',
+      profile: 'default',
+      targetProfile: 'backend-default'
+    }
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-warm', 'runtime-warm']])
+    }
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-warm', clientState('stored-warm')]])
+    }
+    // Same-name rows without a source tag are not authoritative for an
+    // explicit owner. Metadata must be re-read from the captured connection.
+    setSessions([storedSession({ id: 'stored-warm', profile: 'default' })])
+    vi.mocked(getSession).mockImplementation(async id => storedSession({ id, profile: 'default' }))
+    vi.mocked(getLatestSessionMessages).mockImplementation(async id => ({ messages: [], session_id: id }) as never)
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
+      if (method === 'session.activate') {
+        throw new Error('Method not found')
+      }
+
+      if (method === 'session.usage') {
+        return { input: 1, output: 2, total: 3 } as never
+      }
+
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          messages: [],
+          resumed: params?.session_id,
+          session_id: 'runtime-cold'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const ambientRequest = vi.fn(async () => ({}) as never)
+    let resume: null | ((
+      storedSessionId: string,
+      replaceRoute?: boolean,
+      ownerRoute?: SessionProfileRoute
+    ) => Promise<unknown>) = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={ambientRequest}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    await resume!('stored-warm', true, ownerRoute)
+    await resume!('stored-cold', true, ownerRoute)
+    await resume!('stored-cold', true, {
+      connectionId: 'source-b',
+      mode: 'remote',
+      profile: 'default',
+      targetProfile: 'backend-b'
+    })
+
+    const restScope = { connectionId: 'source-a', profile: 'backend-default' }
+    expect(getSession).toHaveBeenCalledWith('stored-warm', restScope)
+    expect(getSession).toHaveBeenCalledWith('stored-cold', restScope)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-warm', restScope)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-cold', restScope)
+    expect(getSession).toHaveBeenCalledWith('stored-cold', {
+      connectionId: 'source-b',
+      profile: 'backend-b'
+    })
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-cold', {
+      connectionId: 'source-b',
+      profile: 'backend-b'
+    })
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'default',
+      'session.activate',
+      expect.objectContaining({ session_id: 'runtime-warm' })
+    )
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'default',
+      'session.usage',
+      { session_id: 'runtime-warm' }
+    )
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'default',
+      'session.resume',
+      expect.objectContaining({ session_id: 'stored-cold' })
+    )
+    expect(ambientRequest).not.toHaveBeenCalled()
   })
 
   it('rejects a cross-wired runtime mapping and falls through to a full resume', async () => {

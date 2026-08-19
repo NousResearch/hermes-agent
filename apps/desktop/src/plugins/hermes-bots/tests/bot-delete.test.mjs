@@ -10,6 +10,7 @@ function load({ sdkDeleteProfile = false } = {}) {
   const sdkDeletes = []
   const invalidations = []
   const stored = []
+  const storageOps = []
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
@@ -28,8 +29,8 @@ function load({ sdkDeleteProfile = false } = {}) {
       },
       ...(sdkDeleteProfile
         ? {
-            deleteProfile: async name => {
-              sdkDeletes.push(name)
+            deleteProfile: async profile => {
+              sdkDeletes.push(profile)
             }
           }
         : {}),
@@ -52,11 +53,15 @@ function load({ sdkDeleteProfile = false } = {}) {
   context.plugin.register({
     storage: {
       get: () => null,
-      set: (key, value) => stored.push({ key, value })
+      remove: key => storageOps.push({ op: 'remove', key }),
+      set: (key, value) => {
+        stored.push({ key, value })
+        storageOps.push({ op: 'set', key, value })
+      }
     },
     register: () => undefined
   })
-  return { context, requests, sdkDeletes, invalidations, stored }
+  return { context, requests, sdkDeletes, invalidations, stored, storageOps }
 }
 
 test('unit: deleting a bot prefers the SDK deleteProfile (teardown-routed REST path)', async () => {
@@ -66,6 +71,75 @@ test('unit: deleting a bot prefers the SDK deleteProfile (teardown-routed REST p
 
   assert.deepEqual(sdkDeletes, ['researcher'])
   assert.equal(requests.filter(r => r.method === 'cli.exec').length, 0)
+})
+
+test('unit: source-scoped deletion preserves the route targetProfile', async () => {
+  const { context, sdkDeletes } = load({ sdkDeleteProfile: true })
+  const route = {
+    connectionId: 'source-a',
+    mode: 'remote',
+    profile: 'worker',
+    targetProfile: 'backend-worker'
+  }
+
+  await context.__delete.deleteBot({ name: 'worker', sourceScoped: true, route })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(sdkDeletes)), [route])
+})
+
+test('unit: source-scoped deletion commits bot-meta-v2 atomically', async () => {
+  const { context, storageOps } = load({ sdkDeleteProfile: true })
+  const route = {
+    connectionId: 'source-a',
+    mode: 'remote',
+    profile: 'worker',
+    targetProfile: 'backend-worker'
+  }
+  const key = 'source-a::worker'
+  context.__delete.$botMeta.set({
+    [key]: { title: 'Worker' },
+    'source-a::writer': { title: 'Writer' }
+  })
+
+  await context.__delete.deleteBot({
+    name: 'worker',
+    sourceScoped: true,
+    route
+  })
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(storageOps.slice(-3))),
+    [
+      { op: 'remove', key: 'bot-meta-v2-migrated' },
+      {
+        op: 'set',
+        key: 'bot-meta-v2',
+        value: { 'source-a::writer': { title: 'Writer' } }
+      },
+      { op: 'set', key: 'bot-meta-v2-migrated', value: true }
+    ]
+  )
+})
+
+test('unit: an alias targeting backend default is rejected before deletion', async () => {
+  const { context, sdkDeletes, requests } = load({ sdkDeleteProfile: true })
+
+  await assert.rejects(
+    context.__delete.deleteBot({
+      name: 'worker',
+      sourceScoped: true,
+      route: {
+        connectionId: 'source-a',
+        mode: 'remote',
+        profile: 'worker',
+        targetProfile: 'default'
+      }
+    }),
+    /default profile cannot be deleted/i
+  )
+
+  assert.deepEqual(sdkDeletes, [])
+  assert.equal(requests.some(request => request.method === 'cli.exec'), false)
 })
 
 test('unit: older desktop without host.deleteProfile falls back to the non-interactive profile CLI command', async () => {
@@ -101,7 +175,7 @@ test('integration: a deleted bot is removed from plugin-local state and the rost
 
 test('regression: the bot context menu exposes a destructive delete action and confirmation', () => {
   assert.match(pluginSource, /ContextMenuItem, \{[\s\S]*?variant: 'destructive'[\s\S]*?children: 'Delete'/)
-  assert.match(pluginSource, /bot\.is_default \? null : jsx\(ContextMenuSeparator/)
+  assert.match(pluginSource, /isDefaultBot\(bot\) \? null : jsx\(ContextMenuSeparator/)
   assert.match(pluginSource, /ConfirmDialog/)
   assert.match(pluginSource, /title: 'Delete bot and profile\?'/)
   assert.match(pluginSource, /This will permanently delete the bot[\s\S]*?and its associated Hermes profile at[\s\S]*?This cannot be undone\./)

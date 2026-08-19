@@ -311,7 +311,21 @@ function connectionScoped(): { connectionId?: string } {
 //     ids mean the local pool and deliberately DROP the ambient connection
 //     tag, so a local-profile pick made while a remote gateway is active still
 //     routes to the local machine.
-export type ProfileScope = null | string | { connectionId?: null | string; profile?: null | string }
+export type ProfileScope = undefined | null | string | { connectionId?: null | string; profile?: null | string }
+
+function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
+  if (scope === undefined || scope === null) {
+    return {}
+  }
+
+  return capabilityScoped(scope)
+}
+
+function sessionScopeQuery(scope?: ProfileScope): string {
+  const profile = sessionScoped(scope).profile
+
+  return profile ? `?profile=${encodeURIComponent(profile)}` : ''
+}
 
 function capabilityScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
   if (scope && typeof scope === 'object') {
@@ -773,11 +787,12 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 // the given `profile`). The backend resolves exact ids and unique prefixes and
 // 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
 // cross-profile list scan when locating an unknown id's owner.
-export function getSession(id: string, profile?: string | null): Promise<SessionInfo> {
-  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+export function getSession(id: string, profile?: ProfileScope): Promise<SessionInfo> {
+  const scoped = sessionScoped(profile)
+  const suffix = sessionScopeQuery(profile)
 
   return window.hermesDesktop.api<SessionInfo>({
-    ...(profile ? { profile } : {}),
+    ...scoped,
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
   })
 }
@@ -788,13 +803,15 @@ export function getSession(id: string, profile?: string | null): Promise<Session
 // the current/default profile.
 export function getSessionMessages(
   id: string,
-  profile?: string | null,
+  profile?: ProfileScope,
   page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
-  if (profile) {
-    query.set('profile', profile)
+  const scoped = sessionScoped(profile)
+
+  if (scoped.profile) {
+    query.set('profile', scoped.profile)
   }
 
   if (page.limit !== undefined) {
@@ -816,7 +833,7 @@ export function getSessionMessages(
   const suffix = query.size ? `?${query.toString()}` : ''
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
-    ...(profile ? { profile } : {}),
+    ...scoped,
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
   })
 }
@@ -830,7 +847,7 @@ export function getSessionMessages(
  */
 export const LATEST_SESSION_MESSAGES_LIMIT = 120
 
-export function getLatestSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
+export function getLatestSessionMessages(id: string, profile?: ProfileScope): Promise<SessionMessagesResponse> {
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
@@ -868,7 +885,7 @@ export function getLatestSessionMessages(id: string, profile?: string | null): P
  */
 export function getOlderSessionMessages(
   id: string,
-  profile: string | null | undefined,
+  profile: ProfileScope,
   offset: number,
   limit: number = LATEST_SESSION_MESSAGES_LIMIT
 ): Promise<SessionMessagesResponse> {
@@ -877,7 +894,7 @@ export function getOlderSessionMessages(
 
 export async function getAllSessionMessages(
   id: string,
-  profile?: string | null,
+  profile?: ProfileScope,
   options: { maxJsonChars?: number } = {}
 ): Promise<SessionMessagesResponse> {
   const messages: SessionMessage[] = []
@@ -917,9 +934,9 @@ export async function getAllSessionMessages(
   return { session_id: resolvedSessionId, messages }
 }
 
-export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {
+export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...sessionScoped(profile),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'DELETE'
   })
@@ -1771,9 +1788,21 @@ export function renameProfile(name: string, newName: string): Promise<{ name: st
   })
 }
 
-export function deleteProfile(name: string): Promise<{ ok: boolean; path: string }> {
+export function deleteProfile(name: string, scope?: ProfileScope): Promise<{ ok: boolean; path: string }> {
+  const normalized = name.trim()
+  const scopedProfile = scope && typeof scope === 'object' ? scope.profile?.trim() : undefined
+
+  if (!normalized) {
+    return Promise.reject(new Error('Profile name required'))
+  }
+
+  if (normalized.toLowerCase() === 'default' || scopedProfile?.toLowerCase() === 'default') {
+    return Promise.reject(new Error('The default profile cannot be deleted.'))
+  }
+
   return window.hermesDesktop.api<{ ok: boolean; path: string }>({
-    path: `/api/profiles/${encodeURIComponent(name)}`,
+    ...capabilityScoped(scope),
+    path: `/api/profiles/${encodeURIComponent(normalized)}`,
     method: 'DELETE'
   })
 }

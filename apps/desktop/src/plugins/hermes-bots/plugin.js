@@ -86,6 +86,12 @@ const ID = 'hermes-bots'
 const ROSTER_KEY = [ID, 'roster']
 const ROUTINES_KEY = [ID, 'routines']
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const BOT_META_V1_KEY = 'bot-meta'
+const BOT_META_V2_KEY = 'bot-meta-v2'
+const BOT_META_MIGRATION_KEY = 'bot-meta-v2-migrated'
+let botMetaV2Active = false
+let botMetaV2Commit = Promise.resolve()
+const migratedLocalRoutes = new Map()
 
 /** Captured in register() so components can reach plugin storage. */
 let pluginCtx = null
@@ -126,9 +132,10 @@ function trackInboundActivity(roster) {
   watermarksSeeded = true
 
   for (const bot of roster) {
+    const key = botSelectionKey(bot)
     const ts = bot.last_session?.last_active || 0
-    const prev = rosterWatermarks.get(bot.name) || 0
-    rosterWatermarks.set(bot.name, Math.max(prev, ts))
+    const prev = rosterWatermarks.get(key) || 0
+    rosterWatermarks.set(key, Math.max(prev, ts))
 
     if (seeding || ts <= prev) {
       continue
@@ -136,22 +143,22 @@ function trackInboundActivity(roster) {
 
     // Activity in the bot the user is currently looking at is already
     // visible — never badge the open chat.
-    if ($selectedBot.get() === bot.name) {
+    if ($selectedBot.get() === key) {
       continue
     }
 
-    $botUnread.set({ ...$botUnread.get(), [bot.name]: true })
+    $botUnread.set({ ...$botUnread.get(), [key]: true })
 
     // Roster-hidden bots stay quiet: the unread flag above accumulates
     // silently (unhiding reveals the badge) but a hidden bot never toasts.
-    if ($botMeta.get()[bot.name]?.hidden) {
+    if (botRosterMeta(bot, $botMeta.get())?.hidden) {
       continue
     }
 
     // Toasts are opt-in: the unread badge is always set above, but the
     // per-message notification fires only when the user enabled it.
     if ($activityToasts.get()) {
-      const meta = $botMeta.get()[bot.name]
+      const meta = botRosterMeta(bot, $botMeta.get())
       const label = displayName(bot, meta)
       const preview = (bot.last_session?.preview || '').trim()
       const inbound = /^Message from/i.test(preview)
@@ -214,14 +221,61 @@ function handleSessionsGatewayTransition() {
  *  { [botName]: { shape, color, title } } */
 const $botMeta = atom({})
 
-async function saveBotMeta(name, patch) {
-  const prevMeta = $botMeta.get()[name] || {}
-  const next = { ...$botMeta.get(), [name]: { ...prevMeta, ...patch } }
+function commitBotMetaV2(storage, snapshot) {
+  const commit = botMetaV2Commit.then(async () => {
+    if (typeof storage?.remove !== 'function' || typeof storage?.set !== 'function') {
+      throw new Error('bot metadata v2 storage is unavailable')
+    }
+
+    try {
+      await storage.remove(BOT_META_MIGRATION_KEY)
+      await storage.set(BOT_META_V2_KEY, snapshot)
+      await storage.set(BOT_META_MIGRATION_KEY, true)
+    } catch (error) {
+      await Promise.allSettled(
+        [BOT_META_MIGRATION_KEY, BOT_META_V2_KEY].map(key => storage.remove(key))
+      )
+      throw error
+    }
+  })
+
+  botMetaV2Commit = commit.catch(() => undefined)
+
+  return commit
+}
+
+function botOwner(owner) {
+  if (typeof owner === 'string') {
+    const name = owner.trim()
+    const route = migratedLocalRoutes.get(name)
+
+    return {
+      bot: route ? { name, sourceScoped: true, route } : { name },
+      name,
+      key: route ? botRouteKey(route) : name,
+      route: route || null
+    }
+  }
+
+  const name = String(owner?.name || '').trim()
+  const route = botConnectionRoute(owner)
+
+  return { bot: owner, name, key: route ? botRouteKey(route) : name, route }
+}
+
+async function saveBotMeta(owner, patch) {
+  const { bot, key, name, route } = botOwner(owner)
+  const prevMeta = $botMeta.get()[key] || {}
+  const next = { ...$botMeta.get(), [key]: { ...prevMeta, ...patch } }
   $botMeta.set(next)
 
   // Local plugin storage: instant, and the fallback for older gateways.
+  let localPersistence = Promise.resolve()
   try {
-    Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', next)).catch(() => undefined)
+    const persisted = route || botMetaV2Active
+      ? commitBotMetaV2(pluginCtx?.storage, next)
+      : Promise.resolve(pluginCtx?.storage?.set?.(BOT_META_V1_KEY, next))
+    localPersistence = persisted.catch(() => undefined)
   } catch {
     /* storage unavailable — look persists for this window only */
   }
@@ -236,8 +290,10 @@ async function saveBotMeta(name, patch) {
   // the list call — so pfps follow the profile across machines too.
   let serverRequest = null
   try {
-    const { image, pet, ...rest } = next[name] || {}
-    serverRequest = Promise.resolve(host.request('profiles.configure', { name, ui_meta: { 'hermes-bots': rest } }))
+    const { image, pet, ...rest } = next[key] || {}
+    const request = route ? requestForBot(bot, 'profiles.configure', { name, ui_meta: { 'hermes-bots': rest } }) :
+      host.request('profiles.configure', { name, ui_meta: { 'hermes-bots': rest } })
+    serverRequest = Promise.resolve(request)
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -251,8 +307,12 @@ async function saveBotMeta(name, patch) {
   if ('image' in patch && patch.image !== (prevMeta.image ?? null)) {
     try {
       const req = patch.image
-        ? host.request('profiles.set_asset', { name, asset: 'avatar', data: patch.image })
-        : host.request('profiles.set_asset', { name, asset: 'avatar', clear: true })
+        ? (route
+            ? requestForBot(bot, 'profiles.set_asset', { name, asset: 'avatar', data: patch.image })
+            : host.request('profiles.set_asset', { name, asset: 'avatar', data: patch.image }))
+        : (route
+            ? requestForBot(bot, 'profiles.set_asset', { name, asset: 'avatar', clear: true })
+            : host.request('profiles.set_asset', { name, asset: 'avatar', clear: true }))
       req.catch(() => undefined)
     } catch {
       /* older gateway */
@@ -282,7 +342,145 @@ async function saveBotMeta(name, patch) {
     }
   }
 
+  await localPersistence
+
   return { serverPersisted: serverOutcome === 'persisted', serverOutcome }
+}
+
+/** Migrate name-keyed appearance state only when the live registry proves
+ * there is one local source. A v1 name cannot identify a machine in a
+ * multi-source desktop, so the conservative result there is to retain v1 as
+ * rollback data and leave remote rows unpainted. */
+function hydrateBotMeta(snapshot, remap = null) {
+  const next = { ...snapshot }
+
+  for (const [key, meta] of Object.entries($botMeta.get())) {
+    const target = remap?.get(key) || key
+    next[target] = { ...(next[target] || {}), ...meta }
+  }
+
+  $botMeta.set(next)
+
+  return next
+}
+
+async function migrateBotMeta(storage = pluginCtx?.storage) {
+  let v1 = null
+  let v2 = null
+  let v2Committed = false
+
+  try {
+    ;[v1, v2, v2Committed] = await Promise.all([
+      storage?.get?.(BOT_META_V1_KEY),
+      storage?.get?.(BOT_META_V2_KEY),
+      storage?.get?.(BOT_META_MIGRATION_KEY)
+    ])
+  } catch {
+    return false
+  }
+
+  if (v2Committed === true && v2 && typeof v2 === 'object' && !Array.isArray(v2)) {
+    hydrateBotMeta(v2)
+    botMetaV2Active = true
+
+    return true
+  }
+
+  if (!v1 || typeof v1 !== 'object' || Array.isArray(v1) || typeof host.agents !== 'function') {
+    if (v1 && typeof v1 === 'object' && !Array.isArray(v1)) {
+      hydrateBotMeta(v1)
+    }
+
+    return false
+  }
+
+  let union
+  let routes
+
+  try {
+    union = await host.agents()
+    routes = typeof host.profileRoutes === 'function' ? await host.profileRoutes() : []
+  } catch {
+    hydrateBotMeta(v1)
+
+    return false
+  }
+
+  const sources = Array.isArray(union?.sources) ? union.sources : []
+  const localAgents = (union?.agents || []).filter(agent => agent?.connectionKind === 'local')
+  const soleLocal = sources.length === 1
+    ? sources[0]?.kind === 'local'
+    : sources.length === 0 && localAgents.length > 0 && (union?.agents || []).every(agent => agent?.connectionKind === 'local')
+
+  if (!soleLocal) {
+    hydrateBotMeta(v1)
+
+    return false
+  }
+
+  const migrated = {}
+  const pendingLocalRoutes = new Map()
+
+  for (const [name, meta] of Object.entries(v1)) {
+    const route = (routes || []).find(candidate => candidate?.mode === 'local' && candidate?.profile === name) ||
+      (() => {
+        const agent = localAgents.find(candidate => candidate.profile === name)
+
+        return agent
+          ? {
+              connectionId: agent.connectionId,
+              mode: 'local',
+              profile: name,
+              targetProfile: agent.targetProfile || name
+            }
+          : null
+      })()
+
+    if (!route?.connectionId) {
+      // A missing route makes the topology proof unusable for this key. Keep
+      // the v1 record intact rather than guessing a local/remote projection.
+      hydrateBotMeta(v1)
+
+      return false
+    }
+
+    const captured = {
+      connectionId: route.connectionId,
+      mode: 'local',
+      profile: name,
+      targetProfile: route.targetProfile || name
+    }
+    migrated[botRouteKey(captured)] = meta
+    pendingLocalRoutes.set(name, captured)
+  }
+
+  const remap = new Map(
+    [...pendingLocalRoutes].map(([name, route]) => [name, botRouteKey(route)])
+  )
+  const hydrated = { ...migrated }
+
+  for (const [key, meta] of Object.entries($botMeta.get())) {
+    const target = remap.get(key) || key
+    hydrated[target] = { ...(hydrated[target] || {}), ...meta }
+  }
+
+  try {
+    await commitBotMetaV2(storage, hydrated)
+  } catch {
+    botMetaV2Active = false
+    hydrateBotMeta(v1)
+
+    return false
+  }
+
+  migratedLocalRoutes.clear()
+  for (const [name, route] of pendingLocalRoutes) {
+    migratedLocalRoutes.set(name, route)
+  }
+  hydrateBotMeta(hydrated)
+  botMetaV2Active = true
+
+  return true
 }
 
 // ── hidden bots (right-click → Hide Bot) ────────────────────────────────────
@@ -318,14 +516,19 @@ function fallbackSelectionAfterHide(name) {
   const meta = $botMeta.get()
   const visible = $lastRoster
     .get()
-    .filter(bot => !bot.remoteSource && bot.name !== name && !meta[bot.name]?.hidden)
+    .filter(bot => botSelectionKey(bot) !== name && !botRosterMeta(bot, meta)?.hidden)
 
   if (visible.length) {
-    $selectedBot.set(visible[0].name)
+    $selectedBot.set(botSelectionKey(visible[0]))
     return
   }
 
-  if (name !== 'default' && !meta.default?.hidden) {
+  const defaultBot = $lastRoster.get().find(bot => isDefaultBot(bot) && !botRosterMeta(bot, meta)?.hidden)
+  if (defaultBot && botSelectionKey(defaultBot) !== name) {
+    $selectedBot.set(botSelectionKey(defaultBot))
+  } else if (!$lastRoster.get().some(isDefaultBot)) {
+    // Legacy sole-local rosters can transiently omit the default row. Keep the
+    // historic fallback rather than leaving Routines attached to a hidden bot.
     $selectedBot.set('default')
   }
 }
@@ -339,19 +542,26 @@ function fallbackSelectionAfterHide(name) {
  *  setter is a no-op on already-hidden rows) and feature-detected: older
  *  gateways lack session.set_hidden and simply keep the rows visible. */
 function hideOwnedBotSessions() {
-  const canonical = Object.values($botMeta.get())
-    .map(m => m && m.chat)
+  const roster = $lastRoster.get()
+  const canonical = Object.entries($botMeta.get())
+    .map(([key, meta]) => {
+      const bot = roster.find(candidate => botMetaKey(candidate) === key)
+
+      return meta?.chat && bot ? { bot, id: meta.chat } : null
+    })
     .filter(Boolean)
+  const canonicalIds = new Set(canonical.map(({ id }) => id))
   const rooms = Object.values($groupChats.get())
     .flatMap(room => Object.values(room?.sessions || {}))
-    .filter(sid => Boolean(sid) && sid !== true)
-  const ids = [...new Set([...canonical, ...rooms])]
-
-  const known = Promise.all(
-    ids.map(sid =>
+    .filter(sid => Boolean(sid) && sid !== true && !canonicalIds.has(sid))
+  const known = Promise.all([
+    ...canonical.map(({ bot, id }) =>
+      Promise.resolve(requestForBot(bot, 'session.set_hidden', { session_id: id, hidden: true })).catch(() => undefined)
+    ),
+    ...rooms.map(sid =>
       Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden: true })).catch(() => undefined)
     )
-  )
+  ])
 
   return Promise.all([known, sweepBotProfileSessions().catch(() => undefined)])
 }
@@ -391,7 +601,12 @@ async function sweepBotProfileSessions() {
     // back to the active gateway's own profile list (local bots; remote
     // sources get covered by the next sweep once the roster cache exists).
     try {
-      const res = await host.request('profiles.list', {})
+      const route = await activeBotRoute()
+      const res = await requestForBot(
+        route ? { name: route.profile, sourceScoped: true, route } : { name: 'default' },
+        'profiles.list',
+        {}
+      )
       roster = Array.isArray(res?.profiles) ? res.profiles : []
     } catch {
       return
@@ -437,18 +652,22 @@ const avatarPushInflight = new Set()
  *  cross-machine roster art, so local-only images are a bug, not a state. */
 function pushLocalAvatars(roster) {
   for (const bot of roster) {
-    if (bot.has_avatar || avatarPushInflight.has(bot.name)) {
+    const key = botMetaKey(bot)
+
+    if (bot.has_avatar || avatarPushInflight.has(key)) {
       continue
     }
 
-    const image = $botMeta.get()[bot.name]?.image
+    const image = $botMeta.get()[key]?.image
 
     if (image && typeof image === 'string' && image.startsWith('data:')) {
-      avatarPushInflight.add(bot.name)
-      host
-        .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: image })
+      avatarPushInflight.add(key)
+      const request = bot.sourceScoped
+        ? requestForBot(bot, 'profiles.set_asset', { name: bot.name, asset: 'avatar', data: image })
+        : host.request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: image })
+      Promise.resolve(request)
         .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
-        .catch(() => avatarPushInflight.delete(bot.name))
+        .catch(() => avatarPushInflight.delete(key))
       continue
     }
 
@@ -461,16 +680,17 @@ function pushLocalAvatars(roster) {
       continue
     }
 
-    avatarPushInflight.add(bot.name)
+    avatarPushInflight.add(key)
     rasterizeSvgToPng(svg, 160)
       .then(png =>
         png
-          ? host
-              .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: png })
+          ? (bot.sourceScoped
+              ? requestForBot(bot, 'profiles.set_asset', { name: bot.name, asset: 'avatar', data: png })
+              : host.request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: png }))
               .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
           : Promise.reject(new Error('rasterize failed'))
       )
-      .catch(() => avatarPushInflight.delete(bot.name))
+      .catch(() => avatarPushInflight.delete(key))
   }
 }
 
@@ -529,37 +749,36 @@ function pullServerAvatars(roster) {
   pushLocalAvatars(roster)
 
   for (const bot of roster) {
-    if (!bot.has_avatar || avatarFetchInflight.has(bot.name)) {
+    const key = botMetaKey(bot)
+
+    if (!bot.has_avatar || avatarFetchInflight.has(key)) {
       continue
     }
 
-    if ($botMeta.get()[bot.name]?.image) {
+    if ($botMeta.get()[key]?.image) {
       continue
     }
 
-    avatarFetchInflight.add(bot.name)
-    host
-      .request('profiles.get_asset', { name: bot.name, asset: 'avatar' })
+    avatarFetchInflight.add(key)
+    const assetRequest = bot.sourceScoped
+      ? requestForBot(bot, 'profiles.get_asset', { name: bot.name, asset: 'avatar' })
+      : host.request('profiles.get_asset', { name: bot.name, asset: 'avatar' })
+    Promise.resolve(assetRequest)
       .then(res => {
         if (res?.found && res.data) {
           const current = $botMeta.get()
-          const mine = current[bot.name] || {}
+          const mine = current[key] || {}
           // A 160px raster of the vector face is only for inter-agent
           // notices. Do not park it on the roster or the live face dies.
           if (isBackfilledFacePng(res.data) && mine.imageKind !== 'photo' && !mine.pet) {
             return
           }
-          $botMeta.set({ ...current, [bot.name]: { ...mine, image: res.data } })
-
-          try {
-            Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', $botMeta.get())).catch(() => undefined)
-          } catch {
-            /* no storage */
-          }
+          $botMeta.set({ ...current, [key]: { ...mine, image: res.data } })
+          persistBotMetaSnapshot($botMeta.get(), Boolean(bot.sourceScoped))
         }
       })
       .catch(() => undefined)
-      .finally(() => avatarFetchInflight.delete(bot.name))
+      .finally(() => avatarFetchInflight.delete(key))
   }
 }
 
@@ -577,7 +796,8 @@ function mergeServerMeta(roster) {
   for (const bot of roster) {
     const server = bot.ui_meta?.['hermes-bots']
     if (server && typeof server === 'object') {
-      const mine = next[bot.name] || {}
+      const key = botMetaKey(bot)
+      const mine = next[key] || {}
       const merged = { ...mine, ...server }
 
       // Local-only fields survive the server overlay.
@@ -607,8 +827,8 @@ function mergeServerMeta(roster) {
         delete merged.group
       }
 
-      if (JSON.stringify(next[bot.name] || null) !== JSON.stringify(merged)) {
-        next[bot.name] = merged
+      if (JSON.stringify(next[key] || null) !== JSON.stringify(merged)) {
+        next[key] = merged
         changed = true
       }
     }
@@ -620,7 +840,7 @@ function mergeServerMeta(roster) {
     // Persist server reconciliation so a relaunch cannot rehydrate stale
     // local fields that the server intentionally removed.
     try {
-      Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', next)).catch(() => undefined)
+      persistBotMetaSnapshot(next, roster.some(bot => bot.sourceScoped))
     } catch {
       /* storage unavailable — reconciliation lasts for this window only */
     }
@@ -630,7 +850,10 @@ function mergeServerMeta(roster) {
 /** Clone a bot: profile (config/skills/SOUL/memory via clone_from) + look.
  *  Name is "<base>-2", "-3", … — first free slot against the live roster. */
 async function duplicateBot(bot, roster) {
+  await ensureBotMetadata(bot)
   const base = bot.name
+  const ownerRoute = botConnectionRoute(bot)
+  const ownerKey = ownerRoute ? botRouteKey(ownerRoute) : null
   let name = null
   for (let n = 2; n < 100; n++) {
     // Truncate the BASE, never the suffix — slicing the joined string chops
@@ -638,7 +861,7 @@ async function duplicateBot(bot, roster) {
     // base forever (#19).
     const suffix = `-${n}`
     const candidate = base.slice(0, 64 - suffix.length) + suffix
-    if (!roster.some(b => b.name === candidate)) {
+    if (!roster.some(b => b.name === candidate && (!ownerKey || botMetaKey(b)?.startsWith(`${ownerRoute.connectionId}::`)))) {
       name = candidate
       break
     }
@@ -648,7 +871,7 @@ async function duplicateBot(bot, roster) {
     throw new Error('No free name for the duplicate.')
   }
 
-  await host.request('profiles.create', {
+  await requestForBot(bot, 'profiles.create', {
     name,
     clone_from: base,
     description: bot.description || ''
@@ -657,10 +880,10 @@ async function duplicateBot(bot, roster) {
   // Same look: avatar shape/color/image and a "(copy)" title so the two
   // are tellable apart in the roster until the user renames. Do not copy
   // chat or created. Those belong to the original bot.
-  const meta = $botMeta.get()[base]
+  const meta = $botMeta.get()[botMetaKey(bot)]
   if (meta) {
     const { chat, created, ...look } = meta
-    saveBotMeta(name, {
+    await saveBotMeta({ ...bot, name, route: ownerRoute, sourceScoped: Boolean(ownerRoute) }, {
       ...look,
       title: meta.title ? `${meta.title} (copy)` : ''
     })
@@ -681,13 +904,25 @@ async function duplicateBot(bot, roster) {
  * renderer's socket reconnect respawns it mid-delete, resurrecting the
  * directory (hermes-agent#52279). That is the "can't delete a bot" error. */
 async function deleteBot(bot) {
+  const route = botConnectionRoute(bot)
+
+  if (isDefaultBot(bot) || String(route?.targetProfile || '').toLowerCase() === 'default') {
+    throw new Error('The default profile cannot be deleted.')
+  }
+
   if (typeof host.deleteProfile === 'function') {
-    await host.deleteProfile(bot.name)
+    if (route) {
+      await host.deleteProfile(route)
+    } else {
+      await host.deleteProfile(bot.name)
+    }
   } else {
-    // Older desktop without the SDK verb — best effort via the CLI.
-    const result = await host.request('cli.exec', {
+    // Older desktop without the SDK verb — source-scoped rows fail closed.
+    const result = await (route ? requestForBot(bot, 'cli.exec', {
       argv: ['profile', 'delete', bot.name, '--yes']
-    })
+    }) : host.request('cli.exec', {
+      argv: ['profile', 'delete', bot.name, '--yes']
+    }))
 
     if (result?.blocked || result?.code !== 0) {
       throw new Error(result?.hint || result?.output || `Could not delete profile ${bot.name}.`)
@@ -695,23 +930,27 @@ async function deleteBot(bot) {
   }
 
   const meta = { ...$botMeta.get() }
-  delete meta[bot.name]
+  delete meta[botMetaKey(bot)]
   $botMeta.set(meta)
 
   try {
-    await Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', meta))
+    if (route) {
+      await commitBotMetaV2(pluginCtx?.storage, meta)
+    } else {
+      await Promise.resolve(pluginCtx?.storage?.set?.(BOT_META_V1_KEY, meta))
+    }
   } catch {
     /* profile is deleted; stale local appearance is harmless if storage fails */
   }
 
   const unread = { ...$botUnread.get() }
-  delete unread[bot.name]
+  delete unread[botSelectionKey(bot)]
   $botUnread.set(unread)
-  rosterWatermarks.delete(bot.name)
-  avatarFetchInflight.delete(bot.name)
-  avatarPushInflight.delete(bot.name)
+  rosterWatermarks.delete(botSelectionKey(bot))
+  avatarFetchInflight.delete(botMetaKey(bot))
+  avatarPushInflight.delete(botMetaKey(bot))
 
-  if ($selectedBot.get() === bot.name) {
+  if ($selectedBot.get() === botSelectionKey(bot)) {
     $selectedBot.set('default')
   }
 
@@ -2605,14 +2844,41 @@ let serverInjectsProtocol = false
  *  (preferred_session), so a row's preview can describe the same session its
  *  click opens (hermes-agent#88200). Unknown params are ignored by older
  *  gateways, which simply omit the field. */
-function preferredSessionIds(allMeta) {
+function preferredSessionIds(allMeta, activeRoute = null) {
   const pins = {}
-  for (const [name, meta] of Object.entries(allMeta || {})) {
+  for (const [key, meta] of Object.entries(allMeta || {})) {
     if (meta?.chat) {
-      pins[name] = meta.chat
+      const name = key.includes('::')
+        ? (activeRoute && key === botRouteKey(activeRoute) ? activeRoute.profile : null)
+        : key
+
+      if (name) {
+        pins[name] = meta.chat
+      }
     }
   }
   return pins
+}
+
+async function activeBotRoute() {
+  if (typeof host.profileRoutes !== 'function') {
+    return null
+  }
+
+  const profile = String(host.state.profile?.get?.() || 'default').trim() || 'default'
+  const connectionId = String(
+    host.state.connectionId?.get?.() ||
+    (typeof host.activeConnectionId === 'function' ? host.activeConnectionId() : '') ||
+    'local'
+  ).trim() || 'local'
+  const routes = await host.profileRoutes()
+  const route = routes.find(candidate => candidate?.connectionId === connectionId && candidate?.profile === profile)
+
+  if (!route && typeof host.agents === 'function') {
+    throw new Error(`No route for active bot ${connectionId}::${profile}`)
+  }
+
+  return route || null
 }
 
 function useRoster() {
@@ -2623,8 +2889,13 @@ function useRoster() {
     queryFn: async () => {
       // Rich rows (last_session, ui_meta, has_avatar) come from the ACTIVE
       // gateway's profiles.list — unchanged single-source behavior.
-      const pins = preferredSessionIds($botMeta.get())
-      const local = await host.request(
+      const route = await activeBotRoute()
+      const activeBot = route
+        ? { name: route.profile, sourceScoped: true, route }
+        : { name: String(host.state.profile?.get?.() || 'default').trim() || 'default' }
+      const pins = preferredSessionIds($botMeta.get(), route)
+      const local = await requestForBot(
+        activeBot,
         'profiles.list',
         Object.keys(pins).length ? { preferred_session_ids: pins } : {}
       )
@@ -2665,8 +2936,9 @@ function useRoster() {
  *  already returned: they only ANNOTATE the rich rows (handle, connection
  *  fields); rich fields stay authoritative and they are NOT duplicated.
  *  Rows from other sources become new roster entries tagged with their
- *  source label so BotRow can badge them and route open/warm through
- *  ensureAgent/warmAgent. Pure — exercised directly by the tests. */
+ *  source label so BotRow can badge them, warm the captured agent, and route
+ *  every open directly through that descriptor. Pure — exercised directly by
+ *  the tests. */
 function mergeMultiSourceRoster(local, union, activeConnectionId, previous = []) {
   const localProfiles = Array.isArray(local?.profiles) ? local.profiles : []
   const agents = Array.isArray(union?.agents) ? union.agents : []
@@ -2756,6 +3028,13 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
       row.connectionId = agent.connectionId
       row.connectionKind = agent.connectionKind
       row.connectionLabel = agent.connectionLabel
+      row.targetProfile = agent.targetProfile || profile
+      row.route = {
+        connectionId,
+        mode: agent.connectionKind === 'local' ? 'local' : 'remote',
+        profile,
+        targetProfile: agent.targetProfile || profile
+      }
       row.sourceScoped = true
       continue
     }
@@ -2772,6 +3051,13 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
       connectionId,
       connectionKind: agent.connectionKind,
       connectionLabel: agent.connectionLabel,
+      targetProfile: agent.targetProfile || profile,
+      route: {
+        connectionId,
+        mode: agent.connectionKind === 'local' ? 'local' : 'remote',
+        profile,
+        targetProfile: agent.targetProfile || profile
+      },
       remoteSource: true,
       sourceScoped: true
     })
@@ -2847,6 +3133,26 @@ function isActiveRosterBot(bot, active) {
   }
 
   return botName === activeName
+}
+
+function botSelectionKey(bot) {
+  return bot?.sourceScoped || bot?.remoteSource ? botRosterKey(bot) : bot?.name
+}
+
+function isDefaultBot(bot) {
+  const route = botConnectionRoute(bot)
+
+  return String(route?.profile || bot?.name || '').trim().toLowerCase() === 'default'
+}
+
+function newBotChat(bot) {
+  if (typeof host.newChat !== 'function') {
+    host.navigate?.('/')
+
+    return
+  }
+
+  host.newChat(bot?.sourceScoped || bot?.remoteSource ? botConnectionRoute(bot) : bot?.name)
 }
 
 /** Resolve @handles in prose against the Bot Mode roster (local + Connections).
@@ -2926,10 +3232,11 @@ const REMOTE_DM_POLL_MS = 2000
  *  minting a fresh "Bot Chat" per mention. */
 async function ensureRemoteCanonicalChat(route, profile) {
   let pinned = null
+  const backendProfile = route.targetProfile || profile
 
   try {
     const listed = await host.requestProfile(route, 'profiles.list', {})
-    const owner = listed?.profiles?.find(p => p.name === profile)
+    const owner = listed?.profiles?.find(p => p.name === backendProfile)
     pinned = owner?.ui_meta?.['hermes-bots']?.chat || null
   } catch {
     /* older remote gateway — title lookup below still works */
@@ -2943,7 +3250,7 @@ async function ensureRemoteCanonicalChat(route, profile) {
     try {
       const res = await host.requestProfile(route, 'session.resume', {
         session_id: target,
-        profile,
+        profile: backendProfile,
         omit_messages: true
       })
 
@@ -2956,7 +3263,7 @@ async function ensureRemoteCanonicalChat(route, profile) {
   }
 
   const created = await host.requestProfile(route, 'session.create', {
-    profile,
+    profile: backendProfile,
     title: 'Bot Chat',
     // Bot Mode sessions are always hidden from the global sidebar.
     hidden: true
@@ -2969,6 +3276,7 @@ async function ensureRemoteCanonicalChat(route, profile) {
  *  member turn: wait for a NEW assistant message after `before`, or time out. */
 async function pollRemoteDmReply(route, profile, sessionRef, before) {
   const deadline = Date.now() + REMOTE_DM_TIMEOUT_MS
+  const backendProfile = route.targetProfile || profile
 
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, REMOTE_DM_POLL_MS))
@@ -2976,7 +3284,10 @@ async function pollRemoteDmReply(route, profile, sessionRef, before) {
     let state = null
 
     try {
-      state = await host.requestProfile(route, 'session.resume', { session_id: sessionRef, profile })
+      state = await host.requestProfile(route, 'session.resume', {
+        session_id: sessionRef,
+        profile: backendProfile
+      })
     } catch {
       continue
     }
@@ -3029,7 +3340,7 @@ async function deliverRemoteRosterMentions(bots, userText, sender) {
       continue
     }
 
-    const route = { connectionId, mode: 'remote', profile, targetProfile: profile }
+    const route = botConnectionRoute(bot)
     const label = bot.connectionLabel || connectionId
 
     try {
@@ -3043,7 +3354,10 @@ async function deliverRemoteRosterMentions(bots, userText, sender) {
       let before = 0
 
       try {
-        const pre = await host.requestProfile(route, 'session.resume', { session_id: stored || runtime, profile })
+        const pre = await host.requestProfile(route, 'session.resume', {
+          session_id: stored || runtime,
+          profile: route.targetProfile || profile
+        })
         before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
       } catch {
         /* lazy session — zero messages */
@@ -3091,33 +3405,106 @@ function botRosterKey(bot) {
   return `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`
 }
 
+function botRouteKey(route) {
+  return `${route.connectionId}::${route.profile}`
+}
+
+function botMetaKey(bot) {
+  const route = botConnectionRoute(bot)
+
+  return route ? botRouteKey(route) : bot?.name
+}
+
+function persistBotMetaSnapshot(value, scoped = false) {
+  try {
+    const persisted = scoped
+      ? commitBotMetaV2(pluginCtx?.storage, value)
+      : Promise.resolve(pluginCtx?.storage?.set?.(BOT_META_V1_KEY, value))
+
+    return persisted.catch(() => undefined)
+  } catch {
+    return Promise.resolve()
+  }
+}
+
 // ── cross-connection routing ─────────────────────────────────────────────────
 // A bot from another registered connection (remoteSource rows) is reached
 // through host.requestProfile with a route descriptor; local bots keep the
 // active-gateway door. Feature-detected: older desktops without
 // requestProfile simply have no remote routes (callers fall back / disable).
 
-/** Route descriptor for a bot on another connection, or null for the local /
- *  active source (or when the desktop can't route). */
+/** Immutable owner descriptor for every source-scoped row. The active
+ *  gateway is presentation state and is never consulted here. */
 function botConnectionRoute(bot) {
-  const id = String(bot?.connectionId || '').trim()
-
-  if (!bot?.remoteSource || !id || id === 'local' || typeof host.requestProfile !== 'function') {
+  if (!bot?.sourceScoped && !bot?.remoteSource) {
     return null
   }
 
-  const profile = String(bot?.name || '').trim() || 'default'
+  const candidate = bot.route || {
+    connectionId: bot.connectionId,
+    mode: bot.connectionKind === 'local' ? 'local' : 'remote',
+    profile: bot.name,
+    targetProfile: bot.targetProfile || bot.name
+  }
+  const connectionId = String(candidate?.connectionId || '').trim()
+  const profile = String(candidate?.profile || bot?.name || '').trim() || 'default'
+  const targetProfile = String(candidate?.targetProfile || profile).trim() || profile
 
-  return { connectionId: id, mode: 'remote', profile, targetProfile: profile }
+  if (!connectionId) {
+    throw new Error(`Bot ${profile} has no connection owner`)
+  }
+
+  return Object.freeze({
+    connectionId,
+    mode: candidate.mode === 'local' || connectionId === 'local' ? 'local' : 'remote',
+    profile,
+    targetProfile
+  })
 }
 
-/** Gateway RPC on the bot's OWN source: requestProfile for remote rows,
- *  the active gateway for local ones. Never activates/foregrounds. */
+function scopedBotParams(route, method, params) {
+  const logical = route.profile
+  const target = route.targetProfile || logical
+  let next = params
+
+  if (Object.prototype.hasOwnProperty.call(params, 'profile')) {
+    next = { ...next, profile: target }
+  }
+
+  if (method.startsWith('profiles.') && method !== 'profiles.create' && params.name === logical) {
+    next = { ...next, name: target }
+  }
+
+  if (params.clone_from === logical) {
+    next = { ...next, clone_from: target }
+  }
+
+  if (method === 'cli.exec' && Array.isArray(params.argv)) {
+    next = { ...next, argv: params.argv.map(arg => arg === logical ? target : arg) }
+  }
+
+  return next
+}
+
+function botBackendProfileScope(route, fallbackProfile = 'default') {
+  if (!route) {
+    return fallbackProfile
+  }
+
+  return { connectionId: route.connectionId, profile: route.targetProfile || route.profile }
+}
+
+/** Gateway RPC on the bot's OWN source. Source-scoped rows always use the
+ * explicit descriptor, including a registered local source. */
 async function requestForBot(bot, method, params = {}) {
   const route = botConnectionRoute(bot)
 
   if (route) {
-    return host.requestProfile(route, method, params)
+    if (typeof host.requestProfile !== 'function') {
+      throw new Error(`Cannot route ${method} for ${route.connectionId}::${route.profile}`)
+    }
+
+    return host.requestProfile(route, method, scopedBotParams(route, method, params))
   }
 
   return host.request(method, params)
@@ -3128,7 +3515,7 @@ async function requestForBot(bot, method, params = {}) {
  *  remote members get the source-qualified key so `dixie` on the Mini and a
  *  local `dixie` never share watermarks or sessions. */
 function groupMemberKey(member) {
-  return member?.remoteSource ? botRosterKey(member) : member?.name
+  return member?.sourceScoped || member?.remoteSource ? botRosterKey(member) : member?.name
 }
 
 // Bot metadata is scoped to the active gateway until the server exposes a
@@ -3136,7 +3523,13 @@ function groupMemberKey(member) {
 // another source: two `default` agents must not borrow each other's title,
 // pin, avatar, group, unread state, or canonical-chat pointer.
 function botRosterMeta(bot, metaByName) {
-  return bot?.remoteSource ? null : metaByName?.[bot?.name]
+  if (bot?.sourceScoped || bot?.remoteSource) {
+    const route = botConnectionRoute(bot)
+
+    return route ? metaByName?.[botRouteKey(route)] : null
+  }
+
+  return metaByName?.[bot?.name]
 }
 
 function showsHandle(name, meta, bot) {
@@ -3163,16 +3556,19 @@ function showsHandle(name, meta, bot) {
 const canonicalCreations = new Map()
 let botOpenGeneration = 0
 
-async function openStoredBotChat(name, storedId, summary) {
+async function openStoredBotChat(owner, storedId, summary) {
   if (!storedId || typeof host.openSession !== 'function') {
     throw new Error('This Hermes Desktop version cannot open stored sessions')
   }
+
+  const { name, route } = botOwner(owner)
 
   const hasAuthoritativeCount =
     typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
   const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
 
   await host.openSession(storedId, {
+    ...(route ? { route } : {}),
     profile: name,
     intent: 'main',
     awaitHydration: true,
@@ -3186,15 +3582,16 @@ async function openStoredBotChat(name, storedId, summary) {
  *  message (the gateway prunes zero-message sessions, so the chat is born
  *  with the bot introducing itself). Pins the stored id in bot meta and
  *  returns it. */
-function createCanonicalChat(name) {
-  const inflight = canonicalCreations.get(name)
+function createCanonicalChat(owner) {
+  const { bot, key, name, route } = botOwner(owner)
+  const inflight = canonicalCreations.get(key)
 
   if (inflight) {
     return inflight
   }
 
   const run = (async () => {
-    const res = await host.request('session.create', {
+    const res = await requestForBot(bot, 'session.create', {
       profile: name,
       title: 'Bot Chat',
       // Always born hidden from the global sidebar — Bot Mode sessions are
@@ -3207,7 +3604,7 @@ function createCanonicalChat(name) {
     const runtime = res?.session_id
 
     if (sid) {
-      saveBotMeta(name, { chat: sid })
+      saveBotMeta(owner, { chat: sid })
     }
 
     // Mount the session view FIRST, then send the kickoff — submitting into
@@ -3216,7 +3613,7 @@ function createCanonicalChat(name) {
 
     if (sid && typeof host.openSession === 'function') {
       try {
-        await host.openSession(sid, { profile: name, intent: 'main' })
+        await host.openSession(sid, { ...(route ? { route } : {}), profile: name, intent: 'main' })
         opened = true
       } catch {
         // The stored row may not exist until the kickoff persists it. Retry
@@ -3228,10 +3625,10 @@ function createCanonicalChat(name) {
       await new Promise(resolve => window.setTimeout(resolve, 400))
 
       try {
-        await host.request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
+        await requestForBot(bot, 'prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
 
         if (!opened && sid && typeof host.openSession === 'function') {
-          await host.openSession(sid, { profile: name, intent: 'main' })
+          await host.openSession(sid, { ...(route ? { route } : {}), profile: name, intent: 'main' })
         }
       } catch {
         // The chat already exists. Keep the pin so the next click
@@ -3240,9 +3637,9 @@ function createCanonicalChat(name) {
     }
 
     return sid || null
-  })().finally(() => canonicalCreations.delete(name))
+  })().finally(() => canonicalCreations.delete(key))
 
-  canonicalCreations.set(name, run)
+  canonicalCreations.set(key, run)
 
   return run
 }
@@ -3260,16 +3657,18 @@ function createCanonicalChat(name) {
  *    session.list window, which misjudged real hidden pins as gone;
  *  - transient lookup failures keep the pin: try the stored id as-is, and
  *    only a rejected open enters recovery. */
-async function openBotCanonicalChat(name, pinned, history) {
+async function openBotCanonicalChat(owner, pinned, history) {
+  const { bot, name } = botOwner(owner)
+
   if (!pinned) {
     // Grandfather: adopt the conversation the row already previews.
     const adoptId = history?.id
     if (adoptId && typeof host.openSession === 'function') {
-      await openStoredBotChat(name, adoptId, history)
-      saveBotMeta(name, { chat: adoptId })
+      await openStoredBotChat(owner, adoptId, history)
+      saveBotMeta(owner, { chat: adoptId })
       return adoptId
     }
-    return createCanonicalChat(name)
+    return createCanonicalChat(owner)
   }
 
   // Precise verification. An older gateway ignores the unknown param and
@@ -3278,7 +3677,7 @@ async function openBotCanonicalChat(name, pinned, history) {
   let preferred
   let lookupFailed = false
   try {
-    const res = await host.request('profiles.list', {
+    const res = await requestForBot(bot, 'profiles.list', {
       include_sessions: true,
       preferred_session_ids: { [name]: pinned }
     })
@@ -3296,12 +3695,12 @@ async function openBotCanonicalChat(name, pinned, history) {
     // until proven guilty — try it as-is. A rejected open is still ambiguous:
     // it can be the same reconnect/hydration outage that broke this lookup, so
     // preserve the forever-chat pin and surface Retry instead of forking it.
-    return openStoredBotChat(name, pinned, history)
+    return openStoredBotChat(owner, pinned, history)
   }
 
   if (preferred) {
     try {
-      await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred)
+      await openStoredBotChat(owner, preferred.resolved_id || preferred.id, preferred)
       return pinned
     } catch (error) {
       // The precise lookup JUST confirmed this session exists, so a failed
@@ -3316,41 +3715,23 @@ async function openBotCanonicalChat(name, pinned, history) {
   // recovery): re-anchor on the previewed session when there is one.
   const recoveryId = history?.id
   if (recoveryId && typeof host.openSession === 'function') {
-    await openStoredBotChat(name, recoveryId, history)
-    saveBotMeta(name, { chat: recoveryId })
+    await openStoredBotChat(owner, recoveryId, history)
+    saveBotMeta(owner, { chat: recoveryId })
     return recoveryId
   }
-  saveBotMeta(name, { chat: null })
-  return createCanonicalChat(name)
+  saveBotMeta(owner, { chat: null })
+  return createCanonicalChat(owner)
 }
 
 async function prepareBotSource(bot, pinnedChat) {
-  if (!bot.sourceScoped) {
+  if (!bot.sourceScoped || pinnedChat) {
     return pinnedChat
   }
 
-  if (typeof host.ensureAgent !== 'function') {
-    throw new Error('Update Hermes Desktop to chat with agents on other connections.')
-  }
-
-  await host.ensureAgent(bot.connectionId, bot.name)
-
-  if (!bot.remoteSource) {
-    return pinnedChat
-  }
-
-  const liveId = String(typeof host.activeConnectionId === 'function' ? host.activeConnectionId() || '' : '').trim()
-  const targetId = String(bot.connectionId || '').trim()
-
-  if (targetId && targetId !== 'local' && liveId !== targetId) {
-    throw new Error(`Still on ${liveId || 'this device'}, not ${bot.connectionLabel || targetId}`)
-  }
-
-  // Thin rows deliberately omit metadata from the active source. Once their
-  // owner is active, recover that source's canonical-chat pointer so
-  // same-named agents never reuse or overwrite each other's pin.
+  // Thin rows deliberately omit metadata. Read it on the captured owner
+  // route; activation is a UI concern and cannot authorize this RPC.
   try {
-    const refreshed = await host.request('profiles.list', {})
+    const refreshed = await requestForBot(bot, 'profiles.list', {})
     const owner = refreshed?.profiles?.find(profile => profile.name === bot.name)
 
     return owner?.ui_meta?.['hermes-bots']?.chat || null
@@ -3358,6 +3739,24 @@ async function prepareBotSource(bot, pinnedChat) {
     // Metadata refresh is best-effort; canonical creation remains the fallback.
     return null
   }
+}
+
+async function ensureBotMetadata(bot) {
+  if (!bot?.sourceScoped) {
+    return botRosterMeta(bot, $botMeta.get()) || {}
+  }
+
+  const result = await requestForBot(bot, 'profiles.list', {})
+  const row = (result?.profiles || []).find(profile => profile?.name === bot.name)
+  const server = row?.ui_meta?.['hermes-bots']
+
+  if (server && typeof server === 'object') {
+    const key = botMetaKey(bot)
+    $botMeta.set({ ...$botMeta.get(), [key]: { ...($botMeta.get()[key] || {}), ...server } })
+    persistBotMetaSnapshot($botMeta.get(), true)
+  }
+
+  return botRosterMeta(bot, $botMeta.get()) || {}
 }
 
 function displayName(bot, meta) {
@@ -3509,7 +3908,7 @@ function groupLastActivity(room) {
  *  Prefers the LIVE roster row for a stored descriptor when present. */
 function groupChatMemberBots(group, roster, metaByName) {
   const local = (roster || []).filter(
-    bot => !bot.remoteSource && botGroups(botRosterMeta(bot, metaByName)).includes(group)
+    bot => botGroups(botRosterMeta(bot, metaByName)).includes(group)
   )
   const stored = ($groupChats.get()[group] || {}).members || []
   const seated = new Set(local.map(botRosterKey))
@@ -3533,15 +3932,20 @@ function groupChatMemberBots(group, roster, metaByName) {
  *  source's row may become remote after a connection switch, so retaining it
  *  here is what keeps the same room intact across machines. */
 function durableGroupChatMembers(bots) {
-  return (bots || []).map(bot => ({
-    name: bot.name,
-    handle: bot.handle || bot.name,
-    connectionId: bot.connectionId,
-    connectionKind: bot.connectionKind,
-    connectionLabel: bot.connectionLabel,
-    remoteSource: true,
-    sourceScoped: true
-  }))
+  return (bots || []).map(bot => {
+    const route = botConnectionRoute(bot)
+
+    return {
+      name: bot.name,
+      handle: bot.handle || bot.name,
+      connectionId: bot.connectionId,
+      connectionKind: bot.connectionKind,
+      connectionLabel: bot.connectionLabel,
+      ...(route ? { route, targetProfile: route.targetProfile } : {}),
+      remoteSource: true,
+      sourceScoped: Boolean(route)
+    }
+  })
 }
 
 /** Existing group names, alphabetical — feeds the Manage-groups dialog. */
@@ -3862,12 +4266,12 @@ async function disbandGroupChat(group, members) {
   // best-effort profiles.configure per member), so a flaky gateway can't
   // strand the disband halfway with the room log already gone.
   for (const member of members) {
-    if (!member?.name || member.remoteSource) {
+    if (!member?.name) {
       continue
     }
 
-    const meta = $botMeta.get()[member.name] || {}
-    await saveBotMeta(member.name, groupMembershipPatch(meta, group, false))
+    const meta = botRosterMeta(member, $botMeta.get()) || {}
+    await saveBotMeta(member, groupMembershipPatch(meta, group, false))
   }
 }
 
@@ -3935,14 +4339,14 @@ async function renameGroupChat(oldName, newName, members) {
   // list (syncs cross-machine via ui_meta). Remote members' seating lives in
   // the room record we just moved.
   for (const member of members || []) {
-    if (!member?.name || member.remoteSource) {
+    if (!member?.name) {
       continue
     }
 
-    const meta = $botMeta.get()[member.name] || {}
+    const meta = botRosterMeta(member, $botMeta.get()) || {}
     const groups = [...new Set(botGroups(meta).map(g => (g === oldName ? next : g)))]
 
-    await saveBotMeta(member.name, { groups, group: groups[0] || null })
+    await saveBotMeta(member, { groups, group: groups[0] || null })
   }
 
   // Persist the re-keyed map (updateGroupChat writes the whole durable map).
@@ -4643,7 +5047,8 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const meta = botRosterMeta(bot, useValue($botMeta))
   const groups = botGroups(meta)
   const last = bot.last_session
-  const isActive = !bot.remoteSource && bot.name === activeProfile
+  const activeConnectionId = String(host.state.connectionId?.get?.() || 'local').trim()
+  const isActive = isActiveRosterBot(bot, { name: activeProfile, connectionId: activeConnectionId })
   const { shape, color, image } = botAppearance(bot.name, meta)
   // Keep user photos/pets. Drop the 160px SVG backfill so the math face can move.
   const photo = Boolean(image && !isBackfilledFacePng(image))
@@ -4656,7 +5061,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   // Subscribe on every render. A source switch turns the same keyed row from
   // thin to rich; conditionally calling useValue here breaks React hook order.
   const unreadByName = useValue($botUnread)
-  const unread = !bot.remoteSource && Boolean(unreadByName[bot.name])
+  const unread = Boolean(unreadByName[botSelectionKey(bot)])
   // WHO sent the last message (bot-to-bot DM vs human) — the full stored
   // history lives in the Sessions workspace (context menu), not inline.
   // Preview identity must match click identity (#88200): when the backend
@@ -4698,28 +5103,18 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const open = async () => {
     const generation = ++botOpenGeneration
     haptic('tap')
-    $selectedBot.set(bot.name)
-
-    if (bot.remoteSource) {
-      const handle = botHandle(bot.name, bot)
-      host.notify?.({
-        kind: 'info',
-        title: displayName(bot),
-        message: `Stay in this chat and @${handle} to message them. Gateway stays on this device.`
-      })
-      return
-    }
+    $selectedBot.set(botSelectionKey(bot))
 
     let pinnedChat = meta?.chat
 
-    if (!bot.remoteSource && $botUnread.get()[bot.name]) {
+    if ($botUnread.get()[botSelectionKey(bot)]) {
       const next = { ...$botUnread.get() }
-      delete next[bot.name]
+      delete next[botSelectionKey(bot)]
       $botUnread.set(next)
     }
 
-    // Activate the owner first so every canonical-chat RPC lands on the
-    // backend that owns this bot's state database.
+    // Refresh through the immutable owner route. Foreground activation is
+    // presentation state and is never routing authority for this open.
     try {
       pinnedChat = await prepareBotSource(bot, pinnedChat)
     } catch (error) {
@@ -4733,7 +5128,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     }
 
     try {
-      const id = await openBotCanonicalChat(bot.name, pinnedChat, previewSession)
+      const id = await openBotCanonicalChat(bot, pinnedChat, previewSession)
 
       if (generation === botOpenGeneration && id) {
         return
@@ -4752,7 +5147,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
 
     if (typeof host.newChat === 'function') {
       // Older gateway without profile-scoped session.create — plain draft.
-      host.newChat(bot.name)
+      newBotChat(bot)
     } else {
       host.navigate('/')
     }
@@ -4862,14 +5257,6 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     ]
   })
 
-  // Thin rows from another source are navigation targets only. Their profile
-  // metadata is not loaded yet, so edit/delete/pin/group actions would mutate
-  // whichever backend happens to be active. A normal click activates the
-  // owner; the refreshed rich row then exposes the full context menu.
-  if (bot.remoteSource) {
-    return row
-  }
-
   return jsxs(ContextMenu, {
     children: [
       jsx(ContextMenuTrigger, { asChild: true, children: row }),
@@ -4877,32 +5264,34 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
         children: [
           jsx(ContextMenuItem, {
             onSelect: () => {
-              const pinned = Boolean($botMeta.get()[bot.name]?.pinned)
-              saveBotMeta(bot.name, { pinned: !pinned })
-              host.notify({
-                kind: 'info',
-                message: `${displayName(bot, meta)} ${pinned ? 'unpinned' : 'pinned to top'}`
-              })
+              void ensureBotMetadata(bot).then(current => {
+                const pinned = Boolean(current.pinned)
+                void saveBotMeta(bot, { pinned: !pinned })
+                host.notify({
+                  kind: 'info',
+                  message: `${displayName(bot, current)} ${pinned ? 'unpinned' : 'pinned to top'}`
+                })
+              }).catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
             },
             children: meta?.pinned ? 'Unpin' : 'Pin to top'
           }),
           jsx(ContextMenuItem, {
             onSelect: () => {
-              const hidden = Boolean($botMeta.get()[bot.name]?.hidden)
-              // `hidden: false` (not null) so unhide round-trips through the
-              // server ui_meta merge the same way the local merge sees it.
-              saveBotMeta(bot.name, { hidden: !hidden })
+              void ensureBotMetadata(bot).then(current => {
+                const hidden = Boolean(current.hidden)
+                void saveBotMeta(bot, { hidden: !hidden })
 
-              if (!hidden) {
-                fallbackSelectionAfterHide(bot.name)
-              }
+                if (!hidden) {
+                  fallbackSelectionAfterHide(botSelectionKey(bot))
+                }
 
-              host.notify({
-                kind: 'info',
-                message: hidden
-                  ? `${displayName(bot, meta)} is back in the roster`
-                  : `${displayName(bot, meta)} hidden — use the eye button in the Bots header to see hidden bots`
-              })
+                host.notify({
+                  kind: 'info',
+                  message: hidden
+                    ? `${displayName(bot, current)} is back in the roster`
+                    : `${displayName(bot, current)} hidden — use the eye button in the Bots header to see hidden bots`
+                })
+              }).catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
             },
             children: meta?.hidden ? 'Unhide Bot' : 'Hide Bot'
           }),
@@ -4911,17 +5300,18 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
             onSelect: () => openBotSessionsWorkspace(bot),
             children: 'Sessions'
           }),
-          jsx(ContextMenuItem, { onSelect: () => onEdit(bot), children: 'Edit Profile' }),
-          !bot.remoteSource
-            ? jsx(ContextMenuItem, {
-                onSelect: () => onGroup(bot),
-                children: groups.length ? `Groups: ${groups.join(', ')}…` : 'Manage groups…'
-              })
-            : null,
+          jsx(ContextMenuItem, {
+            onSelect: () => void ensureBotMetadata(bot).then(() => onEdit(bot)).catch(error => host.notifyError?.(error, 'Could not load bot')),
+            children: 'Edit Profile'
+          }),
+          jsx(ContextMenuItem, {
+            onSelect: () => void ensureBotMetadata(bot).then(() => onGroup(bot)).catch(error => host.notifyError?.(error, 'Could not load bot groups')),
+            children: groups.length ? `Groups: ${groups.join(', ')}…` : 'Manage groups…'
+          }),
           jsx(ContextMenuItem, {
             onSelect: () => {
               host.notify({ kind: 'info', message: `Duplicating ${displayName(bot, meta)}…` })
-              duplicateBot(bot, $lastRoster.get().filter(candidate => !candidate.remoteSource))
+              duplicateBot(bot, $lastRoster.get())
                 .then(name => {
                   queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
                   host.notify({ kind: 'success', message: `Created ${name} — full copy of ${bot.name}` })
@@ -4933,16 +5323,16 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
           jsx(ContextMenuSeparator, {}),
           jsx(ContextMenuItem, {
             onSelect: () => {
-              $selectedBot.set(bot.name)
+              $selectedBot.set(botSelectionKey(bot))
 
               if (typeof host.newChat === 'function') {
-                host.newChat(bot.name)
+                newBotChat(bot)
               }
             },
             children: 'New chat with this agent'
           }),
-          bot.is_default ? null : jsx(ContextMenuSeparator, {}),
-          bot.is_default
+          isDefaultBot(bot) ? null : jsx(ContextMenuSeparator, {}),
+          isDefaultBot(bot)
             ? null
             : jsx(ContextMenuItem, {
                 onSelect: () => onDelete(bot),
@@ -4957,10 +5347,16 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
 
 // ── model picker (provider/model dropdowns via model.options) ───────────────
 
-function useModelOptions() {
+function useModelOptions(bot = null) {
+  const route = botConnectionRoute(bot)
+
   return useQuery({
-    queryKey: [ID, 'model-options'],
-    queryFn: () => host.request('model.options', { include_unconfigured: true, explicit_only: false, refresh: true }),
+    queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
+    queryFn: () => requestForBot(bot, 'model.options', {
+      include_unconfigured: true,
+      explicit_only: false,
+      refresh: true
+    }),
     staleTime: 120000,
     retry: false
   })
@@ -4971,8 +5367,8 @@ function useModelOptions() {
  * same data the core model picker shows. `value = {provider, model}`;
  * onChange receives the merged patch.
  */
-function ModelPicker({ value, onChange, placeholderModel = 'gateway default' }) {
-  const { data, isLoading, error } = useModelOptions()
+function ModelPicker({ bot = null, value, onChange, placeholderModel = 'gateway default' }) {
+  const { data, isLoading, error } = useModelOptions(bot)
 
   // Hooks are ALWAYS declared up front, before any conditional return.
   // Declaring them after a return trips React error #310.
@@ -5164,12 +5560,15 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   const [loaded, setLoaded] = useState(false)
   const [unsupported, setUnsupported] = useState(false)
   const [skillFilter, setSkillFilter] = useState('')
+  const botRoute = botConnectionRoute(bot)
+  const backendProfile = botRoute?.targetProfile || botRoute?.profile || bot.name
+  const backendScope = botBackendProfileScope(botRoute, bot.name)
 
   if (!loaded) {
     setLoaded(true)
     Promise.all([
-      host.request('profiles.describe', { name: bot }),
-      host.request('mcp.catalog', { profile: bot }).catch(() => null)
+      requestForBot(bot, 'profiles.describe', { name: bot.name }),
+      requestForBot(bot, 'mcp.catalog', { profile: bot.name }).catch(() => null)
     ])
       .then(([res, cat]) => {
         const configured = res.mcp_servers || []
@@ -5251,11 +5650,12 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   // Render THAT instead of the checkbox stand-ins; writes go straight to the
   // bot's backend, so the dirty-section staging below only carries
   // model + SOUL on these builds. Older builds keep the full checklist UI.
-  if (SkillsView) {
+  if (SkillsView && (!botRoute || skillsViewRoutesConnections)) {
     return jsxs('div', {
       className: 'grid gap-4',
       children: [
         jsx(ModelPicker, {
+          bot,
           value: { provider: state.provider, model: state.model },
           onChange: patch => setState(prev => ({ ...prev, dirtyModel: true, ...patch }))
         }),
@@ -5264,9 +5664,38 @@ function AdvancedProfileConfig({ bot, state, setState }) {
           jsx('div', {
             className: 'overflow-hidden rounded-md border border-(--ui-stroke-secondary)',
             style: { height: 460, minHeight: 300, resize: 'vertical', overflow: 'auto' },
-            children: jsx(SkillsView, { embedded: true, fixedProfile: bot })
+            children: jsx(SkillsView, {
+              embedded: true,
+              fixedProfile: backendProfile,
+              ...(botRoute ? { fixedConnection: botRoute.connectionId } : {})
+            })
           })
         ),
+        labeled(
+          'SOUL.md (persona + agent-messaging protocol)',
+          jsx(Textarea, {
+            className: 'min-h-28 font-mono text-xs leading-5',
+            value: state.soul,
+            onChange: event => setState(prev => ({ ...prev, dirtySoul: true, soul: event.target.value }))
+          })
+        )
+      ]
+    })
+  }
+
+  if (bot?.sourceScoped && botRoute?.mode === 'remote' && !skillsViewRoutesConnections) {
+    return jsxs('div', {
+      className: 'grid gap-4',
+      children: [
+        jsx(ModelPicker, {
+          bot,
+          value: { provider: state.provider, model: state.model },
+          onChange: patch => setState(prev => ({ ...prev, dirtyModel: true, ...patch }))
+        }),
+        jsx('div', {
+          className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-text-tertiary)',
+          children: 'Remote capabilities require a newer desktop. Model and SOUL changes remain staged until you save.'
+        }),
         labeled(
           'SOUL.md (persona + agent-messaging protocol)',
           jsx(Textarea, {
@@ -5283,6 +5712,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
     className: 'grid gap-4',
     children: [
       jsx(ModelPicker, {
+        bot,
         value: { provider: state.provider, model: state.model },
         onChange: patch => setState(prev => ({ ...prev, dirtyModel: true, ...patch }))
       }),
@@ -5303,7 +5733,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
               children: jsx(CheckList, { items: visibleSkills, onToggle: toggleSkill, columns: 2 })
             }),
             jsx(HubSkillsSection, {
-              forProfile: bot,
+              forProfile: backendScope,
               onInstalled: name =>
                 setState(prev =>
                   prev.skills.some(s => s.name === name)
@@ -5345,7 +5775,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
                       ToolsetConfigPanel
                         ? jsx('div', {
                             className: 'mt-1.5 border-t border-(--ui-stroke-secondary) pt-1.5',
-                            children: jsx(ToolsetConfigPanel, { toolset: tset.name, profile: bot })
+                            children: jsx(ToolsetConfigPanel, { toolset: tset.name, profile: backendScope })
                           })
                         : null
                     ]
@@ -5368,7 +5798,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
           children: McpTab && typeof host.getGateway === 'function'
             ? jsx('div', {
                 style: { minHeight: 220, maxHeight: 360 },
-                children: jsx(McpTab, { gateway: host.getGateway(), profile: bot })
+                children: jsx(McpTab, { gateway: host.getGateway(), profile: backendScope })
               })
             : mcpList.length === 0
               ? jsx('div', {
@@ -5404,7 +5834,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
                                   : null,
                                 needsSetup
                                   ? jsx(McpSetupButton, {
-                                      profile: bot,
+                                      profile: backendScope,
                                       entry: m,
                                       onDone: () => toggleMcp(m.name, true)
                                     })
@@ -5722,11 +6152,11 @@ function emptyAdvancedState() {
 
 /** Persist only the dirty sections of the advanced editor. */
 async function applyAdvancedConfig(bot, state) {
-  const payload = { name: bot }
+  const payload = { name: bot.name }
   const applied = {}
 
   if (state.dirtySoul) {
-    payload.soul = ensureMessagingProtocol(state.soul, bot, $lastRoster.get())
+    payload.soul = ensureMessagingProtocol(state.soul, bot.name, $lastRoster.get())
   }
 
   if (state.dirtyModel) {
@@ -5738,8 +6168,8 @@ async function applyAdvancedConfig(bot, state) {
       payload.provider = provider
     } else if (!model && !provider) {
       try {
-        const result = await host.request('cli.exec', {
-          argv: ['--profile', bot, 'config', 'unset', 'model']
+        const result = await requestForBot(bot, 'cli.exec', {
+          argv: ['--profile', bot.name, 'config', 'unset', 'model']
         })
         applied.model = result?.blocked !== true && result?.code === 0
       } catch {
@@ -5769,7 +6199,7 @@ async function applyAdvancedConfig(bot, state) {
     return { ok: Object.values(applied).every(Boolean), applied }
   }
 
-  const result = await host.request('profiles.configure', payload)
+  const result = await requestForBot(bot, 'profiles.configure', payload)
   const merged = { ...applied, ...(result?.applied || {}) }
 
   return { ...result, ok: Object.values(merged).every(Boolean), applied: merged }
@@ -5792,7 +6222,7 @@ function labeled(label, control) {
 
 function EditProfileDialog({ bot, open, onClose }) {
   const metaAll = useValue($botMeta)
-  const meta = bot ? metaAll[bot.name] : null
+  const meta = bot ? botRosterMeta(bot, metaAll) : null
   const appearance = bot ? botAppearance(bot.name, meta) : { shape: 'circle', color: AVATAR_COLORS[3] }
   const [shape, setShape] = useState(appearance.shape)
   const [color, setColor] = useState(appearance.color)
@@ -5805,7 +6235,7 @@ function EditProfileDialog({ bot, open, onClose }) {
 
   // Re-seed local state each time a different bot opens the dialog.
   const [seedKey, setSeedKey] = useState(null)
-  const currentKey = bot ? `${bot.name}:${open}` : null
+  const currentKey = bot ? `${botSelectionKey(bot)}:${open}` : null
   if (currentKey !== seedKey) {
     setSeedKey(currentKey)
     if (bot && open) {
@@ -5831,7 +6261,7 @@ function EditProfileDialog({ bot, open, onClose }) {
 
     setBusy(true)
     let advancedFailed = false
-    const persistence = await saveBotMeta(bot.name, {
+    const persistence = await saveBotMeta(bot, {
       shape,
       color,
       image,
@@ -5854,7 +6284,7 @@ function EditProfileDialog({ bot, open, onClose }) {
     const desc = description.trim()
     if (desc !== (bot.description || '').trim()) {
       try {
-        await host.request('cli.exec', {
+        await requestForBot(bot, 'cli.exec', {
           argv: ['profile', 'describe', bot.name, '--text', desc]
         })
         queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
@@ -5865,7 +6295,7 @@ function EditProfileDialog({ bot, open, onClose }) {
 
     if (adv.loaded && (adv.dirtyModel || adv.dirtySoul || adv.dirtySkills || adv.dirtyToolsets || adv.dirtyMcp)) {
       try {
-        const res = await applyAdvancedConfig(bot.name, adv)
+        const res = await applyAdvancedConfig(bot, adv)
         const failed = Object.entries(res?.applied || {}).filter(([, ok]) => !ok)
 
         if (failed.length) {
@@ -5947,7 +6377,7 @@ function EditProfileDialog({ bot, open, onClose }) {
             advanced
               ? jsx('div', {
                   className: 'rounded-md border border-(--ui-stroke-secondary) p-3',
-                  children: jsx(AdvancedProfileConfig, { bot: bot.name, state: adv, setState: setAdv })
+                  children: jsx(AdvancedProfileConfig, { bot, state: adv, setState: setAdv })
                 })
               : null
           ]
@@ -6841,13 +7271,15 @@ function isLegacyDelegatedRoutine(job) {
   return Boolean(routineBot(job) && typeof preview === 'string' && preview.startsWith(LEGACY_DELEGATED_ROUTINE_PREFIX))
 }
 
-async function loadRoutines(profile) {
+async function loadRoutines(owner) {
+  const bot = typeof owner === 'string' ? { name: owner } : owner
+  const profile = String(bot?.name || '').trim()
   // profile scopes cron.manage to that bot's own cron store (core RPC gained an
   // optional `profile` param). Older gateways ignore the unknown param and
   // return the launch-profile store — the [bot:] tag filter in selectRoutineJobs
   // remains the graceful fallback there.
   const scope = profile ? { profile } : {}
-  const data = await host.request('cron.manage', { action: 'list', include_disabled: true, ...scope })
+  const data = await requestForBot(bot, 'cron.manage', { action: 'list', include_disabled: true, ...scope })
   const jobs = Array.isArray(data?.jobs) ? data.jobs : []
   const activeLegacyJobs = jobs.filter(
     job => isLegacyDelegatedRoutine(job) && job.enabled !== false && job.state !== 'paused'
@@ -6860,8 +7292,7 @@ async function loadRoutines(profile) {
   // actually paused, and the next poll retries the rest.
   const pauses = await Promise.all(
     activeLegacyJobs.map(job =>
-      host
-        .request('cron.manage', { action: 'pause', name: job.job_id, ...scope })
+      requestForBot(bot, 'cron.manage', { action: 'pause', name: job.job_id, ...scope })
         .then(() => true)
         .catch(() => false)
     )
@@ -6878,10 +7309,14 @@ async function loadRoutines(profile) {
   }
 }
 
-function useRoutines(profile) {
+function useRoutines(owner) {
+  const bot = typeof owner === 'string' ? { name: owner } : owner
+  const route = botConnectionRoute(bot)
+  const key = route ? botRosterKey(bot) : bot?.name || ''
+
   return useQuery({
-    queryKey: [...ROUTINES_KEY, profile || ''],
-    queryFn: () => loadRoutines(profile),
+    queryKey: [...ROUTINES_KEY, key],
+    queryFn: () => loadRoutines(bot),
     refetchInterval: 20000,
     staleTime: 8000
   })
@@ -6891,9 +7326,13 @@ function routineCreateTarget(owner, activeBot) {
   return owner || activeBot
 }
 
-async function invalidateRoutineOwner(profile) {
+async function invalidateRoutineOwner(owner) {
+  const bot = typeof owner === 'string' ? { name: owner } : owner
+  const route = botConnectionRoute(bot)
+  const key = route ? botRosterKey(bot) : bot?.name || ''
+
   await queryClient.invalidateQueries({
-    queryKey: [...ROUTINES_KEY, profile || ''],
+    queryKey: [...ROUTINES_KEY, key],
     exact: true
   })
 }
@@ -7001,7 +7440,8 @@ function scheduleLabel(schedule) {
   return schedule || ''
 }
 
-function RoutineRow({ job, profile }) {
+function RoutineRow({ job, owner }) {
+  const profile = typeof owner === 'string' ? owner : owner?.name
   const [busy, setBusy] = useState(false)
   // Optimistic overlay: null = trust server state. Set immediately on
   // toggle so the switch responds even before the refetch lands.
@@ -7026,8 +7466,8 @@ function RoutineRow({ job, profile }) {
     }
 
     try {
-      await host.request('cron.manage', { action, name: job.job_id, ...(profile ? { profile } : {}) })
-      await invalidateRoutineOwner(profile)
+      await requestForBot(owner, 'cron.manage', { action, name: job.job_id, ...(profile ? { profile } : {}) })
+      await invalidateRoutineOwner(owner)
     } catch (err) {
       setPendingActive(null)
       host.notifyError(err, 'Cronjob update failed')
@@ -7310,6 +7750,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const activeProfile = useValue(host.state.profile)
+  const profile = typeof bot === 'string' ? bot : bot?.name
   const schedule = composeSchedule(sched)
 
   const reset = () => {
@@ -7343,12 +7784,12 @@ function CreateRoutineDialog({ bot, open, onClose }) {
         sched.freq !== 'once' && sched.freq !== 'advanced' && String(sched.repeatN || '').trim()
           ? Math.max(1, parseInt(sched.repeatN, 10) || 1)
           : null
-      await host.request('cron.manage', {
+      await requestForBot(bot, 'cron.manage', {
         action: 'add',
-        name: `[bot:${bot}] ${title}`,
+        name: `[bot:${profile}] ${title}`,
         schedule: schedule.trim(),
-        prompt: routinePrompt(bot, title, task, activeProfile),
-        ...(bot ? { profile: bot } : {}),
+        prompt: routinePrompt(profile, title, task, activeProfile),
+        ...(profile ? { profile } : {}),
         ...(repeatN ? { repeat: repeatN } : {}),
         ...(continuity ? { continuity: true } : {})
       })
@@ -7377,7 +7818,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
           children: [
             jsx(DialogTitle, { children: 'New Cronjob' }),
             jsx(DialogDescription, {
-              children: `A recurring task ${displayName({ name: bot }, $botMeta.get()[bot])} runs on a schedule. Runs land in its own chat history.`
+              children: `A recurring task ${displayName(typeof bot === 'string' ? { name: bot } : bot, botRosterMeta(bot, $botMeta.get()))} runs on a schedule. Runs land in its own chat history.`
             })
           ]
         }),
@@ -7452,16 +7893,25 @@ function RoutinesPane() {
   // The tile maps to the bot you're chatting with: the live gateway profile
   // is the truth once a chat opens; $selectedBot covers the gap between a
   // roster click and the profile swap landing.
-  const bot = (gatewayProfile || selected || 'default').trim() || 'default'
-  const meta = useValue($botMeta)[bot]
+  const roster = $lastRoster.get()
+  const selectedBot = roster.find(bot => botSelectionKey(bot) === selected)
+  const activeBot = roster.find(bot =>
+    isActiveRosterBot(bot, {
+      name: gatewayProfile,
+      connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
+    })
+  )
+  const owner = selectedBot || activeBot || { name: (gatewayProfile || selected || 'default').trim() || 'default' }
+  const bot = owner.name
+  const meta = botRosterMeta(owner, useValue($botMeta))
   const { shape, color, image } = botAppearance(bot, meta)
-  const { data, error, isLoading, refetch } = useRoutines(bot)
+  const { data, error, isLoading, refetch } = useRoutines(owner)
   const [createOpen, setCreateOpen] = useState(false)
   const [createOwner, setCreateOwner] = useState(null)
   const createTarget = routineCreateTarget(createOwner, bot)
 
   const openCreate = () => {
-    setCreateOwner(bot)
+    setCreateOwner(owner)
     setCreateOpen(true)
   }
 
@@ -7573,7 +8023,7 @@ function RoutinesPane() {
               className: 'min-h-0 flex-1',
               children: jsx('div', {
                 className: 'grid gap-1.5 px-2.5 py-2',
-                children: jobs.map(job => jsx(RoutineRow, { job, profile: bot }, job.job_id))
+                children: jobs.map(job => jsx(RoutineRow, { job, owner }, job.job_id))
               })
             }),
       jsx(CreateRoutineDialog, {
@@ -7596,7 +8046,7 @@ const PROFILE_SESSION_LIST_LIMIT = 200
 
 function openBotSessionsWorkspace(bot) {
   if (bot?.name && NAME_RE.test(bot.name)) {
-    $botSessionsWorkspace.set(bot.name)
+    $botSessionsWorkspace.set(botSelectionKey(bot))
   }
 }
 
@@ -7609,21 +8059,33 @@ function filterProfileSessions(sessions, query) {
   )
 }
 
-function useProfileSessions(botName, gatewayGeneration) {
+function useProfileSessions(bot, gatewayGeneration) {
+  const owner = typeof bot === 'string' ? { name: bot } : bot
+  const profile = String(owner?.name || '')
+  const route = botConnectionRoute(owner)
+  const key = route ? botRosterKey(owner) : profile
+
   return useQuery({
-    queryKey: [ID, 'profile-sessions', botName, gatewayGeneration],
-    enabled: Boolean(botName),
+    queryKey: [ID, 'profile-sessions', key, gatewayGeneration],
+    enabled: Boolean(profile),
     // include_hidden: this browser exists precisely to see the profile's own
     // (always-hidden) Bot Mode sessions alongside its regular ones.
-    queryFn: () => host.request('session.list', { profile: botName, limit: PROFILE_SESSION_LIST_LIMIT, include_hidden: true }),
+    queryFn: () => requestForBot(owner, 'session.list', {
+      profile: route?.targetProfile || profile,
+      limit: PROFILE_SESSION_LIST_LIMIT,
+      include_hidden: true
+    }),
     refetchInterval: 8000,
     staleTime: 4000,
     retry: false
   })
 }
 
-async function openProfileSession(botName, session, gatewayGeneration) {
-  const profile = String(botName || '')
+async function openProfileSession(bot, session, gatewayGeneration) {
+  const owner = typeof bot === 'string' ? { name: bot } : bot
+  const profile = String(owner?.name || '')
+  const route = botConnectionRoute(owner)
+  const selectionKey = route ? botRosterKey(owner) : profile
   const id = String(session?.id || '')
   if (!NAME_RE.test(profile) || !id || gatewayGeneration !== $sessionsGatewayGeneration.get()) return
   if (typeof host.openSession !== 'function') {
@@ -7638,16 +8100,21 @@ async function openProfileSession(botName, session, gatewayGeneration) {
     typeof session?.message_count === 'number' && Number.isFinite(session.message_count)
   const expectHistory = hasAuthoritativeCount ? session.message_count > 0 : Boolean(session?.preview)
 
-  await host.openSession(id, { profile, awaitHydration: true, expectHistory })
+  await host.openSession(id, {
+    ...(route ? { route } : {}),
+    profile,
+    awaitHydration: true,
+    expectHistory
+  })
   if (gatewayGeneration !== $sessionsGatewayGeneration.get()) return
-  $botSelectedSessions.set({ ...$botSelectedSessions.get(), [profile]: id })
+  $botSelectedSessions.set({ ...$botSelectedSessions.get(), [selectionKey]: id })
 }
 
-function ProfileSessionRow({ session, botName, active, gatewayGeneration }) {
+function ProfileSessionRow({ session, bot, active, gatewayGeneration }) {
   return jsxs('button', {
     type: 'button',
     'aria-current': active ? 'page' : undefined,
-    onClick: () => void openProfileSession(botName, session, gatewayGeneration).catch(err => host.notifyError(err, 'Could not open session')),
+    onClick: () => void openProfileSession(bot, session, gatewayGeneration).catch(err => host.notifyError(err, 'Could not open session')),
     className: cn(
       'flex w-full flex-col gap-0.5 overflow-hidden rounded-md px-2 py-1.5 text-left transition-colors',
       'hover:bg-(--chrome-action-hover)',
@@ -7668,13 +8135,13 @@ function ProfileSessionRow({ session, botName, active, gatewayGeneration }) {
 
 function ProfileSessionsWorkspace({ bot }) {
   const gatewayGeneration = useValue($sessionsGatewayGeneration)
-  const { data, isLoading, error } = useProfileSessions(bot.name, gatewayGeneration)
+  const { data, isLoading, error } = useProfileSessions(bot, gatewayGeneration)
   const selectedByProfile = useValue($botSelectedSessions)
   const [query, setQuery] = useState('')
   const sourceSessions = data?.sessions || []
   const sessions = filterProfileSessions(sourceSessions, query)
   const inventoryBounded = sourceSessions.length >= PROFILE_SESSION_LIST_LIMIT
-  const selectedId = selectedByProfile[bot.name] || ''
+  const selectedId = selectedByProfile[botSelectionKey(bot)] || ''
 
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
@@ -7687,7 +8154,7 @@ function ProfileSessionsWorkspace({ bot }) {
       }),
       jsx('div', {
         className: 'min-w-0 flex-1 truncate text-sm font-semibold',
-        children: `${displayName(bot, $botMeta.get()[bot.name])} sessions`
+        children: `${displayName(bot, botRosterMeta(bot, $botMeta.get()))} sessions`
       })
     ]
   })
@@ -7728,7 +8195,7 @@ function ProfileSessionsWorkspace({ bot }) {
                 children: sessions.length
                   ? sessions.map(session => jsx(ProfileSessionRow, {
                       session,
-                      botName: bot.name,
+                      bot,
                       active: selectedId === session.id,
                       gatewayGeneration
                     }, session.id))
@@ -7771,7 +8238,7 @@ function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpe
         children: 'Active now'
       }),
       ...active.map(bot => {
-        const meta = metaByName?.[bot.name]
+        const meta = botRosterMeta(bot, metaByName)
         const { shape, color, image } = botAppearance(bot.name, meta)
         const photo = Boolean(image && !isBackfilledFacePng(image))
         const label = displayName(bot, meta)
@@ -7810,16 +8277,16 @@ function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpe
 function GroupDialog({ bot, onClose }) {
   const meta = useValue($botMeta)
   const [name, setName] = useState('')
-  const current = botGroups(meta[bot?.name])
+  const current = botGroups(botRosterMeta(bot, meta))
   const groups = knownGroups(meta)
 
   const setMembership = (group, enabled) => {
-    saveBotMeta(bot.name, groupMembershipPatch(meta[bot.name], group, enabled))
+    void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
     host.notify({
       kind: 'info',
       message: enabled
-        ? `${displayName(bot, meta[bot.name])} added to “${group}”`
-        : `${displayName(bot, meta[bot.name])} removed from “${group}”`
+        ? `${displayName(bot, botRosterMeta(bot, meta))} added to “${group}”`
+        : `${displayName(bot, botRosterMeta(bot, meta))} removed from “${group}”`
     })
   }
 
@@ -7891,7 +8358,7 @@ function GroupDialog({ bot, onClose }) {
               variant: 'ghost',
               size: 'sm',
               className: 'justify-self-start',
-              onClick: () => saveBotMeta(bot.name, { groups: [], group: null }),
+              onClick: () => void saveBotMeta(bot, { groups: [], group: null }),
               children: 'Remove from all groups'
             })
           : null
@@ -8125,9 +8592,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
     }
 
     for (const bot of selected) {
-      if (!bot.remoteSource) {
-        void saveBotMeta(bot.name, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
-      }
+      void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
     }
 
     // Persist every machine identity, including today's active source. That
@@ -9311,7 +9776,7 @@ function BotsPane() {
   const showHidden = useValue($showHiddenBots)
   const unreadByName = useValue($botUnread)
   const hiddenBots = roster.filter(bot => isBotHidden(bot, allMeta))
-  const hiddenUnread = hiddenBots.some(bot => !bot.remoteSource && unreadByName[bot.name])
+  const hiddenUnread = hiddenBots.some(bot => unreadByName[botSelectionKey(bot)])
   const visibleRoster = showHidden ? roster : roster.filter(bot => !isBotHidden(bot, allMeta))
   const filteredRoster = filterBots(visibleRoster, allMeta, query)
   // Group chats are first-class roster rows (Discord-style): one standalone
@@ -9352,7 +9817,7 @@ function BotsPane() {
   const staleNotice = error && !live && roster.length
     ? 'Roster refresh failed — showing the last good list.' + (gatewayUp ? '' : ' Waiting for the gateway to reconnect…')
     : null
-  const sessionsWorkspaceBot = roster.find(bot => bot.name === sessionsWorkspaceName)
+  const sessionsWorkspaceBot = roster.find(bot => botSelectionKey(bot) === sessionsWorkspaceName)
 
   if (sessionsWorkspaceBot) {
     return jsx(ProfileSessionsWorkspace, { bot: sessionsWorkspaceBot })
@@ -9459,21 +9924,11 @@ function BotsPane() {
         onOpen: bot => {
           const generation = ++botOpenGeneration
           haptic('tap')
-          $selectedBot.set(bot.name)
+          $selectedBot.set(botSelectionKey(bot))
 
-          if (bot.remoteSource) {
-            const handle = botHandle(bot.name, bot)
-            host.notify?.({
-              kind: 'info',
-              title: displayName(bot),
-              message: `Stay in this chat and @${handle} to message them. Gateway stays on this device.`
-            })
-            return
-          }
-
-          if ($botUnread.get()[bot.name]) {
+          if ($botUnread.get()[botSelectionKey(bot)]) {
             const next = { ...$botUnread.get() }
-            delete next[bot.name]
+            delete next[botSelectionKey(bot)]
             $botUnread.set(next)
           }
 
@@ -9494,7 +9949,7 @@ function BotsPane() {
 
             try {
               const id = await openBotCanonicalChat(
-                bot.name,
+                bot,
                 pinnedChat,
                 bot.preferred_session || bot.last_session
               )
@@ -9515,7 +9970,7 @@ function BotsPane() {
             }
 
             if (typeof host.newChat === 'function') {
-              host.newChat(bot.name)
+              newBotChat(bot)
             } else {
               host.navigate('/')
             }
@@ -9750,25 +10205,10 @@ export default {
       document.head.appendChild(style)
     }
 
-    // Hydrate persisted avatars/titles. Storage may be sync, async, or
-    // absent depending on shell version — normalize through Promise.resolve
-    // inside a try so a storage quirk can NEVER fail the plugin load.
-    try {
-      Promise.resolve(ctx.storage?.get?.('bot-meta'))
-        .then(value => {
-          if (value && typeof value === 'object' && !Array.isArray(value)) {
-            const live = $botMeta.get()
-            const next = { ...value }
-            for (const name of Object.keys(live)) {
-              next[name] = { ...(value[name] || {}), ...live[name] }
-            }
-            $botMeta.set(next)
-          }
-        })
-        .catch(() => undefined)
-    } catch {
-      /* no storage on this shell — defaults stay */
-    }
+    // Hydrate persisted avatars/titles. Migration writes v2 only after a
+    // provable sole-local topology and deliberately leaves v1 untouched for
+    // one-version rollback.
+    void migrateBotMeta(ctx.storage).catch(() => undefined)
 
     // Bot Mode sessions are always hidden now — the old "hide Bot Chats"
     // pref is gone (its stored key is simply ignored). The reconciliation
@@ -9826,7 +10266,12 @@ export default {
     // clock before its onDispose hook — these kept firing until app restart).
     const unbindProfileListener = host.state.profile.listen(profile => {
       if (profile && typeof profile === 'string') {
-        $selectedBot.set(profile)
+        const connectionId = String(
+          host.state.connectionId?.get?.() ||
+          (typeof host.activeConnectionId === 'function' ? host.activeConnectionId() : '') ||
+          ''
+        ).trim()
+        $selectedBot.set(connectionId ? `${connectionId}::${profile}` : profile)
       }
     })
     const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)

@@ -56,6 +56,11 @@ function renderBotRow(input = 'alpha') {
     // #49 session-aware-row helpers referenced inside BotRow.
     previewKind: () => ({ fromBot: false, sender: null }),
     generatedSessionTitle: () => null,
+    isActiveRosterBot: () => false,
+    isBackfilledFacePng: () => false,
+    botSelectionKey: value => value.sourceScoped ? `${value.connectionId}::${value.name}` : value.name,
+    isDefaultBot: value => value.name === 'default',
+    newBotChat: () => undefined,
     openBotCanonicalChat: async (...args) => {
       opened.push(args)
       return 'stored-chat'
@@ -121,7 +126,7 @@ test('behavior: pointer entry prewarms only the hovered bot', () => {
   assert.deepEqual(warmed, ['alpha'])
 })
 
-test('behavior: a remote Connections row stays in this chat instead of hopping SSH', async () => {
+test('behavior: a remote Connections row opens through its captured route without activation authority', async () => {
   const { ensured, opened, row, warmed } = renderBotRow({
     connectionId: 'work',
     connectionLabel: 'Work',
@@ -135,10 +140,11 @@ test('behavior: a remote Connections row stays in this chat instead of hopping S
 
   await row.props.onClick()
   assert.deepEqual(ensured, [])
-  assert.deepEqual(opened, [])
+  assert.equal(opened.length, 1)
+  assert.equal(opened[0][0].connectionId, 'work')
 })
 
-test('behavior: remote default does not open this-device chat when the source did not activate', async () => {
+test('behavior: remote default never opens the same-name local chat', async () => {
   const bot = {
     connectionId: 'mac-mini',
     connectionLabel: 'Mac Mini',
@@ -182,6 +188,11 @@ test('behavior: remote default does not open this-device chat when the source di
     haptic: () => undefined,
     previewKind: () => ({ fromBot: false, sender: null }),
     generatedSessionTitle: () => null,
+    isActiveRosterBot: () => false,
+    isBackfilledFacePng: () => false,
+    botSelectionKey: value => value.sourceScoped ? `${value.connectionId}::${value.name}` : value.name,
+    isDefaultBot: value => value.name === 'default',
+    newBotChat: () => undefined,
     openBotCanonicalChat: async (...args) => {
       opened.push(args)
       return 'this-device-chat'
@@ -217,6 +228,7 @@ test('behavior: remote default does not open this-device chat when the source di
 
   await row.props.onClick()
   assert.deepEqual(ensured, [])
-  assert.deepEqual(opened, [])
+  assert.equal(opened.length, 1)
+  assert.equal(opened[0][0].connectionId, 'mac-mini')
   assert.equal(errors.length, 0)
 })

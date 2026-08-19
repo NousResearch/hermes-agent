@@ -7,6 +7,7 @@ import {
   AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
   audioSpeakRequestTimeoutMs,
   audioTranscribeRequestTimeoutMs,
+  deleteProfile,
   getAllSessionMessages,
   getCronJobs,
   getGlobalModelInfo,
@@ -16,6 +17,7 @@ import {
   getLatestSessionMessages,
   getOlderSessionMessages,
   getProfiles,
+  getSession,
   getSessionMessages,
   getStatus,
   LATEST_SESSION_MESSAGES_LIMIT,
@@ -355,6 +357,42 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('pins session metadata and transcripts to an explicit connection scope', async () => {
+    api.mockResolvedValue({ messages: [], session_id: 'session-1' })
+    const scope = { connectionId: 'source-a', profile: 'backend-default' }
+
+    await getSession('session-1', scope)
+    await getSessionMessages('session-1', scope)
+
+    expect(api).toHaveBeenNthCalledWith(1, {
+      connectionId: 'source-a',
+      path: '/api/sessions/session-1?profile=backend-default',
+      profile: 'backend-default'
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      connectionId: 'source-a',
+      path: '/api/sessions/session-1/messages?profile=backend-default',
+      profile: 'backend-default'
+    })
+  })
+
+  it('scopes profile deletion and rejects default before Electron dispatch', async () => {
+    api.mockResolvedValue({ ok: true, path: '/profiles/worker' })
+
+    await deleteProfile('backend-worker', { connectionId: 'source-a', profile: 'backend-worker' })
+    await expect(
+      deleteProfile('worker', { connectionId: 'source-a', profile: 'default' })
+    ).rejects.toThrow(/default profile cannot be deleted/i)
+
+    expect(api).toHaveBeenCalledOnce()
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'source-a',
+      method: 'DELETE',
+      path: '/api/profiles/backend-worker',
+      profile: 'backend-worker'
     })
   })
 

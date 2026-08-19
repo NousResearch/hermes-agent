@@ -27,6 +27,7 @@ import {
   commitWorkspaceCwdForSelectedSession,
   getRememberedRoute,
   getRememberedSessionId,
+  getSessionOwnerHint,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
@@ -36,6 +37,7 @@ import {
   setCurrentCwdTransient,
   setRememberedRoute,
   setRememberedSessionId,
+  setSessionOwnerHint,
   setSelectedStoredSessionId,
   setSessions,
   shouldMigrateComposerScope,
@@ -66,6 +68,35 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   title: null,
   tool_call_count: 0,
   ...over
+})
+
+describe('session owner hints', () => {
+  it('keeps identical session ids separate across connection and profile owners', () => {
+    const sourceA = { connectionId: 'source-a', mode: 'remote' as const, profile: 'worker', targetProfile: 'backend-a' }
+    const sourceB = { connectionId: 'source-b', mode: 'remote' as const, profile: 'worker', targetProfile: 'backend-b' }
+
+    setSessionOwnerHint('same-session', sourceA)
+    setSessionOwnerHint('same-session', sourceB)
+
+    expect(getSessionOwnerHint('same-session', sourceA)).toEqual(sourceA)
+    expect(getSessionOwnerHint('same-session', sourceB)).toEqual(sourceB)
+    expect(getSessionOwnerHint('same-session')).toBeUndefined()
+  })
+
+  it('bounds owner hints and evicts the oldest scoped identity', () => {
+    for (let index = 0; index < 257; index += 1) {
+      setSessionOwnerHint(`bounded-${index}`, {
+        connectionId: 'bounded-source',
+        mode: 'remote',
+        profile: 'worker',
+        targetProfile: 'backend-worker'
+      })
+    }
+
+    const scope = { connectionId: 'bounded-source', profile: 'worker' }
+    expect(getSessionOwnerHint('bounded-0', scope)).toBeUndefined()
+    expect(getSessionOwnerHint('bounded-256', scope)).toMatchObject({ connectionId: 'bounded-source' })
+  })
 })
 
 describe('computed $attentionSessionIds', () => {

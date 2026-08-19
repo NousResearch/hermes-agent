@@ -24,6 +24,7 @@ from hermes_constants import (
     node_tool_runnable,
     parse_reasoning_effort,
     reset_hermes_home_override,
+    resolve_reasoning_config,
     secure_parent_dir,
     set_hermes_home_override,
     with_hermes_node_path,
@@ -173,7 +174,7 @@ class TestHermesManagedNode:
         node_dir = home / "node"
         node_dir.mkdir(parents=True)
         npm_cmd = node_dir / "npm.cmd"
-        npm_cmd.write_text("@echo off\n")
+        npm_cmd.write_text("@echo off\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
 
@@ -186,11 +187,11 @@ class TestHermesManagedNode:
         home = tmp_path / "hermes"
         managed_npm = home / "node" / "npm.cmd"
         managed_npm.parent.mkdir(parents=True)
-        managed_npm.write_text("@echo off\n")
+        managed_npm.write_text("@echo off\n", encoding="utf-8")
         bin_dir = tmp_path / "nodejs"
         bin_dir.mkdir()
         path_npm = bin_dir / "npm.cmd"
-        path_npm.write_text("@echo off\n")
+        path_npm.write_text("@echo off\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", str(bin_dir))
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
@@ -213,7 +214,7 @@ class TestNodeToolRunnable:
 
     def _stub(self, tmp_path, name, body, mode=0o755):
         path = tmp_path / name
-        path.write_text(body)
+        path.write_text(body, encoding="utf-8")
         path.chmod(mode)
         return path
 
@@ -242,7 +243,7 @@ class TestNodeToolRunnable:
 
         def _heal():
             heal_called["value"] = True
-            broken_npm.write_text("#!/bin/sh\necho '22.0.0'\nexit 0\n")
+            broken_npm.write_text("#!/bin/sh\necho '22.0.0'\nexit 0\n", encoding="utf-8")
             broken_npm.chmod(0o755)
             return True
 
@@ -288,7 +289,7 @@ class TestNodeToolRunnable:
 
         def _heal():
             heal_called["value"] = True
-            old_node.write_text(f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n")
+            old_node.write_text(f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n", encoding="utf-8")
             old_node.chmod(0o755)
             return True
 
@@ -651,7 +652,7 @@ class TestAgentBrowserRunnable:
 
     def _stub(self, tmp_path, name, body, mode=0o755):
         p = tmp_path / name
-        p.write_text(body)
+        p.write_text(body, encoding="utf-8")
         p.chmod(mode)
         return p
 
@@ -739,7 +740,7 @@ class TestGetHermesDir:
         legacy.symlink_to(tmp_path / "does-not-exist")
         new = tmp_path / "platforms" / "pairing"
         new.mkdir(parents=True)
-        (new / "discord-approved.json").write_text("[]")
+        (new / "discord-approved.json").write_text("[]", encoding="utf-8")
         result = get_hermes_dir("platforms/pairing", "pairing")
         assert result == new
 
@@ -1152,3 +1153,76 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+
+class TestResolveReasoningOverridesCoercion:
+    """resolve_reasoning_config must not silently ignore string-form overrides."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_warned_shapes(self, monkeypatch):
+        monkeypatch.setattr(
+            hermes_constants, "_reasoning_overrides_bad_shape_warned", set()
+        )
+
+    def test_json_string_form_is_parsed_and_applied(self):
+        cfg = {
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": '{"glm-5.3": "max", "kimi-k3": "low"}',
+            }
+        }
+        assert resolve_reasoning_config(cfg, "glm-5.3") == {
+            "enabled": True,
+            "effort": "max",
+        }
+        assert resolve_reasoning_config(cfg, "kimi-k3") == {
+            "enabled": True,
+            "effort": "low",
+        }
+
+    def test_unparseable_string_warns_and_falls_back_to_global(
+        self, caplog
+    ):
+        cfg = {
+            "agent": {
+                "reasoning_effort": "high",
+                "reasoning_overrides": "not-a-map",
+            }
+        }
+        with caplog.at_level("WARNING", logger="hermes_constants"):
+            assert resolve_reasoning_config(cfg, "glm-5.3") == {
+                "enabled": True,
+                "effort": "high",
+            }
+        assert any(
+            "agent.reasoning_overrides" in rec.message for rec in caplog.records
+        )
+
+    def test_yaml_map_form_still_wins_over_global(self):
+        cfg = {
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {"gpt-5.6-terra": "max"},
+            }
+        }
+        assert resolve_reasoning_config(cfg, "gpt-5.6-terra") == {
+            "enabled": True,
+            "effort": "max",
+        }
+        assert resolve_reasoning_config(cfg, "uncovered-model") == {
+            "enabled": True,
+            "effort": "medium",
+        }
+
+    def test_warns_once_per_distinct_bad_value(self, caplog):
+        cfg = {"agent": {"reasoning_overrides": "still-not-a-map"}}
+        with caplog.at_level("WARNING", logger="hermes_constants"):
+            resolve_reasoning_config(cfg, "glm-5.3")
+            resolve_reasoning_config(cfg, "glm-5.3")
+            resolve_reasoning_config(cfg, "glm-5.3")
+        warnings = [
+            rec
+            for rec in caplog.records
+            if "agent.reasoning_overrides" in rec.message
+        ]
+        assert len(warnings) == 1

@@ -1396,7 +1396,6 @@ def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id
 
 
 
-
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [_codex_tool_call_response(), _codex_message_response("done")]

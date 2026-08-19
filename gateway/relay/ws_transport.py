@@ -809,47 +809,64 @@ class WebSocketRelayTransport:
         assert self._ws is not None
         buf = ""
         try:
-            async for chunk in self._ws:
-                buf += chunk if isinstance(chunk, str) else chunk.decode("utf-8")
-                # Newline-delimited frames; keep any trailing partial line.
-                *lines, buf = buf.split("\n")
-                for line in lines:
-                    if line.strip():
-                        await self._handle_frame(line)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
-            # Phase 7 Unit 7d-B: detect a 4401 (unauthorized) close. After a prior
-            # successful handshake this is a REVOCATION (opt-out / deprovision) —
-            # the per-gateway secret is gone, so reconnecting is futile. Latch a
-            # terminal "auth revoked" state and DON'T re-dial. Before any
-            # successful handshake a 4401 stays retryable (cold-start race).
-            if self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE and self._handshake_succeeded:
-                self._auth_revoked = True
-                if not self._closing:
-                    logger.warning(
-                        "relay ws closed 4401 (unauthorized) after a successful handshake — "
-                        "treating as a revoked relay credential (opt-out); not reconnecting"
+            try:
+                async for chunk in self._ws:
+                    buf += chunk if isinstance(chunk, str) else chunk.decode("utf-8")
+                    # Newline-delimited frames; keep any trailing partial line.
+                    *lines, buf = buf.split("\n")
+                    for line in lines:
+                        if line.strip():
+                            await self._handle_frame(line)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
+                # Phase 7 Unit 7d-B: detect a 4401 (unauthorized) close. After a prior
+                # successful handshake this is a REVOCATION (opt-out / deprovision) —
+                # the per-gateway secret is gone, so reconnecting is futile. Latch a
+                # terminal "auth revoked" state and DON'T re-dial. Before any
+                # successful handshake a 4401 stays retryable (cold-start race).
+                if self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE and self._handshake_succeeded:
+                    self._auth_revoked = True
+                    if not self._closing:
+                        logger.warning(
+                            "relay ws closed 4401 (unauthorized) after a successful handshake — "
+                            "treating as a revoked relay credential (opt-out); not reconnecting"
+                        )
+                elif not self._closing:
+                    logger.warning("relay ws read loop ended: %s", exc)
+            # Phase 5 §5.3: the socket closed. If reconnect is enabled and this was
+            # NOT a deliberate disconnect(), kick the reconnect supervisor so the
+            # gateway re-dials + re-handshakes (which triggers the connector's
+            # buffered-flip drain on the new handshake). Self-scheduling: the reader
+            # ends here, the supervisor re-dials and starts a fresh reader.
+            # Phase 7 Unit 7d-B: a revoked credential (terminal 4401) is the one case
+            # we deliberately do NOT reconnect — the secret is dead until the
+            # instance is recreated, so spinning would just reproduce the failure.
+            if (
+                self._reconnect
+                and not self._closing
+                and not self._auth_revoked
+                and (self._supervisor is None or self._supervisor.done())
+            ):
+                self._supervisor = asyncio.create_task(
+                    self._reconnect_loop(), name="relay-ws-reconnect"
+                )
+        finally:
+            # The reader is the ONLY thing that can resolve a pending
+            # outbound_result future — once it exits (socket dropped, error,
+            # or cancellation cleanup) every in-flight _request_response waiter
+            # is unresolvable and would otherwise block the full
+            # _outbound_timeout_s (~30s) on a dead socket (Coatue incident
+            # 2026-08-18: stuck sends after a 1011 keepalive close). Fail them
+            # NOW with the dict shape callers expect (never an exception on
+            # the outbound path). list() snapshot: set_result wakes waiters
+            # whose finally-pop would otherwise mutate the dict mid-iteration.
+            for _rid, fut in list(self._pending.items()):
+                if not fut.done():
+                    fut.set_result(
+                        {"success": False, "error": "relay transport connection lost"}
                     )
-            elif not self._closing:
-                logger.warning("relay ws read loop ended: %s", exc)
-        # Phase 5 §5.3: the socket closed. If reconnect is enabled and this was
-        # NOT a deliberate disconnect(), kick the reconnect supervisor so the
-        # gateway re-dials + re-handshakes (which triggers the connector's
-        # buffered-flip drain on the new handshake). Self-scheduling: the reader
-        # ends here, the supervisor re-dials and starts a fresh reader.
-        # Phase 7 Unit 7d-B: a revoked credential (terminal 4401) is the one case
-        # we deliberately do NOT reconnect — the secret is dead until the
-        # instance is recreated, so spinning would just reproduce the failure.
-        if (
-            self._reconnect
-            and not self._closing
-            and not self._auth_revoked
-            and (self._supervisor is None or self._supervisor.done())
-        ):
-            self._supervisor = asyncio.create_task(
-                self._reconnect_loop(), name="relay-ws-reconnect"
-            )
+            self._pending.clear()
 
     @staticmethod
     def _close_code_of(exc: BaseException) -> Optional[int]:

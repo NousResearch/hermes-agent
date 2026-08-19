@@ -497,10 +497,26 @@ class WebSocketRelayTransport:
         # normal fast backoff, not the dormant cadence.
         self._dormant = False
         headers = self._upgrade_headers()
+        # WAN-friendly keepalive: customer gateways cross WAN paths to the
+        # connector; the websockets library default (ping_interval=20,
+        # ping_timeout=20) gives the peer only a 20s pong deadline, which
+        # produces spurious `1011 keepalive ping timeout` closes under
+        # transient latency / event-loop stalls (Coatue incident 2026-08-18).
+        # ping_timeout=60 tolerates such stalls while still detecting a dead
+        # link within ~90s worst case (30s interval + 60s pong deadline).
         if headers:
-            self._ws = await websockets.connect(self._url, additional_headers=headers)  # type: ignore[union-attr]
+            self._ws = await websockets.connect(  # type: ignore[union-attr]
+                self._url,
+                additional_headers=headers,
+                ping_interval=30,
+                ping_timeout=60,
+            )
         else:
-            self._ws = await websockets.connect(self._url)  # type: ignore[union-attr]
+            self._ws = await websockets.connect(  # type: ignore[union-attr]
+                self._url,
+                ping_interval=30,
+                ping_timeout=60,
+            )
         self._reader = asyncio.create_task(self._read_loop(), name="relay-ws-reader")
         # Send one hello PER fronted identity (Phase 1.5 Shape A). The connector
         # accumulates them into its advertised set (the first sets the session

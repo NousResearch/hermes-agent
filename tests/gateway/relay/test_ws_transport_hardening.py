@@ -104,3 +104,51 @@ async def test_send_during_redial_window_fails_fast():
             await t._supervisor
         except asyncio.CancelledError:
             pass
+
+
+@pytest.mark.asyncio
+async def test_connect_passes_wan_keepalive_tuning(monkeypatch):
+    """connect() must pass ping_interval=30 / ping_timeout=60 explicitly —
+    the library defaults (20/20) caused spurious 1011 keepalive closes over
+    WAN paths (Coatue 2026-08-18). Both call sites (with/without auth
+    headers) are exercised."""
+    captured: list[dict] = []
+
+    class _IdleWS:
+        async def send(self, data):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(3600)
+
+        async def close(self):
+            pass
+
+    async def _fake_connect(url, **kwargs):
+        captured.append(kwargs)
+        return _IdleWS()
+
+    monkeypatch.setattr(ws_transport_mod.websockets, "connect", _fake_connect)
+
+    # Site 1: no upgrade secret -> the headerless connect() call.
+    t = WebSocketRelayTransport("ws://unused", "discord", "bot1")
+    await t.connect()
+    await t.disconnect(budget_s=0)
+
+    # Site 2: secret + gateway_id -> the additional_headers connect() call.
+    t2 = WebSocketRelayTransport(
+        "ws://unused", "discord", "bot1", gateway_id="gw-1", upgrade_secret="s3cret"
+    )
+    await t2.connect()
+    await t2.disconnect(budget_s=0)
+
+    assert len(captured) == 2
+    no_header_kwargs, header_kwargs = captured
+    assert "additional_headers" not in no_header_kwargs
+    assert "additional_headers" in header_kwargs
+    for kwargs in captured:
+        assert kwargs.get("ping_interval") == 30
+        assert kwargs.get("ping_timeout") == 60

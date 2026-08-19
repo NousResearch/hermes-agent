@@ -4,7 +4,11 @@ import type { HermesReadDirResult } from '@/global'
 import type * as HermesModule from '@/hermes'
 
 import { $pluginRecords, setPluginEnabled } from './plugins-store'
-import { discoverRuntimePlugins, watchRuntimePlugins } from './runtime-loader'
+import {
+  discoverRuntimePlugins,
+  loadShippedRuntimePlugins,
+  watchRuntimePlugins
+} from './runtime-loader'
 
 // getStatus would supply the connected backend's hermes_home — a REMOTE path in
 // remote mode. The disk scanner must NOT derive the plugin root from it (#66899).
@@ -176,5 +180,18 @@ describe('watchRuntimePlugins dir watch (#66899)', () => {
     expect(watchDirectory).toHaveBeenCalledWith('/local/.hermes/plugins')
     expect(watchDirectory).not.toHaveBeenCalledWith('/remote/box/.hermes/desktop-plugins')
     expect(getStatus).not.toHaveBeenCalled()
+  })
+})
+
+describe('shipped runtime plugins', () => {
+  it('connects the real Spatial source to the startup runtime-loader path', async () => {
+    const loader = vi.fn(async (_source: string, origin: string) => origin)
+
+    await expect(loadShippedRuntimePlugins(loader)).resolves.toEqual(['spatial'])
+
+    expect(loader).toHaveBeenCalledTimes(1)
+    expect(loader).toHaveBeenCalledWith(expect.stringContaining("const ID = 'spatial'"), 'spatial', {
+      kind: 'bundled'
+    })
   })
 })

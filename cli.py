@@ -1284,6 +1284,16 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     finally:
         _cleanup_in_progress = False
 
+    # ``AIAgent.close`` owns per-session teardown, including process-registry
+    # cleanup.  One-shot CLI invocations (and therefore Kanban workers) reach
+    # this path directly; omitting close here lets their background process
+    # trees outlive the worker even though the agent knows the owning session.
+    try:
+        if _active_agent_ref and hasattr(_active_agent_ref, "close"):
+            _active_agent_ref.close()
+    except Exception as e:
+        logger.warning("CLI cleanup agent close failed: %s", e, exc_info=True)
+
 
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
     # A session that was handed off to the gateway is now owned by the

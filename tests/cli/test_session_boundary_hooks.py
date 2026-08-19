@@ -52,6 +52,10 @@ def test_session_finalize_on_cleanup(mock_finalize_session):
 
     cli_mod._run_cleanup()
 
+    # A one-shot CLI/Kanban worker is a real session boundary. Its active
+    # agent must close so session-owned background process trees are reaped.
+    mock_agent.close.assert_called_once_with()
+
     assert any(
         not c.args
         and c.kwargs["session_id"] == "cleanup-session-id"

@@ -1,11 +1,13 @@
 ---
 name: autoresearch
-description: >
-  Autonomous research skill. When user asks to research something, ask clarifying
-  questions then offer regular research (normal chat flow) or autoresearch (autonomous
-  background loop with git-based keep/revert). No custom Python package - uses Hermes
-  native tools only.
-tags: [research, autonomous, background, ml, market, idea, sales]
+description: "Autonomous background research loop with keep/revert."
+version: 1.0.0
+author: Hermes Agent
+license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [Research, Autonomous, Background, Experiments, Git]
 ---
 
 # Research Skill

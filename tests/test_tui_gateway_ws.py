@@ -153,6 +153,50 @@ def test_ws_starts_mcp_discovery_before_ready(monkeypatch):
     assert events == ["accept", "ready_after_0"]
 
 
+def test_ws_ready_advertises_heartbeat_and_ping_is_inline(monkeypatch):
+    sent = []
+    inbound = iter(
+        [
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "heartbeat-1",
+                    "method": "gateway.ping",
+                    "params": {},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            try:
+                return next(inbound)
+            except StopIteration:
+                raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS()))
+
+    ready = sent[0]["params"]
+    assert ready["type"] == "gateway.ready"
+    assert ready["payload"]["heartbeat"] is True
+    assert sent[1] == {
+        "jsonrpc": "2.0",
+        "result": {"ok": True},
+        "id": "heartbeat-1",
+    }
+
+
 def test_ws_transport_serializes_concurrent_sends():
     active_sends = 0
     max_active_sends = 0

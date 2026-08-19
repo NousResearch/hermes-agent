@@ -44,6 +44,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT = 30
@@ -61,6 +63,7 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
+        creationflags=windows_hide_flags(),
     )
 
 

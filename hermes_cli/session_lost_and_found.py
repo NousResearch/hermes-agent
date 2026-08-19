@@ -31,6 +31,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 # Hermes session ids are timestamps: 20260812_135332_ab12cd. This is the
 # strongest sentinel available for classifying schema-less rows.
 SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
@@ -105,6 +107,7 @@ def _cli_supports_recover(binary: str) -> bool:
             [binary, "-readonly", str(scratch), ".recover"],
             capture_output=True,
             timeout=30,
+            creationflags=windows_hide_flags(),
         )
         if probe.returncode != 0:
             return False
@@ -136,12 +139,14 @@ def run_cli_lost_and_found_recover(
             [sqlite3_bin, "-readonly", str(source), command],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            creationflags=windows_hide_flags(),
         )
         load = subprocess.Popen(
             [sqlite3_bin, str(lf_path)],
             stdin=dump.stdout,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            creationflags=windows_hide_flags(),
         )
         assert dump.stdout is not None
         dump.stdout.close()  # let dump receive SIGPIPE if load dies

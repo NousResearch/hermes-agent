@@ -396,6 +396,127 @@ def test_lazy_deps_uv_install_hides_console_window(monkeypatch):
     assert kwargs["stdin"] == subprocess.DEVNULL
 
 
+def test_session_lost_and_found_recover_probe_hides_console_window(monkeypatch, tmp_path):
+    """``session_lost_and_found._cli_supports_recover``'s capability probe."""
+    from hermes_cli import session_lost_and_found
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        # capture_output=True without text=True -> bytes stdout/stderr.
+        return SimpleNamespace(stdout=b"", stderr=b"", returncode=0)
+
+    monkeypatch.setattr(
+        session_lost_and_found, "windows_hide_flags", lambda: _CREATE_NO_WINDOW
+    )
+    monkeypatch.setattr(session_lost_and_found.subprocess, "run", fake_run)
+
+    session_lost_and_found._cli_supports_recover("sqlite3")
+
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd[0] == "sqlite3"
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_session_lost_and_found_recover_run_hides_console_window(monkeypatch, tmp_path):
+    """``session_lost_and_found.run_cli_lost_and_found_recover``'s dump/load
+    pipeline — two ``Popen`` spawns, both must hide their console window."""
+    from hermes_cli import session_lost_and_found
+
+    captured = []
+
+    class _FakePipe:
+        def close(self) -> None:
+            pass
+
+        def read(self) -> bytes:
+            return b""
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            self.stdout = _FakePipe()
+            self.stderr = _FakePipe()
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return (b"", b"")
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):  # pragma: no cover - not reached on the fast path
+            raise AssertionError("kill() must not run on the fast path")
+
+    monkeypatch.setattr(
+        session_lost_and_found, "windows_hide_flags", lambda: _CREATE_NO_WINDOW
+    )
+    monkeypatch.setattr(session_lost_and_found.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(
+        session_lost_and_found,
+        "_lost_and_found_db_usable",
+        lambda lf_path: True,
+    )
+
+    lf_path = tmp_path / "lf.db"
+    session_lost_and_found.run_cli_lost_and_found_recover(
+        tmp_path / "source.db", lf_path, "sqlite3"
+    )
+
+    assert len(captured) == 2, captured
+    for cmd, kwargs in captured:
+        assert cmd[0] == "sqlite3"
+        assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_subagent_worktree_run_git_hides_console_window(monkeypatch):
+    """``tools.subagent_worktree._run_git`` — the single chokepoint all 7
+    worktree-isolation git calls go through."""
+    from tools import subagent_worktree
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="ok", returncode=0)
+
+    monkeypatch.setattr(
+        subagent_worktree, "windows_hide_flags", lambda: _CREATE_NO_WINDOW
+    )
+    monkeypatch.setattr(subagent_worktree.subprocess, "run", fake_run)
+
+    subagent_worktree._run_git(["rev-parse", "HEAD"], cwd="/tmp")
+
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd == ["git", "rev-parse", "HEAD"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_plugins_cmd_git_helpers_hide_console_window(monkeypatch, tmp_path):
+    """``hermes_cli.plugins_cmd``'s git plumbing (clone/fetch/checkout/
+    remote-scrub/revision-read/plugin-update helpers) — spot-check the two
+    standalone chokepoints (``_git_head_revision``, ``_run_plugin_git``)."""
+    from hermes_cli import plugins_cmd
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="deadbeef" * 5, returncode=0)
+
+    monkeypatch.setattr(plugins_cmd, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(plugins_cmd.subprocess, "run", fake_run)
+
+    plugins_cmd._git_head_revision(tmp_path, "git")
+    plugins_cmd._run_plugin_git("git", tmp_path, "status", "--porcelain")
+
+    assert len(captured) == 2, captured
+    for cmd, kwargs in captured:
+        assert cmd[0] == "git"
+        assert kwargs["creationflags"] == _CREATE_NO_WINDOW
 
 
 

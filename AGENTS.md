@@ -4,6 +4,124 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Controlled Fork Repository Rules
+
+This repository is a controlled fork of `NousResearch/hermes-agent`. Hermes is
+the runtime foundation for a model-agnostic software-engineering agent; it is
+not merely reference code. The fork adds an engineering execution layer around
+the existing runtime rather than replacing the runtime itself.
+
+### Repository purpose and boundaries
+
+- Reuse Hermes for the generic agent loop, provider runtime, tools, sessions,
+  skills, plugins, context, and delegation infrastructure.
+- The fork owns engineering-specific orchestration, policy, project inspection,
+  deterministic verification, review gates, domain guardrails, workflows,
+  skills, context, and evals.
+- `CODEX_HANDOFF.md` is the current program handoff and milestone entry point.
+  `docs/vision/agent-engineering-blueprint.md` is a long-term roadmap, not an
+  instruction to implement every named component now. `docs/upstream/README.md`
+  defines the upstream relationship.
+- Work only on the currently approved milestone. Do not pull V2/V3 ideas or
+  future roadmap items into the active change without an explicit decision.
+- Keep repository-level rules here concise and durable. Put architecture
+  findings in research docs, decisions in ADRs, repeatable procedures in
+  skills/runbooks, and task-specific plans in an ExecPlan.
+
+### Evidence discipline
+
+Every material Hermes architecture statement must be classified as one of:
+
+- **CONFIRMED** — supported by current source code or fresh executable evidence.
+  Cite concrete file paths and symbols; include line ranges when practical.
+- **INFERENCE** — a reasoned conclusion from identified evidence. State the
+  reasoning and what remains unverified.
+- **GAP** — the required behavior or evidence was not found. State where and how
+  it was searched; do not silently convert a gap into a design fact.
+
+Documentation is useful for navigation, but source code and executable behavior
+are authoritative for runtime claims. Before declaring a bug or missing
+extension point, trace the current call path and inspect the original design
+intent where relevant. Never claim that a hook, veto, completion gate, public
+API, or lifecycle boundary exists until it is verified in the current tree.
+
+### Extension and change policy
+
+For every new capability, use the first sufficient option in this order:
+
+1. existing Hermes capability;
+2. existing plugin, hook, middleware, skill, CLI, MCP, or other edge surface;
+3. a new engineering-owned module outside Hermes core;
+4. a minimal, generic Hermes core patch.
+
+Before a core patch:
+
+- show the exact requirement and call path;
+- show why existing extension surfaces and an outer engineering orchestrator
+  are insufficient;
+- keep the patch generic, minimal, backward-compatible, cache-safe, and useful
+  beyond one engineering feature;
+- preserve provider, session, tool, profile, and platform invariants;
+- record the patch and rationale under `docs/upstream/` or in an ADR so upstream
+  synchronization remains possible.
+
+Do not add engineering-specific branches to `run_agent.py`, `model_tools.py`,
+`cli.py`, or gateway core merely for convenience. Do not duplicate provider,
+tool-call, session, plugin, skill, context, or generic orchestration frameworks.
+
+### Engineering workflow and completion
+
+Use the workflow states below. Simple, low-risk tasks may omit a formal plan,
+but they may not omit understanding, scoped verification, or diff review.
+
+```text
+UNDERSTAND -> EXPLORE -> PLAN (when required) -> IMPLEMENT
+           -> VERIFY -> REVIEW -> DONE
+```
+
+- Inspect the relevant implementation and search for reusable paths before
+  editing.
+- Keep changes minimal, compatible, and confined to the approved scope.
+- Convert deterministic requirements into code, tests, schemas, validators,
+  state transitions, or CI gates rather than relying on prompt text alone.
+- Treat an agent's statement of completion as a claim, not evidence.
+- A task reaches `DONE` only when the applicable verification and review gates
+  have fresh evidence. Report commands, results, skipped checks, and remaining
+  uncertainty separately.
+- Verification is risk-based: documentation-only and other low-risk changes
+  normally require content/diff inspection only; use the smallest targeted
+  test for behavioral changes; reserve baseline or broad suites for changes
+  whose regression risk actually requires them.
+- When Python tests are justified, use `scripts/run_tests.sh` and target the
+  narrowest relevant file or directory. Preserve the upstream rules below for
+  cross-platform and behavior-based testing.
+
+### Safety and domain gates
+
+- Never expose or log secrets, credentials, signatures, payment material, or
+  production data. Use redacted fixtures and isolated temporary homes.
+- Database writes/migrations, payment state or amount/signature logic, auth and
+  permission changes, production configuration, deployment, deletion, and
+  other irreversible operations require explicit scope, impact analysis,
+  rollback/recovery, and targeted verification before execution.
+- Default to read-only inspection for production systems and databases. No
+  autonomous production deployment or production data mutation is implied by
+  an engineering workflow.
+- Preserve prompt-cache stability, strict message-role alternation, profile
+  isolation, approval boundaries, and secret handling. An engineering feature
+  must not weaken these Hermes invariants.
+
+### Upstream synchronization
+
+- Keep product-owned engineering work visibly separable from inherited Hermes
+  code and avoid unrelated formatting or refactors in upstream files.
+- Before changing inherited behavior, inspect current upstream-facing docs,
+  relevant history, and nearby tests. Prefer a generic upstream contribution
+  when a narrow runtime improvement benefits Hermes independently.
+- During upstream syncs, preserve fork-owned modules and decision records,
+  reconcile behavior rather than blindly taking either side, and re-verify the
+  affected boundaries.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a

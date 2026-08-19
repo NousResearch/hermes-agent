@@ -27,6 +27,7 @@ const WEIGHT_RESET: AnsiCode = {
   endCode: WEIGHT_END
 }
 
+// eslint-disable-next-line no-control-regex -- SGR CSI matcher; ESC is intentional
 const SGR_PARAMS_RE = /^\u001b\[([0-9;]*)m$/
 
 /** The bold/dim atoms ('1' / '2') a single SGR sequence turns on. */

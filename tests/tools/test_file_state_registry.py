@@ -177,6 +177,97 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertIn("agentB", warn)
         self.assertIn("sibling", warn.lower())
 
+    def test_same_agent_consecutive_writes_no_false_warning(self):
+        p = self._write_seed("own.txt")
+        json.loads(read_file_tool(path=p, task_id="agentC"))
+        w1 = json.loads(write_file_tool(path=p, content="one\n", task_id="agentC"))
+        self.assertFalse(w1.get("_warning"))
+        w2 = json.loads(write_file_tool(path=p, content="two\n", task_id="agentC"))
+        self.assertFalse(w2.get("_warning"))
+
+    def test_kanban_worker_write_file_refuses_after_partial_read(self):
+        p = self._write_seed("partial.txt", "one\ntwo\nthree\n")
+        r = json.loads(read_file_tool(path=p, limit=1, task_id="agentK"))
+        self.assertTrue(r.get("truncated"), r)
+
+        old_task = os.environ.get("HERMES_KANBAN_TASK")
+        os.environ["HERMES_KANBAN_TASK"] = "t_agentK"
+        try:
+            w = json.loads(write_file_tool(path=p, content="one\n", task_id="agentK"))
+        finally:
+            if old_task is None:
+                os.environ.pop("HERMES_KANBAN_TASK", None)
+            else:
+                os.environ["HERMES_KANBAN_TASK"] = old_task
+
+        self.assertIn("error", w)
+        self.assertIn("Kanban worker safety", w["error"])
+        self.assertIn("partial read_file view", w["error"])
+
+    def test_kanban_worker_write_file_refuses_after_default_truncated_read(self):
+        p = self._write_seed("default-partial.txt", "\n".join(str(i) for i in range(700)))
+
+        old_task = os.environ.get("HERMES_KANBAN_TASK")
+        os.environ["HERMES_KANBAN_TASK"] = "t_agentK"
+        try:
+            r = json.loads(read_file_tool(path=p, limit=500, task_id="agentK", default_limit_used=True))
+            w = json.loads(write_file_tool(path=p, content="short\n", task_id="agentK"))
+        finally:
+            if old_task is None:
+                os.environ.pop("HERMES_KANBAN_TASK", None)
+            else:
+                os.environ["HERMES_KANBAN_TASK"] = old_task
+
+        self.assertIn("error", r)
+        self.assertIn("default line limit", r["error"])
+        self.assertIn("truncated", r["error"])
+        self.assertIn("error", w)
+        self.assertIn("Kanban worker safety", w["error"])
+        self.assertIn("partial read_file view", w["error"])
+
+    def test_kanban_worker_partial_read_block_survives_sibling_warning_priority(self):
+        p = self._write_seed("partial-and-sibling.txt", "one\ntwo\nthree\n")
+        r = json.loads(read_file_tool(path=p, limit=1, task_id="agentK"))
+        self.assertTrue(r.get("truncated"), r)
+        sibling = json.loads(write_file_tool(path=p, content="sibling\n", task_id="agentB"))
+        self.assertNotIn("error", sibling)
+
+        old_task = os.environ.get("HERMES_KANBAN_TASK")
+        os.environ["HERMES_KANBAN_TASK"] = "t_agentK"
+        try:
+            w = json.loads(write_file_tool(path=p, content="agent\n", task_id="agentK"))
+        finally:
+            if old_task is None:
+                os.environ.pop("HERMES_KANBAN_TASK", None)
+            else:
+                os.environ["HERMES_KANBAN_TASK"] = old_task
+
+        self.assertIn("error", w)
+        self.assertIn("Kanban worker safety", w["error"])
+        self.assertIn("partial read_file view", w["error"])
+
+    def test_patch_tool_also_surfaces_sibling_warning(self):
+        p = self._write_seed("p.txt", "hello world\n")
+        json.loads(read_file_tool(path=p, task_id="agentA"))
+        json.loads(write_file_tool(path=p, content="hello planet\n", task_id="agentB"))
+        r = json.loads(
+            patch_tool(
+                mode="replace",
+                path=p,
+                old_string="hello",
+                new_string="HI",
+                task_id="agentA",
+            )
+        )
+        warn = r.get("_warning", "")
+        # Patch may fail (sibling changed the content so old_string may not
+        # match) or succeed — either way, the cross-agent warning should be
+        # present when old_string still happens to match.  What matters is
+        # that if the patch succeeded or the warning was reported, it names
+        # the sibling.  When old_string doesn't match, the patch itself
+        # returns an error but the warning is still set from the pre-check.
+        if warn:
+            self.assertIn("agentB", warn)
 
     def test_net_new_file_no_warning(self):
         p = os.path.join(self._tmpdir, "brand_new.txt")

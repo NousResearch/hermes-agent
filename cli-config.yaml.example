@@ -672,6 +672,19 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Tool-result budget (optional)
+# =============================================================================
+# Controls when a large tool result is spilled to disk (full output saved to
+# $HERMES_HOME/cache/spillover, preview + path kept in context). MCP tool
+# results (tools named mcp_*) spill at a tighter 50,000-char threshold than
+# the generic 100K default: MCP servers routinely return un-paginated 20-50K
+# payloads that bloat context and slow every subsequent turn. Nothing is
+# lost — the full result is on disk and readable with read_file.
+#
+# tool_budget:
+#   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
+
+# =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================
 # When prompt caching is active (Claude via OpenRouter or native Anthropic),

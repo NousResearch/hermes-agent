@@ -58,19 +58,19 @@ test.describe('batch clarify card', () => {
       await expect(page.getByText(entry.question)).toHaveCount(1)
     }
 
-    // Answer question 1: stage a choice, lock it with Continue.
+    // Answer both questions: stage picks locally (no server traffic yet).
+    const confirmButton = batchCard.locator('button[type="submit"]')
+    await expect(confirmButton).toContainText('Confirm and continue')
+    await expect(confirmButton).toBeDisabled()
+
     await batchCard.getByRole('button', { name: /Coffee/ }).click()
-    const continueButton = batchCard.locator('button[type="submit"]')
-    await expect(continueButton).toContainText('Continue')
-    await continueButton.click()
+    await expect(confirmButton).toBeDisabled()
 
-    // One locked, one left: the button relabels to Confirm and continue.
-    await expect(batchCard.locator('[data-clarify-batch-question][data-locked]')).toHaveCount(1)
-    await expect(continueButton).toContainText('Confirm and continue')
-
-    // Answer question 2 and confirm — the batch resolves and settles.
     await batchCard.getByRole('button', { name: /Morning/ }).click()
-    await continueButton.click()
+    await expect(confirmButton).toBeEnabled()
+
+    // ONE confirm submits the whole batch.
+    await confirmButton.click()
 
     // The settled card lists both questions with their locked answers.
     const settled = page.locator('[data-clarify-settled]')

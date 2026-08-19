@@ -533,65 +533,70 @@ describe('ClarifyTool batch card', () => {
     expect(screen.getByText('0 of 2 answered')).toBeTruthy()
   })
 
-  it('locks a picked choice via Continue, keyed by qid', async () => {
+  it('stages locally and keeps the single confirm disabled until all answered', async () => {
+    const request = renderLiveBatch()
+    const confirm = screen.getByRole('button', { name: /Confirm and continue/ })
+
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
+
+    // Staging a pick sends NOTHING to the server.
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+    expect(request).not.toHaveBeenCalled()
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    expect(screen.getByText('2 of 2 answered')).toBeTruthy()
+    expect(request).not.toHaveBeenCalled()
+    expect((confirm as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('confirm sends every per-question lock in order and completes the batch', async () => {
     const request = renderLiveBatch()
 
     fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('clarify.respond', {
-        answer: 'red',
-        question_id: 'q0',
-        request_id: 'request-batch'
-      })
+      expect(request).toHaveBeenCalledTimes(2)
     })
-
-    await waitFor(() => {
-      expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
+      answer: 'packet',
+      question_id: 'q1',
+      request_id: 'request-batch'
     })
   })
 
-  it('answers in any order: free-text question first', async () => {
+  it('a staged answer stays editable before confirm', async () => {
     const request = renderLiveBatch()
 
-    const nameBox = screen.getByPlaceholderText('Type your answer…')
-    fireEvent.change(nameBox, { target: { value: 'packet' } })
-    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
-
-    await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('clarify.respond', {
-        answer: 'packet',
-        question_id: 'q1',
-        request_id: 'request-batch'
-      })
-    })
-  })
-
-  it('relabels the button to Confirm and continue when one question remains', async () => {
-    renderLiveBatch({ q1: 'already locked' })
-
-    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Confirm and continue/ })).toBeTruthy()
-  })
-
-  it('re-staging a locked answer un-locks it and a re-lock overwrites', async () => {
-    const request = renderLiveBatch({ q0: 'red' })
-
-    // q0 arrived locked from replay. Picking blue un-locks it locally…
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
     fireEvent.click(screen.getByRole('button', { name: /blue/ }))
-    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
-
-    // …and Continue re-locks with the new answer.
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('clarify.respond', {
-        answer: 'blue',
-        question_id: 'q0',
-        request_id: 'request-batch'
-      })
+      expect(request).toHaveBeenCalledTimes(2)
     })
+    // The re-pick won: blue, not red.
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
+      answer: 'blue',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('pre-stages replayed locked answers from a reconnect', () => {
+    renderLiveBatch({ q0: 'red' })
+
+    // The replayed answer counts as staged: one question left to answer.
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
   })
 
   it('Skip cancels the whole batch without a question_id', async () => {

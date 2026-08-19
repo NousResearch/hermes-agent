@@ -906,11 +906,13 @@ function BatchQuestionBlock({
 
 const emptyStage = { choices: [] as string[], draft: '' }
 
-/** Live batch card (B lock-in): all questions at once, staging per question,
- * one footer button that locks the focused answer. Locked answers stay
- * editable (a re-lock overwrites server-side) until the final confirm — the
- * last unanswered question's lock IS the confirm, so the button relabels to
- * "Confirm and continue" when exactly one remains. */
+/** Live batch card: all questions at once, staged locally, ONE confirm.
+ * Picks and drafts stay in component state — nothing reaches the server
+ * until every question has a staged answer and the user presses the single
+ * "Confirm and continue" button, which sends the per-question locks
+ * back-to-back and completes the batch. Staged answers stay editable up to
+ * that moment. The per-question wire protocol is unchanged (the TUI/CLI
+ * still lock incrementally); this card just batches its locks at the end. */
 function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
@@ -922,17 +924,35 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
   const ready = Boolean(request?.requestId) && questions.length > 0
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
-  // Locked = accepted by the server (clarify.respond succeeded). Seeded from
-  // the reconnect replay so a reattached window shows its earlier locks.
-  const [locked, setLocked] = useState<Record<string, string>>(() => request?.lockedAnswers ?? {})
-  // The question the footer button acts on: last interacted-with, unlocked.
-  const [focusedQid, setFocusedQid] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
+  // Reconnect replay: answers the server already locked (an earlier window's
+  // partial progress) pre-stage their questions so the restored card shows
+  // them selected instead of blank.
   useEffect(() => {
-    if (request?.lockedAnswers) {
-      setLocked(current => ({ ...request.lockedAnswers, ...current }))
+    const lockedAnswers = request?.lockedAnswers
+
+    if (!lockedAnswers) {
+      return
     }
+
+    setStaged(current => {
+      const next = { ...current }
+
+      for (const question of questions) {
+        const answer = lockedAnswers[question.qid]
+
+        if (answer === undefined || next[question.qid]) {
+          continue
+        }
+
+        const asChoice = (question.choices ?? []).find(choice => bareChoice(choice) === answer)
+        next[question.qid] = asChoice ? { choices: [asChoice], draft: '' } : { choices: [], draft: answer }
+      }
+
+      return next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by the replay map only
   }, [request?.lockedAnswers])
 
   const stageFor = (qid: string) => staged[qid] ?? emptyStage
@@ -952,73 +972,43 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
     [staged]
   )
 
-  const unansweredCount = questions.filter(q => locked[q.qid] === undefined).length
+  const answeredCount = questions.filter(q => stagedAnswer(q) !== null).length
+  const allStaged = answeredCount === questions.length
 
-  // The button targets the focused question when it has something staged;
-  // otherwise the first unlocked question with a staged answer.
-  const target = useMemo(() => {
-    const focused = questions.find(q => q.qid === focusedQid)
+  const confirmAll = useCallback(async () => {
+    if (!request || !gateway) {
+      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
 
-    if (focused && stagedAnswer(focused) !== null) {
-      return focused
-    }
-
-    return questions.find(q => stagedAnswer(q) !== null) ?? null
-  }, [focusedQid, questions, stagedAnswer])
-
-  const lockAnswer = useCallback(
-    async (question: ClarifyQuestion, answer: string) => {
-      if (!request || !gateway) {
-        notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
-
-        return
-      }
-
-      setSubmitting(true)
-
-      try {
-        await gateway.request<{ ok?: boolean }>('clarify.respond', {
-          answer,
-          question_id: question.qid,
-          request_id: request.requestId
-        })
-        triggerHaptic('submit')
-        setLocked(current => ({ ...current, [question.qid]: answer }))
-        setStaged(current => ({ ...current, [question.qid]: emptyStage }))
-        setFocusedQid(null)
-
-        // Locking the last unanswered question completes the batch: the
-        // server resolves the blocked tool and tool.complete lands next
-        // (→ ClarifyToolBatchSettled). Drop the store entry now, mirroring
-        // the single-question card.
-        const remaining = questions.filter(q => q.qid !== question.qid && locked[q.qid] === undefined)
-
-        if (remaining.length === 0) {
-          clearClarifyRequest(request.requestId, request.sessionId)
-        }
-      } catch (error) {
-        notifyError(error, copy.sendFailed)
-      } finally {
-        setSubmitting(false)
-      }
-    },
-    [copy, gateway, locked, questions, request]
-  )
-
-  const submitTarget = useCallback(() => {
-    if (!target) {
       return
     }
 
-    const answer = stagedAnswer(target)
+    setSubmitting(true)
 
-    if (answer !== null) {
-      void lockAnswer(target, answer)
+    try {
+      // Sequential, not Promise.all: the LAST lock resolves the blocked tool
+      // server-side, so every earlier lock must already be accepted when it
+      // lands — a reordered burst could complete the batch with a missing
+      // answer.
+      for (const question of questions) {
+        const answer = stagedAnswer(question)
+
+        await gateway.request<{ ok?: boolean }>('clarify.respond', {
+          answer: answer ?? '',
+          question_id: question.qid,
+          request_id: request.requestId
+        })
+      }
+
+      triggerHaptic('submit')
+      // tool.complete lands next → ClarifyToolBatchSettled.
+      clearClarifyRequest(request.requestId, request.sessionId)
+    } catch (error) {
+      notifyError(error, copy.sendFailed)
+      setSubmitting(false)
     }
-  }, [lockAnswer, stagedAnswer, target])
+  }, [copy, gateway, questions, request, stagedAnswer])
 
   const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
-    setFocusedQid(question.qid)
     setStaged(current => {
       const stage = current[question.qid] ?? emptyStage
       const next = question.multiSelect
@@ -1029,33 +1019,10 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
 
       return { ...current, [question.qid]: { choices: next, draft: '' } }
     })
-    // A fresh pick un-locks the question for editing: the old answer stays on
-    // the server until the re-lock overwrites it.
-    setLocked(current => {
-      if (current[question.qid] === undefined) {
-        return current
-      }
-
-      const next = { ...current }
-      delete next[question.qid]
-
-      return next
-    })
   }, [])
 
   const draftFor = useCallback((question: ClarifyQuestion, value: string) => {
-    setFocusedQid(question.qid)
     setStaged(current => ({ ...current, [question.qid]: { choices: [], draft: value } }))
-    setLocked(current => {
-      if (current[question.qid] === undefined || !value.trim()) {
-        return current
-      }
-
-      const next = { ...current }
-      delete next[question.qid]
-
-      return next
-    })
   }, [])
 
   const cancelAll = useCallback(async () => {
@@ -1075,9 +1042,12 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
-      submitTarget()
+
+      if (allStaged) {
+        void confirmAll()
+      }
     },
-    [submitTarget]
+    [allStaged, confirmAll]
   )
 
   if (!ready) {
@@ -1087,9 +1057,6 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
       </ClarifyShell>
     )
   }
-
-  const answeredCount = questions.length - unansweredCount
-  const lastOne = unansweredCount === 1
 
   return (
     <form className="my-1.5 grid gap-4" data-clarify-batch={questions.length} onSubmit={handleSubmit}>
@@ -1104,7 +1071,7 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
           <BatchQuestionBlock
             disabled={submitting}
             key={question.qid}
-            locked={locked[question.qid] !== undefined}
+            locked={false}
             onDraft={value => draftFor(question, value)}
             onToggle={choice => toggleChoice(question, choice)}
             question={question}
@@ -1117,12 +1084,12 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
         <Button disabled={submitting} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
           {copy.skip}
         </Button>
-        <Button disabled={submitting || !target} size="xs" type="submit">
+        <Button disabled={submitting || !allStaged} size="xs" type="submit">
           {submitting ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (
             <>
-              {lastOne ? copy.confirmAndContinueLabel : copy.continueLabel}
+              {copy.confirmAndContinueLabel}
               <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
                 ⏎
               </span>

@@ -547,7 +547,7 @@ test('get-windows native install invokes node-pre-gyp directly from the package 
     assert.deepEqual(calls, [
       {
         command: process.execPath,
-        args: [installer, 'install', '--fallback-to-build'],
+        args: [fs.realpathSync(installer), 'install', '--fallback-to-build'],
         options: { cwd: srcRoot, stdio: 'inherit' }
       }
     ])

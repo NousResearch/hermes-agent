@@ -258,8 +258,11 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
     git("init", "-q")
     git("config", "user.email", "t@example.com")
     git("config", "user.name", "t")
-    (tmp_path / ".gitignore").write_text(repo_gitignore.read_text())
-    (tmp_path / "tracked.txt").write_text("x\n")
+    (tmp_path / ".gitignore").write_text(
+        repo_gitignore.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "tracked.txt").write_text("x\n", encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "init")
 

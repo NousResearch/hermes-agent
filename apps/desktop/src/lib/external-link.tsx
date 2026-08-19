@@ -280,6 +280,9 @@ export function ExternalLink({
 }: ExternalLinkProps) {
   const target = normalizeExternalUrl(href)
 
+  // No menu wiring here: the app context-menu coordinator resolves a
+  // right-click on any `a[href]` to the link menu (open in-app / open
+  // external / copy URL / copy resolved URL).
   return (
     <a
       className={cn('ref', className)}

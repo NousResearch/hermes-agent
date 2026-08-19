@@ -76,10 +76,10 @@ import {
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
+import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
-import { ShellContextMenu } from '../shell/shell-context-menu'
 
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { ContribWiring, WiredPane } from './wiring'
@@ -808,8 +808,8 @@ export function ContribController() {
       style={{ '--sidebar-width': '100%' } as CSSProperties}
     >
       <ContribWiring>
-        <ShellContextMenu>
-          <div
+        <AppContextMenu />
+        <div
             className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
             // Window-glass hook: this div and the sidebar-wrapper above it are
             // the app shell's two full-window opaque painters; the
@@ -880,7 +880,6 @@ export function ContribController() {
               per-turn readouts stop with it. */}
             {statusbarVisible && <WiredPane part="statusbar" />}
           </div>
-        </ShellContextMenu>
       </ContribWiring>
     </SidebarProvider>
   )

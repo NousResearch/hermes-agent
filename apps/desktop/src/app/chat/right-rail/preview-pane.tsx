@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
@@ -34,16 +35,42 @@ type PreviewWebview = HTMLElement & {
   canGoBack?: () => boolean
   canGoForward?: () => boolean
   closeDevTools?: () => void
+  copy?: () => void
+  cut?: () => void
   executeJavaScript?: (code: string) => Promise<unknown>
   getTitle?: () => string
   getURL?: () => string
+  getWebContentsId?: () => number
   goBack?: () => void
   goForward?: () => void
+  inspectElement?: (x: number, y: number) => void
   isDevToolsOpened?: () => boolean
   loadURL?: (url: string) => Promise<void>
   openDevTools?: () => void
+  paste?: () => void
   reload?: () => void
   reloadIgnoringCache?: () => void
+  replaceMisspelling?: (word: string) => void
+  selectAll?: () => void
+}
+
+/** The raw Chromium params riding the webview tag's `context-menu` event. */
+interface GuestContextMenuParams {
+  dictionarySuggestions?: string[]
+  editFlags?: {
+    canCopy?: boolean
+    canCut?: boolean
+    canPaste?: boolean
+    canSelectAll?: boolean
+  }
+  hasImageContents?: boolean
+  isEditable?: boolean
+  linkURL?: string
+  misspelledWord?: string
+  selectionText?: string
+  srcURL?: string
+  x: number
+  y: number
 }
 
 interface PreviewPaneProps {
@@ -723,7 +750,82 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     const onDevToolsOpened = () => setDevtoolsOpen(true)
     const onDevToolsClosed = () => setDevtoolsOpen(false)
 
+    // Right-clicks INSIDE the guest page. The tag surfaces Chromium's full
+    // context-menu params (link, image, editable, selection, spellcheck), so
+    // the app coordinator renders the same translated menu it shows
+    // everywhere else.
+    //
+    // Coordinates: params.x/y are WINDOW-relative device-independent pixels
+    // — the guest offset is already included, and CSS values are multiplied
+    // by the window zoom factor. Measured live (zoom 0.9): a click whose
+    // true window CSS point was (901, 272) arrived as params (811, 246) =
+    // (901*0.9, 272*0.9). Dividing by the zoom factor recovers CSS
+    // coordinates; adding the webview rect on top double-counted the offset
+    // and dropped the menu far right+below the click.
+    const onGuestContextMenu = (event: Event) => {
+      const detail = event as Event & { params?: GuestContextMenuParams }
+      const params = detail.params
+
+      if (!params) {
+        return
+      }
+
+      const zoom = window.hermesDesktop?.zoom?.factor?.() || 1
+      // Window CSS point of the click (the menu anchors here).
+      const windowX = params.x / zoom
+      const windowY = params.y / zoom
+      // Guest CSS point (inspectElement wants coordinates INSIDE the page):
+      // subtract the webview's own offset from the window point.
+      const rect = webview.getBoundingClientRect()
+      const guestX = Math.max(0, Math.round(windowX - rect.left))
+      const guestY = Math.max(0, Math.round(windowY - rect.top))
+
+      openGuestContextMenu(
+        windowX,
+        windowY,
+        {
+          dictionarySuggestions: Array.isArray(params.dictionarySuggestions) ? params.dictionarySuggestions : [],
+          // Chromium's availability verdict for the edit verbs. Absent only
+          // if a future Electron drops it — then everything stays enabled,
+          // which is the pre-editFlags behavior, not a lockout.
+          editFlags: {
+            canCopy: params.editFlags?.canCopy ?? true,
+            canCut: params.editFlags?.canCut ?? true,
+            canPaste: params.editFlags?.canPaste ?? true,
+            canSelectAll: params.editFlags?.canSelectAll ?? true
+          },
+          hasImageContents: Boolean(params.hasImageContents),
+          isEditable: Boolean(params.isEditable),
+          linkURL: params.linkURL || '',
+          misspelledWord: params.misspelledWord || '',
+          selectionText: params.selectionText || '',
+          srcURL: params.srcURL || ''
+        },
+        {
+          addToDictionary: (word: string) => {
+            const webContentsId = webview.getWebContentsId?.()
+
+            if (typeof webContentsId === 'number') {
+              void window.hermesDesktop?.contextMenuGuestAddWord?.({ webContentsId, word })
+            }
+          },
+          copyImage: () => void window.hermesDesktop?.contextMenuCopyImage?.(),
+          // The tag's edit commands act on the focused webContents, and the
+          // menu click just parked focus on the HOST body — measured live:
+          // selectAll() with host focus selected the address bar + chat
+          // instead of the page. Focus the webview first, every verb.
+          editCommand: (command: 'copy' | 'cut' | 'paste' | 'selectAll') => {
+            webview.focus()
+            webview[command]?.()
+          },
+          inspectElement: () => webview.inspectElement?.(guestX, guestY),
+          replaceMisspelling: (word: string) => webview.replaceMisspelling?.(word)
+        }
+      )
+    }
+
     webview.addEventListener('console-message', onConsole)
+    webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
     webview.addEventListener('did-fail-load', onFail)
@@ -736,6 +838,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     return () => {
       webview.removeEventListener('console-message', onConsole)
+      webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
       webview.removeEventListener('did-fail-load', onFail)

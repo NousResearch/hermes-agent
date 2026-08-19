@@ -721,6 +721,13 @@ Semantics:
 
 `.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
 
+No-agent scripts also receive two scheduler-owned environment variables:
+
+- `HERMES_CRON_JOB_ID` — the cron job ID.
+- `HERMES_CRON_OCCURRENCE_AT` — the scheduled occurrence timestamp captured from the due job's `next_run_at` before scheduler state advances. It is an occurrence/idempotency hint, **not** the script's wall-clock start time. Scripts must tolerate an empty value for execution paths where no scheduled occurrence is available (for example, some manual or legacy invocations).
+
+These `HERMES_CRON_*` values are reserved scheduler metadata. The scheduler applies them after the sanitized subprocess environment and interpreter-specific environment overlay, so they win if a child-process environment source contains the same key. They are scoped to the script subprocess and do not mutate the parent Hermes environment. Agent pre-run/wake-gate scripts do not receive this no-agent occurrence overlay.
+
 ### The agent sets these up for you
 
 The `cronjob` tool's schema exposes `no_agent` to Hermes directly, so you can describe a watchdog in chat and let the agent wire it up:

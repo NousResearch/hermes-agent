@@ -6189,7 +6189,10 @@ function CreateAgentDialog({ open, onClose, roster }) {
 
     host
       .connections()
-      .then(value => setConnections(Array.isArray(value?.connections) ? value.connections : []))
+      // host.connections() returns the registry ROWS on current SDKs, but the
+      // envelope object ({version, primary, connections: [...]}) on desktops
+      // that predate the SDK-side unwrap — accept both shapes.
+      .then(value => setConnections(Array.isArray(value) ? value : Array.isArray(value?.connections) ? value.connections : []))
       .catch(() => setConnections([]))
   }, [open, connections])
 

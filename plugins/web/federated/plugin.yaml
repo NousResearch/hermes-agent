@@ -1,0 +1,7 @@
+name: web-federated
+version: 1.0.0
+description: "Federated search — aggregate results from multiple search backends (Tavily, SearXNG, custom HTTP endpoints, etc.) with LLM-based relevance ranking. Configure sub-backends under web.federated.backends."
+author: Hermes Agent Contributors
+kind: backend
+provides_web_providers:
+  - federated

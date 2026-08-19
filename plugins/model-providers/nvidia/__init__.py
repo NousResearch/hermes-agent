@@ -1,6 +1,5 @@
 """NVIDIA NIM provider profile."""
 
-import copy
 from typing import Any
 
 from providers import register_provider
@@ -20,11 +19,25 @@ class NvidiaProviderProfile(ProviderProfile):
         if not needs_sanitize:
             return messages
 
-        sanitized = copy.deepcopy(messages)
-        for msg in sanitized:
-            if isinstance(msg, dict) and msg.get("role") == "tool":
-                msg.pop("name", None)
-                msg.pop("tool_name", None)
+        # Copy-on-write: shallow outer-list copy, then a shallow dict copy
+        # only for the role:"tool" messages that actually need a field
+        # dropped. Avoids recursively deep-copying every message's content
+        # (including large tool outputs and attachments) for a turn that
+        # only ever needs to touch two top-level keys on a handful of
+        # messages. Matches the pattern already used by the shared
+        # sanitizer in agent/transports/chat_completions.py and by
+        # QwenProfile.prepare_messages().
+        sanitized = list(messages)
+        for idx, msg in enumerate(messages):
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "tool"
+                and ("name" in msg or "tool_name" in msg)
+            ):
+                msg_copy = dict(msg)
+                msg_copy.pop("name", None)
+                msg_copy.pop("tool_name", None)
+                sanitized[idx] = msg_copy
         return sanitized
 
 

@@ -602,6 +602,11 @@ def effective_job_state(job: Dict[str, Any]) -> str:
     return stored or "scheduled"
 
 
+def is_terminal_job(job: Dict[str, Any]) -> bool:
+    """Return whether a job record is in a terminal scheduler state."""
+    return job.get("state") in {"completed", "error"}
+
+
 def _secure_dir(path: Path):
     """Set directory to owner-only access (0700). No-op on Windows."""
     try:
@@ -2229,6 +2234,16 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
 
+            if is_terminal_job(job) and (
+                updated.get("state") not in {"completed", "error"}
+                or updated.get("enabled") is True
+                or updated.get("next_run_at") is not None
+            ):
+                raise ValueError(
+                    f"Cannot activate terminal cron job '{job.get('name', job_id)}' "
+                    "through update_job; use cron resume --run-now or --at."
+                )
+
             # Re-check execution-mode invariants on the MERGED record when
             # any participating field changes, so create-time invariants
             # can't be violated through the update door (e.g. flipping
@@ -2312,6 +2327,16 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     )
                 updated["next_run_at"] = next_run
 
+            if is_terminal_job(job) and (
+                updated.get("state") not in {"completed", "error"}
+                or updated.get("enabled") is True
+                or updated.get("next_run_at") is not None
+            ):
+                raise ValueError(
+                    f"Cannot activate terminal cron job '{job.get('name', job_id)}' "
+                    "through update_job; use cron resume --run-now or --at."
+                )
+
             jobs[i] = updated
             save_jobs(jobs)
             return _normalize_job_record(jobs[i])
@@ -2364,6 +2389,14 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     job = resolve_job_ref(job_id)
     if not job:
         return None
+    if is_terminal_job(job):
+        state = job.get("state")
+        name = job.get("name", job_id)
+        raise ValueError(
+            f"Cannot run: job '{name}' is {state} (terminal). "
+            f"Create a new occurrence with 'hermes cron resume {name} "
+            "--run-now' or '--at <ISO-8601>'."
+        )
     return update_job(
         job["id"],
         {
@@ -2913,6 +2946,8 @@ def advance_next_runs(job_ids) -> int:
         for job in jobs:
             if job["id"] not in ids:
                 continue
+            if is_terminal_job(job):
+                continue
             kind = job.get("schedule", {}).get("kind")
             if kind not in {"cron", "interval"}:
                 continue
@@ -3012,6 +3047,8 @@ def _claim_job_for_fire_locked(
         for job in jobs:
             if job["id"] != job_id:
                 continue
+            if is_terminal_job(job):
+                return False
             # enabled + pause markers must both clear — a half-paused record
             # (enabled=true, state=paused/paused_at set) must not claim. An
             # explicit ``force`` (Trigger-now on a paused job) bypasses the
@@ -3310,6 +3347,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         # job this tick" so healthy siblings still run and their recovered
         # state still reaches save_jobs() below.
         try:
+            if is_terminal_job(job):
+                continue
             if not job.get("enabled", True):
                 continue
 

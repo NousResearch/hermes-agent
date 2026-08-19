@@ -64,7 +64,11 @@ test('blob shape strings round-trip through parse/build', () => {
 
 test('every silhouette has a trait position inside its frozen band', () => {
   const b = load()
-  const bands = { round: [0, 0.28], organic: [0.28, 0.58], boxy: [0.58, 0.72], nub: [0.72, 0.84], cloud: [0.84, 0.93], sun: [0.93, 1] }
+  const bands = {
+    round: [0, 0.22], organic: [0.22, 0.48], boxy: [0.48, 0.60], capsule: [0.60, 0.70],
+    nub: [0.70, 0.79], cloud: [0.79, 0.86], droplet: [0.86, 0.915], hexagon: [0.915, 0.95],
+    sun: [0.95, 0.98], triangle: [0.98, 1]
+  }
 
   for (const kind of b.BLOB_KINDS) {
     const v = b.BLOB_KIND_TRAIT[kind]

@@ -852,17 +852,21 @@ function defaultShapeFor(name) {
 //   'blobatar'                — the face follows the bot's NAME (renaming the
 //                               bot re-rolls the face, live in the dialog)
 //   'blobatar:<seed>'         — seed locked (the 🔒 lock / 🎲 randomize picks)
-//   'blobatar:<seed>:<kind>'  — plus one of the six silhouettes pinned
+//   'blobatar:<seed>:<kind>'  — plus one of the ten silhouettes pinned
 //   'blobatar::<kind>'        — silhouette pinned, seed still follows the name
 // Bot names are slugs (NAME_RE) and generated seeds are base36, so ':' never
 // appears inside a segment. Colors come from the library's own name-derived
 // palette (contrast-guaranteed) — the classic color swatches don't apply.
 
-const BLOB_KINDS = ['round', 'organic', 'boxy', 'nub', 'cloud', 'sun']
+const BLOB_KINDS = ['round', 'organic', 'boxy', 'capsule', 'nub', 'cloud', 'droplet', 'hexagon', 'sun', 'triangle']
 
 // Trait positions at the center of each silhouette band. Band thresholds are
-// frozen per blobatar major (0.28 / 0.58 / 0.72 / 0.84 / 0.93).
-const BLOB_KIND_TRAIT = { round: 0.14, organic: 0.43, boxy: 0.65, nub: 0.78, cloud: 0.885, sun: 0.965 }
+// frozen per blobatar major (gen2: 0.22 / 0.48 / 0.60 / 0.70 / 0.79 / 0.86 /
+// 0.915 / 0.95 / 0.98).
+const BLOB_KIND_TRAIT = {
+  round: 0.11, organic: 0.35, boxy: 0.54, capsule: 0.65, nub: 0.745,
+  cloud: 0.825, droplet: 0.8875, hexagon: 0.9325, sun: 0.965, triangle: 0.99
+}
 
 function isBlobShape(shape) {
   return shape === 'blobatar' || (typeof shape === 'string' && shape.startsWith('blobatar:'))

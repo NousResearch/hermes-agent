@@ -108,7 +108,9 @@ def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_pa
         server._cfg_path = None
         _clear_server_sessions()
         monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
-        monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+        monkeypatch.setattr(
+            server, "_completion_cwd", lambda params=None: str(tmp_path)
+        )
 
         # Opening a chat must NOT take a slot. Every tile paint and every
         # background reconnect-resume calls session.create, and an unprompted
@@ -134,7 +136,9 @@ def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_pa
         assert closed["result"]["closed"] is True
         assert active_session_registry_snapshot() == []
 
-        assert server._ensure_active_session_slot(other, server._sessions[other]) is None
+        assert (
+            server._ensure_active_session_slot(other, server._sessions[other]) is None
+        )
     finally:
         _clear_server_sessions()
         server._cfg_cache = None
@@ -200,13 +204,19 @@ def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
     try:
         pending = FakeDb("pending")
         monkeypatch.setattr(server, "_session_db", lambda _session: DbContext(pending))
-        result = server._methods["handoff.fail"]("r1", {"session_id": sid, "error": "timed out"})
+        result = server._methods["handoff.fail"](
+            "r1", {"session_id": sid, "error": "timed out"}
+        )
         assert result["result"] == {"failed": True, "state": "failed"}
         assert pending.failed_with == "timed out"
 
         completed = FakeDb("completed")
-        monkeypatch.setattr(server, "_session_db", lambda _session: DbContext(completed))
-        result = server._methods["handoff.fail"]("r2", {"session_id": sid, "error": "late timeout"})
+        monkeypatch.setattr(
+            server, "_session_db", lambda _session: DbContext(completed)
+        )
+        result = server._methods["handoff.fail"](
+            "r2", {"session_id": sid, "error": "late timeout"}
+        )
         assert result["result"] == {"failed": False, "state": "completed"}
         assert completed.failed_with is None
     finally:
@@ -256,7 +266,9 @@ def test_default_config_seeds_dashboard_process_isolation_keys():
     assert dashboard["compute_host_respawn_max"] == 3
 
 
-def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(monkeypatch):
+def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(
+    monkeypatch,
+):
     class FakeSupervisor:
         def __init__(self):
             self.frames = []
@@ -292,16 +304,16 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
             "persist_seed", parent_writes["persist_seed"] + 1
         ),
     )
-    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake_supervisor)
+    monkeypatch.setattr(
+        server, "_get_compute_host_supervisor", lambda _cfg=None: fake_supervisor
+    )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "submit",
-                "method": "prompt.submit",
-                "params": {"session_id": "iso-sid", "text": "hello"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "submit",
+            "method": "prompt.submit",
+            "params": {"session_id": "iso-sid", "text": "hello"},
+        })
         assert resp["result"] == {"status": "streaming", "turn_isolation": True}
         assert fake_supervisor.frames[0]["type"] == "turn.start"
         assert fake_supervisor.frames[0]["sid"] == "iso-sid"
@@ -311,14 +323,12 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         assert parent_writes == {"ensure_session": 0, "persist_seed": 0}
         assert server._sessions["iso-sid"]["running"] is True
 
-        fake_supervisor.callback(
-            {
-                "type": "turn.end",
-                "sid": "iso-sid",
-                "request_id": "submit",
-                "history_version": 1,
-            }
-        )
+        fake_supervisor.callback({
+            "type": "turn.end",
+            "sid": "iso-sid",
+            "request_id": "submit",
+            "history_version": 1,
+        })
         assert server._sessions["iso-sid"]["running"] is False
         assert server._sessions["iso-sid"]["history_version"] == 1
     finally:
@@ -331,7 +341,9 @@ def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch)
             session["attached_images"].append("/tmp/c.png")
 
     session = _session(attached_images=[])
-    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor())
+    monkeypatch.setattr(
+        server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor()
+    )
 
     response = server._submit_prompt_to_compute_host(
         "r1", "sid", session, "B", image_paths=["/tmp/b.png"]
@@ -345,14 +357,12 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     class _BrokenSupervisor:
         def submit_turn(self, frame, *, on_complete=None):
             if on_complete is not None:
-                on_complete(
-                    {
-                        "type": "turn.error",
-                        "request_id": frame["request_id"],
-                        "reason": "send_failed",
-                        "message": "broken pipe",
-                    }
-                )
+                on_complete({
+                    "type": "turn.error",
+                    "request_id": frame["request_id"],
+                    "reason": "send_failed",
+                    "message": "broken pipe",
+                })
             raise BrokenPipeError("broken pipe")
 
     class _ImmediateThread:
@@ -366,29 +376,37 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     session = _session(agent=None, agent_ready=threading.Event())
     server._sessions["iso-fallback"] = session
     inline_calls = []
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
-    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _BrokenSupervisor())
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}}
+    )
+    monkeypatch.setattr(
+        server, "_get_compute_host_supervisor", lambda _cfg=None: _BrokenSupervisor()
+    )
     monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
     monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: None)
     monkeypatch.setattr(server, "_wait_agent", lambda _session, _rid: None)
     # The deferred inline-fallback thread now waits via the patient variant.
-    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda _session, _rid, _sid: None)
+    monkeypatch.setattr(
+        server, "_wait_agent_for_prompt", lambda _session, _rid, _sid: None
+    )
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda rid, sid, _session, text, **_kwargs: inline_calls.append((rid, sid, text)),
+        lambda rid, sid, _session, text, **_kwargs: inline_calls.append((
+            rid,
+            sid,
+            text,
+        )),
     )
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "fallback-turn",
-                "method": "prompt.submit",
-                "params": {"session_id": "iso-fallback", "text": "hello"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "fallback-turn",
+            "method": "prompt.submit",
+            "params": {"session_id": "iso-fallback", "text": "hello"},
+        })
     finally:
         server._sessions.pop("iso-fallback", None)
 
@@ -417,7 +435,11 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
     )
     server._sessions["iso-sid"] = session
     emitted = []
-    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)),
+    )
 
     try:
         server._on_compute_host_turn_done(
@@ -484,22 +506,34 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
             }
 
     fake = _FakeSupervisor()
-    session = _session(agent=None, agent_ready=threading.Event(), _compute_host_active=True)
+    session = _session(
+        agent=None, agent_ready=threading.Event(), _compute_host_active=True
+    )
     server._sessions["sid"] = session
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}}
+    )
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake)
     monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
-    monkeypatch.setattr(server, "_compress_session_history", lambda *a, **k: (_ for _ in ()).throw(AssertionError("parent compressed")))
-    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: (_ for _ in ()).throw(AssertionError("parent identity guard ran")))
+    monkeypatch.setattr(
+        server,
+        "_compress_session_history",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("parent compressed")),
+    )
+    monkeypatch.setattr(
+        server,
+        "_sync_session_key_after_compress",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("parent identity guard ran")
+        ),
+    )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "slash.exec",
-                "params": {"command": "compress focus", "session_id": "sid"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "slash.exec",
+            "params": {"command": "compress focus", "session_id": "sid"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -535,7 +569,9 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
         def clear_interrupt(self):
             return None
 
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             if stream_callback is not None:
                 stream_callback("hi")
             return {
@@ -546,12 +582,18 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
                 ],
             }
 
-    fixed_info = {"model": "gold-model", "provider": "gold-provider", "usage": {"total": 15}}
+    fixed_info = {
+        "model": "gold-model",
+        "provider": "gold-provider",
+        "usage": {"total": 15},
+    }
     usage = server._get_usage(_Agent())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
-    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: dict(fixed_info))
+    monkeypatch.setattr(
+        server, "_session_info", lambda _agent, _session=None: dict(fixed_info)
+    )
     monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
     monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
     fake_title = types.ModuleType("agent.title_generator")
@@ -560,15 +602,24 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
 
     def run_flag_off():
         events = []
-        monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.append((event, sid, payload)))
-        monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": False}})
+        monkeypatch.setattr(
+            server,
+            "_emit",
+            lambda event, sid, payload=None: events.append((event, sid, payload)),
+        )
+        monkeypatch.setattr(
+            server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": False}}
+        )
         server._sessions["sid"] = _session(
-            agent=_Agent(), model_override={"model": "gold-model", "provider": "gold-provider"}
+            agent=_Agent(),
+            model_override={"model": "gold-model", "provider": "gold-provider"},
         )
         try:
-            response = server.handle_request(
-                {"id": "turn-1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
-            )
+            response = server.handle_request({
+                "id": "turn-1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            })
             assert response["result"]["status"] == "streaming"
             return events
         finally:
@@ -576,32 +627,42 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
 
     def run_flag_on():
         events = []
-        monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.append((event, sid, payload)))
-        monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+        monkeypatch.setattr(
+            server,
+            "_emit",
+            lambda event, sid, payload=None: events.append((event, sid, payload)),
+        )
+        monkeypatch.setattr(
+            server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}}
+        )
 
         class _FakeSupervisor:
             def submit_turn(self, frame, *, on_complete=None):
                 sid = frame["sid"]
                 server._emit("message.start", sid)
                 server._emit("message.delta", sid, {"text": "hi"})
-                server._emit("message.complete", sid, {"text": "hi", "usage": usage, "status": "complete"})
+                server._emit(
+                    "message.complete",
+                    sid,
+                    {"text": "hi", "usage": usage, "status": "complete"},
+                )
                 server._emit("session.info", sid, dict(fixed_info))
                 if on_complete is not None:
-                    on_complete(
-                        {
-                            "type": "turn.end",
-                            "sid": sid,
-                            "request_id": frame["request_id"],
-                            "session_key": "session-key",
-                            "history_version": 1,
-                            "message_count": 2,
-                            "session_info": dict(fixed_info),
-                            "session_info_emitted": True,
-                        }
-                    )
+                    on_complete({
+                        "type": "turn.end",
+                        "sid": sid,
+                        "request_id": frame["request_id"],
+                        "session_key": "session-key",
+                        "history_version": 1,
+                        "message_count": 2,
+                        "session_info": dict(fixed_info),
+                        "session_info_emitted": True,
+                    })
                 return frame["request_id"]
 
-        monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _FakeSupervisor())
+        monkeypatch.setattr(
+            server, "_get_compute_host_supervisor", lambda _cfg=None: _FakeSupervisor()
+        )
         session = _session(
             agent=None,
             agent_ready=threading.Event(),
@@ -611,9 +672,11 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
         session["agent"] = None
         server._sessions["sid"] = session
         try:
-            response = server.handle_request(
-                {"id": "turn-1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
-            )
+            response = server.handle_request({
+                "id": "turn-1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            })
             assert response["result"]["status"] == "streaming"
             return events
         finally:
@@ -662,9 +725,7 @@ def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
     profile_home.mkdir(parents=True)
 
     (profile_home / "config.yaml").write_text(
-        "mcp_servers:\n"
-        "  bluesky_sheepyr:\n"
-        "    command: test-command\n",
+        "mcp_servers:\n  bluesky_sheepyr:\n    command: test-command\n",
         encoding="utf-8",
     )
 
@@ -717,8 +778,7 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
     monkeypatch.setattr(
         server,
         "_make_agent",
-        lambda *args, **kwargs: built.set()
-        or type("Agent", (), {"model": "test"})(),
+        lambda *args, **kwargs: built.set() or type("Agent", (), {"model": "test"})(),
     )
     monkeypatch.setattr(
         "tui_gateway.entry.ensure_mcp_discovery_started",
@@ -768,9 +828,7 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
 
     profile_home = tmp_path / "profiles" / "grace"
     profile_home.mkdir(parents=True)
-    (profile_home / ".env").write_text(
-        "PROXMOX_TOKEN=grace-secret\n", encoding="utf-8"
-    )
+    (profile_home / ".env").write_text("PROXMOX_TOKEN=grace-secret\n", encoding="utf-8")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default"))
 
@@ -784,9 +842,7 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
         return type("Agent", (), {"model": "test"})()
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
-    monkeypatch.setattr(
-        "tui_gateway.entry.ensure_mcp_discovery_started", lambda: None
-    )
+    monkeypatch.setattr("tui_gateway.entry.ensure_mcp_discovery_started", lambda: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
@@ -868,7 +924,9 @@ def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_pa
     stale.mkdir()
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}}
+    )
     monkeypatch.setattr(server, "_profile_home", lambda _name: None)
 
     assert server._completion_cwd({}) == str(configured)
@@ -884,7 +942,9 @@ def test_default_session_cwd_prefers_launch_config(monkeypatch, tmp_path):
     stale.mkdir()
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}}
+    )
 
     assert server._default_session_cwd() == str(configured)
 
@@ -1043,11 +1103,14 @@ def test_write_json_drops_detached_ws_frames(monkeypatch):
     monkeypatch.setattr(server, "_real_stdout", out)
     server._sessions["detached-sid"] = {"transport": server._detached_ws_transport}
     try:
-        assert server.write_json({
-            "jsonrpc": "2.0",
-            "method": "event",
-            "params": {"session_id": "detached-sid", "type": "message.delta"},
-        }) is False
+        assert (
+            server.write_json({
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {"session_id": "detached-sid", "type": "message.delta"},
+            })
+            is False
+        )
         assert out.parts == []
     finally:
         server._sessions.pop("detached-sid", None)
@@ -1060,7 +1123,9 @@ def test_usage_ticker_emits_wrapped_usage_payload(monkeypatch):
     # …) silently drops every live tick on the client side.
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
-        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+        server,
+        "_emit",
+        lambda event_type, sid, payload: events.append((event_type, sid, payload)),
     )
     snapshot = {"input": 1200, "total": 1280}
     monkeypatch.setattr(server, "_get_usage", lambda agent: dict(snapshot))
@@ -1237,13 +1302,11 @@ def test_run_prompt_submit_never_ticks_after_message_complete(monkeypatch):
 
     server._sessions["sid"] = _session(agent=_Agent())
     try:
-        server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "hello"},
-            }
-        )
+        server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -1346,13 +1409,11 @@ def test_run_prompt_submit_joins_ticker_without_timeout(monkeypatch):
 
     server._sessions["sid"] = _session(agent=_Agent())
     try:
-        server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "hello"},
-            }
-        )
+        server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -1409,7 +1470,9 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
 
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
-        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+        server,
+        "_emit",
+        lambda event_type, sid, payload: events.append((event_type, sid, payload)),
     )
     monkeypatch.setitem(
         server._sessions,
@@ -1418,7 +1481,9 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     )
 
     server._on_tool_start("redaction-test", "tool-1", "terminal", {"command": "pwd"})
-    server._on_tool_complete("redaction-test", "tool-1", "terminal", {"command": "pwd"}, "done")
+    server._on_tool_complete(
+        "redaction-test", "tool-1", "terminal", {"command": "pwd"}, "done"
+    )
 
     assert events[0][0] == "tool.start"
     assert events[1][0] == "tool.complete"
@@ -1429,7 +1494,9 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
 def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
-        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+        server,
+        "_emit",
+        lambda event_type, sid, payload: events.append((event_type, sid, payload)),
     )
     monkeypatch.setitem(
         server._sessions,
@@ -1449,24 +1516,28 @@ def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypa
         },
     )
 
-    assert events == [(
-        "tool.output_risk",
-        "risk-test",
-        {
-            "tool_id": "tool-1",
-            "name": "web_extract",
-            "risk": "high",
-            "findings": ["prompt_injection"],
-            "redacted": False,
-        },
-    )]
+    assert events == [
+        (
+            "tool.output_risk",
+            "risk-test",
+            {
+                "tool_id": "tool-1",
+                "name": "web_extract",
+                "risk": "high",
+                "findings": ["prompt_injection"],
+                "redacted": False,
+            },
+        )
+    ]
     assert "result" not in events[0][2]
 
 
 def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
-        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+        server,
+        "_emit",
+        lambda event_type, sid, payload: events.append((event_type, sid, payload)),
     )
     monkeypatch.setitem(
         server._sessions,
@@ -1478,7 +1549,9 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
     result = '{"question":"Pick one","choices_offered":["A","B"],"user_response":"A"}'
 
     server._on_tool_start("clarify-off-test", "tool-clarify", "clarify", args)
-    server._on_tool_complete("clarify-off-test", "tool-clarify", "clarify", args, result)
+    server._on_tool_complete(
+        "clarify-off-test", "tool-clarify", "clarify", args, result
+    )
 
     assert [event[0] for event in events] == ["tool.start", "tool.complete"]
     assert events[0][2]["name"] == "clarify"
@@ -1486,10 +1559,14 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
     assert events[1][2]["result"]["user_response"] == "A"
 
 
-def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(monkeypatch):
+def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(
+    monkeypatch,
+):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
-        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+        server,
+        "_emit",
+        lambda event_type, sid, payload: events.append((event_type, sid, payload)),
     )
     monkeypatch.setitem(
         server._sessions,
@@ -1498,7 +1575,9 @@ def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(
     )
 
     server._on_tool_start("terminal-off-test", "tool-1", "terminal", {"command": "pwd"})
-    server._on_tool_complete("terminal-off-test", "tool-1", "terminal", {"command": "pwd"}, "done")
+    server._on_tool_complete(
+        "terminal-off-test", "tool-1", "terminal", {"command": "pwd"}, "done"
+    )
 
     assert events == []
 
@@ -1568,9 +1647,11 @@ def test_config_set_battery_toggles_and_persists(monkeypatch):
         server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
     )
 
-    resp = server.dispatch(
-        {"id": "c1", "method": "config.set", "params": {"key": "battery", "value": ""}}
-    )
+    resp = server.dispatch({
+        "id": "c1",
+        "method": "config.set",
+        "params": {"key": "battery", "value": ""},
+    })
 
     assert resp["result"] == {"key": "battery", "value": "on"}
     assert writes == {"display.battery": True}
@@ -1583,13 +1664,11 @@ def test_config_set_battery_explicit_off(monkeypatch):
         server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
     )
 
-    resp = server.dispatch(
-        {
-            "id": "c2",
-            "method": "config.set",
-            "params": {"key": "battery", "value": "off"},
-        }
-    )
+    resp = server.dispatch({
+        "id": "c2",
+        "method": "config.set",
+        "params": {"key": "battery", "value": "off"},
+    })
 
     assert resp["result"] == {"key": "battery", "value": "off"}
     assert writes == {"display.battery": False}
@@ -1615,12 +1694,16 @@ def test_voice_toggle_returns_configured_record_key(monkeypatch):
     # review on #19835).
     monkeypatch.setenv("HERMES_VOICE", "0")
 
-    on_resp = _dispatch_sync(
-        {"id": "voice-on", "method": "voice.toggle", "params": {"action": "on"}}
-    )
-    status_resp = _dispatch_sync(
-        {"id": "voice-status", "method": "voice.toggle", "params": {"action": "status"}}
-    )
+    on_resp = _dispatch_sync({
+        "id": "voice-on",
+        "method": "voice.toggle",
+        "params": {"action": "on"},
+    })
+    status_resp = _dispatch_sync({
+        "id": "voice-status",
+        "method": "voice.toggle",
+        "params": {"action": "status"},
+    })
 
     assert on_resp["result"]["record_key"] == "ctrl+o"
     assert status_resp["result"]["record_key"] == "ctrl+o"
@@ -1641,9 +1724,11 @@ def test_voice_toggle_on_carries_stop_hint(monkeypatch):
     )
     monkeypatch.setenv("HERMES_VOICE", "0")
 
-    on_resp = _dispatch_sync(
-        {"id": "voice-on", "method": "voice.toggle", "params": {"action": "on"}}
-    )
+    on_resp = _dispatch_sync({
+        "id": "voice-on",
+        "method": "voice.toggle",
+        "params": {"action": "on"},
+    })
     assert on_resp["result"]["stop_hint"] == 'Say "halt" to end the voice chat.'
 
     # Disabled stop phrases → empty hint, clients show nothing.
@@ -1655,15 +1740,19 @@ def test_voice_toggle_on_carries_stop_hint(monkeypatch):
             voice_stop_hint=lambda: "",
         ),
     )
-    on_resp = _dispatch_sync(
-        {"id": "voice-on2", "method": "voice.toggle", "params": {"action": "on"}}
-    )
+    on_resp = _dispatch_sync({
+        "id": "voice-on2",
+        "method": "voice.toggle",
+        "params": {"action": "on"},
+    })
     assert on_resp["result"]["stop_hint"] == ""
 
     # off carries no hint text (mode is ending).
-    off_resp = _dispatch_sync(
-        {"id": "voice-off", "method": "voice.toggle", "params": {"action": "off"}}
-    )
+    off_resp = _dispatch_sync({
+        "id": "voice-off",
+        "method": "voice.toggle",
+        "params": {"action": "off"},
+    })
     assert off_resp["result"]["stop_hint"] == ""
 
 
@@ -1687,17 +1776,15 @@ def test_voice_toggle_handles_non_dict_voice_cfg(monkeypatch):
     for bad in (True, "cmd+b", None, 42, ["ctrl+b"]):
         monkeypatch.setattr(server, "_load_cfg", lambda b=bad: {"voice": b})
 
-        status_resp = _dispatch_sync(
-            {
-                "id": "voice-status",
-                "method": "voice.toggle",
-                "params": {"action": "status"},
-            }
-        )
+        status_resp = _dispatch_sync({
+            "id": "voice-status",
+            "method": "voice.toggle",
+            "params": {"action": "status"},
+        })
 
-        assert (
-            status_resp["result"]["record_key"] == "ctrl+b"
-        ), f"voice.record_key fell back to default for voice={bad!r}"
+        assert status_resp["result"]["record_key"] == "ctrl+b", (
+            f"voice.record_key fell back to default for voice={bad!r}"
+        )
 
     # Round-4 follow-up: the YAML root itself may be a non-dict. A
     # hand-edit that collapses config.yaml to a scalar / list would
@@ -1706,17 +1793,15 @@ def test_voice_toggle_handles_non_dict_voice_cfg(monkeypatch):
     for bad_root in (True, None, [], "ctrl+b", 42):
         monkeypatch.setattr(server, "_load_cfg", lambda r=bad_root: r)
 
-        status_resp = _dispatch_sync(
-            {
-                "id": "voice-status-root",
-                "method": "voice.toggle",
-                "params": {"action": "status"},
-            }
-        )
+        status_resp = _dispatch_sync({
+            "id": "voice-status-root",
+            "method": "voice.toggle",
+            "params": {"action": "status"},
+        })
 
-        assert (
-            status_resp["result"]["record_key"] == "ctrl+b"
-        ), f"voice.record_key fell back to default for root={bad_root!r}"
+        assert status_resp["result"]["record_key"] == "ctrl+b", (
+            f"voice.record_key fell back to default for root={bad_root!r}"
+        )
 
 
 def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
@@ -1747,22 +1832,19 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         captured.clear()
         monkeypatch.setattr(server, "_load_cfg", lambda b=bad: {"voice": b})
 
-        resp = _dispatch_sync(
-            {
-                "id": "voice-record",
-                "method": "voice.record",
-                "params": {"action": "start"},
-            }
-        )
+        resp = _dispatch_sync({
+            "id": "voice-record",
+            "method": "voice.record",
+            "params": {"action": "start"},
+        })
 
-        assert (
-            "result" in resp
-        ), f"voice.record raised for voice={bad!r}: {resp.get('error')}"
+        assert "result" in resp, (
+            f"voice.record raised for voice={bad!r}: {resp.get('error')}"
+        )
         assert resp["result"]["status"] == "recording"
         assert captured["silence_threshold"] == 200
         assert captured["silence_duration"] == 3.0
         assert captured["auto_restart"] is False
-
 
     # Round-12 Copilot review regression on #19835: ``bool`` is a subclass
     # of ``int``, so the naive ``isinstance(threshold, (int, float))``
@@ -1776,21 +1858,19 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         captured.clear()
         monkeypatch.setattr(server, "_load_cfg", lambda c=bad_bool_cfg: {"voice": c})
 
-        resp = _dispatch_sync(
-            {
-                "id": "voice-record-bool",
-                "method": "voice.record",
-                "params": {"action": "start"},
-            }
-        )
+        resp = _dispatch_sync({
+            "id": "voice-record-bool",
+            "method": "voice.record",
+            "params": {"action": "start"},
+        })
 
         assert "result" in resp, f"voice.record raised for bool cfg={bad_bool_cfg!r}"
-        assert (
-            captured["silence_threshold"] == 200
-        ), f"bool silence_threshold leaked through for {bad_bool_cfg!r}"
-        assert (
-            captured["silence_duration"] == 3.0
-        ), f"bool silence_duration leaked through for {bad_bool_cfg!r}"
+        assert captured["silence_threshold"] == 200, (
+            f"bool silence_threshold leaked through for {bad_bool_cfg!r}"
+        )
+        assert captured["silence_duration"] == 3.0, (
+            f"bool silence_duration leaked through for {bad_bool_cfg!r}"
+        )
         assert captured["auto_restart"] is False
 
 
@@ -1802,7 +1882,9 @@ def test_prompt_submit_typed_stop_phrase_ends_voice_chat(monkeypatch):
     calls = {"stop_continuous": 0}
     emitted = []
     monkeypatch.setattr(
-        server, "_emit", lambda event, sid, payload=None: emitted.append((event, payload))
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, payload)),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -1824,13 +1906,11 @@ def test_prompt_submit_typed_stop_phrase_ends_voice_chat(monkeypatch):
     monkeypatch.setenv("HERMES_VOICE", "1")
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
 
-    resp = server.dispatch(
-        {
-            "id": "typed-stop",
-            "method": "prompt.submit",
-            "params": {"session_id": "any-sid", "text": "Stop."},
-        }
-    )
+    resp = server.dispatch({
+        "id": "typed-stop",
+        "method": "prompt.submit",
+        "params": {"session_id": "any-sid", "text": "Stop."},
+    })
 
     assert resp["result"] == {"voice_stopped": True}
     assert os.environ["HERMES_VOICE"] == "0"
@@ -1853,13 +1933,11 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
     )
     monkeypatch.setenv("HERMES_VOICE", "0")
 
-    resp = server.dispatch(
-        {
-            "id": "typed-stop-off",
-            "method": "prompt.submit",
-            "params": {"session_id": "missing-sid", "text": "stop"},
-        }
-    )
+    resp = server.dispatch({
+        "id": "typed-stop-off",
+        "method": "prompt.submit",
+        "params": {"session_id": "missing-sid", "text": "stop"},
+    })
 
     # The submit proceeds into normal handling (here: unknown session error),
     # NOT the voice_stopped consumption path.
@@ -1867,7 +1945,7 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
 
 
 def test_prompt_submit_longer_text_not_consumed_in_voice_mode(monkeypatch):
-    """"stop the build" while voice is on must reach the agent path."""
+    """ "stop the build" while voice is on must reach the agent path."""
     monkeypatch.setitem(
         sys.modules,
         "tools.voice_mode",
@@ -1877,13 +1955,11 @@ def test_prompt_submit_longer_text_not_consumed_in_voice_mode(monkeypatch):
     )
     monkeypatch.setenv("HERMES_VOICE", "1")
 
-    resp = server.dispatch(
-        {
-            "id": "typed-long",
-            "method": "prompt.submit",
-            "params": {"session_id": "missing-sid", "text": "stop the build"},
-        }
-    )
+    resp = server.dispatch({
+        "id": "typed-long",
+        "method": "prompt.submit",
+        "params": {"session_id": "missing-sid", "text": "stop the build"},
+    })
 
     assert resp.get("result") != {"voice_stopped": True}
 
@@ -1926,22 +2002,32 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
         voice_callbacks.update(callbacks)
         return True
 
-    monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: {
-        "enabled": True,
-        "phrase": "hey hermes",
-        "surface": "auto",
-        "start_new_session": True,
-    })
-    monkeypatch.setattr(wake_word, "check_wake_word_requirements", lambda _cfg: {
-        "available": True,
-        "phrase": "hey hermes",
-        "provider": "test",
-        "hint": "",
-    })
+    monkeypatch.setattr(
+        wake_word,
+        "load_wake_word_config",
+        lambda: {
+            "enabled": True,
+            "phrase": "hey hermes",
+            "surface": "auto",
+            "start_new_session": True,
+        },
+    )
+    monkeypatch.setattr(
+        wake_word,
+        "check_wake_word_requirements",
+        lambda _cfg: {
+            "available": True,
+            "phrase": "hey hermes",
+            "provider": "test",
+            "hint": "",
+        },
+    )
     monkeypatch.setattr(wake_word, "start_listening", start_listening)
     monkeypatch.setattr(wake_word, "pause_listening", pause_listening)
     monkeypatch.setattr(wake_word, "stop_listening", stop_listening)
-    monkeypatch.setattr(wake_word, "owns_listener", lambda owner: state["owner"] is owner)
+    monkeypatch.setattr(
+        wake_word, "owns_listener", lambda owner: state["owner"] is owner
+    )
     monkeypatch.setattr(
         wake_word,
         "is_listening",
@@ -1968,33 +2054,48 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
     monkeypatch.setattr(
         server,
         "_emit",
-        lambda event, sid, payload: emitted.append(
-            (event, sid, payload, server.current_transport())
-        ),
+        lambda event, sid, payload: emitted.append((
+            event,
+            sid,
+            payload,
+            server.current_transport(),
+        )),
     )
     server._wake_owner_transport = None
     server._wake_owner_surface = ""
     try:
-        started = _dispatch_sync({
-            "id": "wake-1",
-            "method": "wake.start",
-            "params": {"surface": "gui", "session_id": "first-session"},
-        }, transport=first)
-        denied = _dispatch_sync({
-            "id": "wake-2",
-            "method": "wake.start",
-            "params": {"surface": "tui", "session_id": "second-session"},
-        }, transport=second)
-        denied_stop = server.dispatch({
-            "id": "wake-stop-2",
-            "method": "wake.stop",
-            "params": {},
-        }, transport=second)
-        denied_voice_stop = _dispatch_sync({
-            "id": "voice-stop-2",
-            "method": "voice.record",
-            "params": {"action": "stop"},
-        }, transport=second)
+        started = _dispatch_sync(
+            {
+                "id": "wake-1",
+                "method": "wake.start",
+                "params": {"surface": "gui", "session_id": "first-session"},
+            },
+            transport=first,
+        )
+        denied = _dispatch_sync(
+            {
+                "id": "wake-2",
+                "method": "wake.start",
+                "params": {"surface": "tui", "session_id": "second-session"},
+            },
+            transport=second,
+        )
+        denied_stop = server.dispatch(
+            {
+                "id": "wake-stop-2",
+                "method": "wake.stop",
+                "params": {},
+            },
+            transport=second,
+        )
+        denied_voice_stop = _dispatch_sync(
+            {
+                "id": "voice-stop-2",
+                "method": "voice.record",
+                "params": {"action": "stop"},
+            },
+            transport=second,
+        )
 
         assert started["result"]["started"] is True
         assert denied["result"] == {
@@ -2013,39 +2114,50 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
         }
 
         state["callback"]()
-        assert emitted == [(
-            "wake.detected",
-            "first-session",
-            {"phrase": "hey hermes", "profile": None, "start_new_session": True},
-            first,
-        )]
+        assert emitted == [
+            (
+                "wake.detected",
+                "first-session",
+                {"phrase": "hey hermes", "profile": None, "start_new_session": True},
+                first,
+            )
+        ]
         assert state["paused"] is True
 
-        voice_started = _dispatch_sync({
-            "id": "voice-start-1",
-            "method": "voice.record",
-            "params": {"action": "start", "session_id": "first-session"},
-        }, transport=first)
+        voice_started = _dispatch_sync(
+            {
+                "id": "voice-start-1",
+                "method": "voice.record",
+                "params": {"action": "start", "session_id": "first-session"},
+            },
+            transport=first,
+        )
         assert voice_started["result"]["status"] == "recording"
         voice_callbacks["on_status"]("idle")
         assert state["paused"] is False
 
-        stopped = server.dispatch({
-            "id": "wake-stop-1",
-            "method": "wake.stop",
-            "params": {},
-        }, transport=first)
+        stopped = server.dispatch(
+            {
+                "id": "wake-stop-1",
+                "method": "wake.stop",
+                "params": {},
+            },
+            transport=first,
+        )
         assert stopped["result"] == {
             "stopped": True,
             "reason": None,
             "disabled_persisted": False,
         }
 
-        reclaimed = _dispatch_sync({
-            "id": "wake-reclaim-2",
-            "method": "wake.start",
-            "params": {"surface": "tui", "session_id": "second-session"},
-        }, transport=second)
+        reclaimed = _dispatch_sync(
+            {
+                "id": "wake-reclaim-2",
+                "method": "wake.start",
+                "params": {"surface": "tui", "session_id": "second-session"},
+            },
+            transport=second,
+        )
         assert reclaimed["result"]["started"] is True
         assert state["owner"] is second
 
@@ -2057,11 +2169,14 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
             second,
         )
 
-        stopped_again = server.dispatch({
-            "id": "wake-stop-2-after-reclaim",
-            "method": "wake.stop",
-            "params": {},
-        }, transport=second)
+        stopped_again = server.dispatch(
+            {
+                "id": "wake-stop-2-after-reclaim",
+                "method": "wake.stop",
+                "params": {},
+            },
+            transport=second,
+        )
         assert stopped_again["result"] == {
             "stopped": True,
             "reason": None,
@@ -2076,8 +2191,12 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
     """The ear toggle / /wake on|off write wake_word.enabled; auto-arm never does."""
     from tools import wake_word
 
-    config = {"enabled": False, "phrase": "hey hermes", "surface": "auto",
-              "start_new_session": True}
+    config = {
+        "enabled": False,
+        "phrase": "hey hermes",
+        "surface": "auto",
+        "start_new_session": True,
+    }
     persisted = []
 
     def fake_persist(enabled):
@@ -2087,65 +2206,85 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
 
     monkeypatch.setattr(server, "_persist_wake_enabled", fake_persist)
     monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: dict(config))
-    monkeypatch.setattr(wake_word, "check_wake_word_requirements", lambda _cfg: {
-        "available": True,
-        "phrase": "hey hermes",
-        "provider": "test",
-        "hint": "",
-    })
+    monkeypatch.setattr(
+        wake_word,
+        "check_wake_word_requirements",
+        lambda _cfg: {
+            "available": True,
+            "phrase": "hey hermes",
+            "provider": "test",
+            "hint": "",
+        },
+    )
     listener = {"owner": None}
     monkeypatch.setattr(
-        wake_word, "start_listening",
+        wake_word,
+        "start_listening",
         lambda callback, *, owner, config, external_audio=False: listener.update(
             owner=owner, external_audio=bool(external_audio)
         ),
     )
     monkeypatch.setattr(
-        wake_word, "stop_listening",
+        wake_word,
+        "stop_listening",
         lambda *, owner: listener["owner"] is owner and not listener.update(owner=None),
     )
-    monkeypatch.setattr(wake_word, "owns_listener", lambda owner: listener["owner"] is owner)
+    monkeypatch.setattr(
+        wake_word, "owns_listener", lambda owner: listener["owner"] is owner
+    )
 
     transport = types.SimpleNamespace(_closed=False)
     server._wake_owner_transport = None
     server._wake_owner_surface = ""
     try:
         # Passive auto-arm (no persist): refused, config untouched.
-        passive = _dispatch_sync({
-            "id": "wake-passive",
-            "method": "wake.start",
-            "params": {"surface": "gui"},
-        }, transport=transport)
+        passive = _dispatch_sync(
+            {
+                "id": "wake-passive",
+                "method": "wake.start",
+                "params": {"surface": "gui"},
+            },
+            transport=transport,
+        )
         assert passive["result"] == {"started": False, "reason": "disabled"}
         assert persisted == []
 
         # Explicit gesture: enables in config AND arms.
-        clicked = _dispatch_sync({
-            "id": "wake-click",
-            "method": "wake.start",
-            "params": {"surface": "gui", "persist": True},
-        }, transport=transport)
+        clicked = _dispatch_sync(
+            {
+                "id": "wake-click",
+                "method": "wake.start",
+                "params": {"surface": "gui", "persist": True},
+            },
+            transport=transport,
+        )
         assert clicked["result"]["started"] is True
         assert clicked["result"]["enabled_persisted"] is True
         assert persisted == [True]
 
         # Explicit stop: disables in config.
-        stopped = server.dispatch({
-            "id": "wake-click-off",
-            "method": "wake.stop",
-            "params": {"persist": True},
-        }, transport=transport)
+        stopped = server.dispatch(
+            {
+                "id": "wake-click-off",
+                "method": "wake.stop",
+                "params": {"persist": True},
+            },
+            transport=transport,
+        )
         assert stopped["result"]["stopped"] is True
         assert stopped["result"]["disabled_persisted"] is True
         assert persisted == [True, False]
 
         # persist does NOT override an explicit surface scoping.
         config.update(enabled=True, surface="tui")
-        scoped = _dispatch_sync({
-            "id": "wake-scoped",
-            "method": "wake.start",
-            "params": {"surface": "gui", "persist": True},
-        }, transport=transport)
+        scoped = _dispatch_sync(
+            {
+                "id": "wake-scoped",
+                "method": "wake.start",
+                "params": {"surface": "gui", "persist": True},
+            },
+            transport=transport,
+        )
         assert scoped["result"] == {"started": False, "reason": "disabled_for_surface"}
         assert persisted == [True, False]
     finally:
@@ -2153,7 +2292,9 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         server._wake_owner_surface = ""
 
 
-def test_wake_status_reports_configured_input_device_and_windows_silence_hint(monkeypatch):
+def test_wake_status_reports_configured_input_device_and_windows_silence_hint(
+    monkeypatch,
+):
     from tools import wake_word
 
     config = {
@@ -2234,29 +2375,29 @@ def test_voice_record_start_forwards_max_recording_seconds(monkeypatch):
     monkeypatch.setenv("HERMES_VOICE", "1")
 
     for cfg, expected in (
-        ({"max_recording_seconds": 45}, 45),        # explicit cap forwarded as-is
-        ({"max_recording_seconds": 0}, 0.0),        # explicit 0 = disabled
-        ({"max_recording_seconds": -5}, 0.0),       # negative = disabled
-        ({}, 120.0),                                # missing = documented default
-        ({"max_recording_seconds": True}, 120.0),   # bool must not become 1s cap
-        ({"max_recording_seconds": "long"}, 120.0), # garbage = documented default
+        ({"max_recording_seconds": 45}, 45),  # explicit cap forwarded as-is
+        ({"max_recording_seconds": 0}, 0.0),  # explicit 0 = disabled
+        ({"max_recording_seconds": -5}, 0.0),  # negative = disabled
+        ({}, 120.0),  # missing = documented default
+        ({"max_recording_seconds": True}, 120.0),  # bool must not become 1s cap
+        ({"max_recording_seconds": "long"}, 120.0),  # garbage = documented default
     ):
         captured.clear()
         monkeypatch.setattr(server, "_load_cfg", lambda c=cfg: {"voice": c})
 
-        resp = _dispatch_sync(
-            {
-                "id": "voice-record-cap",
-                "method": "voice.record",
-                "params": {"action": "start"},
-            }
-        )
+        resp = _dispatch_sync({
+            "id": "voice-record-cap",
+            "method": "voice.record",
+            "params": {"action": "start"},
+        })
 
-        assert "result" in resp, f"voice.record raised for cfg={cfg!r}: {resp.get('error')}"
+        assert "result" in resp, (
+            f"voice.record raised for cfg={cfg!r}: {resp.get('error')}"
+        )
         assert resp["result"]["status"] == "recording"
-        assert (
-            captured["max_recording_seconds"] == expected
-        ), f"cfg={cfg!r} forwarded {captured.get('max_recording_seconds')!r}, expected {expected!r}"
+        assert captured["max_recording_seconds"] == expected, (
+            f"cfg={cfg!r} forwarded {captured.get('max_recording_seconds')!r}, expected {expected!r}"
+        )
 
 
 def test_voice_record_stop_forces_transcription(monkeypatch):
@@ -2274,13 +2415,11 @@ def test_voice_record_stop_forces_transcription(monkeypatch):
         ),
     )
 
-    resp = _dispatch_sync(
-        {
-            "id": "voice-record-stop",
-            "method": "voice.record",
-            "params": {"action": "stop"},
-        }
-    )
+    resp = _dispatch_sync({
+        "id": "voice-record-stop",
+        "method": "voice.record",
+        "params": {"action": "stop"},
+    })
 
     assert resp["result"]["status"] == "stopped"
     assert captured["force_transcribe"] is True
@@ -2297,13 +2436,11 @@ def test_voice_record_stop_updates_event_session_id(monkeypatch):
     )
     monkeypatch.setattr(server, "_voice_event_sid", "old-session")
 
-    resp = _dispatch_sync(
-        {
-            "id": "voice-record-stop-session",
-            "method": "voice.record",
-            "params": {"action": "stop", "session_id": "new-session"},
-        }
-    )
+    resp = _dispatch_sync({
+        "id": "voice-record-stop-session",
+        "method": "voice.record",
+        "params": {"action": "stop", "session_id": "new-session"},
+    })
 
     assert resp["result"]["status"] == "stopped"
     assert server._voice_event_sid == "new-session"
@@ -2321,13 +2458,11 @@ def test_voice_record_start_reports_busy_when_stop_is_in_progress(monkeypatch):
     monkeypatch.setenv("HERMES_VOICE", "1")
     monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
 
-    resp = _dispatch_sync(
-        {
-            "id": "voice-record-busy",
-            "method": "voice.record",
-            "params": {"action": "start"},
-        }
-    )
+    resp = _dispatch_sync({
+        "id": "voice-record-busy",
+        "method": "voice.record",
+        "params": {"action": "start"},
+    })
 
     assert resp["result"]["status"] == "busy"
 
@@ -2359,9 +2494,11 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
     # later test in the file (which now spins up the streaming TTS pipeline).
     monkeypatch.setenv("HERMES_VOICE_TTS", "0")
 
-    tts_resp = _dispatch_sync(
-        {"id": "voice-tts", "method": "voice.toggle", "params": {"action": "tts"}}
-    )
+    tts_resp = _dispatch_sync({
+        "id": "voice-tts",
+        "method": "voice.toggle",
+        "params": {"action": "tts"},
+    })
 
     assert tts_resp["result"]["record_key"] == "ctrl+space"
     assert tts_resp["result"]["tts"] is True
@@ -2612,9 +2749,9 @@ def test_history_to_messages_ships_full_tool_args():
     assert rows[1]["context"]
 
     # A tool row with no recorded args keeps the old small shape.
-    argless = server._history_to_messages(
-        [{"role": "tool", "content": "{}", "tool_call_id": "missing"}]
-    )
+    argless = server._history_to_messages([
+        {"role": "tool", "content": "{}", "tool_call_id": "missing"}
+    ])
     assert "args" not in argless[0]
 
 
@@ -2625,7 +2762,9 @@ def test_tool_start_ships_full_args(monkeypatch):
     # every client, so tool.start does too. There is no per-client gate.
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
-        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+        server,
+        "_emit",
+        lambda event_type, sid, payload: events.append((event_type, sid, payload)),
     )
     long_command = "echo " + "y" * 200
     monkeypatch.setitem(
@@ -2647,11 +2786,16 @@ def test_tool_ctx_sends_an_arg_preview_not_a_phrased_label():
     # `Terminal("<ctx>")` and the desktop prepends "Running"/"Ran". Sending a
     # pre-phrased label made both stutter ("Ran Running sleep 70 + 2 commands")
     # and stood in for the real command in the desktop's `$` transcript.
-    assert server._tool_ctx("terminal", {"command": 'sleep 70; echo "a"; echo "b"'}) == (
-        "sleep 70 + 2 commands"
+    assert server._tool_ctx(
+        "terminal", {"command": 'sleep 70; echo "a"; echo "b"'}
+    ) == ("sleep 70 + 2 commands")
+    assert (
+        server._tool_ctx("read_file", {"path": "/tmp/demo/package.json"})
+        == "package.json"
     )
-    assert server._tool_ctx("read_file", {"path": "/tmp/demo/package.json"}) == "package.json"
-    assert server._tool_ctx("web_search", {"query": "weather in NYC"}) == "weather in NYC"
+    assert (
+        server._tool_ctx("web_search", {"query": "weather in NYC"}) == "weather in NYC"
+    )
 
 
 def test_history_to_messages_keeps_reasoning_only_assistant_turn():
@@ -2699,7 +2843,10 @@ def test_history_to_messages_renders_multimodal_content():
             "role": "user",
             "content": [
                 {"type": "text", "text": "look here"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                },
             ],
         },
         {"role": "assistant", "content": "saw it"},
@@ -2937,9 +3084,11 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messag
             include_row_ids=False,
             **_kwargs,
         ):
-            captured.setdefault("history_calls", []).append(
-                (target, include_ancestors, include_row_ids)
-            )
+            captured.setdefault("history_calls", []).append((
+                target,
+                include_ancestors,
+                include_row_ids,
+            ))
             return (
                 [
                     {"role": "user", "content": "root prompt"},
@@ -2964,7 +3113,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messag
         lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
     )
     monkeypatch.setattr(
-        server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
+        server,
+        "_init_session",
+        lambda sid, key, agent, history, cols=80, **_kwargs: None,
     )
     # The deferred pre-warm timer is neutered module-wide by the autouse
     # _neuter_agent_prewarm_timer fixture; this test only asserts the
@@ -2973,21 +3124,31 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messag
     params = {"session_id": target}
     if omit_messages:
         params["omit_messages"] = True
-    resp = server.handle_request(
-        {"id": "1", "method": "session.resume", "params": params}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.resume",
+        "params": params,
+    })
 
-    expected = [] if omit_messages else [
-        {"role": "user", "text": "root prompt"},
-        {"role": "assistant", "text": "root answer"},
-    ]
+    expected = (
+        []
+        if omit_messages
+        else [
+            {"role": "user", "text": "root prompt"},
+            {"role": "assistant", "text": "root answer"},
+        ]
+    )
     assert resp["result"]["messages"] == expected
     assert resp["result"]["message_count"] == (1 if omit_messages else 2)
     assert resp["result"]["messages_omitted"] is omit_messages
-    expected_calls = [(target, False, True)] if omit_messages else [
-        (target, False, False),
-        (target, True, False),
-    ]
+    expected_calls = (
+        [(target, False, True)]
+        if omit_messages
+        else [
+            (target, False, False),
+            (target, True, False),
+        ]
+    )
     assert captured["history_calls"] == expected_calls
 
 
@@ -3011,8 +3172,11 @@ def test_live_visible_history_prefers_db_display_with_candidate():
     # Persisted display lineage: the candidate (substantive answer) survives.
     display_with_candidate = [
         {"role": "user", "content": "do the thing"},
-        {"role": "assistant", "content": "long substantive answer",
-         "finish_reason": "verification_required"},
+        {
+            "role": "assistant",
+            "content": "long substantive answer",
+            "finish_reason": "verification_required",
+        },
         {"role": "assistant", "content": "terse verified reply"},
     ]
 
@@ -3031,11 +3195,15 @@ def test_live_visible_history_prefers_db_display_with_candidate():
 def test_live_visible_history_falls_back_without_db_or_key():
     in_memory = [{"role": "user", "content": "hi"}]
     # No DB handle available.
-    assert server._live_visible_history({"session_key": "s"}, None, in_memory) == in_memory
+    assert (
+        server._live_visible_history({"session_key": "s"}, None, in_memory) == in_memory
+    )
 
     # DB available but the session has no persist key yet.
     class DB:
-        def get_messages_as_conversation(self, *a, **k):  # pragma: no cover - not reached
+        def get_messages_as_conversation(
+            self, *a, **k
+        ):  # pragma: no cover - not reached
             raise AssertionError("must not query without a session_key")
 
     assert server._live_visible_history({}, DB(), in_memory) == in_memory
@@ -3050,17 +3218,26 @@ def test_live_visible_history_falls_back_when_db_empty():
         def get_messages_as_conversation(self, *a, **k):
             return []
 
-    assert server._live_visible_history({"session_key": "s"}, EmptyDB(), in_memory) == in_memory
+    assert (
+        server._live_visible_history({"session_key": "s"}, EmptyDB(), in_memory)
+        == in_memory
+    )
 
 
 def test_live_visible_history_falls_back_when_db_raises():
-    in_memory = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+    in_memory = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "yo"},
+    ]
 
     class BrokenDB:
         def get_messages_as_conversation(self, *a, **k):
             raise RuntimeError("db exploded")
 
-    assert server._live_visible_history({"session_key": "s"}, BrokenDB(), in_memory) == in_memory
+    assert (
+        server._live_visible_history({"session_key": "s"}, BrokenDB(), in_memory)
+        == in_memory
+    )
 
 
 def test_live_visible_history_keeps_candidate_and_fresh_tail():
@@ -3069,8 +3246,11 @@ def test_live_visible_history_keeps_candidate_and_fresh_tail():
     # Persisted display: has the verification candidate, lags the newest turn.
     db_display = [
         {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "long substantive answer",
-         "finish_reason": "verification_required"},
+        {
+            "role": "assistant",
+            "content": "long substantive answer",
+            "finish_reason": "verification_required",
+        },
         {"role": "assistant", "content": "terse verified reply"},
     ]
     # In-memory model history: candidate collapsed out, but has a fresh turn 2.
@@ -3082,14 +3262,19 @@ def test_live_visible_history_keeps_candidate_and_fresh_tail():
     ]
 
     class DB:
-        def get_messages_as_conversation(self, key, include_ancestors=False, repair_alternation=False, **_kwargs):
+        def get_messages_as_conversation(
+            self, key, include_ancestors=False, repair_alternation=False, **_kwargs
+        ):
             return list(db_display)
 
     result = server._live_visible_history({"session_key": "s1"}, DB(), in_memory)
     assert result == [
         {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "long substantive answer",
-         "finish_reason": "verification_required"},
+        {
+            "role": "assistant",
+            "content": "long substantive answer",
+            "finish_reason": "verification_required",
+        },
         {"role": "assistant", "content": "terse verified reply"},
         {"role": "user", "content": "turn 2 not flushed"},
         {"role": "assistant", "content": "turn 2 reply not flushed"},
@@ -3125,24 +3310,33 @@ def test_live_visible_history_matches_eager_resume_with_real_db(tmp_path):
     db.create_session("s1", source="tui")
     db.append_message("s1", role="user", content="do the thing")
     db.append_message(
-        "s1", role="assistant", content="long substantive answer",
+        "s1",
+        role="assistant",
+        content="long substantive answer",
         finish_reason="verification_required",
     )
     db.append_message(
-        "s1", role="assistant", content="terse verified reply", finish_reason="stop",
+        "s1",
+        role="assistant",
+        content="terse verified reply",
+        finish_reason="stop",
     )
 
     model_history, display_history = db.get_resume_conversations("s1")
 
     # The divergence #65919 introduced: candidate absent from the model
     # projection, present in the display projection.
-    assert not any("long substantive" in (m.get("content") or "") for m in model_history)
+    assert not any(
+        "long substantive" in (m.get("content") or "") for m in model_history
+    )
     assert any("long substantive" in (m.get("content") or "") for m in display_history)
 
     # Eager session.resume serves the display projection.
     eager_messages = server._history_to_messages(display_history)
     # Warm/live reuse: in-memory history is the collapsed model projection.
-    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
+    live_history = server._live_visible_history(
+        {"session_key": "s1"}, db, list(model_history)
+    )
     # They must agree — the candidate survives the warm switch.
     assert server._history_to_messages(live_history) == eager_messages
     assert any(m.get("text") == "long substantive answer" for m in eager_messages)
@@ -3157,15 +3351,23 @@ def test_live_visible_history_keeps_candidate_and_new_flushed_turn_real_db(tmp_p
     db.create_session("s1", source="tui")
     db.append_message("s1", role="user", content="turn 1")
     db.append_message(
-        "s1", role="assistant", content="candidate answer",
+        "s1",
+        role="assistant",
+        content="candidate answer",
         finish_reason="verification_required",
     )
-    db.append_message("s1", role="assistant", content="verified reply", finish_reason="stop")
+    db.append_message(
+        "s1", role="assistant", content="verified reply", finish_reason="stop"
+    )
     db.append_message("s1", role="user", content="turn 2")
-    db.append_message("s1", role="assistant", content="turn 2 reply", finish_reason="stop")
+    db.append_message(
+        "s1", role="assistant", content="turn 2 reply", finish_reason="stop"
+    )
 
     model_history, display_history = db.get_resume_conversations("s1")
-    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
+    live_history = server._live_visible_history(
+        {"session_key": "s1"}, db, list(model_history)
+    )
     texts = [m.get("text") for m in server._history_to_messages(live_history)]
 
     assert texts == [
@@ -3211,7 +3413,9 @@ def test_live_session_payload_reads_profile_db_not_launch_db(monkeypatch, tmp_pa
         finish_reason="stop",
     )
     model_history, display_history = profile_db.get_resume_conversations("s-profile")
-    assert not any("long substantive" in (m.get("content") or "") for m in model_history)
+    assert not any(
+        "long substantive" in (m.get("content") or "") for m in model_history
+    )
     assert any("long substantive" in (m.get("content") or "") for m in display_history)
 
     session = {
@@ -3233,10 +3437,14 @@ def test_live_session_payload_reads_profile_db_not_launch_db(monkeypatch, tmp_pa
     texts = [m.get("text") for m in payload.get("messages") or []]
 
     assert "long substantive answer" in texts
-    assert texts == [m.get("text") for m in server._history_to_messages(display_history)]
+    assert texts == [
+        m.get("text") for m in server._history_to_messages(display_history)
+    ]
 
 
-def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch, tmp_path):
+def test_lazy_child_watch_resume_serves_candidate_inclusive_display(
+    monkeypatch, tmp_path
+):
     """The delegated-child watch-window cold resume (lazy=True) must serve the
     verbatim display projection so a persisted verification candidate is not
     collapsed out of the watch window (#65919 sibling of the warm-payload fix).
@@ -3247,11 +3455,16 @@ def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch,
     db.create_session("child1", source="tui")
     db.append_message("child1", role="user", content="child prompt")
     db.append_message(
-        "child1", role="assistant", content="child substantive answer",
+        "child1",
+        role="assistant",
+        content="child substantive answer",
         finish_reason="verification_required",
     )
     db.append_message(
-        "child1", role="assistant", content="child terse reply", finish_reason="stop",
+        "child1",
+        role="assistant",
+        content="child terse reply",
+        finish_reason="stop",
     )
 
     lease = types.SimpleNamespace(session_id="child1", release=lambda: None)
@@ -3266,15 +3479,15 @@ def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch,
     )
     monkeypatch.setattr(server, "_claim_or_reuse_live", lambda *a, **k: None)
     monkeypatch.setattr(server, "_child_run_active", lambda *a, **k: False)
-    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
-
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "session.resume",
-            "params": {"session_id": "child1", "lazy": True},
-        }
+    monkeypatch.setattr(
+        server, "_schedule_session_cap_enforcement", lambda *a, **k: None
     )
+
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.resume",
+        "params": {"session_id": "child1", "lazy": True},
+    })
 
     assert "error" not in resp, resp
     texts = [m.get("text") for m in resp["result"]["messages"]]
@@ -3322,9 +3535,11 @@ def test_session_resume_deferred_history_acknowledges_and_reuses(monkeypatch):
     monkeypatch.setattr(
         server,
         "_maybe_schedule_auto_continue",
-        lambda sid, session, stored_id: auto_continue_calls.append(
-            (sid, session, stored_id)
-        ),
+        lambda sid, session, stored_id: auto_continue_calls.append((
+            sid,
+            session,
+            stored_id,
+        )),
     )
 
     try:
@@ -3513,13 +3728,17 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     base = int(time.time()) - 10_000
     db.create_session("parent_root", source="tui")
     db.append_message(
-        "parent_root", role="user", content="pre-compression turn",
+        "parent_root",
+        role="user",
+        content="pre-compression turn",
         timestamp=base + 10,
     )
     db.end_session("parent_root", "compression")
     db.create_session("cont_tip", source="tui", parent_session_id="parent_root")
     db.append_message(
-        "cont_tip", role="assistant", content="post-compression reply",
+        "cont_tip",
+        role="assistant",
+        content="post-compression reply",
         timestamp=base + 110,
     )
     conn = db._conn
@@ -3528,7 +3747,9 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
         "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'parent_root'",
         (base, base + 50),
     )
-    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont_tip'", (base + 100,))
+    conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = 'cont_tip'", (base + 100,)
+    )
     conn.commit()
 
     captured = {}
@@ -3546,19 +3767,25 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(
-        server, "_session_info", lambda agent, *a: {"model": "test", "tools": {}, "skills": {}}
+        server,
+        "_session_info",
+        lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
     )
     monkeypatch.setattr(
-        server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
+        server,
+        "_init_session",
+        lambda sid, key, agent, history, cols=80, **_kwargs: None,
     )
 
     try:
         # eager_build: this asserts the synchronously-built agent binds to the
         # resolved tip (captured["agent_session_id"]); the compression-tip
         # resolution itself runs before the build and is mode-agnostic.
-        resp = server.handle_request(
-            {"id": "1", "method": "session.resume", "params": {"session_id": "parent_root", "eager_build": True}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.resume",
+            "params": {"session_id": "parent_root", "eager_build": True},
+        })
     finally:
         db.close()
 
@@ -3594,7 +3821,9 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         def get_ancestor_display_prefix(self, _sid):
             return []
 
-        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False, **_kwargs):
+        def get_messages_as_conversation(
+            self, target, include_ancestors=False, repair_alternation=False, **_kwargs
+        ):
             return [{"role": "user", "content": "hello"}]
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
@@ -3606,7 +3835,11 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
-    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider})
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent, *a: {"model": agent.model, "provider": agent.provider},
+    )
 
     def fake_init_session(sid, key, agent, history, cols=80, **_kwargs):
         server._sessions[sid] = {"agent": agent, "session_key": key}
@@ -3616,9 +3849,11 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     # eager_build: this asserts the synchronous build contract (stored runtime
     # overrides reach _make_agent, info comes from _session_info). The deferred
     # default restores the same overrides via _start_agent_build off-thread.
-    resp = server.handle_request(
-        {"id": "1", "method": "session.resume", "params": {"session_id": "stored-session", "eager_build": True}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.resume",
+        "params": {"session_id": "stored-session", "eager_build": True},
+    })
 
     assert resp["result"]["info"] == {"model": "gpt-5.4", "provider": "openai-codex"}
     assert captured["model_override"] == {
@@ -3663,7 +3898,9 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         def get_ancestor_display_prefix(self, _sid):
             return []
 
-        def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False, **_kwargs):
+        def get_messages_as_conversation(
+            self, _target, include_ancestors=False, repair_alternation=False, **_kwargs
+        ):
             return [{"role": "user", "content": "hello"}]
 
         def update_session_cwd(self, *_args):
@@ -3715,13 +3952,11 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     try:
         # eager_build: asserts the synchronous build receives the profile's db
         # (the deferred default builds with the same db via _start_agent_build).
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.resume",
-                "params": {"session_id": target, "profile": "worker", "eager_build": True},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.resume",
+            "params": {"session_id": target, "profile": "worker", "eager_build": True},
+        })
 
         assert "error" not in resp
         sid = resp["result"]["session_id"]
@@ -3742,7 +3977,9 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     captured = {}
 
     class ProfileDB:
-        def update_session_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None):
+        def update_session_cwd(
+            self, session_id, cwd, git_branch=None, git_repo_root=None
+        ):
             captured["profile_update"] = (session_id, cwd)
 
         def close(self):
@@ -3779,34 +4016,43 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     `model_config.provider`, is still restored.
     """
     # Bare "custom" bucket, no explicit model_config.provider: no provider override restored.
-    ov = server._stored_session_runtime_overrides({"model": "my-model", "billing_provider": "custom"})
+    ov = server._stored_session_runtime_overrides({
+        "model": "my-model",
+        "billing_provider": "custom",
+    })
     assert "provider_override" not in ov
     assert ov["model_override"]["provider"] is None
 
     for bare in ("auto", "custom"):
-        ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": bare})
+        ov = server._stored_session_runtime_overrides({
+            "model": "m",
+            "billing_provider": bare,
+        })
         assert "provider_override" not in ov
 
     # A real provider in billing_provider is still restored.
-    ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": "anthropic"})
+    ov = server._stored_session_runtime_overrides({
+        "model": "m",
+        "billing_provider": "anthropic",
+    })
     assert ov["provider_override"] == "anthropic"
     assert ov["model_override"]["provider"] == "anthropic"
 
     # An explicit routable provider in model_config wins over the bare billing bucket.
-    ov = server._stored_session_runtime_overrides(
-        {"model": "m", "billing_provider": "custom", "model_config": {"provider": "custom:myendpoint"}}
-    )
+    ov = server._stored_session_runtime_overrides({
+        "model": "m",
+        "billing_provider": "custom",
+        "model_config": {"provider": "custom:myendpoint"},
+    })
     assert ov["provider_override"] == "custom:myendpoint"
     assert ov["model_override"]["provider"] == "custom:myendpoint"
 
 
 def test_stored_session_runtime_overrides_restores_explicit_normal_tier():
-    overrides = server._stored_session_runtime_overrides(
-        {
-            "model": "gpt-5.4",
-            "model_config": {"service_tier": "normal"},
-        }
-    )
+    overrides = server._stored_session_runtime_overrides({
+        "model": "gpt-5.4",
+        "model_config": {"service_tier": "normal"},
+    })
 
     assert "service_tier_override" in overrides
     assert overrides["service_tier_override"] == ""
@@ -3820,22 +4066,24 @@ def test_openrouter_session_resume_restores_provider():
     # OpenRouter session with no explicit model_config.provider (the common case
     # for sessions that never used /model): billing_provider="openrouter" should
     # be restored as the provider override.
-    ov = server._stored_session_runtime_overrides(
-        {"model": "anthropic/claude-opus-4.8", "billing_provider": "openrouter"}
-    )
+    ov = server._stored_session_runtime_overrides({
+        "model": "anthropic/claude-opus-4.8",
+        "billing_provider": "openrouter",
+    })
     assert ov["provider_override"] == "openrouter"
     assert ov["model_override"]["provider"] == "openrouter"
     assert ov["model_override"]["model"] == "anthropic/claude-opus-4.8"
 
     # When an explicit model_config.provider exists, it takes precedence over
     # billing_provider (this path was already correct).
-    ov = server._stored_session_runtime_overrides(
-        {
-            "model": "anthropic/claude-opus-4.8",
-            "billing_provider": "openrouter",
-            "model_config": {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
-        }
-    )
+    ov = server._stored_session_runtime_overrides({
+        "model": "anthropic/claude-opus-4.8",
+        "billing_provider": "openrouter",
+        "model_config": {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+    })
     assert ov["provider_override"] == "openrouter"
 
 
@@ -3860,7 +4108,10 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
         _session_db=FakeDB(),
     )
 
-    server._persist_live_session_runtime({"agent": agent, "session_key": "stored-session"})
+    server._persist_live_session_runtime({
+        "agent": agent,
+        "session_key": "stored-session",
+    })
 
     assert "model" not in updates
     assert updates["meta"] == (
@@ -3898,13 +4149,11 @@ def test_persist_live_session_runtime_preserves_explicit_normal_tier():
         _session_db=FakeDB(),
     )
 
-    server._persist_live_session_runtime(
-        {
-            "agent": agent,
-            "session_key": "stored-session",
-            "create_service_tier_override": "",
-        }
-    )
+    server._persist_live_session_runtime({
+        "agent": agent,
+        "session_key": "stored-session",
+        "create_service_tier_override": "",
+    })
 
     assert updates["config"]["service_tier"] == "normal"
 
@@ -4093,7 +4342,9 @@ def test_config_sync_config_wins_over_env_seed(monkeypatch):
     # the per-turn sync must follow config.yaml edits, not stay pinned to it.
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", "seed/model")
     monkeypatch.delenv("HERMES_MODEL", raising=False)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "new/model"}})
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"model": {"default": "new/model"}}
+    )
     session = _sync_test_session(config_model_seen=("seed/model", ""))
     calls = []
     monkeypatch.setattr(
@@ -4155,15 +4406,14 @@ def test_apply_model_switch_persist_override_false_never_persists(monkeypatch):
         model_info=None,
         error_message="",
     )
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model", lambda **kw: result
-    )
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: result)
     monkeypatch.setattr(
         "hermes_cli.model_switch.resolve_persist_behavior",
         lambda *a: pytest.fail("persist_override must bypass resolve_persist_behavior"),
     )
     monkeypatch.setattr(
-        server, "_persist_model_switch",
+        server,
+        "_persist_model_switch",
         lambda _r: pytest.fail("persist_override=False must not persist"),
     )
     monkeypatch.setattr(
@@ -4401,9 +4651,11 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     )
 
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.close", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.close",
+            "params": {"session_id": "sid"},
+        })
         assert resp["result"]["closed"] is True
         assert calls["history"] == [{"role": "user", "content": "hello"}]
         assert ("on_session_finalize", "session-key") in calls["hooks"]
@@ -4427,13 +4679,11 @@ def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
 
     def _close():
         response.update(
-            server.handle_request(
-                {
-                    "id": "close",
-                    "method": "session.close",
-                    "params": {"session_id": "slow-close"},
-                }
-            )
+            server.handle_request({
+                "id": "close",
+                "method": "session.close",
+                "params": {"session_id": "slow-close"},
+            })
         )
 
     thread = threading.Thread(target=_close)
@@ -4475,19 +4725,15 @@ def test_session_close_settles_active_turn_before_teardown(monkeypatch):
     session["_run_thread"] = run_thread
     server._sessions["settle-close"] = session
     monkeypatch.setattr(server, "_teardown_session", _teardown)
-    monkeypatch.setattr(
-        server, "_TURN_SETTLE_BEFORE_CLOSE_SECONDS", 1.0, raising=False
-    )
+    monkeypatch.setattr(server, "_TURN_SETTLE_BEFORE_CLOSE_SECONDS", 1.0, raising=False)
 
     close_thread = threading.Thread(
         target=lambda: response.update(
-            server.handle_request(
-                {
-                    "id": "close",
-                    "method": "session.close",
-                    "params": {"session_id": "settle-close"},
-                }
-            )
+            server.handle_request({
+                "id": "close",
+                "method": "session.close",
+                "params": {"session_id": "settle-close"},
+            })
         )
     )
     run_thread.start()
@@ -4603,9 +4849,10 @@ def test_ws_orphan_reap_waits_for_active_delegation_then_reaps(monkeypatch):
     monkeypatch.setattr(
         server,
         "_teardown_session",
-        lambda session, *, end_reason="tui_close": torn_down.append(
-            (session, end_reason)
-        ),
+        lambda session, *, end_reason="tui_close": torn_down.append((
+            session,
+            end_reason,
+        )),
     )
     server._sessions["delegating-sid"] = _session(
         transport=server._detached_ws_transport,
@@ -4657,15 +4904,14 @@ def test_ws_orphan_reap_retries_when_delegation_lookup_fails(monkeypatch):
 
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
-    monkeypatch.setattr(
-        async_delegation, "has_live_for_session", _raise_lookup_error
-    )
+    monkeypatch.setattr(async_delegation, "has_live_for_session", _raise_lookup_error)
     monkeypatch.setattr(
         server,
         "_teardown_session",
-        lambda session, *, end_reason="tui_close": torn_down.append(
-            (session, end_reason)
-        ),
+        lambda session, *, end_reason="tui_close": torn_down.append((
+            session,
+            end_reason,
+        )),
     )
     server._sessions["lookup-error-sid"] = _session(
         transport=server._detached_ws_transport,
@@ -4738,7 +4984,9 @@ def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     assert server._ws_session_is_orphaned(done) is False
 
 
-def test_ws_orphan_reap_spares_detached_session_with_running_async_delegation(monkeypatch):
+def test_ws_orphan_reap_spares_detached_session_with_running_async_delegation(
+    monkeypatch,
+):
     """A detached desktop session with live background delegation is parked.
 
     Regression for Desktop session switches / transient WS detaches: the parent
@@ -4768,7 +5016,9 @@ def test_ws_orphan_reap_spares_detached_session_with_running_async_delegation(mo
         server,
         "_teardown_popped_session",
         lambda session, *, end_reason="tui_close": (
-            closed.append((session["_sid"], end_reason)) if session is not None else None
+            closed.append((session["_sid"], end_reason))
+            if session is not None
+            else None
         ),
     )
 
@@ -4917,13 +5167,11 @@ def test_session_title_creates_row_and_sets_immediately_when_not_ready(monkeypat
     monkeypatch.setattr(server, "_ensure_session_db_row", _fake_ensure_row)
     monkeypatch.setattr(server, "_session_db", _fake_session_db)
     try:
-        set_resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.title",
-                "params": {"session_id": "sid", "title": "my-custom-name"},
-            }
-        )
+        set_resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid", "title": "my-custom-name"},
+        })
 
         # No longer queued — the row is created and the title set immediately.
         assert set_resp["result"]["pending"] is False
@@ -4933,9 +5181,11 @@ def test_session_title_creates_row_and_sets_immediately_when_not_ready(monkeypat
         assert server._sessions["sid"]["pending_title"] is None
 
         # A subsequent read reflects the persisted title.
-        get_resp = server.handle_request(
-            {"id": "2", "method": "session.title", "params": {"session_id": "sid"}}
-        )
+        get_resp = server.handle_request({
+            "id": "2",
+            "method": "session.title",
+            "params": {"session_id": "sid"},
+        })
         assert get_resp["result"]["title"] == "my-custom-name"
     finally:
         server._sessions.pop("sid", None)
@@ -4976,21 +5226,21 @@ def test_session_title_falls_back_to_queue_when_row_create_fails(monkeypatch):
     monkeypatch.setattr(server, "_ensure_session_db_row", _fake_ensure_row)
     monkeypatch.setattr(server, "_session_db", _fake_session_db)
     try:
-        set_resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.title",
-                "params": {"session_id": "sid", "title": "queued title"},
-            }
-        )
+        set_resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid", "title": "queued title"},
+        })
 
         assert set_resp["result"]["pending"] is True
         assert set_resp["result"]["title"] == "queued title"
         assert server._sessions["sid"]["pending_title"] == "queued title"
 
-        get_resp = server.handle_request(
-            {"id": "2", "method": "session.title", "params": {"session_id": "sid"}}
-        )
+        get_resp = server.handle_request({
+            "id": "2",
+            "method": "session.title",
+            "params": {"session_id": "sid"},
+        })
         assert get_resp["result"]["title"] == "queued title"
     finally:
         server._sessions.pop("sid", None)
@@ -5003,14 +5253,30 @@ def test_notification_event_routing_by_session_key(monkeypatch):
     monkeypatch.setattr(server, "_sessions", {"a": mine, "b": other})
 
     # My own event → handle it.
-    assert server._notification_event_belongs_elsewhere("a", mine, {"session_key": "mine"}) is False
+    assert (
+        server._notification_event_belongs_elsewhere("a", mine, {"session_key": "mine"})
+        is False
+    )
     # Global/system event with no owner → handle it.
-    assert server._notification_event_belongs_elsewhere("a", mine, {"session_key": ""}) is False
+    assert (
+        server._notification_event_belongs_elsewhere("a", mine, {"session_key": ""})
+        is False
+    )
     assert server._notification_event_belongs_elsewhere("a", mine, {}) is False
     # Owned by another *live* session → defer to that session's poller.
-    assert server._notification_event_belongs_elsewhere("a", mine, {"session_key": "other"}) is True
+    assert (
+        server._notification_event_belongs_elsewhere(
+            "a", mine, {"session_key": "other"}
+        )
+        is True
+    )
     # Owner is gone (not in _sessions) → handle as fallback so it isn't lost.
-    assert server._notification_event_belongs_elsewhere("a", mine, {"session_key": "ghost"}) is False
+    assert (
+        server._notification_event_belongs_elsewhere(
+            "a", mine, {"session_key": "ghost"}
+        )
+        is False
+    )
 
 
 def test_async_delegation_event_prefers_origin_ui_session(monkeypatch):
@@ -5031,14 +5297,18 @@ def test_async_delegation_event_prefers_origin_ui_session(monkeypatch):
     }
 
     assert server._notification_event_belongs_elsewhere("other-sid", other, evt) is True
-    assert server._notification_event_belongs_elsewhere("origin-sid", mine, evt) is False
+    assert (
+        server._notification_event_belongs_elsewhere("origin-sid", mine, evt) is False
+    )
 
 
 def test_notification_event_follows_compression_continuation(monkeypatch):
     """Events keyed to a compressed parent route to the live continuation."""
     old_parent = _session(session_key="old-parent")
     live_tip = _session(session_key="new-tip")
-    monkeypatch.setattr(server, "_sessions", {"old-sid": old_parent, "tip-sid": live_tip})
+    monkeypatch.setattr(
+        server, "_sessions", {"old-sid": old_parent, "tip-sid": live_tip}
+    )
 
     class _DB:
         def resolve_resume_session_id(self, session_id):
@@ -5047,8 +5317,12 @@ def test_notification_event_follows_compression_continuation(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     evt = {"type": "async_delegation", "session_key": "old-parent"}
 
-    assert server._notification_event_belongs_elsewhere("old-sid", old_parent, evt) is True
-    assert server._notification_event_belongs_elsewhere("tip-sid", live_tip, evt) is False
+    assert (
+        server._notification_event_belongs_elsewhere("old-sid", old_parent, evt) is True
+    )
+    assert (
+        server._notification_event_belongs_elsewhere("tip-sid", live_tip, evt) is False
+    )
     # A third session must leave it alone for the continuation's poller.
     third = _session(session_key="third")
     monkeypatch.setattr(
@@ -5080,8 +5354,15 @@ def test_finalized_origin_ui_session_falls_back_to_live_continuation(monkeypatch
         "origin_ui_session_id": "origin-sid",
     }
 
-    assert server._notification_event_belongs_elsewhere("origin-sid", finalized_origin, evt) is True
-    assert server._notification_event_belongs_elsewhere("tip-sid", live_tip, evt) is False
+    assert (
+        server._notification_event_belongs_elsewhere(
+            "origin-sid", finalized_origin, evt
+        )
+        is True
+    )
+    assert (
+        server._notification_event_belongs_elsewhere("tip-sid", live_tip, evt) is False
+    )
 
 
 def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
@@ -5097,7 +5378,9 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -5111,25 +5394,27 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     # If the guard ever lets a negative ordinal through, these would run and the
     # session would be marked busy; failing here makes that regression loud.
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "trunc-sid",
-                    "text": "next",
-                    "truncate_before_user_ordinal": -1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "trunc-sid",
+                "text": "next",
+                "truncate_before_user_ordinal": -1,
+                "confirm_truncate": True,
+            },
+        })
         assert resp["error"]["code"] == 4018
         # History and the DB are left exactly as they were — no silent loss.
         assert server._sessions["trunc-sid"]["history"] == history
@@ -5155,25 +5440,27 @@ def test_prompt_submit_refuses_boolean_ordinal(monkeypatch):
     ]
     server._sessions["bool-trunc-sid"] = _session(history=list(history))
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "bool-trunc-sid",
-                    "text": "new turn",
-                    "truncate_before_user_ordinal": True,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "bool-trunc-sid",
+                "text": "new turn",
+                "truncate_before_user_ordinal": True,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4004
         assert "must be an integer" in resp["error"]["message"]
@@ -5196,24 +5483,26 @@ def test_prompt_submit_refuses_confirm_truncate_without_target(monkeypatch):
     ]
     server._sessions["bare-confirm-sid"] = _session(history=list(history))
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "bare-confirm-sid",
-                    "text": "new turn",
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "bare-confirm-sid",
+                "text": "new turn",
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4004
         assert "confirm_truncate requires" in resp["error"]["message"]
@@ -5234,7 +5523,9 @@ def test_prompt_submit_refuses_unconfirmed_nonempty_truncation(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -5248,25 +5539,27 @@ def test_prompt_submit_refuses_unconfirmed_nonempty_truncation(monkeypatch):
     server._sessions["unconfirmed-trunc-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     def _submit(**extra):
-        return server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "unconfirmed-trunc-sid",
-                    "text": "an ordinary typed message",
-                    "truncate_before_user_ordinal": 2,
-                    **extra,
-                },
-            }
-        )
+        return server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "unconfirmed-trunc-sid",
+                "text": "an ordinary typed message",
+                "truncate_before_user_ordinal": 2,
+                **extra,
+            },
+        })
 
     try:
         resp = _submit()
@@ -5292,7 +5585,9 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -5303,26 +5598,20 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
     ]
     server._sessions["msg-id-trunc-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-    monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: None
-    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "msg-id-trunc-sid",
-                    "text": "new turn",
-                    "truncate_before_message_id": "msg-2",
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "msg-id-trunc-sid",
+                "text": "new turn",
+                "truncate_before_message_id": "msg-2",
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("result") is not None
         assert len(replaced) == 1
         assert replaced[0][1] == history[:2]
@@ -5342,7 +5631,9 @@ def test_prompt_submit_truncation_falls_back_to_sid_when_session_key_null(monkey
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -5359,19 +5650,17 @@ def test_prompt_submit_truncation_falls_back_to_sid_when_session_key_null(monkey
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "null-key-trunc-sid",
-                    "text": "new turn",
-                    "truncate_before_row_id": 103,
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "null-key-trunc-sid",
+                "text": "new turn",
+                "truncate_before_row_id": 103,
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("result") is not None
         assert len(replaced) == 1
         # Keyed by the session id, never None (the FK-violating value).
@@ -5391,26 +5680,28 @@ def test_prompt_submit_refuses_ordinal_and_message_id_mismatch(monkeypatch):
     ]
     server._sessions["mismatch-trunc-sid"] = _session(history=list(history))
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "mismatch-trunc-sid",
-                    "text": "new turn",
-                    "truncate_before_message_id": "msg-2",  # ordinal index 1
-                    "truncate_before_user_ordinal": 0,      # mismatch (stale 0)
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "mismatch-trunc-sid",
+                "text": "new turn",
+                "truncate_before_message_id": "msg-2",  # ordinal index 1
+                "truncate_before_user_ordinal": 0,  # mismatch (stale 0)
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4030
         assert "does not match" in resp["error"]["message"]
@@ -5423,7 +5714,9 @@ def test_prompt_submit_refuses_ordinal_only_when_history_has_row_ids(monkeypatch
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -5435,25 +5728,27 @@ def test_prompt_submit_refuses_ordinal_only_when_history_has_row_ids(monkeypatch
     server._sessions["ordinal-only-durable-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "ordinal-only-durable-sid",
-                    "text": "retry",
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "ordinal-only-durable-sid",
+                "text": "retry",
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
 
         assert resp["error"]["code"] == 4004
         assert "truncate_before_row_id" in resp["error"]["message"]
@@ -5464,7 +5759,9 @@ def test_prompt_submit_refuses_ordinal_only_when_history_has_row_ids(monkeypatch
         server._sessions.pop("ordinal-only-durable-sid", None)
 
 
-def test_prompt_submit_refuses_ordinal_only_when_durable_history_is_unstamped(monkeypatch):
+def test_prompt_submit_refuses_ordinal_only_when_durable_history_is_unstamped(
+    monkeypatch,
+):
     """Durability comes from state.db, not optional stamps on the live copy."""
     replaced = []
     history = [
@@ -5478,33 +5775,40 @@ def test_prompt_submit_refuses_ordinal_only_when_durable_history_is_unstamped(mo
         def get_messages_as_conversation(self, key, **kwargs):
             assert key == "session-key"
             assert kwargs["include_row_ids"] is True
-            return [dict(message, _row_id=100 + index) for index, message in enumerate(history)]
+            return [
+                dict(message, _row_id=100 + index)
+                for index, message in enumerate(history)
+            ]
 
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     server._sessions["unstamped-durable-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "unstamped-durable-sid",
-                    "text": "retry",
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "unstamped-durable-sid",
+                "text": "retry",
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
 
         assert resp["error"]["code"] == 4004
         assert "truncate_before_row_id" in resp["error"]["message"]
@@ -5519,7 +5823,9 @@ def test_prompt_submit_truncates_by_row_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -5532,24 +5838,20 @@ def test_prompt_submit_truncates_by_row_id(monkeypatch):
     server._sessions["row-id-trunc-sid"] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     started = []
-    monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: started.append(k)
-    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: started.append(k))
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "row-id-trunc-sid",
-                    "text": "new turn",
-                    "truncate_before_row_id": 103,
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "row-id-trunc-sid",
+                "text": "new turn",
+                "truncate_before_row_id": 103,
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is None
         assert len(sess["history"]) == 2
         assert sess["history"][-1]["content"] == "reply 1"
@@ -5564,7 +5866,9 @@ def test_prompt_submit_truncates_by_string_row_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -5579,18 +5883,16 @@ def test_prompt_submit_truncates_by_string_row_id(monkeypatch):
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "str-row-id-trunc-sid",
-                    "text": "new turn",
-                    "truncate_before_row_id": 103,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "str-row-id-trunc-sid",
+                "text": "new turn",
+                "truncate_before_row_id": 103,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is None
         assert len(sess["history"]) == 2
     finally:
@@ -5607,23 +5909,23 @@ def test_prompt_submit_refuses_ordinal_and_row_id_mismatch(monkeypatch):
     ]
     server._sessions["row-mismatch-sid"] = _session(history=list(history))
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "row-mismatch-sid",
-                    "text": "new turn",
-                    "truncate_before_row_id": 203,  # user turn ordinal 1
-                    "truncate_before_user_ordinal": 0,  # mismatch (stale 0)
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "row-mismatch-sid",
+                "text": "new turn",
+                "truncate_before_row_id": 203,  # user turn ordinal 1
+                "truncate_before_user_ordinal": 0,  # mismatch (stale 0)
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4030
         assert "does not match" in resp["error"]["message"]
@@ -5639,18 +5941,16 @@ def test_prompt_submit_refuses_boolean_row_id(monkeypatch):
     ]
     server._sessions["bool-row-sid"] = _session(history=list(history))
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "bool-row-sid",
-                    "text": "new turn",
-                    "truncate_before_row_id": True,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "bool-row-sid",
+                "text": "new turn",
+                "truncate_before_row_id": True,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4004
         assert "must be an integer" in resp["error"]["message"]
@@ -5665,18 +5965,16 @@ def test_prompt_submit_row_id_not_found(monkeypatch):
     ]
     server._sessions["missing-row-sid"] = _session(history=list(history))
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "missing-row-sid",
-                    "text": "new turn",
-                    "truncate_before_row_id": 999,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "missing-row-sid",
+                "text": "new turn",
+                "truncate_before_row_id": 999,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4018
         assert "no longer in session history" in resp["error"]["message"]
@@ -5700,7 +5998,7 @@ def test_prompt_submit_row_id_ignores_platform_id_fallback(monkeypatch):
                 "text": "new turn",
                 "truncate_before_row_id": 999,
                 "confirm_truncate": True,
-            }
+            },
         })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4018
@@ -5718,7 +6016,9 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -5730,16 +6030,34 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
     server._sessions["empty-trunc-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
         # Missing confirm → refuse.
-        resp = server.handle_request(
-            {
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "empty-trunc-sid",
+                "text": "fresh typed message",
+                "truncate_before_row_id": 101,
+                "truncate_before_user_ordinal": 0,
+                "confirm_truncate": True,
+            },
+        })
+        assert resp["error"]["code"] == 4028
+        assert "confirm_empty_truncate" in resp["error"]["message"]
+        # Explicit falsey values must not satisfy the opt-in either.
+        for falsey in (False, 0, "", "false", "no"):
+            resp = server.handle_request({
                 "id": "1",
                 "method": "prompt.submit",
                 "params": {
@@ -5748,27 +6066,9 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
                     "truncate_before_row_id": 101,
                     "truncate_before_user_ordinal": 0,
                     "confirm_truncate": True,
+                    "confirm_empty_truncate": falsey,
                 },
-            }
-        )
-        assert resp["error"]["code"] == 4028
-        assert "confirm_empty_truncate" in resp["error"]["message"]
-        # Explicit falsey values must not satisfy the opt-in either.
-        for falsey in (False, 0, "", "false", "no"):
-            resp = server.handle_request(
-                {
-                    "id": "1",
-                    "method": "prompt.submit",
-                    "params": {
-                        "session_id": "empty-trunc-sid",
-                        "text": "fresh typed message",
-                        "truncate_before_row_id": 101,
-                        "truncate_before_user_ordinal": 0,
-                        "confirm_truncate": True,
-                        "confirm_empty_truncate": falsey,
-                    },
-                }
-            )
+            })
             assert resp["error"]["code"] == 4028, falsey
         assert server._sessions["empty-trunc-sid"]["history"] == history
         assert server._sessions["empty-trunc-sid"]["running"] is False
@@ -5807,7 +6107,9 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
             self._target()
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -5827,20 +6129,18 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
         monkeypatch.setattr(server, "_emit", lambda *a: None)
         monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "confirm-empty-sid",
-                    "text": "first",
-                    "truncate_before_row_id": 101,
-                    "truncate_before_user_ordinal": 0,
-                    "confirm_truncate": True,
-                    "confirm_empty_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "confirm-empty-sid",
+                "text": "first",
+                "truncate_before_row_id": 101,
+                "truncate_before_user_ordinal": 0,
+                "confirm_truncate": True,
+                "confirm_empty_truncate": True,
+            },
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert seen["prompt"] == "first"
         assert seen["history"] == []
@@ -5893,12 +6193,10 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
         session["running"] = False
 
     monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
-    server._sessions.update(
-        {
-            "sid-a-live-handoff": session_a,
-            "sid-b-live-handoff": session_b,
-        }
-    )
+    server._sessions.update({
+        "sid-a-live-handoff": session_a,
+        "sid-b-live-handoff": session_b,
+    })
     process_registry._completion_consumed.discard(event["session_id"])
 
     try:
@@ -5970,9 +6268,7 @@ def test_completion_ownership_lineage_lookup_failure_fails_closed(monkeypatch):
         {"origin_ui_session_id": "missing-owner-sid"},
     ],
 )
-def test_notification_poller_live_loop_drops_addressed_orphan(
-    monkeypatch, routing
-):
+def test_notification_poller_live_loop_drops_addressed_orphan(monkeypatch, routing):
     """A live poll never injects an addressed event whose owner is gone."""
     import queue as _queue_mod
 
@@ -6045,16 +6341,14 @@ def test_notification_poller_drops_orphaned_events(monkeypatch, routing):
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_ghost")
-    isolated_queue.put(
-        {
-            "type": "completion",
-            "session_id": "proc_ghost",
-            "command": "echo from ghost",
-            "exit_code": 0,
-            "output": "ghost output",
-            **routing,
-        }
-    )
+    isolated_queue.put({
+        "type": "completion",
+        "session_id": "proc_ghost",
+        "command": "echo from ghost",
+        "exit_code": 0,
+        "output": "ghost output",
+        **routing,
+    })
 
     stop = threading.Event()
     stop.set()
@@ -6084,9 +6378,7 @@ def test_notification_poller_drops_orphaned_events(monkeypatch, routing):
         ({"session_key": "old-parent-key"}, "session-a"),
     ],
 )
-def test_notification_poller_delivers_owned_events(
-    monkeypatch, routing, resolved_key
-):
+def test_notification_poller_delivers_owned_events(monkeypatch, routing, resolved_key):
     """Direct, UI-origin, and compression-lineage owners are delivered."""
     import queue as _queue_mod
 
@@ -6111,16 +6403,14 @@ def test_notification_poller_delivers_owned_events(
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_mine")
-    isolated_queue.put(
-        {
-            "type": "completion",
-            "session_id": "proc_mine",
-            "command": "echo mine",
-            "exit_code": 0,
-            "output": "mine",
-            **routing,
-        }
-    )
+    isolated_queue.put({
+        "type": "completion",
+        "session_id": "proc_mine",
+        "command": "echo mine",
+        "exit_code": 0,
+        "output": "mine",
+        **routing,
+    })
 
     stop = threading.Event()
     stop.set()
@@ -6139,9 +6429,7 @@ def test_notification_poller_delivers_owned_events(
             process_registry.completion_queue.get_nowait()
 
 
-def _configure_immediate_prompt_run(
-    monkeypatch, tmp_path, *, immediate_threads=True
-):
+def _configure_immediate_prompt_run(monkeypatch, tmp_path, *, immediate_threads=True):
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None, **_kwargs):
             self._target = target
@@ -6236,7 +6524,9 @@ class _RecordingAgent:
     def clear_interrupt(self):
         return None
 
-    def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+    def run_conversation(
+        self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+    ):
         self._turns.append(prompt)
         return {"final_response": "", "messages": []}
 
@@ -6380,9 +6670,7 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
 
     from tools.process_registry import process_registry
 
-    _configure_immediate_prompt_run(
-        monkeypatch, tmp_path, immediate_threads=False
-    )
+    _configure_immediate_prompt_run(monkeypatch, tmp_path, immediate_threads=False)
     real_thread_class = threading.Thread
     threads = []
     nested_started = threading.Event()
@@ -6395,7 +6683,9 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
         return thread
 
     class _BlockingNotificationAgent(_RecordingAgent):
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             turns.append(prompt)
             if "proc_batch_1" in prompt:
                 nested_started.set()
@@ -6567,8 +6857,6 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
         server._sessions.pop("sid_b", None)
         process_registry._completion_consumed.discard(event["session_id"])
 
-
-
     """session.create must NOT eagerly write a DB row.
 
     Every TUI/desktop launch opens a session here just to paint the composer;
@@ -6589,9 +6877,11 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
         lambda *a, **k: types.SimpleNamespace(daemon=False, start=lambda: None),
     )
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.create", "params": {"cols": 80}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.create",
+        "params": {"cols": 80},
+    })
     sid = resp["result"]["session_id"]
     try:
         assert resp["result"]["stored_session_id"]
@@ -6605,20 +6895,43 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
-            created.append(
-                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
-            )
+        def create_session(
+            self,
+            key,
+            source=None,
+            model=None,
+            model_config=None,
+            parent_session_id=None,
+            cwd=None,
+            profile_name=None,
+        ):
+            created.append({
+                "key": key,
+                "source": source,
+                "model": model,
+                "model_config": model_config,
+                "cwd": cwd,
+            })
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
 
-    server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
+    server._ensure_session_db_row({
+        "session_key": "k1",
+        "cwd": str(tmp_path),
+        "explicit_cwd": True,
+    })
 
     assert created == [
-        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
+        {
+            "key": "k1",
+            "source": "tui",
+            "model": "test-model",
+            "model_config": None,
+            "cwd": str(tmp_path),
+        }
     ]
 
 
@@ -6626,10 +6939,23 @@ def test_ensure_session_db_row_persists_session_source(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
-            created.append(
-                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
-            )
+        def create_session(
+            self,
+            key,
+            source=None,
+            model=None,
+            model_config=None,
+            parent_session_id=None,
+            cwd=None,
+            profile_name=None,
+        ):
+            created.append({
+                "key": key,
+                "source": source,
+                "model": model,
+                "model_config": model_config,
+                "cwd": cwd,
+            })
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
@@ -6637,7 +6963,13 @@ def test_ensure_session_db_row_persists_session_source(monkeypatch):
     server._ensure_session_db_row({"session_key": "k1", "source": "tool"})
 
     assert created == [
-        {"key": "k1", "source": "tool", "model": "test-model", "model_config": None, "cwd": None}
+        {
+            "key": "k1",
+            "source": "tool",
+            "model": "test-model",
+            "model_config": None,
+            "cwd": None,
+        }
     ]
 
 
@@ -6651,10 +6983,23 @@ def test_ensure_session_db_row_records_a_terminal_workspace(monkeypatch, tmp_pat
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
-            created.append(
-                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
-            )
+        def create_session(
+            self,
+            key,
+            source=None,
+            model=None,
+            model_config=None,
+            parent_session_id=None,
+            cwd=None,
+            profile_name=None,
+        ):
+            created.append({
+                "key": key,
+                "source": source,
+                "model": model,
+                "model_config": model_config,
+                "cwd": cwd,
+            })
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
@@ -6664,7 +7009,13 @@ def test_ensure_session_db_row_records_a_terminal_workspace(monkeypatch, tmp_pat
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
     assert created == [
-        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
+        {
+            "key": "k1",
+            "source": "tui",
+            "model": "test-model",
+            "model_config": None,
+            "cwd": str(tmp_path),
+        }
     ]
 
 
@@ -6674,18 +7025,41 @@ def test_ensure_session_db_row_defaults_desktop_to_no_workspace(monkeypatch, tmp
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
-            created.append(
-                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
-            )
+        def create_session(
+            self,
+            key,
+            source=None,
+            model=None,
+            model_config=None,
+            parent_session_id=None,
+            cwd=None,
+            profile_name=None,
+        ):
+            created.append({
+                "key": key,
+                "source": source,
+                "model": model,
+                "model_config": model_config,
+                "cwd": cwd,
+            })
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
-    server._ensure_session_db_row({"session_key": "k1", "source": "desktop", "cwd": str(tmp_path)})
+    server._ensure_session_db_row({
+        "session_key": "k1",
+        "source": "desktop",
+        "cwd": str(tmp_path),
+    })
 
     assert created == [
-        {"key": "k1", "source": "desktop", "model": "test-model", "model_config": None, "cwd": None}
+        {
+            "key": "k1",
+            "source": "desktop",
+            "model": "test-model",
+            "model_config": None,
+            "cwd": None,
+        }
     ]
 
 
@@ -6701,22 +7075,32 @@ def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
-            created.append(
-                {"key": key, "model": model, "model_config": model_config, "cwd": cwd}
-            )
+        def create_session(
+            self,
+            key,
+            source=None,
+            model=None,
+            model_config=None,
+            parent_session_id=None,
+            cwd=None,
+            profile_name=None,
+        ):
+            created.append({
+                "key": key,
+                "model": model,
+                "model_config": model_config,
+                "cwd": cwd,
+            })
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
 
-    server._ensure_session_db_row(
-        {
-            "session_key": "k1",
-            "model_override": {"model": "openai/gpt-5.5", "provider": "openrouter"},
-            "create_reasoning_override": {"effort": "high"},
-            "create_service_tier_override": "priority",
-        }
-    )
+    server._ensure_session_db_row({
+        "session_key": "k1",
+        "model_override": {"model": "openai/gpt-5.5", "provider": "openrouter"},
+        "create_reasoning_override": {"effort": "high"},
+        "create_service_tier_override": "priority",
+    })
 
     assert len(created) == 1
     row = created[0]
@@ -6733,7 +7117,16 @@ def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
+        def create_session(
+            self,
+            key,
+            source=None,
+            model=None,
+            model_config=None,
+            parent_session_id=None,
+            cwd=None,
+            profile_name=None,
+        ):
             created.append({"model": model, "model_config": model_config})
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -6765,9 +7158,10 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_state.SessionDB", _ProfileDB)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
-    server._ensure_session_db_row(
-        {"session_key": "k1", "profile_home": str(profile_home)}
-    )
+    server._ensure_session_db_row({
+        "session_key": "k1",
+        "profile_home": str(profile_home),
+    })
 
     assert created and created[0]["key"] == "k1"
     assert created[0]["profile_name"] == "mlperf"
@@ -6795,13 +7189,11 @@ def test_session_title_clears_pending_after_persist(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.title",
-                "params": {"session_id": "sid", "title": "fresh"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid", "title": "fresh"},
+        })
 
         assert resp["result"]["pending"] is False
         assert resp["result"]["title"] == "fresh"
@@ -6830,13 +7222,11 @@ def test_session_title_does_not_queue_noop_when_row_exists(monkeypatch):
     server._sessions["sid"] = _session(pending_title="stale")
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.title",
-                "params": {"session_id": "sid", "title": "same title"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid", "title": "same title"},
+        })
 
         assert resp["result"]["pending"] is False
         assert resp["result"]["title"] == "same title"
@@ -6853,9 +7243,11 @@ def test_session_title_get_falls_back_to_pending_when_db_read_throws(monkeypatch
     server._sessions["sid"] = _session(pending_title="queued title")
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid"},
+        })
         assert resp["result"]["title"] == "queued title"
     finally:
         server._sessions.pop("sid", None)
@@ -6880,9 +7272,11 @@ def test_session_title_get_retries_persist_for_pending_title(monkeypatch):
     server._sessions["sid"] = _session(pending_title="queued title")
     monkeypatch.setattr(server, "_get_db", lambda: db)
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid"},
+        })
         assert resp["result"]["title"] == "queued title"
         assert server._sessions["sid"]["pending_title"] is None
     finally:
@@ -6908,9 +7302,11 @@ def test_session_title_get_retries_pending_even_when_db_has_title(monkeypatch):
     server._sessions["sid"] = _session(pending_title="queued title")
     monkeypatch.setattr(server, "_get_db", lambda: db)
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid"},
+        })
         assert resp["result"]["title"] == "queued title"
         assert server._sessions["sid"]["pending_title"] is None
     finally:
@@ -6925,13 +7321,11 @@ def test_session_title_rejects_empty_title_with_specific_error_code(monkeypatch)
     server._sessions["sid"] = _session()
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.title",
-                "params": {"session_id": "sid", "title": "   "},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid", "title": "   "},
+        })
         assert "error" in resp
         assert resp["error"]["code"] == 4021
     finally:
@@ -6952,13 +7346,11 @@ def test_session_title_set_maps_valueerror_to_user_error(monkeypatch):
     server._sessions["sid"] = _session()
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.title",
-                "params": {"session_id": "sid", "title": "dup"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid", "title": "dup"},
+        })
         assert "error" in resp
         assert resp["error"]["code"] == 4022
         assert "already in use" in resp["error"]["message"]
@@ -6980,13 +7372,11 @@ def test_session_title_set_errors_when_row_lookup_fails_after_noop(monkeypatch):
     server._sessions["sid"] = _session()
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.title",
-                "params": {"session_id": "sid", "title": "fresh"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid", "title": "fresh"},
+        })
         assert "error" in resp
         assert resp["error"]["code"] == 5007
         assert "row lookup failed" in resp["error"]["message"]
@@ -7053,9 +7443,11 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
 
     try:
-        server.handle_request(
-            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
-        )
+        server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        })
         assert session["pending_title"] is None
     finally:
         server._sessions.pop("sid", None)
@@ -7066,23 +7458,19 @@ def test_config_set_yolo_toggles_session_scope():
 
     server._sessions["sid"] = _session()
     try:
-        resp_on = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "yolo"},
-            }
-        )
+        resp_on = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "yolo"},
+        })
         assert resp_on["result"]["value"] == "1"
         assert is_session_yolo_enabled("session-key") is True
 
-        resp_off = server.handle_request(
-            {
-                "id": "2",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "yolo"},
-            }
-        )
+        resp_off = server.handle_request({
+            "id": "2",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "yolo"},
+        })
         assert resp_off["result"]["value"] == "0"
         assert is_session_yolo_enabled("session-key") is False
     finally:
@@ -7098,24 +7486,20 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
-    resp_on = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "yolo", "scope": "global"},
-        }
-    )
+    resp_on = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "yolo", "scope": "global"},
+    })
     assert resp_on["result"]["value"] == "1"
     assert resp_on["result"]["scope"] == "global"
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
 
-    resp_off = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {"key": "yolo", "scope": "global"},
-        }
-    )
+    resp_off = server.handle_request({
+        "id": "2",
+        "method": "config.set",
+        "params": {"key": "yolo", "scope": "global"},
+    })
     assert resp_off["result"]["value"] == "0"
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
 
@@ -7134,9 +7518,11 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
         yaml.safe_dump({"approvals": {"timeout": 15}})
     )
 
-    response = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
-    )
+    response = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "approvals.mode"},
+    })
     assert response["result"]["value"] == "smart"
 
 
@@ -7155,9 +7541,11 @@ def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_valu
         yaml.safe_dump({"approvals": {"mode": "sometimes"}})
     )
 
-    response = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
-    )
+    response = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "approvals.mode"},
+    })
     assert response["result"]["value"] == "manual"
 
 
@@ -7172,9 +7560,11 @@ def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
         yaml.safe_dump({"approvals": {"mode": False}})
     )
 
-    response = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
-    )
+    response = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "approvals.mode"},
+    })
     assert response["result"]["value"] == "off"
 
 
@@ -7193,18 +7583,19 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
     server._sessions["sid"] = {"agent": object(), "session_key": "profile-session"}
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"key": "approvals.mode", "value": "manual"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "approvals.mode", "value": "manual"},
+        })
     finally:
         server._sessions.clear()
 
     assert resp["result"] == {"key": "approvals.mode", "value": "manual"}
-    assert yaml.safe_load((tmp_path / "config.yaml").read_text())["approvals"]["mode"] == "manual"
+    assert (
+        yaml.safe_load((tmp_path / "config.yaml").read_text())["approvals"]["mode"]
+        == "manual"
+    )
     assert emitted and emitted[0][0:2] == ("session.info", "sid")
     assert emitted[0][2]["approval_mode"] == "manual"
 
@@ -7224,9 +7615,7 @@ def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch
         yaml.safe_dump({"display": {"pet": {"enabled": "false"}}})
     )
 
-    response = server.handle_request(
-        {"id": "1", "method": "pet.gallery", "params": {}}
-    )
+    response = server.handle_request({"id": "1", "method": "pet.gallery", "params": {}})
     assert response["result"]["enabled"] is False
 
 
@@ -7255,22 +7644,30 @@ def test_pet_info_known_revision_elides_spritesheet(monkeypatch):
         "scale": 0.33,
     }
 
-    monkeypatch.setattr(server, "_pet_active_selection", lambda: (True, _FakePet(), 0.33))
-    monkeypatch.setattr(server, "_pet_sprite_payload", lambda pet, *, scale: dict(payload))
+    monkeypatch.setattr(
+        server, "_pet_active_selection", lambda: (True, _FakePet(), 0.33)
+    )
+    monkeypatch.setattr(
+        server, "_pet_sprite_payload", lambda pet, *, scale: dict(payload)
+    )
 
     # Matching revision: bytes elided, unchanged marker set.
-    resp = server.handle_request(
-        {"id": "1", "method": "pet.info", "params": {"knownRevision": "123:456"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "pet.info",
+        "params": {"knownRevision": "123:456"},
+    })
     assert resp["result"]["enabled"] is True
     assert "spritesheetBase64" not in resp["result"]
     assert resp["result"]["spritesheetUnchanged"] is True
     assert resp["result"]["spritesheetRevision"] == "123:456"
 
     # Stale revision: full payload still flows.
-    resp = server.handle_request(
-        {"id": "2", "method": "pet.info", "params": {"knownRevision": "999:999"}}
-    )
+    resp = server.handle_request({
+        "id": "2",
+        "method": "pet.info",
+        "params": {"knownRevision": "999:999"},
+    })
     assert resp["result"]["spritesheetBase64"] == "A" * 1024
     assert "spritesheetUnchanged" not in resp["result"]
 
@@ -7284,13 +7681,11 @@ def test_desktop_contract_includes_approval_mode_rpc():
 
 
 def test_config_set_approval_mode_rejects_unknown_value():
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "approvals.mode", "value": "sometimes"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "approvals.mode", "value": "sometimes"},
+    })
 
     assert resp["error"]["code"] == 4002
 
@@ -7303,24 +7698,20 @@ def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatc
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "yolo", "scope": "global", "value": "1"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "yolo", "scope": "global", "value": "1"},
+    })
     assert resp["result"]["value"] == "1"
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
 
     # Setting it on again is idempotent — stays off.
-    resp_again = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {"key": "yolo", "scope": "global", "value": "1"},
-        }
-    )
+    resp_again = server.handle_request({
+        "id": "2",
+        "method": "config.set",
+        "params": {"key": "yolo", "scope": "global", "value": "1"},
+    })
     assert resp_again["result"]["value"] == "1"
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
 
@@ -7352,13 +7743,11 @@ def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "fast", "value": "fast"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "fast", "value": "fast"},
+        })
         assert resp["result"]["value"] == "fast"
         assert agent.service_tier == "priority"
         assert agent.request_overrides == {
@@ -7369,13 +7758,11 @@ def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
         assert writes == []
         assert ("session.info", "sid", {"model": "x"}) in emits
 
-        resp_normal = server.handle_request(
-            {
-                "id": "2",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "fast", "value": "normal"},
-            }
-        )
+        resp_normal = server.handle_request({
+            "id": "2",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "fast", "value": "normal"},
+        })
         assert resp_normal["result"]["value"] == "normal"
         assert agent.service_tier is None
         assert agent.request_overrides == {"foo": "bar"}
@@ -7399,13 +7786,11 @@ def test_config_set_fast_status_is_non_mutating(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "fast", "value": "status"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "fast", "value": "status"},
+        })
         assert resp["result"]["value"] == "fast"
         assert writes == []
         assert emits == []
@@ -7431,13 +7816,11 @@ def test_config_set_fast_rejects_unsupported_model(monkeypatch):
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "fast", "value": "fast"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "fast", "value": "fast"},
+        })
         assert resp["error"]["code"] == 4002
         assert "not available" in resp["error"]["message"]
         assert agent.service_tier is None
@@ -7461,13 +7844,11 @@ def test_config_set_fast_rejects_missing_model(monkeypatch):
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "fast", "value": "fast"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "fast", "value": "fast"},
+        })
         assert resp["error"]["code"] == 4002
         assert "without a selected model" in resp["error"]["message"]
         assert agent.service_tier is None
@@ -7489,18 +7870,18 @@ def test_config_busy_get_and_set(monkeypatch):
         server, "_write_config_key", lambda path, value: writes.append((path, value))
     )
 
-    get_resp = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "busy"}}
-    )
+    get_resp = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "busy"},
+    })
     assert get_resp["result"]["value"] == "steer"
 
-    set_resp = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {"key": "busy", "value": "interrupt"},
-        }
-    )
+    set_resp = server.handle_request({
+        "id": "2",
+        "method": "config.set",
+        "params": {"key": "busy", "value": "interrupt"},
+    })
     assert set_resp["result"]["value"] == "interrupt"
     assert ("display.busy_input_mode", "interrupt") in writes
 
@@ -7508,13 +7889,11 @@ def test_config_busy_get_and_set(monkeypatch):
 def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeypatch):
     monkeypatch.setenv("HERMES_YOLO_MODE", "false")
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "yolo"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "yolo"},
+    })
 
     assert resp["result"]["value"] == "1"
     assert os.environ.get("HERMES_YOLO_MODE") == "1"
@@ -7523,9 +7902,11 @@ def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeyp
 def test_config_get_statusbar_survives_non_dict_display(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"display": "broken"})
 
-    resp = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "statusbar"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "statusbar"},
+    })
 
     assert resp["result"]["value"] == "top"
 
@@ -7533,9 +7914,11 @@ def test_config_get_statusbar_survives_non_dict_display(monkeypatch):
 def test_config_get_busy_survives_non_dict_display(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"display": "broken"})
 
-    resp = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "busy"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "busy"},
+    })
 
     assert resp["result"]["value"] == "interrupt"
 
@@ -7547,13 +7930,11 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
     cfg_path.write_text(yaml.safe_dump({"display": "broken"}))
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "statusbar", "value": "bottom"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "statusbar", "value": "bottom"},
+    })
 
     assert resp["result"]["value"] == "bottom"
     saved = yaml.safe_load(cfg_path.read_text())
@@ -7565,19 +7946,17 @@ def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
-        yaml.safe_dump(
-            {"display": {"sections": {"tools": "expanded", "activity": "hidden"}}}
-        )
+        yaml.safe_dump({
+            "display": {"sections": {"tools": "expanded", "activity": "hidden"}}
+        })
     )
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "details_mode", "value": "collapsed"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "details_mode", "value": "collapsed"},
+    })
 
     assert resp["result"] == {"key": "details_mode", "value": "collapsed"}
     saved = yaml.safe_load(cfg_path.read_text())
@@ -7596,13 +7975,11 @@ def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.yaml"
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "details_mode.activity", "value": "hidden"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "details_mode.activity", "value": "hidden"},
+    })
 
     assert resp["result"] == {"key": "details_mode.activity", "value": "hidden"}
     saved = yaml.safe_load(cfg_path.read_text())
@@ -7614,19 +7991,17 @@ def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
-        yaml.safe_dump(
-            {"display": {"sections": {"activity": "hidden", "tools": "expanded"}}}
-        )
+        yaml.safe_dump({
+            "display": {"sections": {"activity": "hidden", "tools": "expanded"}}
+        })
     )
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "details_mode.activity", "value": ""},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "details_mode.activity", "value": ""},
+    })
 
     assert resp["result"] == {"key": "details_mode.activity", "value": ""}
     saved = yaml.safe_load(cfg_path.read_text())
@@ -7636,22 +8011,18 @@ def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch
 def test_config_set_section_rejects_unknown_section_or_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
-    bad_section = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "details_mode.bogus", "value": "hidden"},
-        }
-    )
+    bad_section = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "details_mode.bogus", "value": "hidden"},
+    })
     assert bad_section["error"]["code"] == 4002
 
-    bad_mode = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {"key": "details_mode.tools", "value": "maximised"},
-        }
-    )
+    bad_mode = server.handle_request({
+        "id": "2",
+        "method": "config.set",
+        "params": {"key": "details_mode.tools", "value": "maximised"},
+    })
     assert bad_mode["error"]["code"] == 4002
 
 
@@ -7664,29 +8035,37 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
         server, "_write_config_key", lambda path, value: writes.append((path, value))
     )
 
-    get_legacy = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "mouse"}}
-    )
+    get_legacy = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "mouse"},
+    })
     assert get_legacy["result"]["value"] == "off"
 
-    set_toggle = server.handle_request(
-        {"id": "2", "method": "config.set", "params": {"key": "mouse"}}
-    )
+    set_toggle = server.handle_request({
+        "id": "2",
+        "method": "config.set",
+        "params": {"key": "mouse"},
+    })
     # /mouse (no arg) toggles between 'all' and 'off'. Starting from
     # tui_mouse: False (→ 'off'), the toggle flips to 'all'.
     assert set_toggle["result"] == {"key": "mouse", "value": "all"}
     assert writes == [("display.mouse_tracking", "all")]
 
     cfg["display"] = {"mouse_tracking": 0, "tui_mouse": True}
-    get_canonical = server.handle_request(
-        {"id": "3", "method": "config.get", "params": {"key": "mouse"}}
-    )
+    get_canonical = server.handle_request({
+        "id": "3",
+        "method": "config.get",
+        "params": {"key": "mouse"},
+    })
     assert get_canonical["result"]["value"] == "off"
 
     cfg["display"] = {"mouse_tracking": None, "tui_mouse": False}
-    get_null = server.handle_request(
-        {"id": "4", "method": "config.get", "params": {"key": "mouse"}}
-    )
+    get_null = server.handle_request({
+        "id": "4",
+        "method": "config.get",
+        "params": {"key": "mouse"},
+    })
     # mouse_tracking present-but-None defers neither to tui_mouse nor to
     # the legacy off bucket: it falls through to the 'all' default.
     assert get_null["result"]["value"] == "all"
@@ -7702,35 +8081,29 @@ def test_config_mouse_accepts_preset_strings_and_aliases(monkeypatch):
     )
 
     # Direct preset.
-    set_wheel = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "mouse", "value": "wheel"},
-        }
-    )
+    set_wheel = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "mouse", "value": "wheel"},
+    })
     assert set_wheel["result"] == {"key": "mouse", "value": "wheel"}
     assert writes[-1] == ("display.mouse_tracking", "wheel")
 
     # Alias for buttons.
-    set_click = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {"key": "mouse", "value": "click"},
-        }
-    )
+    set_click = server.handle_request({
+        "id": "2",
+        "method": "config.set",
+        "params": {"key": "mouse", "value": "click"},
+    })
     assert set_click["result"] == {"key": "mouse", "value": "buttons"}
     assert writes[-1] == ("display.mouse_tracking", "buttons")
 
     # Unknown value → 4002.
-    bad = server.handle_request(
-        {
-            "id": "3",
-            "method": "config.set",
-            "params": {"key": "mouse", "value": "rainbows"},
-        }
-    )
+    bad = server.handle_request({
+        "id": "3",
+        "method": "config.set",
+        "params": {"key": "mouse", "value": "rainbows"},
+    })
     assert bad["error"]["code"] == 4002
 
 
@@ -7779,7 +8152,11 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
         },
     )
 
-    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+    resp = server.handle_request({
+        "id": "1",
+        "method": "setup.runtime_check",
+        "params": {},
+    })
 
     assert resp["result"] == {
         "ok": False,
@@ -7801,7 +8178,11 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
         },
     )
 
-    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+    resp = server.handle_request({
+        "id": "1",
+        "method": "setup.runtime_check",
+        "params": {},
+    })
 
     assert resp["result"]["ok"] is True
     assert resp["result"]["provider"] == "custom"
@@ -7818,7 +8199,11 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
         },
     )
 
-    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+    resp = server.handle_request({
+        "id": "1",
+        "method": "setup.runtime_check",
+        "params": {},
+    })
 
     assert resp["result"]["ok"] is False
     assert resp["result"]["provider"] == "bedrock"
@@ -7846,13 +8231,19 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
         fake_resolve,
     )
 
-    scoped = server.handle_request(
-        {"id": "1", "method": "setup.runtime_check", "params": {"provider": "nous"}}
-    )
+    scoped = server.handle_request({
+        "id": "1",
+        "method": "setup.runtime_check",
+        "params": {"provider": "nous"},
+    })
     assert scoped["result"]["ok"] is True
     assert scoped["result"]["provider"] == "nous"
 
-    default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+    default = server.handle_request({
+        "id": "1",
+        "method": "setup.runtime_check",
+        "params": {},
+    })
     assert default["result"]["ok"] is False
     assert default["result"]["provider"] == "anthropic"
 
@@ -7860,16 +8251,20 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
 def test_complete_slash_drops_removed_provider_alias():
     # `/provider` was folded into a single `/model` command, so autocomplete
     # must no longer offer the dead alias...
-    resp = server.handle_request(
-        {"id": "1", "method": "complete.slash", "params": {"text": "/pro"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "complete.slash",
+        "params": {"text": "/pro"},
+    })
 
     assert not any(item["text"] == "provider" for item in resp["result"]["items"])
 
     # ...while `/model` stays the canonical command.
-    resp_model = server.handle_request(
-        {"id": "2", "method": "complete.slash", "params": {"text": "/mod"}}
-    )
+    resp_model = server.handle_request({
+        "id": "2",
+        "method": "complete.slash",
+        "params": {"text": "/mod"},
+    })
 
     assert any(item["text"] == "model" for item in resp_model["result"]["items"])
 
@@ -7879,9 +8274,11 @@ def test_complete_slash_returns_plain_string_fields():
     # display/display_meta; the TUI's CompletionItem contract is plain
     # strings, and shipping the raw list trips Ink's row layout into
     # 1-char truncation of the next column (/goal → /goa).
-    resp = server.handle_request(
-        {"id": "1", "method": "complete.slash", "params": {"text": "/g"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "complete.slash",
+        "params": {"text": "/g"},
+    })
 
     items = resp["result"]["items"]
     goal = next((it for it in items if it["text"] == "goal"), None)
@@ -7895,35 +8292,41 @@ def test_complete_slash_returns_plain_string_fields():
 
 
 def test_complete_slash_includes_tui_details_command():
-    resp = server.handle_request(
-        {"id": "1", "method": "complete.slash", "params": {"text": "/det"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "complete.slash",
+        "params": {"text": "/det"},
+    })
 
     assert any(item["text"] == "/details" for item in resp["result"]["items"])
 
 
 def test_complete_slash_includes_tui_mouse_command():
-    resp = server.handle_request(
-        {"id": "1", "method": "complete.slash", "params": {"text": "/mou"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "complete.slash",
+        "params": {"text": "/mou"},
+    })
 
     assert any(item["text"] == "/mouse" for item in resp["result"]["items"])
 
 
 def test_complete_slash_details_args():
-    resp_root = server.handle_request(
-        {"id": "0", "method": "complete.slash", "params": {"text": "/details"}}
-    )
-    resp_section = server.handle_request(
-        {"id": "1", "method": "complete.slash", "params": {"text": "/details t"}}
-    )
-    resp_mode = server.handle_request(
-        {
-            "id": "2",
-            "method": "complete.slash",
-            "params": {"text": "/details thinking e"},
-        }
-    )
+    resp_root = server.handle_request({
+        "id": "0",
+        "method": "complete.slash",
+        "params": {"text": "/details"},
+    })
+    resp_section = server.handle_request({
+        "id": "1",
+        "method": "complete.slash",
+        "params": {"text": "/details t"},
+    })
+    resp_mode = server.handle_request({
+        "id": "2",
+        "method": "complete.slash",
+        "params": {"text": "/details thinking e"},
+    })
 
     assert resp_root["result"]["replace_from"] == len("/details")
     assert any(item["text"] == " thinking" for item in resp_root["result"]["items"])
@@ -7932,9 +8335,11 @@ def test_complete_slash_details_args():
 
 
 def test_complete_slash_reasoning_includes_current_efforts_and_global_scope():
-    resp = server.handle_request(
-        {"id": "1", "method": "complete.slash", "params": {"text": "/reasoning "}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "complete.slash",
+        "params": {"text": "/reasoning "},
+    })
 
     values = {item["text"] for item in resp["result"]["items"]}
     assert {"max", "ultra", "--global"} <= values
@@ -7970,9 +8375,11 @@ def _slash_skill_fixtures(monkeypatch):
 
 
 def _slash_completions(text: str) -> list[dict]:
-    resp = server.handle_request(
-        {"id": "1", "method": "complete.slash", "params": {"text": text}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "complete.slash",
+        "params": {"text": text},
+    })
     return resp["result"]["items"]
 
 
@@ -7994,7 +8401,9 @@ def test_complete_slash_ranks_skills_by_recorded_usage(monkeypatch):
     _slash_skill_fixtures(monkeypatch)
 
     skills = [
-        item["text"].strip() for item in _slash_completions("/") if item["kind"] == "skill"
+        item["text"].strip()
+        for item in _slash_completions("/")
+        if item["kind"] == "skill"
     ]
 
     assert skills[:3] == ["work", "research", "clean"]
@@ -8030,69 +8439,66 @@ def test_complete_slash_leaves_argument_stages_alone(monkeypatch):
 
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
-    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  reasoning_effort: medium\n", encoding="utf-8"
+    )
     agent = types.SimpleNamespace(reasoning_config=None)
     server._sessions["sid"] = _session(agent=agent)
 
-    resp_effort = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "reasoning",
-                "value": "low",
-            },
-        }
-    )
+    resp_effort = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {
+            "session_id": "sid",
+            "key": "reasoning",
+            "value": "low",
+        },
+    })
     assert resp_effort["result"]["value"] == "low"
     assert agent.reasoning_config == {"enabled": True, "effort": "low"}
-    assert server._sessions["sid"]["create_reasoning_override"] == {"enabled": True, "effort": "low"}
+    assert server._sessions["sid"]["create_reasoning_override"] == {
+        "enabled": True,
+        "effort": "low",
+    }
     assert server._load_cfg()["agent"]["reasoning_effort"] == "medium"
 
-    resp_status = server.handle_request(
-        {
-            "id": "5",
-            "method": "config.get",
-            "params": {"session_id": "sid", "key": "reasoning"},
-        }
-    )
+    resp_status = server.handle_request({
+        "id": "5",
+        "method": "config.get",
+        "params": {"session_id": "sid", "key": "reasoning"},
+    })
     assert resp_status["result"]["value"] == "low"
 
-    resp_global_status = server.handle_request(
-        {"id": "6", "method": "config.get", "params": {"key": "reasoning"}}
-    )
+    resp_global_status = server.handle_request({
+        "id": "6",
+        "method": "config.get",
+        "params": {"key": "reasoning"},
+    })
     assert resp_global_status["result"]["value"] == "medium"
 
     del server._sessions["sid"]["create_reasoning_override"]
     agent.reasoning_config = {"enabled": True, "effort": "high"}
-    resp_agent_status = server.handle_request(
-        {
-            "id": "7",
-            "method": "config.get",
-            "params": {"session_id": "sid", "key": "reasoning"},
-        }
-    )
+    resp_agent_status = server.handle_request({
+        "id": "7",
+        "method": "config.get",
+        "params": {"session_id": "sid", "key": "reasoning"},
+    })
     assert resp_agent_status["result"]["value"] == "high"
 
-    resp_show = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {"session_id": "sid", "key": "reasoning", "value": "show"},
-        }
-    )
+    resp_show = server.handle_request({
+        "id": "2",
+        "method": "config.set",
+        "params": {"session_id": "sid", "key": "reasoning", "value": "show"},
+    })
     assert resp_show["result"]["value"] == "show"
     assert server._sessions["sid"]["show_reasoning"] is True
     assert server._load_cfg()["display"]["sections"]["thinking"] == "expanded"
 
-    resp_hide = server.handle_request(
-        {
-            "id": "3",
-            "method": "config.set",
-            "params": {"session_id": "sid", "key": "reasoning", "value": "hide"},
-        }
-    )
+    resp_hide = server.handle_request({
+        "id": "3",
+        "method": "config.set",
+        "params": {"session_id": "sid", "key": "reasoning", "value": "hide"},
+    })
     assert resp_hide["result"]["value"] == "hide"
     assert server._sessions["sid"]["show_reasoning"] is False
     assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
@@ -8100,58 +8506,61 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     # /reasoning full | clamp — parity with the classic CLI reasoning_full
     # toggle. In the TUI these map to the thinking section's expand/collapse
     # rendering (no fixed 10-line recap exists here).
-    resp_full = server.handle_request(
-        {
-            "id": "4",
-            "method": "config.set",
-            "params": {"session_id": "sid", "key": "reasoning", "value": "full"},
-        }
-    )
+    resp_full = server.handle_request({
+        "id": "4",
+        "method": "config.set",
+        "params": {"session_id": "sid", "key": "reasoning", "value": "full"},
+    })
     assert resp_full["result"]["value"] == "full"
     cfg_full = server._load_cfg()
     assert cfg_full["display"]["reasoning_full"] is True
     assert cfg_full["display"]["sections"]["thinking"] == "expanded"
 
-    resp_clamp = server.handle_request(
-        {
-            "id": "5",
-            "method": "config.set",
-            "params": {"session_id": "sid", "key": "reasoning", "value": "clamp"},
-        }
-    )
+    resp_clamp = server.handle_request({
+        "id": "5",
+        "method": "config.set",
+        "params": {"session_id": "sid", "key": "reasoning", "value": "clamp"},
+    })
     assert resp_clamp["result"]["value"] == "clamp"
     cfg_clamp = server._load_cfg()
     assert cfg_clamp["display"]["reasoning_full"] is False
     assert cfg_clamp["display"]["sections"]["thinking"] == "collapsed"
 
 
-def test_config_set_reasoning_global_scope_clears_session_override(tmp_path, monkeypatch):
+def test_config_set_reasoning_global_scope_clears_session_override(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
-    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  reasoning_effort: medium\n", encoding="utf-8"
+    )
     agent = types.SimpleNamespace(reasoning_config=None)
     server._sessions["sid"] = _session(agent=agent)
-    server._sessions["sid"]["create_reasoning_override"] = {"enabled": True, "effort": "low"}
+    server._sessions["sid"]["create_reasoning_override"] = {
+        "enabled": True,
+        "effort": "low",
+    }
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "reasoning",
-                "value": "high",
-                "scope": "global",
-            },
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {
+            "session_id": "sid",
+            "key": "reasoning",
+            "value": "high",
+            "scope": "global",
+        },
+    })
 
     assert resp["result"]["value"] == "high"
     assert server._load_cfg()["agent"]["reasoning_effort"] == "high"
     assert "create_reasoning_override" not in server._sessions["sid"]
 
-    status = server.handle_request(
-        {"id": "2", "method": "config.get", "params": {"session_id": "sid", "key": "reasoning"}}
-    )
+    status = server.handle_request({
+        "id": "2",
+        "method": "config.get",
+        "params": {"session_id": "sid", "key": "reasoning"},
+    })
     assert status["result"]["value"] == "high"
 
 
@@ -8160,18 +8569,15 @@ def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch
     agent = types.SimpleNamespace(verbose_logging=False)
     server._sessions["sid"] = _session(agent=agent)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"session_id": "sid", "key": "verbose", "value": "cycle"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"session_id": "sid", "key": "verbose", "value": "cycle"},
+    })
 
     assert resp["result"]["value"] == "verbose"
     assert server._sessions["sid"]["tool_progress_mode"] == "verbose"
     assert agent.verbose_logging is True
-
 
 
 def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
@@ -8202,18 +8608,17 @@ def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
     monkeypatch.setattr(server, "_apply_model_switch", fake_apply)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "model", "value": "new/model"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "model", "value": "new/model"},
+        })
 
         assert resp["result"]["value"] == "new/model"
         assert calls == [("start", "sid"), ("apply", "sid", agent, "new/model")]
     finally:
         server._sessions.pop("sid", None)
+
 
 def test_config_set_model_uses_live_switch_path(monkeypatch):
     server._sessions["sid"] = _session()
@@ -8224,13 +8629,11 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
         return {"value": "new/model", "warning": "catalog unreachable"}
 
     monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"session_id": "sid", "key": "model", "value": "new/model"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"session_id": "sid", "key": "model", "value": "new/model"},
+    })
 
     assert resp["result"]["value"] == "new/model"
     assert resp["result"]["warning"] == "catalog unreachable"
@@ -8271,34 +8674,30 @@ def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "model",
-                "value": "openai/gpt-5.5-pro --provider openrouter",
-            },
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {
+            "session_id": "sid",
+            "key": "model",
+            "value": "openai/gpt-5.5-pro --provider openrouter",
+        },
+    })
 
     assert resp["result"]["confirm_required"] is True
     assert "did you mean to select openai/gpt-5.5?" in resp["result"]["confirm_message"]
     assert agent.switched is False
 
-    confirmed = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "model",
-                "value": "openai/gpt-5.5-pro --provider openrouter",
-                "confirm_expensive_model": True,
-            },
-        }
-    )
+    confirmed = server.handle_request({
+        "id": "2",
+        "method": "config.set",
+        "params": {
+            "session_id": "sid",
+            "key": "model",
+            "value": "openai/gpt-5.5-pro --provider openrouter",
+            "confirm_expensive_model": True,
+        },
+    })
 
     assert confirmed["result"]["confirm_required"] is False
     assert confirmed["result"]["value"] == "openai/gpt-5.5-pro"
@@ -8337,19 +8736,20 @@ def test_config_set_model_global_persists(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     # _persist_model_switch uses targeted save_config_value writes (#48305) so it
     # preserves sibling model.* keys instead of rewriting the whole block.
-    monkeypatch.setattr("cli.save_config_value", lambda key, value: saved_values.__setitem__(key, value) or True)
-
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "session_id": "sid",
-                "key": "model",
-                "value": "anthropic/claude-sonnet-4.6 --global",
-            },
-        }
+    monkeypatch.setattr(
+        "cli.save_config_value",
+        lambda key, value: saved_values.__setitem__(key, value) or True,
     )
+
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {
+            "session_id": "sid",
+            "key": "model",
+            "value": "anthropic/claude-sonnet-4.6 --global",
+        },
+    })
 
     assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
     assert seen["is_global"] is True
@@ -8363,9 +8763,19 @@ def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatc
     session = _session()
     session["agent"] = None
     server._sessions["sid"] = session
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "broken/model", "provider": "openrouter"}})
-    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: seen.__setitem__("build", seen["build"] + 1))
-    monkeypatch.setattr(server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1))
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {"default": "broken/model", "provider": "openrouter"}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *_args: seen.__setitem__("build", seen["build"] + 1),
+    )
+    monkeypatch.setattr(
+        server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1)
+    )
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
 
@@ -8381,20 +8791,20 @@ def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatc
             }
         raise RuntimeError(f"unexpected provider {requested}")
 
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider
+    )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "claude-sonnet-4.6 --provider anthropic",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic",
+            },
+        })
 
         assert resp["result"]["value"] == "claude-sonnet-4-6"
         assert seen["build"] == 0
@@ -8406,14 +8816,26 @@ def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatc
         server._sessions.pop("sid", None)
 
 
-def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(monkeypatch):
+def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(
+    monkeypatch,
+):
     seen = {"build": 0, "wait": 0}
     session = _session()
     session["agent"] = None
     server._sessions["sid"] = session
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "broken/model", "provider": "openrouter"}})
-    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: seen.__setitem__("build", seen["build"] + 1))
-    monkeypatch.setattr(server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1))
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {"default": "broken/model", "provider": "openrouter"}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *_args: seen.__setitem__("build", seen["build"] + 1),
+    )
+    monkeypatch.setattr(
+        server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1)
+    )
 
     def fake_runtime_provider(*, requested=None, **_kwargs):
         if requested is None:
@@ -8422,20 +8844,20 @@ def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(mo
             raise RuntimeError("missing anthropic API key")
         raise RuntimeError(f"unexpected provider {requested}")
 
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider
+    )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "claude-sonnet-4.6 --provider anthropic",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic",
+            },
+        })
 
         assert resp["error"]["code"] == 5001
         assert "anthropic" in resp["error"]["message"].lower()
@@ -8486,17 +8908,15 @@ def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     try:
-        server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "claude-sonnet-4.6 --provider anthropic",
-                },
-            }
-        )
+        server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic",
+            },
+        })
 
         # Shared process env is UNCHANGED (the contamination vector is gone).
         assert os.environ["HERMES_INFERENCE_PROVIDER"] == "openrouter"
@@ -8547,17 +8967,15 @@ def test_config_set_model_records_per_session_override_not_env(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     try:
-        server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "deepseek-v4-pro --provider custom:xuanji",
-                },
-            }
-        )
+        server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "deepseek-v4-pro --provider custom:xuanji",
+            },
+        })
 
         # No process-global env mutation.
         assert "HERMES_TUI_PROVIDER" not in os.environ
@@ -8613,9 +9031,11 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
             self.system_prompt = system_prompt
 
         def append_message(self, session_id, role, content=None, **_kwargs):
-            self.messages.append(
-                {"session_id": session_id, "role": role, "content": content}
-            )
+            self.messages.append({
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+            })
 
     agent = Agent()
     db = SessionDB()
@@ -8642,17 +9062,15 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "anthropic/claude-sonnet-4.6 --provider anthropic",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "anthropic/claude-sonnet-4.6 --provider anthropic",
+            },
+        })
 
         assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
         # Agent switched in place...
@@ -8670,7 +9088,10 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         )
         assert agent._cached_system_prompt == db.system_prompt
         assert session["history"][-1]["role"] == "user"
-        assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
+        assert (
+            "changed to anthropic/claude-sonnet-4.6"
+            in session["history"][-1]["content"]
+        )
         assert db.messages[-1] == {
             "session_id": "session-key",
             "role": "user",
@@ -8722,17 +9143,15 @@ def test_config_set_model_once_keeps_env_and_records_restore(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "claude-sonnet-4.6 --provider anthropic --once",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic --once",
+            },
+        })
 
         assert resp["result"]["scope"] == "once"
         assert seen["is_global"] is False
@@ -8750,16 +9169,14 @@ def test_config_set_model_once_requires_live_session(monkeypatch):
         lambda **_: (_ for _ in ()).throw(AssertionError("switch should not run")),
     )
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {
-                "key": "model",
-                "value": "claude-sonnet-4.6 --provider anthropic --once",
-            },
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {
+            "key": "model",
+            "value": "claude-sonnet-4.6 --provider anthropic --once",
+        },
+    })
 
     assert resp["error"]["code"] == 5001
     assert "/model --once requires a live session" in resp["error"]["message"]
@@ -8792,22 +9209,22 @@ def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch
     session = _session(agent=Agent())
     session["one_turn_model_restore"] = {"model": "old/model"}
     server._sessions["sid"] = session
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+    )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "new/model --provider openrouter --session",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "new/model --provider openrouter --session",
+            },
+        })
 
         assert resp["result"]["scope"] == "session"
         assert "one_turn_model_restore" not in session
@@ -8854,13 +9271,11 @@ def test_config_set_personality_rejects_unknown_name(monkeypatch):
         "_available_personalities",
         lambda cfg=None: {"helpful": "You are helpful."},
     )
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "personality", "value": "bogus"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "personality", "value": "bogus"},
+    })
 
     assert "error" in resp
     assert "Unknown personality" in resp["error"]["message"]
@@ -8885,7 +9300,9 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
         lambda cfg=None: {"helpful": "You are helpful."},
     )
     monkeypatch.setattr(
-        server, "_session_info", lambda agent, *a: {"model": getattr(agent, "model", "?")}
+        server,
+        "_session_info",
+        lambda agent, *a: {"model": getattr(agent, "model", "?")},
     )
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     # Persistence now flows through the single owner (hermes_cli.personality),
@@ -8903,13 +9320,11 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
         lambda path, value: writes.append((path, value)),
     )
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"session_id": "sid", "key": "personality", "value": "helpful"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"session_id": "sid", "key": "personality", "value": "helpful"},
+    })
 
     assert resp["result"]["history_reset"] is False
     assert resp["result"]["info"] == {"model": "?"}
@@ -9003,9 +9418,11 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
 
     with patch("tui_gateway.server._emit") as emit:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.compress",
+            "params": {"session_id": "sid"},
+        })
 
     assert resp["result"]["removed"] == 2
     assert resp["result"]["usage"]["total"] == 42
@@ -9023,21 +9440,32 @@ def test_session_compress_normalizes_messages_for_desktop_transcript(monkeypatch
             "tool_calls": [
                 {
                     "id": "call-1",
-                    "function": {"name": "read_file", "arguments": '{"path":"secret.txt"}'},
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"secret.txt"}',
+                    },
                 }
             ],
         },
-        {"role": "tool", "tool_call_id": "call-1", "content": "very sensitive tool output"},
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "very sensitive tool output",
+        },
     ]
     agent = types.SimpleNamespace()
     server._sessions["sid"] = _session(agent=agent, history=history)
-    monkeypatch.setattr(server, "_compress_session_history", lambda *_args, **_kwargs: (0, {}))
+    monkeypatch.setattr(
+        server, "_compress_session_history", lambda *_args, **_kwargs: (0, {})
+    )
     monkeypatch.setattr(server, "_session_info", lambda *_args: {})
 
     try:
-        response = server.handle_request(
-            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
-        )
+        response = server.handle_request({
+            "id": "1",
+            "method": "session.compress",
+            "params": {"session_id": "sid"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -9055,12 +9483,16 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
         "session_info": {"usage": {"total": 42}},
     }
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
-    monkeypatch.setattr(server, "_send_compute_host_control", lambda *args, **kwargs: ack)
+    monkeypatch.setattr(
+        server, "_send_compute_host_control", lambda *args, **kwargs: ack
+    )
 
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.compress",
+            "params": {"session_id": "sid"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -9074,7 +9506,11 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
     }
 
 
-def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch):
+def test_session_compress_forwards_compression_budget_to_compute_host(monkeypatch):
+    """#88988: the host wait must be the compression budget (per-attempt
+    timeout x retries + 30s grace), not the old fixed 120s."""
+    import hermes_cli.config as hc_config
+
     session = _session(agent=None, _compute_host_active=True)
     server._sessions["sid"] = session
     calls = []
@@ -9093,11 +9529,21 @@ def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch
 
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
     monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+    monkeypatch.setattr(
+        hc_config,
+        "load_config",
+        lambda: {
+            "auxiliary": {"compression": {"timeout": 60}},
+            "compression": {"max_attempts": 2},
+        },
+    )
 
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.compress",
+            "params": {"session_id": "sid"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -9109,7 +9555,7 @@ def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch
                 "route_name": "session.compress",
                 "command": "/compress",
                 "wait": True,
-                "timeout": 120.0,
+                "timeout": 150.0,
             },
         )
     ]
@@ -9143,9 +9589,11 @@ def test_session_compress_preserves_compute_host_aborted_summary(monkeypatch):
     )
 
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.compress",
+            "params": {"session_id": "sid"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -9181,13 +9629,11 @@ def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
 
     try:
         with patch("tui_gateway.server._emit"):
-            resp = server.handle_request(
-                {
-                    "id": "1",
-                    "method": "session.compress",
-                    "params": {"session_id": "sid"},
-                }
-            )
+            resp = server.handle_request({
+                "id": "1",
+                "method": "session.compress",
+                "params": {"session_id": "sid"},
+            })
 
         result = resp["result"]
         assert result["status"] == "aborted"
@@ -9238,13 +9684,11 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
 
     try:
         with patch("tui_gateway.server._emit"):
-            server.handle_request(
-                {
-                    "id": "1",
-                    "method": "session.compress",
-                    "params": {"session_id": "sid"},
-                }
-            )
+            server.handle_request({
+                "id": "1",
+                "method": "session.compress",
+                "params": {"session_id": "sid"},
+            })
 
         assert server._sessions["sid"]["session_key"] == "rotated-id"
         assert server._sessions["sid"]["pending_title"] is None
@@ -9286,13 +9730,11 @@ def test_session_compress_sync_failure_discards_lcm_notification(monkeypatch):
 
     try:
         with patch("tui_gateway.server._emit"):
-            resp = server.handle_request(
-                {
-                    "id": "1",
-                    "method": "session.compress",
-                    "params": {"session_id": "sid"},
-                }
-            )
+            resp = server.handle_request({
+                "id": "1",
+                "method": "session.compress",
+                "params": {"session_id": "sid"},
+            })
         assert resp["error"]["code"] == 5005
         assert events == []
     finally:
@@ -9302,7 +9744,9 @@ def test_session_compress_sync_failure_discards_lcm_notification(monkeypatch):
 def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
     class _ExplodingWorker:
         def __init__(self, *args, **kwargs):
-            raise AssertionError("slash worker should not run for isolated read commands")
+            raise AssertionError(
+                "slash worker should not run for isolated read commands"
+            )
 
     history_from_db = [
         {"role": "user", "content": "live question from state db"},
@@ -9328,7 +9772,9 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
         def get_ancestor_display_prefix(self, _sid):
             return []
 
-        def get_messages_as_conversation(self, key, include_ancestors=True, repair_alternation=False, **_kwargs):
+        def get_messages_as_conversation(
+            self, key, include_ancestors=True, repair_alternation=False, **_kwargs
+        ):
             assert key == "session-key"
             assert include_ancestors is True
             return list(history_from_db)
@@ -9361,7 +9807,9 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
     )
     monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}}
+    )
 
     cases = {
         "usage": "Total tokens:                 140",
@@ -9375,13 +9823,11 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
 
     try:
         for command, expected in cases.items():
-            resp = server.handle_request(
-                {
-                    "id": command,
-                    "method": "slash.exec",
-                    "params": {"command": command, "session_id": "sid"},
-                }
-            )
+            resp = server.handle_request({
+                "id": command,
+                "method": "slash.exec",
+                "params": {"command": command, "session_id": "sid"},
+            })
             assert "result" in resp, (command, resp)
             assert expected in resp["result"]["output"]
             assert "stale parent mirror" not in resp["result"]["output"]
@@ -9396,7 +9842,9 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     captured = {}
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             captured["session_key"] = get_current_session_key(default="")
             return {
                 "final_response": "ok",
@@ -9416,13 +9864,11 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "prompt.submit",
-            "params": {"session_id": "sid", "text": "ping"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "prompt.submit",
+        "params": {"session_id": "sid", "text": "ping"},
+    })
 
     assert resp["result"]["status"] == "streaming"
     assert captured["session_key"] == "session-key"
@@ -9436,7 +9882,9 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
         base_url = ""
         api_key = ""
 
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             captured["prompt"] = prompt
             return {
                 "final_response": "ok",
@@ -9451,8 +9899,8 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
             self._target()
 
     fake_ctx = types.ModuleType("agent.context_references")
-    fake_ctx.preprocess_context_references = (
-        lambda message, **kwargs: types.SimpleNamespace(
+    fake_ctx.preprocess_context_references = lambda message, **kwargs: (
+        types.SimpleNamespace(
             blocked=False,
             message="expanded prompt",
             warnings=[],
@@ -9471,13 +9919,11 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
     monkeypatch.setitem(sys.modules, "agent.model_metadata", fake_meta)
 
-    server.handle_request(
-        {
-            "id": "1",
-            "method": "prompt.submit",
-            "params": {"session_id": "sid", "text": "@diff"},
-        }
-    )
+    server.handle_request({
+        "id": "1",
+        "method": "prompt.submit",
+        "params": {"session_id": "sid", "text": "@diff"},
+    })
 
     assert captured["prompt"] == "expanded prompt"
 
@@ -9496,13 +9942,11 @@ def test_image_attach_appends_local_image(monkeypatch):
     server._sessions["sid"] = _session()
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "image.attach",
-            "params": {"session_id": "sid", "path": "/tmp/cat.png"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "image.attach",
+        "params": {"session_id": "sid", "path": "/tmp/cat.png"},
+    })
 
     assert resp["result"]["attached"] is True
     assert resp["result"]["name"] == "cat.png"
@@ -9527,13 +9971,11 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     server._sessions["sid"] = _session()
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "image.attach",
-            "params": {"session_id": "sid", "path": str(screenshot)},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "image.attach",
+        "params": {"session_id": "sid", "path": str(screenshot)},
+    })
 
     assert resp["result"]["attached"] is True
     assert resp["result"]["path"] == str(screenshot)
@@ -9559,18 +10001,16 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "file.attach",
-                "params": {
-                    "session_id": "sid",
-                    "path": "/Users/alice/Downloads/report.txt",
-                    "name": "report.txt",
-                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "file.attach",
+            "params": {
+                "session_id": "sid",
+                "path": "/Users/alice/Downloads/report.txt",
+                "name": "report.txt",
+                "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+            },
+        })
 
         stored = home / "attachments" / "report.txt"
         assert resp["result"]["attached"] is True
@@ -9582,7 +10022,9 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
         server._sessions.pop("sid", None)
 
 
-def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, tmp_path):
+def test_file_attach_copies_gateway_visible_file_outside_workspace(
+    monkeypatch, tmp_path
+):
     """Local case: gateway can see the file but it's outside the workspace → copy in."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -9598,13 +10040,11 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "file.attach",
-                "params": {"session_id": "sid", "path": str(source)},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "file.attach",
+            "params": {"session_id": "sid", "path": str(source)},
+        })
 
         stored = home / "attachments" / "outside.txt"
         assert resp["result"]["attached"] is True
@@ -9630,13 +10070,11 @@ def test_file_attach_uses_in_workspace_file_without_copying(monkeypatch, tmp_pat
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "file.attach",
-                "params": {"session_id": "sid", "path": str(source)},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "file.attach",
+            "params": {"session_id": "sid", "path": str(source)},
+        })
 
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is False
@@ -9662,13 +10100,11 @@ def test_file_attach_errors_when_unresolvable_and_no_bytes(monkeypatch, tmp_path
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "file.attach",
-                "params": {"session_id": "sid", "path": "/Users/alice/missing.txt"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "file.attach",
+            "params": {"session_id": "sid", "path": "/Users/alice/missing.txt"},
+        })
 
         assert "error" in resp
         assert "no data_url" in resp["error"]["message"]
@@ -9685,21 +10121,21 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: None
 
-    server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(tmp_path / "home"))
+    server._sessions["sid"] = _session(
+        cwd=str(workspace), profile_home=str(tmp_path / "home")
+    )
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "file.attach",
-                "params": {
-                    "session_id": "sid",
-                    "name": "my exam schedule.csv",
-                    "data_url": "data:text/csv;base64,YSxiCg==",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "file.attach",
+            "params": {
+                "session_id": "sid",
+                "name": "my exam schedule.csv",
+                "data_url": "data:text/csv;base64,YSxiCg==",
+            },
+        })
 
         stored = tmp_path / "home" / "attachments" / "my exam schedule.csv"
         assert resp["result"]["attached"] is True
@@ -9726,9 +10162,11 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
         },
     )
 
-    resp = server.handle_request(
-        {"id": "1", "method": "commands.catalog", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "commands.catalog",
+        "params": {},
+    })
 
     pairs = dict(resp["result"]["pairs"])
     assert "npm run build" in pairs["/build"]
@@ -9771,9 +10209,11 @@ def test_commands_catalog_ranks_skill_commands_by_recorded_usage(monkeypatch):
         },
     )
 
-    resp = server.handle_request(
-        {"id": "1", "method": "commands.catalog", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "commands.catalog",
+        "params": {},
+    })
 
     skills = resp["result"]["skills"]
     assert skills["/work"] == {"usage": 172, "origin": "local"}
@@ -9794,9 +10234,11 @@ def test_commands_catalog_survives_an_unreadable_usage_sidecar(monkeypatch):
         lambda: (_ for _ in ()).throw(OSError("sidecar is gone")),
     )
 
-    resp = server.handle_request(
-        {"id": "1", "method": "commands.catalog", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "commands.catalog",
+        "params": {},
+    })
 
     assert "error" not in resp
     assert all(
@@ -9806,9 +10248,11 @@ def test_commands_catalog_survives_an_unreadable_usage_sidecar(monkeypatch):
 
 
 def test_commands_catalog_includes_tui_mouse_command():
-    resp = server.handle_request(
-        {"id": "1", "method": "commands.catalog", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "commands.catalog",
+        "params": {},
+    })
 
     pairs = dict(resp["result"]["pairs"])
     tui_cat = next(c for c in resp["result"]["categories"] if c["name"] == "TUI")
@@ -9823,29 +10267,29 @@ def test_commands_catalog_has_no_duplicate_or_alias_colliding_names():
     shadow an alias of a different command (e.g. the historical /compact
     collision where the registry aliased compact -> compress while the TUI
     also registered its own /compact display toggle; see #57133)."""
-    resp = server.handle_request(
-        {"id": "1", "method": "commands.catalog", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "commands.catalog",
+        "params": {},
+    })
 
     names = [name for name, _ in resp["result"]["pairs"]]
     dupes = {n for n in names if names.count(n) > 1}
     assert not dupes, f"duplicate commands advertised in catalog: {sorted(dupes)}"
 
     canon = resp["result"]["canon"]
-    colliding = {
-        name
-        for name in names
-        if canon.get(name.lower(), name) != name
-    }
+    colliding = {name for name in names if canon.get(name.lower(), name) != name}
     assert not colliding, (
         f"catalog commands shadow aliases of other commands: {sorted(colliding)}"
     )
 
 
 def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():
-    resp = server.handle_request(
-        {"id": "1", "method": "commands.catalog", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "commands.catalog",
+        "params": {},
+    })
 
     pairs = dict(resp["result"]["pairs"])
     canon = resp["result"]["canon"]
@@ -9888,9 +10332,11 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.status",
+            "params": {"session_id": "sid"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -9930,24 +10376,20 @@ def test_skills_reload_runs_in_gateway_process(monkeypatch):
 def test_snapshot_restore_is_blocked_from_tui_worker():
     server._sessions["sid"] = _session()
     try:
-        worker_resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "slash.exec",
-                "params": {"command": "snapshot restore latest", "session_id": "sid"},
-            }
-        )
-        dispatch_resp = server.handle_request(
-            {
-                "id": "2",
-                "method": "command.dispatch",
-                "params": {
-                    "arg": "restore latest",
-                    "name": "snapshot",
-                    "session_id": "sid",
-                },
-            }
-        )
+        worker_resp = server.handle_request({
+            "id": "1",
+            "method": "slash.exec",
+            "params": {"command": "snapshot restore latest", "session_id": "sid"},
+        })
+        dispatch_resp = server.handle_request({
+            "id": "2",
+            "method": "command.dispatch",
+            "params": {
+                "arg": "restore latest",
+                "name": "snapshot",
+                "session_id": "sid",
+            },
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -9975,9 +10417,11 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
         ),
     )
 
-    resp = server.handle_request(
-        {"id": "1", "method": "command.dispatch", "params": {"name": "boom"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "command.dispatch",
+        "params": {"name": "boom"},
+    })
 
     assert "error" in resp
     assert "failed" in resp["error"]["message"]
@@ -9985,9 +10429,11 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
 
 def test_plugins_list_surfaces_loader_error(monkeypatch):
     with patch("hermes_cli.plugins.get_plugin_manager", side_effect=Exception("boom")):
-        resp = server.handle_request(
-            {"id": "1", "method": "plugins.list", "params": {}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "plugins.list",
+            "params": {},
+        })
 
     assert "error" in resp
     assert "boom" in resp["error"]["message"]
@@ -9998,9 +10444,11 @@ def test_complete_slash_surfaces_completer_error(monkeypatch):
         "hermes_cli.commands.SlashCommandCompleter",
         side_effect=Exception("no completer"),
     ):
-        resp = server.handle_request(
-            {"id": "1", "method": "complete.slash", "params": {"text": "/mo"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "complete.slash",
+            "params": {"text": "/mo"},
+        })
 
     assert "error" in resp
     assert "no completer" in resp["error"]["message"]
@@ -10017,13 +10465,11 @@ def test_input_detect_drop_attaches_image(monkeypatch):
     server._sessions["sid"] = _session()
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "input.detect_drop",
-            "params": {"session_id": "sid", "text": "/tmp/cat.png"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "input.detect_drop",
+        "params": {"session_id": "sid", "text": "/tmp/cat.png"},
+    })
 
     assert resp["result"]["matched"] is True
     assert resp["result"]["is_image"] is True
@@ -10038,13 +10484,11 @@ def test_input_detect_drop_path_with_spaces(tmp_path):
 
     server._sessions["sid"] = _session()
 
-    resp = server.handle_request(
-        {
-            "id": "2",
-            "method": "input.detect_drop",
-            "params": {"session_id": "sid", "text": str(img)},
-        }
-    )
+    resp = server.handle_request({
+        "id": "2",
+        "method": "input.detect_drop",
+        "params": {"session_id": "sid", "text": str(img)},
+    })
 
     assert resp["result"]["matched"] is True
     assert resp["result"]["is_image"] is True
@@ -10063,13 +10507,11 @@ def test_input_detect_drop_path_with_spaces_and_remainder(tmp_path):
     server._sessions["sid"] = _session()
 
     user_input = f"{img} describe this image"
-    resp = server.handle_request(
-        {
-            "id": "3",
-            "method": "input.detect_drop",
-            "params": {"session_id": "sid", "text": user_input},
-        }
-    )
+    resp = server.handle_request({
+        "id": "3",
+        "method": "input.detect_drop",
+        "params": {"session_id": "sid", "text": user_input},
+    })
 
     assert resp["result"]["matched"] is True
     assert resp["result"]["is_image"] is True
@@ -10095,13 +10537,11 @@ def test_rollback_restore_resolves_number_and_file_path():
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()), history=[]
     )
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "rollback.restore",
-            "params": {"session_id": "sid", "hash": "2", "file_path": "src/app.tsx"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "rollback.restore",
+        "params": {"session_id": "sid", "hash": "2", "file_path": "src/app.tsx"},
+    })
 
     assert resp["result"]["success"] is True
     assert calls["args"][1] == "bbb222"
@@ -10139,13 +10579,11 @@ def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
         history=list(history),
     )
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "rollback.restore",
-                "params": {"session_id": "sid", "hash": "abc123"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "rollback.restore",
+            "params": {"session_id": "sid", "hash": "abc123"},
+        })
 
         assert resp["result"]["success"] is True
         assert resp["result"]["history_removed"] == 3  # q2 + a2 + marker
@@ -10199,13 +10637,11 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
         history=list(history),
     )
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "rollback.restore",
-                "params": {"session_id": "sid", "hash": "abc123"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "rollback.restore",
+            "params": {"session_id": "sid", "hash": "abc123"},
+        })
 
         assert resp["result"]["success"] is True
         # Truncation lands on "second question", not the handoff row.
@@ -10235,13 +10671,11 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
 
     server._sessions["sid"] = _session(agent=_Agent())
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.steer",
-                "params": {"session_id": "sid", "text": "also check auth.log"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.steer",
+            "params": {"session_id": "sid", "text": "also check auth.log"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -10257,13 +10691,11 @@ def test_session_steer_rejects_empty_text():
         agent=types.SimpleNamespace(steer=lambda t: True)
     )
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.steer",
-                "params": {"session_id": "sid", "text": "   "},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.steer",
+            "params": {"session_id": "sid", "text": "   "},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -10274,13 +10706,11 @@ def test_session_steer_rejects_empty_text():
 def test_session_steer_errors_when_agent_has_no_steer_method():
     server._sessions["sid"] = _session(agent=types.SimpleNamespace())  # no steer()
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.steer",
-                "params": {"session_id": "sid", "text": "hi"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.steer",
+            "params": {"session_id": "sid", "text": "hi"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -10295,17 +10725,18 @@ def test_session_redirect_calls_capable_core_agent(monkeypatch):
         redirect=lambda text: calls.append(text) or True,
     )
     session = _session(agent=agent)
-    session["inflight_turn"] = {"user": "original request", "assistant": "partial reply"}
+    session["inflight_turn"] = {
+        "user": "original request",
+        "assistant": "partial reply",
+    }
     server._sessions["sid"] = session
     try:
         before = session.get("last_active")
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.redirect",
-                "params": {"session_id": "sid", "text": "use Postgres"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.redirect",
+            "params": {"session_id": "sid", "text": "use Postgres"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -10350,16 +10781,14 @@ def test_session_redirect_rpc_drops_queued_duplicate_of_inflight_user():
     ]
     server._sessions["sid"] = session
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.redirect",
-                "params": {
-                    "session_id": "sid",
-                    "text": "what about the pricing instead?",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.redirect",
+            "params": {
+                "session_id": "sid",
+                "text": "what about the pricing instead?",
+            },
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -10390,13 +10819,11 @@ def test_session_redirect_build_window_scrubs_stale_p_when_queuing_q():
     session["queued_prompt"] = {"text": original, "transport": "ws-1"}
     server._sessions["sid"] = session
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.redirect",
-                "params": {"session_id": "sid", "text": "correction Q"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.redirect",
+            "params": {"session_id": "sid", "text": "correction Q"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -10496,13 +10923,11 @@ def test_session_redirect_queues_during_agent_build_window(monkeypatch):
     session["agent"] = None
     server._sessions["sid"] = session
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.redirect",
-                "params": {"session_id": "sid", "text": "wait, use SQLite"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.redirect",
+            "params": {"session_id": "sid", "text": "wait, use SQLite"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -10517,13 +10942,11 @@ def test_session_redirect_rejects_when_idle_without_agent(monkeypatch):
     session["agent"] = None
     server._sessions["sid"] = session
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.redirect",
-                "params": {"session_id": "sid", "text": "hi"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.redirect",
+            "params": {"session_id": "sid", "text": "hi"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -10541,7 +10964,9 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     fake_mod.get_mcp_status = lambda: fake_status
     monkeypatch.setitem(sys.modules, "tools.mcp_tool", fake_mod)
 
-    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider="openai-codex"))
+    info = server._session_info(
+        types.SimpleNamespace(tools=[], model="", provider="openai-codex")
+    )
 
     assert info["provider"] == "openai-codex"
     assert info["mcp_servers"] == fake_status
@@ -10622,9 +11047,11 @@ def test_session_undo_rejects_while_running():
         ],
     )
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.undo",
+            "params": {"session_id": "sid"},
+        })
         assert resp.get("error"), "session.undo should reject while running"
         assert resp["error"]["code"] == 4009
         assert "session busy" in resp["error"]["message"]
@@ -10644,9 +11071,11 @@ def test_session_undo_allowed_when_idle():
         ],
     )
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.undo",
+            "params": {"session_id": "sid"},
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert resp["result"]["removed"] == 2
         assert server._sessions["sid"]["history"] == []
@@ -10657,9 +11086,11 @@ def test_session_undo_allowed_when_idle():
 def test_session_compress_rejects_while_running(monkeypatch):
     server._sessions["sid"] = _session(running=True)
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.compress",
+            "params": {"session_id": "sid"},
+        })
         assert resp.get("error")
         assert resp["error"]["code"] == 4009
     finally:
@@ -10670,13 +11101,11 @@ def test_rollback_restore_rejects_full_history_while_running(monkeypatch):
     """Full-history rollback must reject; file-scoped rollback still allowed."""
     server._sessions["sid"] = _session(running=True)
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "rollback.restore",
-                "params": {"session_id": "sid", "hash": "abc"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "rollback.restore",
+            "params": {"session_id": "sid", "hash": "abc"},
+        })
         assert resp.get("error"), "full-history rollback should reject while running"
         assert resp["error"]["code"] == 4009
     finally:
@@ -10693,7 +11122,9 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
     session_ref = {"s": None}
 
     class _RacyAgent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             # Simulate: something external bumped history_version
             # while we were running.
             with session_ref["s"]["history_lock"]:
@@ -10719,13 +11150,11 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "hi"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hi"},
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
         # History should NOT contain the agent's output (version mismatch)
@@ -10776,7 +11205,9 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
         def __init__(self, new_history_state: list):
             self._new_history_state = new_history_state
 
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             # Simulate _append_model_switch_marker: strip prior markers, append new one.
             with session_ref["s"]["history_lock"]:
                 hist = session_ref["s"]["history"]
@@ -10786,7 +11217,8 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
             # result["messages"] = conversation_history + user msg + assistant reply
             return {
                 "final_response": "agent reply",
-                "messages": list(conversation_history) + [
+                "messages": list(conversation_history)
+                + [
                     {"role": "user", "content": "hi"},
                     {"role": "assistant", "content": "agent reply"},
                 ],
@@ -10794,6 +11226,7 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
 
     def _is_marker(entry) -> bool:
         from tui_gateway.server import _is_model_switch_marker
+
         return _is_model_switch_marker(entry)
 
     class _ImmediateThread:
@@ -10806,11 +11239,14 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
     # Test both: no prior marker, and prior marker present
     for label, prior_history in [
         ("no prior marker", [{"role": "user", "content": "hello"}]),
-        ("with prior marker", [
-            {"role": "user", "content": "hello"},
-            _make_marker("old-model"),
-            {"role": "assistant", "content": "hi there"},
-        ]),
+        (
+            "with prior marker",
+            [
+                {"role": "user", "content": "hello"},
+                _make_marker("old-model"),
+                {"role": "assistant", "content": "hi there"},
+            ],
+        ),
     ]:
         server._sessions["sid"] = _session(
             agent=_MarkerAgent([]),
@@ -10824,21 +11260,21 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
             monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
             monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
 
-            resp = server.handle_request(
-                {
-                    "id": "1",
-                    "method": "prompt.submit",
-                    "params": {"session_id": "sid", "text": "hi"},
-                }
-            )
+            resp = server.handle_request({
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hi"},
+            })
             assert resp.get("result"), f"[{label}] got error: {resp.get('error')}"
 
             final_history = server._sessions["sid"]["history"]
 
             # The agent's new messages must be present in the persisted history.
             assistant_msgs = [
-                e for e in final_history
-                if isinstance(e, dict) and e.get("role") == "assistant"
+                e
+                for e in final_history
+                if isinstance(e, dict)
+                and e.get("role") == "assistant"
                 and e.get("content") == "agent reply"
             ]
             assert len(assistant_msgs) == 1, (
@@ -10915,13 +11351,11 @@ def test_prompt_submit_merges_on_personality_pivot_marker(monkeypatch):
         monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
         monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "hi"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hi"},
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
         final_history = server._sessions["sid"]["history"]
@@ -10958,7 +11392,9 @@ def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
     captured: dict[str, str] = {}
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             captured["prompt"] = prompt
             return {
                 "final_response": "ok",
@@ -10983,13 +11419,11 @@ def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **k: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda *a, **k: None)
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": corrupted},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": corrupted},
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert captured["prompt"] == "hello"
     finally:
@@ -11000,7 +11434,9 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
     """Regression guard: the backstop does not affect the happy path."""
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             return {
                 "final_response": "reply",
                 "messages": [{"role": "assistant", "content": "reply"}],
@@ -11021,13 +11457,11 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "hi"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hi"},
+        })
         assert resp.get("result")
 
         # History was written
@@ -11084,13 +11518,16 @@ def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch)
         monkeypatch.setattr(server, "render_message", lambda *_a: "")
         monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
 
-        server.handle_request(
-            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hi"}}
-        )
+        server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hi"},
+        })
 
         assert seen["history"] == [marker]
         assert server._sessions["sid"]["history"][-1] == {
-            "role": "assistant", "content": "reply"
+            "role": "assistant",
+            "content": "reply",
         }
         complete = [a for a in emits if a[0] == "message.complete"]
         assert "warning" not in complete[0][2]
@@ -11104,7 +11541,9 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
     seen = {}
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             seen["prompt"] = prompt
             seen["history"] = conversation_history
             return {
@@ -11138,7 +11577,9 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         def get_messages_as_conversation(self, *_args, **_kwargs):
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, session_id, messages, active_only=False, archive_dropped=False
+        ):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -11150,18 +11591,16 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         monkeypatch.setattr(server, "_emit", lambda *a: None)
         monkeypatch.setattr(server, "_get_db", lambda: stub_db)
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "sid",
-                    "text": "edited second",
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "sid",
+                "text": "edited second",
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
         assert seen["prompt"] == "edited second"
@@ -11198,33 +11637,40 @@ def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
         def get_messages_as_conversation(self, *_args, **_kwargs):
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, session_id, messages, active_only=False, archive_dropped=False
+        ):
             raise OSError("disk full")
 
     monkeypatch.setattr(server, "_get_db", lambda: _FailDb())
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "trunc-fail-sid",
-                    "text": "edited second",
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "trunc-fail-sid",
+                "text": "edited second",
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
         assert "error" in resp
         assert resp["error"]["code"] == 5008
-        assert "truncat" in resp["error"]["message"].lower() or "persist" in resp["error"]["message"].lower()
+        assert (
+            "truncat" in resp["error"]["message"].lower()
+            or "persist" in resp["error"]["message"].lower()
+        )
         # Memory left intact — same list contents as before the refused cut.
         assert sess["history"] == original_history
         assert sess["history_version"] == 0
@@ -11254,7 +11700,9 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
     seen = {}
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             seen["prompt"] = prompt
             seen["history"] = conversation_history
             return {
@@ -11293,7 +11741,9 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         def get_messages_as_conversation(self, *_args, **_kwargs):
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, session_id, messages, active_only=False, archive_dropped=False
+        ):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -11307,18 +11757,16 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
 
         # ordinal=1 means "truncate before the 2nd-from-last real user turn"
         # which is "first". The display_kind marker must NOT shift the ordinal.
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "sid",
-                    "text": "edited first",
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "sid",
+                "text": "edited first",
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
         # With display_kind filter: user_indices = [0, 2] (indices of "first" and "second").
@@ -11347,7 +11795,9 @@ def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
     seen = {}
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             seen["prompt"] = prompt
             seen["history"] = conversation_history
             return {
@@ -11396,7 +11846,9 @@ def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
             # may take the ordinal-only path past the durability gate.
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, session_id, messages, active_only=False, archive_dropped=False
+        ):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -11408,18 +11860,16 @@ def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
         monkeypatch.setattr(server, "_emit", lambda *a: None)
         monkeypatch.setattr(server, "_get_db", lambda: stub_db)
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "sid",
-                    "text": "edited post B",
-                    "truncate_before_user_ordinal": desktop_ordinal_for_post_b,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "sid",
+                "text": "edited post B",
+                "truncate_before_user_ordinal": desktop_ordinal_for_post_b,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert seen["prompt"] == "edited post B"
         assert seen["history"] == tip_history[:2]
@@ -11447,20 +11897,20 @@ def test_prompt_submit_truncate_oor_includes_structured_user_turn_count(monkeypa
 
     try:
         monkeypatch.setattr(
-            server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+            server,
+            "_start_inflight_turn",
+            lambda *a, **k: pytest.fail("must not start a turn"),
         )
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "sid",
-                    "text": "edit ancestor",
-                    "truncate_before_user_ordinal": 0,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "sid",
+                "text": "edit ancestor",
+                "truncate_before_user_ordinal": 0,
+                "confirm_truncate": True,
+            },
+        })
         err = resp.get("error") or {}
         assert err.get("code") == 4018
         assert "no longer in session history" in (err.get("message") or "")
@@ -11497,7 +11947,9 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     sess = _session(history=list(tip_history), display_history_prefix=display_prefix)
@@ -11506,21 +11958,19 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "lineage-row-sid",
-                    "text": "edited post B",
-                    # Row id resolves to tip ordinal 1; the client counted the
-                    # 2 ancestor user turns, so its lineage ordinal is 3.
-                    "truncate_before_row_id": 503,
-                    "truncate_before_user_ordinal": 3,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "lineage-row-sid",
+                "text": "edited post B",
+                # Row id resolves to tip ordinal 1; the client counted the
+                # 2 ancestor user turns, so its lineage ordinal is 3.
+                "truncate_before_row_id": 503,
+                "truncate_before_user_ordinal": 3,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is None, f"got error: {resp.get('error')}"
         assert sess["history"] == tip_history[:2]
     finally:
@@ -11531,22 +11981,22 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
     sess2 = _session(history=list(tip_history), display_history_prefix=display_prefix)
     server._sessions["lineage-row-sid-2"] = sess2
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     try:
-        resp = server.handle_request(
-            {
-                "id": "2",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "lineage-row-sid-2",
-                    "text": "edited post B",
-                    "truncate_before_row_id": 503,
-                    "truncate_before_user_ordinal": 2,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "2",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "lineage-row-sid-2",
+                "text": "edited post B",
+                "truncate_before_row_id": 503,
+                "truncate_before_user_ordinal": 2,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4030
     finally:
@@ -11584,13 +12034,11 @@ def test_interrupt_only_clears_own_session_pending():
         server._answers.clear()
 
         # Interrupt session A.
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.interrupt",
-                "params": {"session_id": "sid_a"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.interrupt",
+            "params": {"session_id": "sid_a"},
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
         # Session A's pending must be released to empty.
@@ -11627,9 +12075,11 @@ def test_interrupt_clears_multiple_own_pending():
         server._pending["r1"] = ("sid", ev1)
         server._pending["r2"] = ("sid", ev2)
 
-        resp = server.handle_request(
-            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.interrupt",
+            "params": {"session_id": "sid"},
+        })
         assert resp.get("result")
         assert ev1.is_set() and ev2.is_set()
         assert server._answers.get("r1") == "" and server._answers.get("r2") == ""
@@ -11674,9 +12124,11 @@ def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
         server._run_prompt_submit("1", "sid", session, "hello")
 
         assert session.get("_run_thread") is not None
-        resp = server.handle_request(
-            {"id": "2", "method": "session.interrupt", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "2",
+            "method": "session.interrupt",
+            "params": {"session_id": "sid"},
+        })
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert calls["interrupted"] is True
@@ -11698,15 +12150,23 @@ def test_interrupt_drops_queued_prompt_for_session():
         ),
         running=True,
         queued_prompt={"text": "next prompt", "transport": None},
-        queued_prompts=[{"text": "later prompt", "image_paths": ["/tmp/later.png"], "transport": None}],
+        queued_prompts=[
+            {
+                "text": "later prompt",
+                "image_paths": ["/tmp/later.png"],
+                "transport": None,
+            }
+        ],
         _run_thread=_LiveThread(),
     )
     server._sessions["sid"] = session
 
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.interrupt",
+            "params": {"session_id": "sid"},
+        })
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert calls["interrupted"] is True
@@ -11751,20 +12211,20 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
             ),
         )
 
-        submit = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "hello"},
-            }
-        )
+        submit = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        })
         assert submit.get("result"), f"got error: {submit.get('error')}"
         assert session["running"] is True
         assert len(threads) == 1
 
-        stop = server.handle_request(
-            {"id": "2", "method": "session.interrupt", "params": {"session_id": "sid"}}
-        )
+        stop = server.handle_request({
+            "id": "2",
+            "method": "session.interrupt",
+            "params": {"session_id": "sid"},
+        })
         assert stop.get("result"), f"got error: {stop.get('error')}"
 
         threads[0].target()
@@ -11808,7 +12268,9 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
 
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
-        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(
+            server, "_emit", lambda *args, **kwargs: emitted.append(args)
+        )
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
@@ -11821,20 +12283,20 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
             ),
         )
 
-        submit = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "hello"},
-            }
-        )
+        submit = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        })
         assert submit.get("result"), f"got error: {submit.get('error')}"
         assert session["running"] is True
 
         # User hits Stop while the agent is still building.
-        stop = server.handle_request(
-            {"id": "2", "method": "session.interrupt", "params": {"session_id": "sid"}}
-        )
+        stop = server.handle_request({
+            "id": "2",
+            "method": "session.interrupt",
+            "params": {"session_id": "sid"},
+        })
         assert stop.get("result"), f"got error: {stop.get('error')}"
         assert session.get("_turn_cancel_requested") is True
 
@@ -11846,7 +12308,11 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
         assert session["running"] is False
         assert session.get("inflight_turn") is None
         # Exactly one error event addressed to this session.
-        error_events = [e for e in emitted if e and len(e) >= 2 and e[0] == "error" and e[1] == "sid"]
+        error_events = [
+            e
+            for e in emitted
+            if e and len(e) >= 2 and e[0] == "error" and e[1] == "sid"
+        ]
         assert len(error_events) == 1, f"expected one error event, got: {emitted}"
         msg = error_events[0][2].get("message", "")
         assert "cancelled" in msg.lower(), f"unexpected message: {msg}"
@@ -11880,7 +12346,9 @@ def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
 
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
-        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(
+            server, "_emit", lambda *args, **kwargs: emitted.append(args)
+        )
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
@@ -11893,13 +12361,11 @@ def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
             ),
         )
 
-        submit = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "hello"},
-            }
-        )
+        submit = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        })
         assert submit.get("result"), f"got error: {submit.get('error')}"
         assert session["running"] is True
 
@@ -11912,7 +12378,11 @@ def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
 
         assert calls["run_prompt"] == 0
         assert session.get("inflight_turn") is None
-        error_events = [e for e in emitted if e and len(e) >= 2 and e[0] == "error" and e[1] == "sid"]
+        error_events = [
+            e
+            for e in emitted
+            if e and len(e) >= 2 and e[0] == "error" and e[1] == "sid"
+        ]
         assert len(error_events) == 1, f"expected one error event, got: {emitted}"
         msg = error_events[0][2].get("message", "")
         assert "no longer running" in msg.lower(), f"unexpected message: {msg}"
@@ -11966,7 +12436,9 @@ def test_slow_agent_build_delivers_prompt_instead_of_timing_out(monkeypatch):
 
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
-        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(
+            server, "_emit", lambda *args, **kwargs: emitted.append(args)
+        )
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
@@ -11978,13 +12450,11 @@ def test_slow_agent_build_delivers_prompt_instead_of_timing_out(monkeypatch):
             ),
         )
 
-        submit = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "first message"},
-            }
-        )
+        submit = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "first message"},
+        })
         assert submit.get("result"), f"got error: {submit.get('error')}"
 
         threads[0].target()
@@ -12041,7 +12511,9 @@ def test_slow_agent_build_emits_keyed_progress_notice(monkeypatch):
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         # Every wait slice lands past the slow threshold.
         monkeypatch.setattr(server, "_AGENT_BUILD_SLOW_NOTICE_AFTER", 0.0)
-        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(
+            server, "_emit", lambda *args, **kwargs: emitted.append(args)
+        )
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
@@ -12053,24 +12525,29 @@ def test_slow_agent_build_emits_keyed_progress_notice(monkeypatch):
             ),
         )
 
-        submit = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "first message"},
-            }
-        )
+        submit = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "first message"},
+        })
         assert submit.get("result"), f"got error: {submit.get('error')}"
 
         threads[0].target()
 
         assert calls["run_prompt"] == 1
-        shows = [e for e in emitted if e and e[0] == "notification.show" and e[1] == "sid"]
-        clears = [e for e in emitted if e and e[0] == "notification.clear" and e[1] == "sid"]
+        shows = [
+            e for e in emitted if e and e[0] == "notification.show" and e[1] == "sid"
+        ]
+        clears = [
+            e for e in emitted if e and e[0] == "notification.clear" and e[1] == "sid"
+        ]
         # Exactly one keyed notice, replaced-in-place semantics, then cleared.
         assert len(shows) == 1, f"expected one slow-build notice, got: {shows}"
         assert shows[0][2].get("key") == server._AGENT_BUILD_SLOW_NOTICE_KEY
-        assert len(clears) == 1 and clears[0][2].get("key") == server._AGENT_BUILD_SLOW_NOTICE_KEY
+        assert (
+            len(clears) == 1
+            and clears[0][2].get("key") == server._AGENT_BUILD_SLOW_NOTICE_KEY
+        )
     finally:
         server._sessions.pop("sid", None)
 
@@ -12103,7 +12580,9 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
 
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
-        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(
+            server, "_emit", lambda *args, **kwargs: emitted.append(args)
+        )
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
@@ -12115,13 +12594,11 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
             ),
         )
 
-        submit = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "first message"},
-            }
-        )
+        submit = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "first message"},
+        })
         assert submit.get("result"), f"got error: {submit.get('error')}"
 
         threads[0].target()
@@ -12145,7 +12622,9 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
                 or "No LLM provider configured" in str(e[2].get("text", ""))
             )
         ]
-        assert len(failure_frames) == 1, f"expected one visible failure frame, got: {emitted}"
+        assert len(failure_frames) == 1, (
+            f"expected one visible failure frame, got: {emitted}"
+        )
         frame = failure_frames[0]
         if frame[0] == "message.complete":
             assert frame[2].get("status") == "error"
@@ -12172,7 +12651,9 @@ def test_dead_build_thread_fails_fast_not_full_cap(monkeypatch):
     server._sessions["sid"] = session
 
     try:
-        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(
+            server, "_emit", lambda *args, **kwargs: emitted.append(args)
+        )
         # Short slices so the test is fast; the dead-thread check fires on the
         # first empty slice, far below the cap.
         monkeypatch.setattr(server, "_AGENT_BUILD_WAIT_SLICE", 0.01)
@@ -12221,22 +12702,29 @@ def test_wait_agent_for_prompt_honors_cancel_mid_wait(monkeypatch):
 def test_agent_build_wait_cap_config_override(monkeypatch):
     """agent.build_wait_timeout in config.yaml overrides the default cap;
     invalid/absent values fall back to 600s."""
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"build_wait_timeout": 90}})
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"agent": {"build_wait_timeout": 90}}
+    )
     assert server._agent_build_wait_cap() == 90.0
 
     monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
     assert server._agent_build_wait_cap() == 600.0
 
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"build_wait_timeout": 0}})
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"agent": {"build_wait_timeout": 0}}
+    )
     assert server._agent_build_wait_cap() == 600.0
 
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"build_wait_timeout": "nonsense"}})
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"agent": {"build_wait_timeout": "nonsense"}}
+    )
     assert server._agent_build_wait_cap() == 600.0
 
 
 def test_wait_agent_for_prompt_expires_at_cap(monkeypatch):
     """A genuinely hung build (thread alive, never ready) still fails at the
     bounded cap with a message that tells the user their text was not sent."""
+
     class _AliveThread:
         def is_alive(self):
             return True
@@ -12282,13 +12770,11 @@ def test_respond_unpacks_sid_tuple_correctly():
     ev = threading.Event()
     server._pending["rid-x"] = ("sid_x", ev)
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "clarify.respond",
-                "params": {"request_id": "rid-x", "answer": "the answer"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "clarify.respond",
+            "params": {"request_id": "rid-x", "answer": "the answer"},
+        })
         assert resp.get("result")
         assert ev.is_set()
         assert server._answers.get("rid-x") == "the answer"
@@ -12321,17 +12807,15 @@ def test_config_set_model_defers_while_running(monkeypatch):
 
     server._sessions["sid"] = _session(running=True)
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": "anthropic/claude-sonnet-4.6",
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "anthropic/claude-sonnet-4.6",
+            },
+        })
         assert not resp.get("error")
         result = resp["result"]
         assert result["deferred"] is True
@@ -12385,13 +12869,11 @@ def test_config_set_model_allowed_when_idle(monkeypatch):
 
     server._sessions["sid"] = _session(running=False)
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "model", "value": "newmodel"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "model", "value": "newmodel"},
+        })
         assert resp.get("result")
         assert resp["result"]["value"] == "newmodel"
         assert seen["called"]
@@ -12429,9 +12911,9 @@ def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monke
         ("/compress", "compress"),
     ]:
         warning = server._mirror_slash_side_effects("sid", session, cmd)
-        assert (
-            "session busy" in warning
-        ), f"{cmd} should have returned busy warning, got: {warning!r}"
+        assert "session busy" in warning, (
+            f"{cmd} should have returned busy warning, got: {warning!r}"
+        )
         assert f"/{expected_name}" in warning
 
     # None of the mutating side-effect helpers should have fired.
@@ -12486,10 +12968,10 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
 
     session = _session(running=False)
-    session["history"] = [
-        {"role": "user", "content": f"m{i}"} for i in range(6)
-    ]
-    session["agent"] = types.SimpleNamespace(model="x", _cached_system_prompt="", tools=None)
+    session["history"] = [{"role": "user", "content": f"m{i}"} for i in range(6)]
+    session["agent"] = types.SimpleNamespace(
+        model="x", _cached_system_prompt="", tools=None
+    )
 
     warning = server._mirror_slash_side_effects("sid", session, "/compress")
 
@@ -12611,17 +13093,17 @@ def test_session_compress_rpc_honors_here_argument(monkeypatch):
     server._sessions["sid"] = session
 
     monkeypatch.setattr(server, "_session_info", lambda *_a, **_kw: {"model": "x"})
-    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *a, **kw: None
+    )
     monkeypatch.setattr(server, "_emit", lambda *args: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.compress",
-                "params": {"session_id": "sid", "focus_topic": "here 1"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.compress",
+            "params": {"session_id": "sid", "focus_topic": "here 1"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -12643,17 +13125,17 @@ def test_command_dispatch_compress_honors_here_argument(monkeypatch):
 
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_a, **_kw: False)
     monkeypatch.setattr(server, "_session_info", lambda *_a, **_kw: {"model": "x"})
-    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *a, **kw: None
+    )
     monkeypatch.setattr(server, "_emit", lambda *args: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "command.dispatch",
-                "params": {"session_id": "sid", "name": "compress", "arg": "here 1"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "command.dispatch",
+            "params": {"session_id": "sid", "name": "compress", "arg": "here 1"},
+        })
     finally:
         server._sessions.pop("sid", None)
 
@@ -12673,7 +13155,9 @@ def test_mirror_slash_compress_honors_here_argument(monkeypatch):
     session["history"] = list(_PARTIAL_FAKE_HISTORY)
 
     monkeypatch.setattr(server, "_session_info", lambda *_a, **_kw: {"model": "x"})
-    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *a, **kw: None
+    )
     monkeypatch.setattr(server, "_emit", lambda *args: None)
 
     warning = server._mirror_slash_side_effects("sid", session, "/compress here 1")
@@ -12767,13 +13251,11 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 
     # Start: session.create spawns _build thread, returns synchronously
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "session.create",
-            "params": {"cols": 80},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.create",
+        "params": {"cols": 80},
+    })
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
     own_key = resp["result"]["stored_session_id"]
@@ -12788,13 +13270,11 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     # Build thread is blocked in _slow_make_agent.  Close the session
     # NOW — this pops _sessions[sid] before _build can install the
     # worker/notify.
-    close_resp = server.handle_request(
-        {
-            "id": "2",
-            "method": "session.close",
-            "params": {"session_id": sid},
-        }
-    )
+    close_resp = server.handle_request({
+        "id": "2",
+        "method": "session.close",
+        "params": {"session_id": sid},
+    })
     assert close_resp.get("result", {}).get("closed") is True
 
     # At this point session.close saw slash_worker=None (never eagerly
@@ -12851,7 +13331,9 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
             self.base_url = ""
             self.api_key = ""
 
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kwargs: _FakeAgent())
+    monkeypatch.setattr(
+        server, "_make_agent", lambda sid, key, session_db=None, **_kwargs: _FakeAgent()
+    )
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(
         server,
@@ -12883,13 +13365,11 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     server._sessions.clear()
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.create",
-                "params": {"cols": 80},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.create",
+            "params": {"cols": 80},
+        })
         sid = resp["result"]["session_id"]
 
         # Wait for the build to finish (ready event inside session dict).
@@ -12909,12 +13389,12 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         own_key = session["session_key"]
         own_closed = [k for k in closed_workers if k == own_key]
         own_unregistered = [k for k in unregistered_keys if k == own_key]
-        assert (
-            own_closed == []
-        ), f"build thread closed its own worker despite no race: {own_closed}"
-        assert (
-            own_unregistered == []
-        ), f"build thread unregistered its own notify despite no race: {own_unregistered}"
+        assert own_closed == [], (
+            f"build thread closed its own worker despite no race: {own_closed}"
+        )
+        assert own_unregistered == [], (
+            f"build thread unregistered its own notify despite no race: {own_unregistered}"
+        )
 
         # No pre-warmed worker: slash.exec spawns on demand, so a fresh
         # session that hasn't run a worker-routed command carries None.
@@ -12959,7 +13439,9 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
 
     emits = []
 
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kwargs: _FakeAgent())
+    monkeypatch.setattr(
+        server, "_make_agent", lambda sid, key, session_db=None, **_kwargs: _FakeAgent()
+    )
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
@@ -12972,9 +13454,11 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.create", "params": {"cols": 80}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.create",
+        "params": {"cols": 80},
+    })
     sid = resp["result"]["session_id"]
     session = server._sessions[sid]
     session["agent_ready"].wait(timeout=2.0)
@@ -13003,9 +13487,11 @@ def test_session_create_lazy_info_reports_desktop_contract(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **kw: None)
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.create", "params": {"cols": 80}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.create",
+        "params": {"cols": 80},
+    })
     info = resp["result"]["info"]
 
     assert info["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
@@ -13034,13 +13520,11 @@ def test_session_activate_lazy_info_reports_desktop_contract():
         "transport": server._stdio_transport,
     }
     try:
-        resp = server.handle_request(
-            {
-                "id": "activate-lazy",
-                "method": "session.activate",
-                "params": {"session_id": sid},
-            }
-        )
+        resp = server.handle_request({
+            "id": "activate-lazy",
+            "method": "session.activate",
+            "params": {"session_id": sid},
+        })
         info = resp["result"]["info"]
         assert info["lazy"] is True
         assert info["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
@@ -13084,9 +13568,11 @@ def test_session_delete_returns_db_unavailable_when_no_db(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_db_error", "locked")
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.delete", "params": {"session_id": "abc"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.delete",
+        "params": {"session_id": "abc"},
+    })
 
     assert "error" in resp
     assert resp["error"]["code"] == 5036
@@ -13105,13 +13591,11 @@ def test_session_delete_refuses_active_session(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setitem(server._sessions, "live", {"session_key": "key-live"})
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.delete",
-                "params": {"session_id": "key-live"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.delete",
+            "params": {"session_id": "key-live"},
+        })
     finally:
         server._sessions.pop("live", None)
 
@@ -13138,9 +13622,11 @@ def test_session_delete_fails_closed_when_active_snapshot_raises(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_sessions", _ExplodingDict())
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.delete", "params": {"session_id": "x"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.delete",
+        "params": {"session_id": "x"},
+    })
 
     assert "error" in resp
     assert resp["error"]["code"] == 5036
@@ -13154,9 +13640,11 @@ def test_session_delete_returns_4007_when_missing(monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.delete", "params": {"session_id": "ghost"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.delete",
+        "params": {"session_id": "ghost"},
+    })
 
     assert "error" in resp
     assert resp["error"]["code"] == 4007
@@ -13169,9 +13657,11 @@ def test_session_delete_propagates_db_exception(monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.delete", "params": {"session_id": "x"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.delete",
+        "params": {"session_id": "x"},
+    })
 
     assert "error" in resp
     assert resp["error"]["code"] == 5036
@@ -13192,9 +13682,11 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.delete", "params": {"session_id": "old-1"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.delete",
+        "params": {"session_id": "old-1"},
+    })
 
     assert "result" in resp, resp
     assert resp["result"] == {"deleted": "old-1"}
@@ -13205,8 +13697,6 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
     # /sessions to it.
     assert captured["sessions_dir"] is not None
     assert str(captured["sessions_dir"]).endswith("sessions")
-
-
 
 
 # --------------------------------------------------------------------------
@@ -13246,17 +13736,17 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
         def close(self):
             seen["closed"] = True
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    monkeypatch.setattr(
+        server, "_profile_home", lambda p: profile_home if p == "mlperf" else None
+    )
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "session.list",
-            "params": {"profile": "mlperf", "limit": 5},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.list",
+        "params": {"profile": "mlperf", "limit": 5},
+    })
     assert "result" in resp, resp
     assert resp["result"]["sessions"][0]["id"] == "ml-1"
     assert seen.get("profile") is True
@@ -13272,7 +13762,9 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
 
     class LaunchDB:
         def list_sessions_rich(self, **kwargs):
-            return [{"id": "launch-tip", "source": "tui", "title": "L", "started_at": 9}]
+            return [
+                {"id": "launch-tip", "source": "tui", "title": "L", "started_at": 9}
+            ]
 
     class ProfileDB2:
         def __init__(self, db_path=None):
@@ -13287,17 +13779,17 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
         def close(self):
             pass
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    monkeypatch.setattr(
+        server, "_profile_home", lambda p: profile_home if p == "mlperf" else None
+    )
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB2)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "session.most_recent",
-            "params": {"profile": "mlperf"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.most_recent",
+        "params": {"profile": "mlperf"},
+    })
     assert resp["result"]["session_id"] == "ml-tip"
 
 
@@ -13313,14 +13805,22 @@ def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+    monkeypatch.setattr(
+        server, "_schedule_session_cap_enforcement", lambda *a, **k: None
+    )
     monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    monkeypatch.setattr(
+        server, "_profile_home", lambda p: profile_home if p == "mlperf" else None
+    )
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
-    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(
+        server, "_claim_active_session_slot", lambda *a, **k: (None, None)
+    )
     _clear()
     try:
-        resp = server._methods["session.create"]("r1", {"profile": "mlperf", "cols": 80})
+        resp = server._methods["session.create"](
+            "r1", {"profile": "mlperf", "cols": 80}
+        )
         assert "result" in resp, resp
         assert resp["result"]["info"]["profile_name"] == "mlperf"
         sid = resp["result"]["session_id"]
@@ -13347,17 +13847,17 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    monkeypatch.setattr(
+        server, "_profile_home", lambda p: profile_home if p == "mlperf" else None
+    )
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "session.delete",
-            "params": {"session_id": "old-ml", "profile": "mlperf"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.delete",
+        "params": {"session_id": "old-ml", "profile": "mlperf"},
+    })
     assert "result" in resp, resp
     assert resp["result"] == {"deleted": "old-ml"}
     assert str(captured["db_path"]).endswith("state.db")
@@ -13418,22 +13918,22 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
     try:
-        set_resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.title",
-                "params": {"session_id": "sid", "title": "profile-title"},
-            }
-        )
+        set_resp = server.handle_request({
+            "id": "1",
+            "method": "session.title",
+            "params": {"session_id": "sid", "title": "profile-title"},
+        })
         assert "result" in set_resp, set_resp
         assert set_resp["result"]["title"] == "profile-title"
         assert seen.get("profile_write") is True
         assert seen.get("launch_write") is None
         assert str(seen.get("db_path")).endswith("state.db")
 
-        get_resp = server.handle_request(
-            {"id": "2", "method": "session.title", "params": {"session_id": "sid"}}
-        )
+        get_resp = server.handle_request({
+            "id": "2",
+            "method": "session.title",
+            "params": {"session_id": "sid"},
+        })
         assert get_resp["result"]["title"] == "profile-title"
         assert seen.get("launch_read") is None
     finally:
@@ -13475,9 +13975,11 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.history", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.history",
+            "params": {"session_id": "sid"},
+        })
         assert "result" in resp, resp
         assert seen.get("profile") is True
         assert seen.get("launch") is None
@@ -13497,7 +13999,9 @@ def test_session_history_ships_durable_row_ids(monkeypatch):
     seen: dict = {}
 
     class _Db:
-        def get_messages_as_conversation(self, _key, include_ancestors=False, include_row_ids=False, **_kwargs):
+        def get_messages_as_conversation(
+            self, _key, include_ancestors=False, include_row_ids=False, **_kwargs
+        ):
             seen["include_row_ids"] = include_row_ids
 
             return [
@@ -13516,9 +14020,11 @@ def test_session_history_ships_durable_row_ids(monkeypatch):
     }
     monkeypatch.setattr(server, "_get_db", lambda: _Db())
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.history", "params": {"session_id": "rowid-hist-sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.history",
+            "params": {"session_id": "rowid-hist-sid"},
+        })
         assert "result" in resp, resp
         assert seen.get("include_row_ids") is True
         user_rows = [m for m in resp["result"]["messages"] if m.get("role") == "user"]
@@ -13562,9 +14068,11 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.status",
+            "params": {"session_id": "sid"},
+        })
         assert "result" in resp, resp
         assert "profile-title" in resp["result"]["output"]
         assert seen.get("profile") is True
@@ -13696,7 +14204,9 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
-    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(
+        server, "_claim_active_session_slot", lambda *a, **k: (None, None)
+    )
 
     def _fake_make_agent(*a, **k):
         seen["agent_session_db"] = k.get("session_db")
@@ -13710,13 +14220,11 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **k: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.branch",
-                "params": {"session_id": "parent", "name": "forked"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.branch",
+            "params": {"session_id": "parent", "name": "forked"},
+        })
         assert "result" in resp, resp
         assert seen.get("created")
         assert seen.get("parent") == "parent-key"
@@ -13812,7 +14320,9 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
-    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(
+        server, "_claim_active_session_slot", lambda *a, **k: (None, None)
+    )
 
     def _fake_make_agent(*a, **k):
         scope = current_secret_scope()
@@ -13827,13 +14337,11 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
     monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **k: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.branch",
-                "params": {"session_id": "parent", "name": "forked"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.branch",
+            "params": {"session_id": "parent", "name": "forked"},
+        })
         assert "result" in resp, resp
         assert seen.get("scope") == {"PROXMOX_TOKEN": "mlperf-secret"}
     finally:
@@ -13841,7 +14349,9 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
             server._sessions.pop(k, None)
 
 
-def test_session_branch_uses_persisted_display_history_after_compaction(monkeypatch, tmp_path):
+def test_session_branch_uses_persisted_display_history_after_compaction(
+    monkeypatch, tmp_path
+):
     """A live branch must copy the complete visible transcript, not the compacted model tail."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
@@ -13929,7 +14439,9 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
-    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(
+        server, "_claim_active_session_slot", lambda *args, **kwargs: (None, None)
+    )
     monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: FakeAgent())
     monkeypatch.setattr(server, "_set_session_context", lambda *args, **kwargs: {})
     monkeypatch.setattr(server, "_clear_session_context", lambda *args, **kwargs: None)
@@ -13939,13 +14451,11 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
     monkeypatch.setattr(server, "_attach_worker", lambda *args, **kwargs: None)
 
     try:
-        response = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.branch",
-                "params": {"session_id": "parent", "count": 4},
-            }
-        )
+        response = server.handle_request({
+            "id": "1",
+            "method": "session.branch",
+            "params": {"session_id": "parent", "count": 4},
+        })
 
         assert "result" in response, response
         assert [message["content"] for message in seen["msgs"]] == [
@@ -14179,8 +14689,12 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda _slug: False,
     )
-    monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None
+    )
 
     resp = server._methods["model.options"](
         102,
@@ -14303,7 +14817,9 @@ def test_prompt_submit_wires_live_title_rename_callback(monkeypatch):
         api_key = object()
         api_mode = "codex_responses"
 
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             return {
                 "final_response": "Rome was founded in 753 BC.",
                 "messages": [
@@ -14317,19 +14833,19 @@ def test_prompt_submit_wires_live_title_rename_callback(monkeypatch):
     emitted = []
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(
-        server, "_emit", lambda kind, sid, payload=None, **kw: emitted.append((kind, payload))
+        server,
+        "_emit",
+        lambda kind, sid, payload=None, **kw: emitted.append((kind, payload)),
     )
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
-    server.handle_request(
-        {
-            "id": "1",
-            "method": "prompt.submit",
-            "params": {"session_id": "sid", "text": "Tell me about Rome"},
-        }
-    )
+    server.handle_request({
+        "id": "1",
+        "method": "prompt.submit",
+        "params": {"session_id": "sid", "text": "Tell me about Rome"},
+    })
 
     hook = getattr(agent, "_on_session_title", None)
     assert callable(hook), "gateway did not install a live title-rename hook"
@@ -14338,7 +14854,9 @@ def test_prompt_submit_wires_live_title_rename_callback(monkeypatch):
     # the lanes that spend a rate-limited remote rename filter by stage.
     hook("tell me about rome", "derived")
     hook("Founding of Rome", "llm")
-    assert [payload["title"] for kind, payload in emitted if kind == "session.title"] == [
+    assert [
+        payload["title"] for kind, payload in emitted if kind == "session.title"
+    ] == [
         "tell me about rome",
         "Founding of Rome",
     ]
@@ -14354,7 +14872,9 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     instead of emitting a blank message.complete turn."""
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             return {
                 "final_response": None,
                 "messages": [],
@@ -14377,13 +14897,11 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
-    server.handle_request(
-        {
-            "id": "1",
-            "method": "prompt.submit",
-            "params": {"session_id": "sid", "text": "hello"},
-        }
-    )
+    server.handle_request({
+        "id": "1",
+        "method": "prompt.submit",
+        "params": {"session_id": "sid", "text": "hello"},
+    })
 
     complete_events = [e for e in emitted if e[0] == "message.complete"]
     assert complete_events, "expected message.complete to be emitted"
@@ -14399,7 +14917,9 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     semantics owned by downstream handlers."""
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             return {
                 "final_response": None,
                 "messages": [],
@@ -14420,13 +14940,11 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
-    server.handle_request(
-        {
-            "id": "1",
-            "method": "prompt.submit",
-            "params": {"session_id": "sid", "text": "hello"},
-        }
-    )
+    server.handle_request({
+        "id": "1",
+        "method": "prompt.submit",
+        "params": {"session_id": "sid", "text": "hello"},
+    })
 
     complete_events = [e for e in emitted if e[0] == "message.complete"]
     assert complete_events, "expected message.complete to be emitted"
@@ -14465,13 +14983,11 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         last_active=30.0,
     )
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.active_list",
-                "params": {"current_session_id": "sid-b"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.active_list",
+            "params": {"current_session_id": "sid-b"},
+        })
     finally:
         server._sessions.clear()
         server._sessions.update(previous_sessions)
@@ -14508,6 +15024,7 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     until a gateway restart. A live session on the real stdio transport (the
     standalone ``hermes --tui`` case) must still be reported.
     """
+
     class _DB:
         def get_session_title(self, key):
             return {"key-live": "Live", "key-dead": "Dead"}.get(key, "")
@@ -14532,20 +15049,17 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     dead["_finalized"] = True
     server._sessions["sid-dead"] = dead
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.active_list",
-                "params": {},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.active_list",
+            "params": {},
+        })
     finally:
         server._sessions.clear()
         server._sessions.update(previous_sessions)
 
     session_rows = resp["result"]["sessions"]
     assert [row["id"] for row in session_rows] == ["sid-live"]
-
 
 
 def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):
@@ -14562,7 +15076,9 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     class _Agent:
         model = "model-live"
 
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             assert prompt == "write a long answer"
             assert conversation_history == []
             stream_callback("partial ")
@@ -14590,23 +15106,19 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     monkeypatch.setattr(server, "_emit", _emit)
 
     try:
-        submit = server.handle_request(
-            {
-                "id": "submit",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid-live", "text": "write a long answer"},
-            }
-        )
+        submit = server.handle_request({
+            "id": "submit",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid-live", "text": "write a long answer"},
+        })
         assert submit["result"]["status"] == "streaming"
         assert started.wait(2), "fake model did not stream before activation"
 
-        resp = server.handle_request(
-            {
-                "id": "activate",
-                "method": "session.activate",
-                "params": {"session_id": "sid-live"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "activate",
+            "method": "session.activate",
+            "params": {"session_id": "sid-live"},
+        })
 
         inflight = resp["result"].get("inflight")
         assert inflight == {
@@ -14615,19 +15127,20 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             "user": "write a long answer",
         }
         turn_started_at = resp["result"]["turn_started_at"]
-        assert turn_started_at == server._sessions["sid-live"]["inflight_turn"]["started_at"]
+        assert (
+            turn_started_at
+            == server._sessions["sid-live"]["inflight_turn"]["started_at"]
+        )
         assert turn_started_at > 0
         assert resp["result"]["messages"] == []
 
         release.set()
         assert done.wait(2), "fake model turn did not complete"
-        completed = server.handle_request(
-            {
-                "id": "activate-done",
-                "method": "session.activate",
-                "params": {"session_id": "sid-live"},
-            }
-        )
+        completed = server.handle_request({
+            "id": "activate-done",
+            "method": "session.activate",
+            "params": {"session_id": "sid-live"},
+        })
         assert completed["result"].get("inflight") is None
         assert completed["result"]["turn_started_at"] is None
         assert completed["result"]["messages"] == [
@@ -14666,13 +15179,11 @@ def test_session_activate_returns_prompt_queued_during_busy_turn(monkeypatch):
         )
         assert queued["result"]["status"] == "queued"
 
-        activated = server.handle_request(
-            {
-                "id": "activate",
-                "method": "session.activate",
-                "params": {"session_id": "sid-live"},
-            }
-        )
+        activated = server.handle_request({
+            "id": "activate",
+            "method": "session.activate",
+            "params": {"session_id": "sid-live"},
+        })
 
         assert activated["result"]["queued"] == {"user": "newest prompt"}
         assert "transport" not in activated["result"]["queued"]
@@ -14697,9 +15208,11 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
         session_key="key-b",
     )
     try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.activate", "params": {"session_id": "sid-b"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.activate",
+            "params": {"session_id": "sid-b"},
+        })
 
         assert "sid-a" in server._sessions
         assert "sid-b" in server._sessions
@@ -14728,13 +15241,11 @@ def test_session_activate_can_omit_duplicate_desktop_transcript(monkeypatch):
         session_key="key-large",
     )
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.activate",
-                "params": {"session_id": "sid-large", "omit_messages": True},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.activate",
+            "params": {"session_id": "sid-large", "omit_messages": True},
+        })
 
         assert resp["result"]["messages"] == []
         assert resp["result"]["message_count"] == 2
@@ -14751,7 +15262,14 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     """Drops `tool` rows like session.list does, returns the first hit."""
 
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+        def list_sessions_rich(
+            self,
+            *,
+            source=None,
+            limit=200,
+            order_by_last_active=False,
+            compact_rows=False,
+        ):
             return [
                 {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
@@ -14759,9 +15277,11 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.most_recent", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.most_recent",
+        "params": {},
+    })
 
     assert resp["result"]["session_id"] == "tui-1"
     assert resp["result"]["title"] == "real"
@@ -14770,14 +15290,23 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
 
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+        def list_sessions_rich(
+            self,
+            *,
+            source=None,
+            limit=200,
+            order_by_last_active=False,
+            compact_rows=False,
+        ):
             return [{"id": "tool-1", "source": "tool", "started_at": 1}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.most_recent", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.most_recent",
+        "params": {},
+    })
 
     assert resp["result"]["session_id"] is None
 
@@ -14788,14 +15317,23 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     'no answer' (Copilot review on #17130)."""
 
     class _BrokenDB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+        def list_sessions_rich(
+            self,
+            *,
+            source=None,
+            limit=200,
+            order_by_last_active=False,
+            compact_rows=False,
+        ):
             raise RuntimeError("db locked")
 
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.most_recent", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.most_recent",
+        "params": {},
+    })
 
     assert "error" not in resp
     assert resp["result"]["session_id"] is None
@@ -14804,9 +15342,11 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
 def test_session_most_recent_handles_db_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
-    resp = server.handle_request(
-        {"id": "1", "method": "session.most_recent", "params": {}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.most_recent",
+        "params": {},
+    })
 
     assert resp["result"]["session_id"] is None
 
@@ -14817,7 +15357,9 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
 def test_verification_status_returns_recorded_evidence(tmp_path, monkeypatch):
     profile_home = tmp_path / "profiles" / "verify"
     profile_home.mkdir(parents=True)
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "verify" else None)
+    monkeypatch.setattr(
+        server, "_profile_home", lambda p: profile_home if p == "verify" else None
+    )
     token = set_hermes_home_override(profile_home)
     project = tmp_path / "project"
     project.mkdir()
@@ -14838,13 +15380,11 @@ def test_verification_status_returns_recorded_evidence(tmp_path, monkeypatch):
             output="green",
         )
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "verification.status",
-                "params": {"cwd": str(project), "session_id": "sid", "profile": "verify"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "verification.status",
+            "params": {"cwd": str(project), "session_id": "sid", "profile": "verify"},
+        })
     finally:
         reset_hermes_home_override(token)
 
@@ -14869,13 +15409,11 @@ def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tm
     home.mkdir()
     token = set_hermes_home_override(home)
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "verification.status",
-                "params": {"cwd": str(tmp_path), "session_id": "sid"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "verification.status",
+            "params": {"cwd": str(tmp_path), "session_id": "sid"},
+        })
     finally:
         reset_hermes_home_override(token)
 
@@ -14935,9 +15473,11 @@ def test_browser_manage_status_reads_env_var(monkeypatch):
     """Status returns the env var verbatim (no network I/O)."""
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
 
-    resp = server.handle_request(
-        {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "browser.manage",
+        "params": {"action": "status"},
+    })
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
@@ -14952,9 +15492,11 @@ def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
         read_raw_config=lambda: {"browser": {"cdp_url": "http://lan:9222"}}
     )
     with patch.dict(sys.modules, {"hermes_cli.config": fake_cfg}):
-        resp = server.handle_request(
-            {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "status"},
+        })
 
     assert resp["result"] == {"connected": True, "url": "http://lan:9222"}
 
@@ -14971,9 +15513,11 @@ def test_browser_manage_status_does_not_call_get_cdp_override(monkeypatch):
         )
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
-        resp = server.handle_request(
-            {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "status"},
+        })
 
     assert resp["result"]["connected"] is True
 
@@ -14995,13 +15539,11 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=True)
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "browser.manage",
-                "params": {"action": "connect", "url": "http://127.0.0.1:9222"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": "http://127.0.0.1:9222"},
+        })
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
@@ -15021,9 +15563,11 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         urls = _stub_urlopen_capture(monkeypatch, ok=True)
-        resp = server.handle_request(
-            {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect"},
+        })
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
@@ -15057,23 +15601,24 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 return_value=ChromeDebugLaunch(),
             ),
             patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
-            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
+            patch(
+                "hermes_cli.browser_connect.manual_chrome_debug_command",
+                return_value=None,
+            ),
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
             ),
         ):
-            resp = server.handle_request(
-                {
-                    "id": "1",
-                    "method": "browser.manage",
-                    "params": {
-                        "action": "connect",
-                        "session_id": "sess-1",
-                        "url": "http://localhost:9222",
-                    },
-                }
-            )
+            resp = server.handle_request({
+                "id": "1",
+                "method": "browser.manage",
+                "params": {
+                    "action": "connect",
+                    "session_id": "sess-1",
+                    "url": "http://localhost:9222",
+                },
+            })
 
     assert resp["result"]["connected"] is False
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
@@ -15115,19 +15660,20 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
                 "hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=ChromeDebugLaunch(),
             ),
-            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
+            patch(
+                "hermes_cli.browser_connect.manual_chrome_debug_command",
+                return_value=None,
+            ),
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
             ),
         ):
-            resp = server.handle_request(
-                {
-                    "id": "1",
-                    "method": "browser.manage",
-                    "params": {"action": "connect", "url": "http://localhost:9222"},
-                }
-            )
+            resp = server.handle_request({
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": "http://localhost:9222"},
+            })
 
     assert resp["result"]["connected"] is False
     assert resp["result"]["messages"]  # bundled list still populated
@@ -15145,13 +15691,11 @@ def test_browser_manage_connect_handles_null_url(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=True)
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "browser.manage",
-                "params": {"action": "connect", "url": None},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": None},
+        })
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
@@ -15159,13 +15703,11 @@ def test_browser_manage_connect_handles_null_url(monkeypatch):
 
 def test_browser_manage_connect_rejects_non_string_url(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "browser.manage",
-            "params": {"action": "connect", "url": 9222},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "browser.manage",
+        "params": {"action": "connect", "url": 9222},
+    })
 
     assert resp["error"]["code"] == 4015
     assert "must be a string" in resp["error"]["message"]
@@ -15213,9 +15755,11 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
             ),
             patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
         ):
-            resp = server.handle_request(
-                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
-            )
+            resp = server.handle_request({
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect"},
+            })
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
@@ -15254,9 +15798,11 @@ def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
-        resp = server.handle_request(
-            {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect"},
+        })
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://[::1]:9222"
@@ -15299,19 +15845,25 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
 
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with (
-            patch("hermes_cli.browser_connect.launch_chrome_debug", side_effect=_launch),
+            patch(
+                "hermes_cli.browser_connect.launch_chrome_debug", side_effect=_launch
+            ),
             patch("hermes_cli.browser_connect.local_port_in_use", return_value=True),
             patch("hermes_cli.browser_connect.find_free_debug_port", return_value=9223),
         ):
-            resp = server.handle_request(
-                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
-            )
+            resp = server.handle_request({
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect"},
+            })
 
     assert launch_ports == [9223]
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9223"
     assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9223"
-    assert any("occupied by another application" in m for m in resp["result"]["messages"])
+    assert any(
+        "occupied by another application" in m for m in resp["result"]["messages"]
+    )
 
 
 def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
@@ -15326,13 +15878,11 @@ def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=False)
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "browser.manage",
-                "params": {"action": "connect", "url": "http://unreachable:9222"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": "http://unreachable:9222"},
+        })
 
     assert "error" in resp
     # Env preserved; nothing reaped.
@@ -15351,13 +15901,11 @@ def test_browser_manage_connect_normalizes_bare_host_port(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=True)
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "browser.manage",
-                "params": {"action": "connect", "url": "127.0.0.1:9222"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": "127.0.0.1:9222"},
+        })
 
     assert resp["result"]["connected"] is True
     # Bare host:port got promoted to a full URL with explicit scheme.
@@ -15377,13 +15925,11 @@ def test_browser_manage_connect_strips_discovery_path(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=True)
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "browser.manage",
-                "params": {"action": "connect", "url": "http://127.0.0.1:9222/json"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": "http://127.0.0.1:9222/json"},
+        })
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
@@ -15415,13 +15961,11 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
             "urllib.request.urlopen", side_effect=AssertionError("urlopen called")
         ):
             with patch("socket.create_connection", return_value=_OkSocket()):
-                resp = server.handle_request(
-                    {
-                        "id": "1",
-                        "method": "browser.manage",
-                        "params": {"action": "connect", "url": concrete},
-                    }
-                )
+                resp = server.handle_request({
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {"action": "connect", "url": concrete},
+                })
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == concrete
@@ -15448,13 +15992,11 @@ def test_browser_manage_connect_local_devtools_ws_preserves_path(monkeypatch):
 
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with patch("socket.create_connection", return_value=_OkSocket()):
-            resp = server.handle_request(
-                {
-                    "id": "1",
-                    "method": "browser.manage",
-                    "params": {"action": "connect", "url": concrete},
-                }
-            )
+            resp = server.handle_request({
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": concrete},
+            })
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == concrete
@@ -15463,13 +16005,11 @@ def test_browser_manage_connect_local_devtools_ws_preserves_path(monkeypatch):
 
 def test_browser_manage_connect_rejects_invalid_port(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "browser.manage",
-            "params": {"action": "connect", "url": "http://localhost:abc"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "browser.manage",
+        "params": {"action": "connect", "url": "http://localhost:abc"},
+    })
 
     assert resp["error"]["code"] == 4015
     assert "invalid port" in resp["error"]["message"]
@@ -15478,13 +16018,11 @@ def test_browser_manage_connect_rejects_invalid_port(monkeypatch):
 
 def test_browser_manage_connect_rejects_missing_host(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "browser.manage",
-            "params": {"action": "connect", "url": "http://:9222"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "browser.manage",
+        "params": {"action": "connect", "url": "http://:9222"},
+    })
 
     assert resp["error"]["code"] == 4015
     assert "missing host" in resp["error"]["message"]
@@ -15522,13 +16060,11 @@ def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
             "urllib.request.urlopen", side_effect=AssertionError("urlopen called")
         ):
             with patch("socket.create_connection", side_effect=_fake_create_connection):
-                resp = server.handle_request(
-                    {
-                        "id": "1",
-                        "method": "browser.manage",
-                        "params": {"action": "connect", "url": concrete},
-                    }
-                )
+                resp = server.handle_request({
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {"action": "connect", "url": concrete},
+                })
 
     assert resp["result"] == {"connected": True, "url": concrete}
     # wss → port 443, host preserved verbatim.
@@ -15548,13 +16084,11 @@ def test_browser_manage_connect_concrete_ws_tcp_unreachable(monkeypatch):
 
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with patch("socket.create_connection", side_effect=OSError("ECONNREFUSED")):
-            resp = server.handle_request(
-                {
-                    "id": "1",
-                    "method": "browser.manage",
-                    "params": {"action": "connect", "url": concrete},
-                }
-            )
+            resp = server.handle_request({
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": concrete},
+            })
 
     assert "error" in resp
     assert resp["error"]["code"] == 5031
@@ -15570,9 +16104,11 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
-        resp = server.handle_request(
-            {"id": "1", "method": "browser.manage", "params": {"action": "disconnect"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "disconnect"},
+        })
 
     assert resp["result"] == {"connected": False}
     assert "BROWSER_CDP_URL" not in os.environ
@@ -15587,9 +16123,11 @@ def test_config_get_indicator_returns_known_value_verbatim(monkeypatch):
     monkeypatch.setattr(
         server, "_load_cfg", lambda: {"display": {"tui_status_indicator": "emoji"}}
     )
-    resp = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "indicator"},
+    })
     assert resp["result"] == {"value": "emoji"}
 
 
@@ -15602,9 +16140,11 @@ def test_config_get_indicator_normalizes_casing_and_whitespace(monkeypatch):
     monkeypatch.setattr(
         server, "_load_cfg", lambda: {"display": {"tui_status_indicator": " EMOJI "}}
     )
-    resp = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "indicator"},
+    })
     assert resp["result"] == {"value": "emoji"}
 
 
@@ -15614,17 +16154,21 @@ def test_config_get_indicator_falls_back_to_default_for_unknown(monkeypatch):
     monkeypatch.setattr(
         server, "_load_cfg", lambda: {"display": {"tui_status_indicator": "rainbow"}}
     )
-    resp = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "indicator"},
+    })
     assert resp["result"] == {"value": "kaomoji"}
 
 
 def test_config_get_indicator_falls_back_when_unset(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {}})
-    resp = server.handle_request(
-        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.get",
+        "params": {"key": "indicator"},
+    })
     assert resp["result"] == {"value": "kaomoji"}
 
 
@@ -15638,13 +16182,11 @@ def test_config_set_indicator_accepts_known_value(monkeypatch):
         "_write_config_key",
         lambda k, v: written.update({k: v}),
     )
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "indicator", "value": "EMOJI"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "indicator", "value": "EMOJI"},
+    })
     assert resp["result"] == {"key": "indicator", "value": "emoji"}
     assert written == {"display.tui_status_indicator": "emoji"}
 
@@ -15656,13 +16198,11 @@ def test_config_set_indicator_falsy_non_string_surfaces_in_error(monkeypatch):
     monkeypatch.setattr(server, "_write_config_key", lambda *a, **k: None)
 
     for bad in (0, False, []):
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"key": "indicator", "value": bad},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "indicator", "value": bad},
+        })
         assert "error" in resp
         msg = resp["error"]["message"]
         assert "unknown indicator" in msg
@@ -15675,13 +16215,11 @@ def test_config_set_indicator_falsy_non_string_surfaces_in_error(monkeypatch):
 def test_config_set_indicator_none_keeps_blank_repr(monkeypatch):
     """`None` is the genuine 'no value' case — empty raw is acceptable."""
     monkeypatch.setattr(server, "_write_config_key", lambda *a, **k: None)
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "indicator", "value": None},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "config.set",
+        "params": {"key": "indicator", "value": None},
+    })
     assert "error" in resp
     assert "unknown indicator: ''" in resp["error"]["message"]
 
@@ -15828,7 +16366,10 @@ def test_make_agent_uses_session_runtime_overrides(monkeypatch):
     assert resolved == {"requested": "openai-codex", "target_model": "gpt-5.4"}
     assert mock_agent.call_args.kwargs["model"] == "gpt-5.4"
     assert mock_agent.call_args.kwargs["provider"] == "openai-codex"
-    assert mock_agent.call_args.kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
+    assert mock_agent.call_args.kwargs["reasoning_config"] == {
+        "enabled": True,
+        "effort": "high",
+    }
     assert mock_agent.call_args.kwargs["service_tier"] == "priority"
 
 
@@ -15922,7 +16463,9 @@ def test_notification_poller_delivers_completion(monkeypatch):
     emitted = []
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             turns.append(prompt)
             return {
                 "final_response": "ok",
@@ -15932,6 +16475,7 @@ def test_notification_poller_delivers_completion(monkeypatch):
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None):
             self._target = target
+
         def start(self):
             self._target()
 
@@ -15977,7 +16521,10 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
         # Should have triggered an agent turn
         assert len(turns) == 1
-        assert "[IMPORTANT: Background process proc_poller_test completed normally" in turns[0]
+        assert (
+            "[IMPORTANT: Background process proc_poller_test completed normally"
+            in turns[0]
+        )
     finally:
         server._sessions.pop("sid_poll", None)
         while not process_registry.completion_queue.empty():
@@ -15993,13 +16540,16 @@ def test_notification_poller_skips_consumed(monkeypatch):
     turns = []
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             turns.append(prompt)
             return {"final_response": "ok", "messages": []}
 
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None):
             self._target = target
+
         def start(self):
             self._target()
 
@@ -16089,7 +16639,9 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
-def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
+def test_session_save_writes_under_hermes_home_with_system_prompt(
+    monkeypatch, tmp_path
+):
     """TUI /save (session.save RPC) must snapshot under the Hermes profile
     home — not the project/workspace CWD — and include the system prompt,
     mirroring the classic CLI /save and the dashboard save export.
@@ -16258,9 +16810,9 @@ def test_notification_event_dedup_key_keeps_completions_one_shot():
         "output": "different output should not change completion key",
     }
 
-    assert server._notification_event_dedup_key(first) == server._notification_event_dedup_key(
-        replay
-    )
+    assert server._notification_event_dedup_key(
+        first
+    ) == server._notification_event_dedup_key(replay)
 
 
 # --- image.attach_bytes / pdf.attach (remote-client byte upload) -------------
@@ -16284,17 +16836,15 @@ def test_image_attach_bytes_writes_to_gateway_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._sessions["abx"] = _session()
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "image.attach_bytes",
-            "params": {
-                "session_id": "abx",
-                "content_base64": _PNG_1X1_B64,
-                "filename": "shot.png",
-            },
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "image.attach_bytes",
+        "params": {
+            "session_id": "abx",
+            "content_base64": _PNG_1X1_B64,
+            "filename": "shot.png",
+        },
+    })
 
     res = resp["result"]
     assert res["attached"] is True
@@ -16311,16 +16861,14 @@ def test_image_attach_bytes_accepts_data_url_prefix(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._sessions["abx2"] = _session()
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "image.attach_bytes",
-            "params": {
-                "session_id": "abx2",
-                "content_base64": f"data:image/png;base64,{_PNG_1X1_B64}",
-            },
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "image.attach_bytes",
+        "params": {
+            "session_id": "abx2",
+            "content_base64": f"data:image/png;base64,{_PNG_1X1_B64}",
+        },
+    })
     assert resp["result"]["attached"] is True
 
 
@@ -16330,13 +16878,11 @@ def test_image_attach_bytes_data_alias_and_magic_sniff(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._sessions["abx3"] = _session()
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "image.attach_bytes",
-            "params": {"session_id": "abx3", "data": _PNG_1X1_B64},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "image.attach_bytes",
+        "params": {"session_id": "abx3", "data": _PNG_1X1_B64},
+    })
     res = resp["result"]
     assert res["attached"] is True
     assert Path(res["path"]).suffix == ".png"  # sniffed from magic bytes
@@ -16347,13 +16893,11 @@ def test_image_attach_bytes_rejects_invalid_base64(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._sessions["abx4"] = _session()
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "image.attach_bytes",
-            "params": {"session_id": "abx4", "content_base64": "!!!not base64!!!"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "image.attach_bytes",
+        "params": {"session_id": "abx4", "content_base64": "!!!not base64!!!"},
+    })
     assert "error" in resp
     assert resp["error"]["code"] == 4017
 
@@ -16367,13 +16911,11 @@ def test_image_attach_bytes_rejects_oversize(monkeypatch, tmp_path):
     server._sessions["abx5"] = _session()
 
     big = _b64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 100).decode("ascii")
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "image.attach_bytes",
-            "params": {"session_id": "abx5", "content_base64": big},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "image.attach_bytes",
+        "params": {"session_id": "abx5", "content_base64": big},
+    })
     assert "error" in resp
     assert resp["error"]["code"] == 4018
 
@@ -16384,17 +16926,15 @@ def test_image_attach_bytes_rejects_unsupported_extension(monkeypatch, tmp_path)
     server._sessions["abx6"] = _session()
 
     # filename hint forces a non-image extension; magic sniff is bypassed by hint
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "image.attach_bytes",
-            "params": {
-                "session_id": "abx6",
-                "content_base64": _PNG_1X1_B64,
-                "filename": "evil.exe",
-            },
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "image.attach_bytes",
+        "params": {
+            "session_id": "abx6",
+            "content_base64": _PNG_1X1_B64,
+            "filename": "evil.exe",
+        },
+    })
     assert "error" in resp
     assert resp["error"]["code"] == 4016
 
@@ -16406,13 +16946,11 @@ def test_pdf_attach_requires_poppler(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _name: None)
     server._sessions["pdf1"] = _session()
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "pdf.attach",
-            "params": {"session_id": "pdf1", "content_base64": "JVBERi0xLjQK"},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "pdf.attach",
+        "params": {"session_id": "pdf1", "content_base64": "JVBERi0xLjQK"},
+    })
     assert "error" in resp
     assert resp["error"]["code"] == 5028
 
@@ -16426,13 +16964,11 @@ def test_pdf_attach_rejects_non_pdf_bytes(monkeypatch, tmp_path):
     server._sessions["pdf2"] = _session()
 
     not_pdf = _b64.b64encode(b"this is not a pdf").decode("ascii")
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "pdf.attach",
-            "params": {"session_id": "pdf2", "content_base64": not_pdf},
-        }
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "pdf.attach",
+        "params": {"session_id": "pdf2", "content_base64": not_pdf},
+    })
     assert "error" in resp
     assert resp["error"]["code"] == 4017
 
@@ -16443,9 +16979,11 @@ def test_pdf_attach_requires_path_or_bytes(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pdftoppm")
     server._sessions["pdf3"] = _session()
 
-    resp = server.handle_request(
-        {"id": "1", "method": "pdf.attach", "params": {"session_id": "pdf3"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "pdf.attach",
+        "params": {"session_id": "pdf3"},
+    })
     assert "error" in resp
     assert resp["error"]["code"] == 4015
 
@@ -16456,11 +16994,16 @@ def test_decode_attach_base64_helper():
     raw = _b64.b64encode(b"hello").decode("ascii")
     assert server._decode_attach_base64(raw, mime_prefix="image/") == b"hello"
     assert (
-        server._decode_attach_base64(f"data:image/png;base64,{raw}", mime_prefix="image/")
+        server._decode_attach_base64(
+            f"data:image/png;base64,{raw}", mime_prefix="image/"
+        )
         == b"hello"
     )
     # whitespace inside payload is tolerated
-    assert server._decode_attach_base64(raw[:4] + "\n" + raw[4:], mime_prefix="image/") == b"hello"
+    assert (
+        server._decode_attach_base64(raw[:4] + "\n" + raw[4:], mime_prefix="image/")
+        == b"hello"
+    )
     assert server._decode_attach_base64("@@@", mime_prefix="image/") is None
 
 
@@ -16538,7 +17081,8 @@ def test_close_session_by_id_is_idempotent_and_full(monkeypatch):
     monkeypatch.setattr(server, "_finalize_session", _fake_finalize)
     monkeypatch.setattr(
         "tools.approval.unregister_gateway_notify",
-        lambda key: calls.__setitem__("unreg", calls["unreg"] + 1), raising=False,
+        lambda key: calls.__setitem__("unreg", calls["unreg"] + 1),
+        raising=False,
     )
     server._sessions["sid-1"] = {"session_key": "k1", "agent": A(), "slash_worker": W()}
 
@@ -16679,13 +17223,11 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
 
     def _exec(n):
         barrier.wait()
-        resp = server.handle_request(
-            {
-                "id": str(n),
-                "method": "slash.exec",
-                "params": {"command": "/context", "session_id": "race-spawn"},
-            }
-        )
+        resp = server.handle_request({
+            "id": str(n),
+            "method": "slash.exec",
+            "params": {"command": "/context", "session_id": "race-spawn"},
+        })
         results.append(resp)
 
     try:
@@ -16707,15 +17249,19 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
 def test_session_close_rpc_claims_then_tears_down(monkeypatch):
     seen = []
     claimed = {"session_key": "k"}
-    monkeypatch.setattr(server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed)
+    monkeypatch.setattr(
+        server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed
+    )
     monkeypatch.setattr(
         server,
         "_teardown_popped_session",
         lambda session, *, end_reason: seen.append((session, end_reason)) or True,
     )
-    resp = server.handle_request(
-        {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
-    )
+    resp = server.handle_request({
+        "id": "1",
+        "method": "session.close",
+        "params": {"session_id": "s9"},
+    })
     assert resp["result"] == {"closed": True}
     assert seen == ["s9", (claimed, "tui_close")]
 
@@ -16723,7 +17269,8 @@ def test_session_close_rpc_claims_then_tears_down(monkeypatch):
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server, "_close_session_by_id",
+        server,
+        "_close_session_by_id",
         lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
     )
     # Detached session "b" would schedule a real grace-reap threading.Timer that
@@ -16736,7 +17283,9 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
         assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
-        assert server._sessions["b"]["transport"] is server._detached_ws_transport  # re-pointed
+        assert (
+            server._sessions["b"]["transport"] is server._detached_ws_transport
+        )  # re-pointed
     finally:
         server._sessions.clear()
 
@@ -16745,12 +17294,16 @@ def test_session_create_records_close_on_disconnect_flag(monkeypatch):
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     server._sessions.clear()
     try:
-        on = server.handle_request(
-            {"id": "1", "method": "session.create", "params": {"close_on_disconnect": True}}
-        )["result"]["session_id"]
-        off = server.handle_request(
-            {"id": "2", "method": "session.create", "params": {}}
-        )["result"]["session_id"]
+        on = server.handle_request({
+            "id": "1",
+            "method": "session.create",
+            "params": {"close_on_disconnect": True},
+        })["result"]["session_id"]
+        off = server.handle_request({
+            "id": "2",
+            "method": "session.create",
+            "params": {},
+        })["result"]["session_id"]
         assert server._sessions[on]["close_on_disconnect"]
         assert not server._sessions[off]["close_on_disconnect"]
     finally:
@@ -16761,9 +17314,11 @@ def test_session_create_records_source(monkeypatch):
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     server._sessions.clear()
     try:
-        sid = server.handle_request(
-            {"id": "1", "method": "session.create", "params": {"source": "tool"}}
-        )["result"]["session_id"]
+        sid = server.handle_request({
+            "id": "1",
+            "method": "session.create",
+            "params": {"source": "tool"},
+        })["result"]["session_id"]
         assert server._sessions[sid]["source"] == "tool"
     finally:
         server._sessions.clear()
@@ -16772,7 +17327,8 @@ def test_session_create_records_source(monkeypatch):
 def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server, "_close_session_by_id",
+        server,
+        "_close_session_by_id",
         lambda sid, *, end_reason: seen.append((sid, end_reason)),
     )
     server._sessions.clear()
@@ -16836,7 +17392,8 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
     closed = []
     monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
     monkeypatch.setattr(
-        server, "_close_session_by_id",
+        server,
+        "_close_session_by_id",
         lambda sid, *, end_reason, predicate=None: closed.append((sid, end_reason)),
     )
     now = time.time()
@@ -16863,7 +17420,8 @@ def test_reap_idle_sessions_calls_periodic_trim(monkeypatch):
     import hermes_cli.mem_trim as mem_trim
 
     monkeypatch.setattr(
-        mem_trim, "trim_memory",
+        mem_trim,
+        "trim_memory",
         lambda **kw: trim_calls.append(kw.get("reason", "")) or True,
     )
 
@@ -16883,7 +17441,11 @@ def test_reap_idle_sessions_logs_trim_failure(monkeypatch, caplog):
     monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
     import hermes_cli.mem_trim as mem_trim
 
-    monkeypatch.setattr(mem_trim, "trim_memory", lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        mem_trim,
+        "trim_memory",
+        lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
     server._sessions.clear()
     try:
         with caplog.at_level("DEBUG", logger="tui_gateway.server"):
@@ -17006,11 +17568,16 @@ def test_lru_reaper_revalidates_and_tries_next_candidate(monkeypatch):
 
     def _reattach_oldest_after_scan(sid, session):
         evictable = original_is_evictable(sid, session)
-        if sid == "lru-race" and session.get("transport") is server._detached_ws_transport:
+        if (
+            sid == "lru-race"
+            and session.get("transport") is server._detached_ws_transport
+        ):
             session["transport"] = live_transport
         return evictable
 
-    monkeypatch.setattr(server, "_session_is_lru_evictable", _reattach_oldest_after_scan)
+    monkeypatch.setattr(
+        server, "_session_is_lru_evictable", _reattach_oldest_after_scan
+    )
     now = time.time()
     server._sessions.clear()
     server._sessions["lru-race"] = _idle_evictable_session(now) | {
@@ -17049,7 +17616,10 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         )
         sid = resp["result"]["session_id"]
         sess = server._sessions[sid]
-        assert sess["model_override"] == {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+        assert sess["model_override"] == {
+            "model": "claude-sonnet-4.6",
+            "provider": "anthropic",
+        }
         assert sess["create_reasoning_override"] is not None
         assert sess["create_service_tier_override"] == "priority"
         # The immediate response reflects the override (not the global default) so
@@ -17059,9 +17629,7 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
 
         # Explicit false is not the same as omission: it must suppress a Fast
         # profile default for this session's first request.
-        normal = server._methods["session.create"](
-            "r2", {"cols": 80, "fast": False}
-        )
+        normal = server._methods["session.create"]("r2", {"cols": 80, "fast": False})
         normal_sess = server._sessions[normal["result"]["session_id"]]
         assert normal_sess["create_service_tier_override"] == ""
 
@@ -17245,12 +17813,12 @@ class _BillingHeaders:
         (429, "rate_limited", None),
     ],
 )
-def test_billing_error_serialization_preserves_server_code(
-    status, error, retry_after
-):
+def test_billing_error_serialization_preserves_server_code(status, error, retry_after):
     import hermes_cli.nous_billing as nb
 
-    headers = _BillingHeaders({"Retry-After": str(retry_after)}) if retry_after else None
+    headers = (
+        _BillingHeaders({"Retry-After": str(retry_after)}) if retry_after else None
+    )
     with pytest.raises(nb.BillingTransient) as ei:
         nb._raise_for_error(status, {"error": error}, headers)
 
@@ -17277,7 +17845,9 @@ def test_billing_rate_limit_without_error_defaults_wire_code():
 def _sub_rpc(method, params):
     # These RPCs are in _LONG_HANDLERS (pool-routed → dispatch returns None and the
     # worker writes via the transport), so drive the inline handler directly.
-    return server.handle_request({"id": "1", "method": method, "params": params})["result"]
+    return server.handle_request({"id": "1", "method": method, "params": params})[
+        "result"
+    ]
 
 
 def test_subscription_preview_serializes_quote(monkeypatch):
@@ -17332,7 +17902,11 @@ def test_subscription_change_cancellation(monkeypatch):
     def _put(*, subscription_type_id=None, cancel=False):
         seen["tier"] = subscription_type_id
         seen["cancel"] = cancel
-        return {"rail": "stripe", "cancelAtPeriodEnd": True, "message": "Scheduled to cancel."}
+        return {
+            "rail": "stripe",
+            "cancelAtPeriodEnd": True,
+            "message": "Scheduled to cancel.",
+        }
 
     monkeypatch.setattr(nb, "put_subscription_pending_change", _put)
     res = _sub_rpc("subscription.change", {"cancel": True})
@@ -17349,7 +17923,12 @@ def test_subscription_change_tier_downgrade(monkeypatch):
     def _put(*, subscription_type_id=None, cancel=False):
         seen["tier"] = subscription_type_id
         seen["cancel"] = cancel
-        return {"rail": "stripe", "changeType": "downgrade", "targetTierName": "Plus", "message": "Scheduled."}
+        return {
+            "rail": "stripe",
+            "changeType": "downgrade",
+            "targetTierName": "Plus",
+            "message": "Scheduled.",
+        }
 
     monkeypatch.setattr(nb, "put_subscription_pending_change", _put)
     res = _sub_rpc("subscription.change", {"subscription_type_id": "plus"})
@@ -17383,10 +17962,17 @@ def test_subscription_upgrade_echoes_status_and_idempotency(monkeypatch):
 
     def _upgrade(*, subscription_type_id, idempotency_key):
         seen["key"] = idempotency_key
-        return {"status": "upgraded", "targetTierId": "ultra", "targetTierName": "Ultra"}
+        return {
+            "status": "upgraded",
+            "targetTierId": "ultra",
+            "targetTierName": "Ultra",
+        }
 
     monkeypatch.setattr(nb, "post_subscription_upgrade", _upgrade)
-    res = _sub_rpc("subscription.upgrade", {"subscription_type_id": "ultra", "idempotency_key": "k-1"})
+    res = _sub_rpc(
+        "subscription.upgrade",
+        {"subscription_type_id": "ultra", "idempotency_key": "k-1"},
+    )
     assert res["ok"] is True
     assert res["status"] == "upgraded"
     assert res["target_tier_name"] == "Ultra"
@@ -17412,6 +17998,8 @@ def test_subscription_upgrade_requires_action_surfaces_recovery(monkeypatch):
     assert res["status"] == "requires_action"
     assert res["recovery_url"].startswith("https://portal.example")
     assert res["idempotency_key"]  # minted when the caller omits one
+
+
 # ── _get_usage active_subagents (TUI status-bar ⛓ indicator) ──────────────
 # Mirrors the classic CLI status bar: _get_usage embeds a live count of
 # background/async subagents from tools.async_delegation.active_count() so the
@@ -17428,6 +18016,7 @@ class _BareAgent:
 
 def test_get_usage_includes_active_subagents(monkeypatch):
     import tools.async_delegation as ad_mod
+
     monkeypatch.setattr(ad_mod, "active_count", lambda: 4)
     usage = server._get_usage(_BareAgent())
     assert usage["active_subagents"] == 4
@@ -17435,6 +18024,7 @@ def test_get_usage_includes_active_subagents(monkeypatch):
 
 def test_get_usage_active_subagents_zero(monkeypatch):
     import tools.async_delegation as ad_mod
+
     monkeypatch.setattr(ad_mod, "active_count", lambda: 0)
     usage = server._get_usage(_BareAgent())
     assert usage["active_subagents"] == 0
@@ -17529,6 +18119,7 @@ def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
 # _resolve_runtime_with_fallback — init-time provider fallback
 # ---------------------------------------------------------------------------
 
+
 class TestResolveRuntimeWithFallback:
     """Tests for _resolve_runtime_with_fallback(): init-time provider
     fallback when the primary provider raises AuthError."""
@@ -17540,9 +18131,7 @@ class TestResolveRuntimeWithFallback:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kw: expected,
         )
-        resolution = server._resolve_runtime_with_fallback(
-            {"requested": "openai"}
-        )
+        resolution = server._resolve_runtime_with_fallback({"requested": "openai"})
         assert resolution.runtime == expected
         assert resolution.selected_model is None
         assert resolution.used_fallback is False
@@ -17600,9 +18189,9 @@ class TestResolveRuntimeWithFallback:
             ],
         )
 
-        resolution = server._resolve_runtime_with_fallback(
-            {"requested": "openai-codex"}
-        )
+        resolution = server._resolve_runtime_with_fallback({
+            "requested": "openai-codex"
+        })
 
         assert requested == ["openai-codex", "openrouter"]
         assert resolution.runtime == fallback_runtime
@@ -17639,9 +18228,9 @@ class TestResolveRuntimeWithFallback:
                 }
             ],
         )
-        resolution = server._resolve_runtime_with_fallback(
-            {"requested": "openai-codex"}
-        )
+        resolution = server._resolve_runtime_with_fallback({
+            "requested": "openai-codex"
+        })
         assert resolution.used_fallback is True
         assert captured.get("explicit_api_key") == "env-resolved-key"
 
@@ -17739,7 +18328,9 @@ class TestResolveRuntimeWithFallback:
             fake_resolve,
         )
         monkeypatch.setattr("run_agent.AIAgent", fake_agent)
-        monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+        monkeypatch.setattr(
+            server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"]
+        )
         monkeypatch.setattr(server, "_get_db", lambda: None)
 
         agent = server._make_agent(
@@ -17821,7 +18412,10 @@ def test_get_usage_clamps_post_compression_sentinel():
 # Streaming TTS — per-turn pipeline + barge-in
 # ---------------------------------------------------------------------------
 
-def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, listen=None, transcribe=None):
+
+def _fake_tts_modules(
+    monkeypatch, *, requirements=True, playback_stops=None, listen=None, transcribe=None
+):
     """Install lightweight tools.tts_tool / tools.voice_mode fakes."""
     started = {}
 
@@ -17851,11 +18445,14 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
         sys.modules,
         "tools.voice_mode",
         types.SimpleNamespace(
-            stop_playback=lambda: (playback_stops.append(True) if playback_stops is not None else None),
+            stop_playback=lambda: (
+                playback_stops.append(True) if playback_stops is not None else None
+            ),
             listen_for_speech=listen or default_listen,
             full_duplex_listen=listen or default_fd_listen,
             is_audio_output_active=lambda: False,
-            transcribe_recording=transcribe or (lambda path, model=None: {"success": True, "transcript": ""}),
+            transcribe_recording=transcribe
+            or (lambda path, model=None: {"success": True, "transcript": ""}),
         ),
     )
     # Fresh listener slot per test — the arm is idempotent per process.
@@ -17945,7 +18542,9 @@ def test_tts_stream_stop_after_natural_finish_does_not_latch(monkeypatch):
     assert ts.take_speech_interrupted() is False
 
 
-def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, tmp_path):
+def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(
+    monkeypatch, tmp_path
+):
     """User speech during playback cuts TTS at the moment of detection
     (voice.interrupted), then the captured interruption is transcribed and
     emitted as voice.transcript so the TUI submits it — complete from its
@@ -17959,7 +18558,9 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
     events: list = []
     monkeypatch.setattr(
-        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+        server,
+        "_voice_emit",
+        lambda event, payload=None: events.append((event, payload)),
     )
 
     wav = tmp_path / "barge.wav"
@@ -17972,7 +18573,10 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     _fake_tts_modules(
         monkeypatch,
         listen=fake_listen,
-        transcribe=lambda path, model=None: {"success": True, "transcript": "stop, actually—"},
+        transcribe=lambda path, model=None: {
+            "success": True,
+            "transcript": "stop, actually—",
+        },
     )
 
     server._tts_stream_begin()
@@ -17999,7 +18603,9 @@ def test_full_duplex_generation_phase_interrupts_running_turn(monkeypatch, tmp_p
     monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
     events: list = []
     monkeypatch.setattr(
-        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+        server,
+        "_voice_emit",
+        lambda event, payload=None: events.append((event, payload)),
     )
 
     wav = tmp_path / "interject.wav"
@@ -18018,7 +18624,10 @@ def test_full_duplex_generation_phase_interrupts_running_turn(monkeypatch, tmp_p
     _fake_tts_modules(
         monkeypatch,
         listen=fake_listen,
-        transcribe=lambda path, model=None: {"success": True, "transcript": "wait, try another way"},
+        transcribe=lambda path, model=None: {
+            "success": True,
+            "transcript": "wait, try another way",
+        },
     )
 
     server._arm_full_duplex_listener()
@@ -18039,7 +18648,9 @@ def test_full_duplex_stop_phrase_mid_generation_ends_voice_chat(monkeypatch, tmp
     monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
     events: list = []
     monkeypatch.setattr(
-        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+        server,
+        "_voice_emit",
+        lambda event, payload=None: events.append((event, payload)),
     )
 
     wav = tmp_path / "stop.wav"
@@ -18061,13 +18672,15 @@ def test_full_duplex_stop_phrase_mid_generation_ends_voice_chat(monkeypatch, tmp
         transcribe=lambda path, model=None: {"success": True, "transcript": "stop"},
     )
     # is_voice_stop_phrase lives in the faked tools.voice_mode namespace.
-    sys.modules["tools.voice_mode"].is_voice_stop_phrase = (
-        lambda text: text.strip().lower() == "stop"
+    sys.modules["tools.voice_mode"].is_voice_stop_phrase = lambda text: (
+        text.strip().lower() == "stop"
     )
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.voice",
-        types.SimpleNamespace(stop_continuous=lambda **_kw: None, speak_text=lambda *a, **k: None),
+        types.SimpleNamespace(
+            stop_continuous=lambda **_kw: None, speak_text=lambda *a, **k: None
+        ),
     )
 
     server._arm_full_duplex_listener()
@@ -18098,7 +18711,9 @@ def test_speak_text_with_barge_arms_monitor_and_cuts_playback(monkeypatch, tmp_p
     )
     events: list = []
     monkeypatch.setattr(
-        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+        server,
+        "_voice_emit",
+        lambda event, payload=None: events.append((event, payload)),
     )
 
     wav = tmp_path / "barge.wav"
@@ -18134,7 +18749,10 @@ def test_speak_text_with_barge_arms_monitor_and_cuts_playback(monkeypatch, tmp_p
     server._speak_text_with_barge("a long spoken reply")
 
     deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and ("voice.transcript", {"text": "hang on"}) not in events:
+    while (
+        time.monotonic() < deadline
+        and ("voice.transcript", {"text": "hang on"}) not in events
+    ):
         time.sleep(0.01)
     release_speak.set()
 
@@ -18225,7 +18843,9 @@ def test_clarify_callback_multi_select_hint(monkeypatch):
     ("configured", "expected"),
     [(0, None), (-1, None), (42, 42)],
 )
-def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, configured, expected):
+def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(
+    monkeypatch, configured, expected
+):
     """A ``<= 0`` clarify timeout means unlimited and reaches _block as None
     (ev.wait(None) waits forever) rather than an immediate ev.wait(0) skip."""
     monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
@@ -18236,18 +18856,25 @@ def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, con
 def test_build_persist_message_with_image_refs_without_images_returns_text(monkeypatch):
     """#70720: when no images are attached the persisted message is the raw
     prompt — no @image directive prefix is introduced."""
-    assert server._build_persist_message_with_image_refs("what is this?", []) == "what is this?"
+    assert (
+        server._build_persist_message_with_image_refs("what is this?", [])
+        == "what is this?"
+    )
     assert server._build_persist_message_with_image_refs("", []) == ""
 
 
-def test_build_persist_message_with_image_refs_appends_existing_paths(monkeypatch, tmp_path):
+def test_build_persist_message_with_image_refs_appends_existing_paths(
+    monkeypatch, tmp_path
+):
     """Attached images that still exist on disk are persisted as trailing
     ``@image:<path>`` directive lines so the desktop renders them after a
     restart (instead of the vision-only enrichment that silently breaks)."""
     img = tmp_path / "cat.png"
     img.write_bytes(b"\x89PNG")
 
-    result = server._build_persist_message_with_image_refs("what is in this photo?", [str(img)])
+    result = server._build_persist_message_with_image_refs(
+        "what is in this photo?", [str(img)]
+    )
 
     assert result == f"what is in this photo?\n@image:{img}"
 
@@ -18259,30 +18886,40 @@ def test_build_persist_message_keeps_the_caption_on_the_first_line(tmp_path):
     img = tmp_path / "cat.png"
     img.write_bytes(b"png")
 
-    result = server._build_persist_message_with_image_refs("what is in this photo?", [str(img)])
+    result = server._build_persist_message_with_image_refs(
+        "what is in this photo?", [str(img)]
+    )
 
     assert result.split("\n", 1)[0] == "what is in this photo?"
 
 
-def test_build_persist_message_with_image_refs_skips_missing_paths(monkeypatch, tmp_path):
+def test_build_persist_message_with_image_refs_skips_missing_paths(
+    monkeypatch, tmp_path
+):
     """Only paths that still exist are persisted; a missing file must not
     inject a dangling @image ref into the transcript."""
     existing = tmp_path / "a.png"
     existing.write_bytes(b"png")
     missing = str(tmp_path / "gone.png")
 
-    result = server._build_persist_message_with_image_refs("compare them", [str(existing), missing])
+    result = server._build_persist_message_with_image_refs(
+        "compare them", [str(existing), missing]
+    )
 
     assert result == f"compare them\n@image:{existing}"
 
 
-def test_build_persist_message_with_image_refs_without_text_is_refs_only(monkeypatch, tmp_path):
+def test_build_persist_message_with_image_refs_without_text_is_refs_only(
+    monkeypatch, tmp_path
+):
     """A stand-alone attachment (no caption) persists as just the directive
     line, so a bare image survives in history and is not dropped as empty."""
     img = tmp_path / "only.png"
     img.write_bytes(b"png")
 
-    assert server._build_persist_message_with_image_refs("", [str(img)]) == f"@image:{img}"
+    assert (
+        server._build_persist_message_with_image_refs("", [str(img)]) == f"@image:{img}"
+    )
 
 
 def test_build_persist_message_quotes_paths_containing_spaces(tmp_path):
@@ -18307,12 +18944,20 @@ def test_persist_user_message_mirrors_the_shape_sent_to_the_model(tmp_path):
     silently dropped and the attachment never reaches history."""
     img = tmp_path / "cat.png"
     img.write_bytes(b"png")
-    image_part = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    image_part = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,AAAA"},
+    }
     native_parts = [{"type": "text", "text": "api-only text"}, image_part]
 
-    override = server._build_persist_user_message("what is this?", [str(img)], native_parts)
+    override = server._build_persist_user_message(
+        "what is this?", [str(img)], native_parts
+    )
 
-    assert override == [{"type": "text", "text": f"what is this?\n@image:{img}"}, image_part]
+    assert override == [
+        {"type": "text", "text": f"what is this?\n@image:{img}"},
+        image_part,
+    ]
 
 
 def test_persist_user_message_stays_a_string_for_text_mode(tmp_path):
@@ -18321,7 +18966,9 @@ def test_persist_user_message_stays_a_string_for_text_mode(tmp_path):
     img = tmp_path / "cat.png"
     img.write_bytes(b"png")
 
-    override = server._build_persist_user_message("what is this?", [str(img)], "enriched api-only text")
+    override = server._build_persist_user_message(
+        "what is this?", [str(img)], "enriched api-only text"
+    )
 
     assert override == f"what is this?\n@image:{img}"
 
@@ -18345,7 +18992,9 @@ def test_native_vision_turn_persists_a_renderable_image_ref(tmp_path):
             "0557bfabd40000000049454e44ae426082"
         )
     )
-    native_parts, skipped = build_native_content_parts("what is in this photo?", [str(img)])
+    native_parts, skipped = build_native_content_parts(
+        "what is in this photo?", [str(img)]
+    )
     assert not skipped
 
     agent = AIAgent.__new__(AIAgent)
@@ -18365,11 +19014,15 @@ def test_native_vision_turn_persists_a_renderable_image_ref(tmp_path):
 
     agent._flush_messages_to_session_db([{"role": "user", "content": native_parts}], [])
 
-    written = agent._session_db.append_messages_batch.call_args.kwargs["messages"][0]["content"]
+    written = agent._session_db.append_messages_batch.call_args.kwargs["messages"][0][
+        "content"
+    ]
     assert f"@image:`{img}`" in written
     assert "what is in this photo?" in written
     # The model keeps the pixels for the rest of the session.
-    assert any(part.get("type") == "image_url" for part in agent._persist_user_message_override)
+    assert any(
+        part.get("type") == "image_url" for part in agent._persist_user_message_override
+    )
 
 
 def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
@@ -18379,7 +19032,9 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
     captured = {}
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             captured["persist_user_message"] = _kwargs.get("persist_user_message")
             return {
                 "final_response": "reply",
@@ -18400,13 +19055,11 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: None)
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid", "text": "hi"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hi"},
+        })
         assert resp.get("result")
 
         # Without attachments the persist form equals the raw prompt.
@@ -18472,13 +19125,11 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):
         )
         monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", _inspect_trim_frame)
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": "sid_trim", "text": "hi"},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid_trim", "text": "hi"},
+        })
 
         assert resp is not None and resp.get("result")
         assert not observed["history"]
@@ -18647,9 +19298,11 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         )
         monkeypatch.setattr(server, "_init_session", lambda *args, **kwargs: None)
 
-        resp = server.handle_request(
-            {"id": "1", "method": "session.branch", "params": {"session_id": "sid"}}
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "session.branch",
+            "params": {"session_id": "sid"},
+        })
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assistant = _branched_assistant(db, "branch-key")
@@ -18693,12 +19346,10 @@ def test_save_cfg_preserves_user_comments(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
-    server._save_cfg(
-        {
-            "model": {"default": "claude-opus-4-7"},
-            "display": {"skin": "mono"},
-        }
-    )
+    server._save_cfg({
+        "model": {"default": "claude-opus-4-7"},
+        "display": {"skin": "mono"},
+    })
 
     text = cfg_path.read_text(encoding="utf-8")
     assert "# top of file note" in text
@@ -18730,20 +19381,20 @@ def test_save_cfg_preserves_top_level_key_order(tmp_path, monkeypatch):
 
     # Caller's dict iteration order is intentionally alphabetical to confirm
     # the helper consults disk order, not caller order.
-    server._save_cfg(
-        {
-            "agent": {"max_turns": 90},
-            "display": {"skin": "mono"},
-            "model": {"default": "claude-opus-4-7"},
-            "toolsets": ["hermes-cli"],
-        }
-    )
+    server._save_cfg({
+        "agent": {"max_turns": 90},
+        "display": {"skin": "mono"},
+        "model": {"default": "claude-opus-4-7"},
+        "toolsets": ["hermes-cli"],
+    })
 
     text = cfg_path.read_text(encoding="utf-8")
     top_keys = [
         line.split(":", 1)[0]
         for line in text.splitlines()
-        if line and not line.startswith(" ") and not line.startswith("-")
+        if line
+        and not line.startswith(" ")
+        and not line.startswith("-")
         and not line.startswith("#")
     ]
     assert top_keys == ["model", "toolsets", "agent", "display"]
@@ -18756,7 +19407,7 @@ def test_save_cfg_keeps_unicode_personalities_readable(tmp_path, monkeypatch):
     cfg_path.write_text(
         "agent:\n"
         "  personalities:\n"
-        "    catgirl: \"nya (=^･ω･^=) 你好\"\n"
+        '    catgirl: "nya (=^･ω･^=) 你好"\n'
         "display:\n"
         "  skin: default\n",
         encoding="utf-8",
@@ -18765,12 +19416,10 @@ def test_save_cfg_keeps_unicode_personalities_readable(tmp_path, monkeypatch):
 
     # Simulate an unrelated /skin write — must not corrupt the catgirl
     # personality string sitting in agent.personalities.
-    server._save_cfg(
-        {
-            "agent": {"personalities": {"catgirl": "nya (=^･ω･^=) 你好"}},
-            "display": {"skin": "mono"},
-        }
-    )
+    server._save_cfg({
+        "agent": {"personalities": {"catgirl": "nya (=^･ω･^=) 你好"}},
+        "display": {"skin": "mono"},
+    })
 
     text = cfg_path.read_text(encoding="utf-8")
     assert "你好" in text
@@ -18795,7 +19444,9 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
     """
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             return {
                 "final_response": "reply",
                 "messages": [
@@ -18819,7 +19470,9 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
         def get_messages_as_conversation(self, *_args, **_kwargs):
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, session_id, messages, active_only=False, archive_dropped=False
+        ):
             self.replaced.append((session_id, list(messages)))
 
     session = _session(
@@ -18842,17 +19495,17 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
         )
 
         marker = session["history"][-1]
-        assert marker["role"] == "user", "provider compatibility: pivot rides as a user turn"
+        assert marker["role"] == "user", (
+            "provider compatibility: pivot rides as a user turn"
+        )
 
         # Two more real turns land after the personality change.
-        session["history"].extend(
-            [
-                {"role": "user", "content": "second"},
-                {"role": "assistant", "content": "second reply"},
-                {"role": "user", "content": "third"},
-                {"role": "assistant", "content": "third reply"},
-            ]
-        )
+        session["history"].extend([
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "second reply"},
+            {"role": "user", "content": "third"},
+            {"role": "assistant", "content": "third reply"},
+        ])
         history_before = list(session["history"])
         third_index = history_before.index({"role": "user", "content": "third"})
 
@@ -18863,18 +19516,16 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
 
         # The client counts three user bubbles (first=0, second=1, third=2) —
         # it never sees the pivot. Rewinding to "third" must cut exactly there.
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "personality-ordinal-sid",
-                    "text": "third, reworded",
-                    "truncate_before_user_ordinal": 2,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "personality-ordinal-sid",
+                "text": "third, reworded",
+                "truncate_before_user_ordinal": 2,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
         expected = history_before[:third_index]
@@ -18908,7 +19559,9 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
     captured = {}
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
             return {
                 "final_response": "reply",
                 "messages": [
@@ -18953,18 +19606,16 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_get_db", lambda: _StubDb())
 
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "archive-trunc-sid",
-                    "text": "second, reworded",
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "archive-trunc-sid",
+                "text": "second, reworded",
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert captured.get("archive_dropped") is True, (
@@ -18979,6 +19630,7 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
 def test_insert_message_rows_sets_row_id_on_fresh_dicts(tmp_path):
     """#82959: _insert_message_rows must assign _row_id on freshly inserted message dicts."""
     from hermes_state import SessionDB
+
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("fresh-msg-row-id-sid", "cli")
     msg = {"role": "user", "content": "fresh turn without pre-existing _row_id"}
@@ -18993,7 +19645,9 @@ def test_prompt_submit_unmatched_row_id_refuses_even_with_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -19006,24 +19660,24 @@ def test_prompt_submit_unmatched_row_id_refuses_even_with_ordinal(monkeypatch):
     server._sessions["fallback-row-id-sid"] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
         # Stale row_id 999 not in history — even with a valid ordinal, refuse.
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "fallback-row-id-sid",
-                    "text": "new turn",
-                    "truncate_before_row_id": 999,
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "fallback-row-id-sid",
+                "text": "new turn",
+                "truncate_before_row_id": 999,
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4018
         assert replaced == []
@@ -19037,7 +19691,9 @@ def test_prompt_submit_unmatched_message_id_refuses_even_with_ordinal(monkeypatc
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
     # Production-shaped history: no renderer "id" keys on user dicts.
@@ -19051,24 +19707,24 @@ def test_prompt_submit_unmatched_message_id_refuses_even_with_ordinal(monkeypatc
     server._sessions["synthetic-msg-id-sid"] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "synthetic-msg-id-sid",
-                    "text": "fresh start",
-                    "truncate_before_message_id": "user-1723456789-0",
-                    "truncate_before_user_ordinal": 0,
-                    "confirm_truncate": True,
-                    "confirm_empty_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "synthetic-msg-id-sid",
+                "text": "fresh start",
+                "truncate_before_message_id": "user-1723456789-0",
+                "truncate_before_user_ordinal": 0,
+                "confirm_truncate": True,
+                "confirm_empty_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4018
         assert replaced == []
@@ -19095,10 +19751,14 @@ def test_prompt_submit_row_id_resolves_via_db_when_memory_lacks_stamps(monkeypat
     ]
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
-        def get_messages_as_conversation(self, key, repair_alternation=False, include_row_ids=False):
+        def get_messages_as_conversation(
+            self, key, repair_alternation=False, include_row_ids=False
+        ):
             assert include_row_ids is True
             return list(durable_history)
 
@@ -19108,18 +19768,16 @@ def test_prompt_submit_row_id_resolves_via_db_when_memory_lacks_stamps(monkeypat
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": "db-row-resolve-sid",
-                    "text": "new turn",
-                    "truncate_before_row_id": 503,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "db-row-resolve-sid",
+                "text": "new turn",
+                "truncate_before_row_id": 503,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is None, resp
         assert len(sess["history"]) == 2
         assert sess["history"][-1]["content"] == "reply 1"
@@ -19172,19 +19830,17 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
 
     try:
         # Cut before second user turn (row_ids[2]) — leave first exchange only.
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "rewound second",
-                    "truncate_before_row_id": row_ids[2],
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": sid,
+                "text": "rewound second",
+                "truncate_before_row_id": row_ids[2],
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is None, resp
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
@@ -19228,28 +19884,30 @@ def test_prompt_submit_row_id_real_sessiondb_unknown_refuses_despite_ordinal(
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     n_before = len(db.get_messages_as_conversation(session_key))
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "stale durable id",
-                    "truncate_before_row_id": 999_999_999,
-                    "truncate_before_user_ordinal": 0,
-                    "confirm_truncate": True,
-                    "confirm_empty_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": sid,
+                "text": "stale durable id",
+                "truncate_before_row_id": 999_999_999,
+                "truncate_before_user_ordinal": 0,
+                "confirm_truncate": True,
+                "confirm_empty_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4018
         assert len(sess["history"]) == 4
@@ -19295,26 +19953,28 @@ def test_prompt_submit_row_id_misaligned_memory_refuses_content_swap(
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     n_before = len(db.get_messages_as_conversation(session_key))
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "rewind B",
-                    "truncate_before_row_id": rid_b,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": sid,
+                "text": "rewind B",
+                "truncate_before_row_id": rid_b,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4018
         # Fail-closed: nothing stamped onto the misaligned dicts, nothing cut.
@@ -19364,18 +20024,16 @@ def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "rewind B",
-                    "truncate_before_row_id": rid_b,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": sid,
+                "text": "rewind B",
+                "truncate_before_row_id": rid_b,
+                "confirm_truncate": True,
+            },
+        })
         assert resp.get("error") is None, resp
         # The addressed turn ("B") is dropped exactly; earlier live turns
         # survive untouched. Before the guard, a positional zip-stamp put a
@@ -19421,10 +20079,14 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
     ]
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self, key, messages, active_only=False, archive_dropped=False
+        ):
             replaced.append((key, list(messages)))
 
-        def get_messages_as_conversation(self, key, repair_alternation=False, include_row_ids=False):
+        def get_messages_as_conversation(
+            self, key, repair_alternation=False, include_row_ids=False
+        ):
             return [dict(m) for m in durable_history]
 
     sess = _session(history=list(live_history), session_key="db-fallback-verify-key")
@@ -19432,25 +20094,27 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "rewind to second",
-                    "truncate_before_row_id": 604,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": sid,
+                "text": "rewind to second",
+                "truncate_before_row_id": 604,
+                "confirm_truncate": True,
+            },
+        })
         # Mapped live turn ("follow-up") does not match durable target
         # ("second") — refuse instead of cutting the wrong turn.
         assert resp.get("error") is not None
@@ -19497,19 +20161,17 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
     try:
         # Rewind 1: cut before "third" (last user turn). Survivors: turns
         # "first" + "second" (+ assistant replies) — re-inserted as NEW rows.
-        resp1 = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "rewound third",
-                    "truncate_before_row_id": original_row_ids[4],
-                    "truncate_before_user_ordinal": 2,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp1 = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": sid,
+                "text": "rewound third",
+                "truncate_before_row_id": original_row_ids[4],
+                "truncate_before_user_ordinal": 2,
+                "confirm_truncate": True,
+            },
+        })
         assert resp1.get("error") is None, resp1
         survivors = resp1["result"].get("survivor_user_row_ids")
         # Fresh ids for the two surviving user turns, in visible-user order.
@@ -19520,37 +20182,33 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         sess["running"] = False
 
         # Rewind 2a: the STALE pre-rewind id for "second" must fail closed.
-        stale_resp = server.handle_request(
-            {
-                "id": "2",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "rewound second (stale id)",
-                    "truncate_before_row_id": original_row_ids[2],
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        stale_resp = server.handle_request({
+            "id": "2",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": sid,
+                "text": "rewound second (stale id)",
+                "truncate_before_row_id": original_row_ids[2],
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
         assert stale_resp.get("error") is not None
         assert stale_resp["error"]["code"] == 4018
         assert len(sess["history"]) == 4  # nothing cut
 
         # Rewind 2b: the RETURNED survivor id for "second" must succeed.
-        resp2 = server.handle_request(
-            {
-                "id": "3",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "rewound second (fresh id)",
-                    "truncate_before_row_id": survivors[1],
-                    "truncate_before_user_ordinal": 1,
-                    "confirm_truncate": True,
-                },
-            }
-        )
+        resp2 = server.handle_request({
+            "id": "3",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": sid,
+                "text": "rewound second (fresh id)",
+                "truncate_before_row_id": survivors[1],
+                "truncate_before_user_ordinal": 1,
+                "confirm_truncate": True,
+            },
+        })
         assert resp2.get("error") is None, resp2
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
@@ -19593,47 +20251,45 @@ def test_prompt_submit_unconfirmed_truncation_refuses_before_target_resolution(
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _SpyDB())
     monkeypatch.setattr(
-        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_agent_build",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
     monkeypatch.setattr(
-        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        server,
+        "_start_inflight_turn",
+        lambda *a, **k: pytest.fail("must not start a turn"),
     )
 
     try:
         # Unconfirmed row_id: 4029, no DB read, no heal stamps on history.
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "prompt.submit",
-                "params": {"session_id": sid, "text": "x", "truncate_before_row_id": 3},
-            }
-        )
+        resp = server.handle_request({
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": sid, "text": "x", "truncate_before_row_id": 3},
+        })
         assert (resp.get("error") or {}).get("code") == 4029, resp
         assert db_reads == []
         assert all("_row_id" not in m for m in sess["history"])
 
         # Malformed param still beats consent: bool row_id is 4004.
-        resp = server.handle_request(
-            {
-                "id": "2",
-                "method": "prompt.submit",
-                "params": {"session_id": sid, "text": "x", "truncate_before_row_id": True},
-            }
-        )
+        resp = server.handle_request({
+            "id": "2",
+            "method": "prompt.submit",
+            "params": {"session_id": sid, "text": "x", "truncate_before_row_id": True},
+        })
         assert (resp.get("error") or {}).get("code") == 4004, resp
 
         # Unconfirmed out-of-range ordinal: 4029 (consent), not 4018 (range).
-        resp = server.handle_request(
-            {
-                "id": "3",
-                "method": "prompt.submit",
-                "params": {
-                    "session_id": sid,
-                    "text": "x",
-                    "truncate_before_user_ordinal": 99,
-                },
-            }
-        )
+        resp = server.handle_request({
+            "id": "3",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": sid,
+                "text": "x",
+                "truncate_before_user_ordinal": 99,
+            },
+        })
         assert (resp.get("error") or {}).get("code") == 4029, resp
         assert len(sess["history"]) == 4
     finally:
@@ -19662,6 +20318,7 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
 
         def _build_system_prompt(self, system_message=None):
             from hermes_constants import get_hermes_home
+
             home = get_hermes_home()
             built_homes.append(str(home))
             soul = (
@@ -19695,12 +20352,14 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
 
     # The override must have been reset after the call.
     from hermes_constants import get_hermes_home_override
+
     assert get_hermes_home_override() is None
 
 
 def test_persist_live_session_system_prompt_no_profile_is_unchanged(monkeypatch):
     """Sessions without a profile_home must not set/clear any override —
     the function should behave identically to before the fix."""
+
     class FakeAgent:
         model = "test"
         _cached_system_prompt = None
@@ -19751,6 +20410,7 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
 
         def _build_system_prompt(self, system_message=None):
             from hermes_constants import get_hermes_home
+
             built_homes.append(str(get_hermes_home()))
             return "inner prompt"
 
@@ -19793,7 +20453,9 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
         def get_session(self, session_id):
             return {"id": session_id}
 
-        def update_session_cwd(self, session_id, cwd, branch=None, root=None, replace_git_meta=True):
+        def update_session_cwd(
+            self, session_id, cwd, branch=None, root=None, replace_git_meta=True
+        ):
             captured["row_update"] = (session_id, cwd)
 
         def close(self):
@@ -19817,7 +20479,11 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
         lambda cwd: str(new_cwd),
     )
 
-    live = {"session_key": target, "running": True, "cwd": str(tmp_path / "old-project")}
+    live = {
+        "session_key": target,
+        "running": True,
+        "cwd": str(tmp_path / "old-project"),
+    }
     server._sessions["live-sid"] = live
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
 

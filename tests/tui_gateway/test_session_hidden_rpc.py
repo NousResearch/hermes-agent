@@ -43,19 +43,25 @@ def test_set_hidden_resolves_stored_id_without_live_session(db):
     _seed(db, "stored-chat")
     assert srv._find_live_session_by_key("stored-chat") is None
 
-    envelope = _call("session.set_hidden", {"session_id": "stored-chat", "hidden": True})
+    envelope = _call(
+        "session.set_hidden", {"session_id": "stored-chat", "hidden": True}
+    )
     assert "error" not in envelope, envelope
     assert envelope["result"]["hidden"] is True
     assert db.get_session("stored-chat")["hidden"] == 1
 
     # And back — unhide through the same durable path.
-    envelope = _call("session.set_hidden", {"session_id": "stored-chat", "hidden": False})
+    envelope = _call(
+        "session.set_hidden", {"session_id": "stored-chat", "hidden": False}
+    )
     assert "error" not in envelope, envelope
     assert db.get_session("stored-chat")["hidden"] == 0
 
 
 def test_set_hidden_unknown_id_still_errors(db):
-    envelope = _call("session.set_hidden", {"session_id": "no-such-session", "hidden": True})
+    envelope = _call(
+        "session.set_hidden", {"session_id": "no-such-session", "hidden": True}
+    )
     assert envelope.get("error"), envelope
 
 
@@ -69,3 +75,34 @@ def test_session_list_include_hidden(db):
 
     all_rows = _call("session.list", {"include_hidden": True})["result"]["sessions"]
     assert {s["id"] for s in all_rows} == {"plain-chat", "bot-chat"}
+
+
+def test_compute_host_compress_wait_budget_resolution(monkeypatch):
+    """#88988: the /compress host wait must scale with the compression
+    timeout + retry rounds instead of the fixed 120s that failed the RPC
+    while the host finished at ~134s."""
+    # The helper lives in tui_gateway.server: register() rebuilds every
+    # methods_* handler with server's globals, so module helpers referenced
+    # from those handlers must resolve there.
+    from tui_gateway import server
+
+    import hermes_cli.config as hc_config
+
+    # Shipped defaults: 120s per attempt x 3 rounds + 30s grace = 390s.
+    monkeypatch.setattr(hc_config, "load_config", lambda: {})
+    assert server._compute_host_compress_wait_s() == 390.0
+
+    # Config-driven: 60s per attempt x 2 rounds + 30s grace = 150s.
+    monkeypatch.setattr(
+        hc_config,
+        "load_config",
+        lambda: {
+            "auxiliary": {"compression": {"timeout": 60}},
+            "compression": {"max_attempts": 2},
+        },
+    )
+    assert server._compute_host_compress_wait_s() == 150.0
+
+    # Broken config fails open to the default.
+    monkeypatch.setattr(hc_config, "load_config", lambda: {"auxiliary": "nonsense"})
+    assert server._compute_host_compress_wait_s() == 390.0

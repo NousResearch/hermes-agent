@@ -513,6 +513,7 @@ class AIAgent:
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
         requested_provider: str = None,
+        requested_model: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         if tool_delay is not None:
@@ -529,6 +530,7 @@ class AIAgent:
             api_key=api_key,
             provider=provider,
             requested_provider=requested_provider,
+            requested_model=requested_model,
             api_mode=api_mode,
             acp_command=acp_command,
             acp_args=acp_args,
@@ -665,6 +667,14 @@ class AIAgent:
                 session_id=self.session_id,
                 source=source,
                 model=self.model,
+                # The requested route, recorded beside the served one. The row
+                # is created lazily on the first turn, which can already be
+                # AFTER a fallback swap replaced self.model/self.provider — so
+                # read the immutable init snapshot, never the live runtime.
+                requested_model=getattr(self, "origin_requested_model", "") or None,
+                requested_provider=(
+                    getattr(self, "origin_requested_provider", "") or None
+                ),
                 model_config=_init_model_config,
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
@@ -673,6 +683,26 @@ class AIAgent:
                 profile_name=_profile_for_session,
             )
             self._session_db_created = True
+            # The row is created lazily, so the turn that creates it may have
+            # ALREADY fallen back — in which case try_activate_fallback's
+            # record_session_fallback() UPDATE hit a row that did not exist and
+            # silently did nothing. Re-apply the flag now that there is a row.
+            if getattr(self, "_fallback_activated", False):
+                try:
+                    self._session_db.record_session_fallback(
+                        self.session_id,
+                        requested_model=(
+                            getattr(self, "origin_requested_model", "") or None
+                        ),
+                        requested_provider=(
+                            getattr(self, "origin_requested_provider", "") or None
+                        ),
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not re-apply the fallback flag after session "
+                        "row creation", exc_info=True,
+                    )
         except Exception as e:
             # Transient failure (e.g. SQLite lock). Keep _session_db alive —
             # _session_db_created stays False so next run_conversation() retries.

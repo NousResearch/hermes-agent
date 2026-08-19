@@ -4524,6 +4524,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         source: str,
         model: str = None,
+        requested_model: str = None,
+        requested_provider: str = None,
         model_config: Dict[str, Any] = None,
         system_prompt: str = None,
         user_id: str = None,
@@ -4549,6 +4551,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         only filling columns that are still NULL, never overwriting values an
         earlier writer already set (so a later bare call with source="unknown"
         can't clobber a real source/model).
+
+        ``requested_model``/``requested_provider`` record the route the CALLER
+        asked for, which is NOT the same thing as ``model``/``billing_provider``:
+        those hold the route that actually served the turn and are rewritten by
+        ``update_token_counts``' first-accounted-route reconciliation. Keeping
+        the request beside the delivery is what makes a silent fallback
+        (requested model X, served model Y, no warning) visible after the fact.
 
         ``chat_id``/``thread_id`` record the messaging origin (the chat/room and
         thread the session was started in) so that gateway ``/resume`` can prove
@@ -4578,13 +4587,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, system_prompt_hash,
+                   model, requested_model, requested_provider,
+                   model_config, system_prompt, system_prompt_hash,
                    parent_session_id, cwd, profile_name, git_repo_root,
                    origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
+                       requested_model = COALESCE(
+                           sessions.requested_model, excluded.requested_model
+                       ),
+                       requested_provider = COALESCE(
+                           sessions.requested_provider, excluded.requested_provider
+                       ),
                        model_config = CASE
                            WHEN excluded.model_config IS NOT NULL
                                 AND json_type(
@@ -4633,6 +4649,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     chat_type,
                     thread_id,
                     model,
+                    requested_model or None,
+                    requested_provider or None,
                     json.dumps(model_config) if model_config else None,
                     system_prompt_hash,
                     parent_session_id,
@@ -6877,6 +6895,48 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
+    def record_session_fallback(
+        self,
+        session_id: str,
+        *,
+        requested_model: Optional[str] = None,
+        requested_provider: Optional[str] = None,
+    ) -> None:
+        """Flag a session whose requested route was abandoned for a fallback.
+
+        Called when ``try_activate_fallback`` swaps the live model/provider. The
+        served route keeps flowing into ``model``/``billing_provider`` through
+        the usual accounting path; this only raises the sticky
+        ``fallback_activated`` flag so readers can tell "this session ran a
+        model nobody asked for" apart from "this session ran the model it was
+        given". Deriving the flag by comparing requested vs served strings is
+        not equivalent: an alias/normalization rewrite makes them differ without
+        any fallback, and a fallback chain whose first entry happens to match
+        the primary makes them equal despite one.
+
+        ``requested_*`` backfill the audit columns when the row predates them
+        being populated (a session created before this build, or one whose
+        creation raced the first API call). Existing non-NULL values win — the
+        original request must never be rewritten by a later observation.
+
+        Best-effort and idempotent: a fallback swap is a recovery path and must
+        not be aborted by a bookkeeping write.
+        """
+        if not session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE sessions
+                      SET fallback_activated = 1,
+                          requested_model = COALESCE(requested_model, ?),
+                          requested_provider = COALESCE(requested_provider, ?)
+                    WHERE id = ?""",
+                (requested_model or None, requested_provider or None, session_id),
+            )
+
+        self._execute_write(_do)
+
     def update_session_model(
         self, session_id: str, model: str, provider: Optional[str] = None
     ) -> None:
@@ -6918,12 +6978,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             merged = self._merge_model_config_json(conn, session_id, patch)
             if merged is _MODEL_CONFIG_ROW_MISSING:
                 return
+            # A mid-session /model switch is a NEW explicit request, so it
+            # also resets the request audit: the old requested route is no
+            # longer what the operator is asking for, and any fallback flag
+            # raised against it would now be misleading.
             conn.execute(
                 "UPDATE sessions SET "
                 "model = ?, model_config = ?, "
+                "requested_model = ?, "
+                "requested_provider = COALESCE(?, requested_provider), "
+                "fallback_activated = 0, "
                 "system_prompt = NULL, system_prompt_hash = NULL "
                 "WHERE id = ?",
-                (model, merged, session_id),
+                (model, merged, model, provider or None, session_id),
             )
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
@@ -7602,6 +7669,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # call. If it fails and fallback succeeds, the first accounted usage
             # event is the first authoritative route. After that, preserve the
             # legacy row: one row cannot represent mixed-provider usage.
+            #
+            # This overwrite is exactly why the audit columns exist: it is the
+            # write that made silent fallback undetectable after the fact (the
+            # row ended up claiming it ran the model that actually never
+            # answered). requested_model/requested_provider/fallback_activated
+            # are deliberately absent from the UPDATE below and must stay that
+            # way — they carry the request, not the delivery.
             first_accounted_route = (
                 existing_api_calls == 0
                 and has_accounted_usage

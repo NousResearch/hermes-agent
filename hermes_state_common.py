@@ -268,6 +268,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     origin_json TEXT,
     expiry_finalized INTEGER DEFAULT 0,
     model TEXT,
+    -- Audit trail for silent model fallback: what the CALLER asked for, kept
+    -- separate from the served route in `model`/`billing_provider`.  The
+    -- `model` column is rewritten by update_token_counts first_accounted_route
+    -- (and by mid-session /model switches), so on its own it can never show
+    -- that a request was not honored.  `fallback_activated` is the
+    -- authoritative flag written when try_activate_fallback swaps the route.
+    requested_model TEXT,
+    requested_provider TEXT,
+    fallback_activated INTEGER NOT NULL DEFAULT 0,
     model_config TEXT,
     system_prompt TEXT,
     system_prompt_hash TEXT,

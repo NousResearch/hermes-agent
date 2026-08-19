@@ -366,6 +366,56 @@ def install_modify_other_keys_aliases() -> int:
                                             # matching Ink TUI + Desktop (#78285)
     })
 
+    # -- Lock-key modifier bits (NumLock=128, CapsLock=64) under the kitty
+    # disambiguate push: kitty encodes lock state into the CSI sequence, so
+    # a plain Down with NumLock on arrives as ESC[1;129B (NumLock), ESC[1;65B
+    # (CapsLock) or ESC[1;193B (both) instead of the legacy ESC[B that stock
+    # prompt_toolkit maps. Those fall through the parser and leak as literal
+    # text ("[1;129B") in the input line. Map them to the plain key; the
+    # +shift variants (130/66/194) to the Shift* keys.
+    lock_plain = (129, 65, 193)
+    lock_shift = (130, 66, 194)
+    for mod in lock_plain:
+        for trailer, key in (
+            ("A", Keys.Up), ("B", Keys.Down), ("C", Keys.Right), ("D", Keys.Left),
+            ("H", Keys.Home), ("F", Keys.End),
+        ):
+            seq = f"\x1b[1;{mod}{trailer}"
+            if seq not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq] = key
+                changed += 1
+        for num, key in (
+            (2, Keys.Insert), (3, Keys.Delete), (5, Keys.PageUp), (6, Keys.PageDown),
+        ):
+            seq = f"\x1b[{num};{mod}~"
+            if seq not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq] = key
+                changed += 1
+        for cp, key in (
+            (13, Keys.ControlM),   # Enter
+            (9, Keys.Tab),         # Tab
+            (127, Keys.Backspace),  # Backspace
+            (32, " "),             # Space
+        ):
+            seq = f"\x1b[{cp};{mod}u"
+            if seq not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq] = key
+                changed += 1
+    for mod in lock_shift:
+        for trailer, key in (
+            ("A", Keys.ShiftUp), ("B", Keys.ShiftDown), ("C", Keys.ShiftRight),
+            ("D", Keys.ShiftLeft), ("H", Keys.ShiftHome), ("F", Keys.ShiftEnd),
+        ):
+            seq = f"\x1b[1;{mod}{trailer}"
+            if seq not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq] = key
+                changed += 1
+        for num, key in ((2, Keys.ShiftInsert), (3, Keys.ShiftDelete)):
+            seq = f"\x1b[{num};{mod}~"
+            if seq not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq] = key
+                changed += 1
+
     # -- Kitty functional keys (Private Use Area codepoints) ----
     # kitty emits these CSI-u encodings even in LEGACY mode for keys that
     # have no legacy encoding, so unmapped they leak as literal text in any

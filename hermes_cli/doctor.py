@@ -2179,6 +2179,41 @@ def run_doctor(args):
                 issues,
             )
 
+    # E2B (if using e2b backend)
+    if terminal_env == "e2b":
+        from agent.secret_scope import get_secret
+
+        if get_secret("E2B_API_KEY"):
+            check_ok("E2B API key", "(configured for active profile)")
+        else:
+            _fail_and_issue(
+                "E2B_API_KEY not set",
+                "(required for TERMINAL_ENV=e2b)",
+                "Set E2B_API_KEY for the active Hermes profile",
+                issues,
+            )
+
+        if importlib.util.find_spec("e2b") is not None:
+            check_ok("E2B SDK", "(installed)")
+        else:
+            _fail_and_issue(
+                "E2B SDK not installed",
+                "(pip install 'hermes-agent[e2b]')",
+                "Install the E2B optional dependency: pip install 'hermes-agent[e2b]'",
+                issues,
+            )
+
+        template = os.getenv("TERMINAL_E2B_TEMPLATE", "base").strip()
+        if template:
+            check_ok("E2B template", f"({template})")
+        else:
+            _fail_and_issue(
+                "E2B template is empty",
+                "(use base or a template ID)",
+                "Set TERMINAL_E2B_TEMPLATE to base or an E2B template ID",
+                issues,
+            )
+
     # Vercel Sandbox (if using vercel_sandbox backend)
     if terminal_env == "vercel_sandbox":
         runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"

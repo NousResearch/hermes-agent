@@ -135,11 +135,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, an E2B cloud sandbox, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | e2b | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
@@ -148,11 +148,12 @@ terminal:
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
+  e2b_template: "base"                                                      # Sandbox template for E2B backend
 ```
 
 `terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.
 
-For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Modal, Daytona, E2B, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
@@ -163,6 +164,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
+| **e2b** | E2B cloud sandbox | Full (cloud microVM) | Secure remote execution with filesystem-only persistence |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
@@ -336,6 +338,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_CONTAINER_PERSISTENT` | `container_persistent` | `true` / `false` — controls the bind-mount workspace dirs, distinct from `docker_persist_across_processes` |
 | `TERMINAL_LIFETIME_SECONDS` | `lifetime_seconds` | Idle reaper window |
 | `TERMINAL_TIMEOUT` | `timeout` | Per-command timeout |
+| `TERMINAL_E2B_TEMPLATE` | `e2b_template` | E2B template alias or ID |
 | `HERMES_DOCKER_BINARY` | _none_ | Force a specific docker/podman binary path |
 
 ### SSH Backend
@@ -402,6 +405,26 @@ terminal:
 **Persistence:** When enabled, sandboxes are stopped (not deleted) on cleanup and resumed on next session. Sandbox names follow the pattern `hermes-{task_id}`.
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
+
+### E2B Backend
+
+Runs commands in an [E2B](https://e2b.dev) cloud sandbox. Hermes remains outside the sandbox and routes terminal, file, and code execution through the normal tool interfaces.
+
+```yaml
+terminal:
+  backend: e2b
+  e2b_template: base               # E2B template alias or template ID
+  lifetime_seconds: 300             # Sandbox timeout and local idle cleanup window
+  container_persistent: true        # Pause the filesystem; false = kill on cleanup
+```
+
+**Required:** `E2B_API_KEY` in the active Hermes profile's secret environment. Install the SDK with `pip install 'hermes-agent[e2b]'` or let `hermes setup` install it.
+
+**Template and resources:** `e2b_template` selects the E2B template. CPU, memory, disk, and base OS are defined by that template; the generic `container_*` resource settings do not configure E2B.
+
+**Persistence:** With `container_persistent: true`, Hermes creates the sandbox with an E2B lifecycle policy that pauses with `keep_memory: false` on timeout, explicitly pauses with `pause(keep_memory=False)` during cleanup, and reconnects with `Sandbox.connect()` on the next session. The sandbox pointer is stored in the active profile's Hermes home. This preserves filesystem state only; live processes, PID space, shell state, and open connections do not survive. If an explicit pause fails, Hermes keeps the pointer so a later retry or the E2B timeout lifecycle can reconnect/pause it; inspect the warning before treating cleanup as complete.
+
+**Credential files:** Hermes synchronizes the active profile's required credential files into the sandbox before execution and syncs them back on cleanup. Host environment credentials are not forwarded implicitly.
 
 ### Vercel Sandbox Backend
 
@@ -476,13 +499,14 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
+- **E2B** — Needs `E2B_API_KEY` and the `e2b` SDK (`pip install 'hermes-agent[e2b]'`). Run `hermes doctor` to check both.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
 ### Remote-to-Host State Sync on Teardown
 
-For the **SSH**, **Modal**, and **Daytona** backends, Hermes pushes your `~/.hermes/` state (credential files, skills, cache) into the remote sandbox during the session, and on teardown **syncs changed state files back** to their original host locations. Files that differ from what was originally pushed (compared by content hash) are applied back in place; new remote files under a synced directory (e.g. a skill the agent created remotely) are mapped back to the corresponding host path. Upload-only credential files are never overwritten on the host.
+For the **SSH**, **Modal**, **Daytona**, and **E2B** backends, Hermes pushes your `~/.hermes/` state (credential files, skills, cache) into the remote sandbox during the session, and on teardown **syncs changed state files back** to their original host locations. Files that differ from what was originally pushed (compared by content hash) are applied back in place; new remote files under a synced directory (e.g. a skill the agent created remotely) are mapped back to the corresponding host path. Upload-only credential files are never overwritten on the host.
 
 - The sync-back retries up to 3 times with backoff and refuses to extract remote archives larger than 2 GiB.
 - Docker and Singularity use bind mounts (live host filesystem view) and don't need this.

@@ -23,7 +23,7 @@ Defense against context-window overflow operates at three levels:
    What the model sees depends on the backend:
 
    - **Local backend (or no active env):** the host path itself.
-   - **Remote backends (docker/ssh/modal/daytona):** ``cache/spillover`` is
+   - **Remote backends (docker/ssh/modal/daytona/e2b):** ``cache/spillover`` is
      in the auto-mounted/synced cache-dir list (tools/credential_files.py),
      so the reference is the translated in-sandbox path (probed for
      readability first). When the sandbox can't see it (e.g. a persistent
@@ -129,7 +129,7 @@ def _is_host_side_env(env) -> bool:
     Covers ``env=None`` (no sandbox environment active — e.g. a session
     that has not run a terminal command yet) and the local backend
     (where env.execute() runs on this same host anyway). Remote backends
-    (docker/ssh/modal/daytona) return False: their read_file resolves
+    (docker/ssh/modal/daytona/e2b) return False: their read_file resolves
     inside the sandbox, so the spill must be written there.
     """
     if env is None:
@@ -164,7 +164,7 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
 
     ``cache/spillover`` is one of the auto-mounted/synced cache dirs
     (tools/credential_files.py), so on docker it is bind-mounted and on
-    modal/ssh/daytona it is file-synced into the sandbox. Translate the
+    modal/ssh/daytona/e2b it is file-synced into the sandbox. Translate the
     host path with the same helper the image tools use, force a sync for
     synced backends, then PROBE readability — a persistent docker
     container created before spillover joined the mount list won't have
@@ -361,7 +361,7 @@ def maybe_persist_tool_result(
             return _build_persisted_message(preview, has_more, len(content), host_path)
     elif env is not None:
         # Remote backend: the spillover dir is auto-mounted (docker) or
-        # file-synced (modal/ssh/daytona) into the sandbox, so reference the
+        # file-synced (modal/ssh/daytona/e2b) into the sandbox, so reference the
         # translated path when the sandbox can actually read it.
         if host_path is not None:
             visible = _sandbox_visible_spillover_path(host_path, env)

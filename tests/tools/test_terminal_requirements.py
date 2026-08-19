@@ -16,6 +16,7 @@ def _clear_terminal_env(monkeypatch):
         "TERMINAL_CONTAINER_MEMORY",
         "TERMINAL_DOCKER_FORWARD_ENV",
         "TERMINAL_DOCKER_VOLUMES",
+        "TERMINAL_E2B_TEMPLATE",
         "TERMINAL_LIFETIME_SECONDS",
         "TERMINAL_MODAL_MODE",
         "TERMINAL_SSH_HOST",
@@ -25,6 +26,7 @@ def _clear_terminal_env(monkeypatch):
         "TERMINAL_VERCEL_RUNTIME",
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
+        "E2B_API_KEY",
         "VERCEL_OIDC_TOKEN",
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",
@@ -65,6 +67,40 @@ def test_unknown_terminal_env_logs_error_and_returns_false(monkeypatch, caplog):
         "Unknown TERMINAL_ENV 'unknown-backend'" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_e2b_backend_without_sdk_logs_specific_error(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "e2b")
+    monkeypatch.setenv("E2B_API_KEY", "test-key")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: None)
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert "e2b is required for the E2B terminal backend" in caplog.text
+
+
+def test_e2b_backend_without_scoped_key_logs_specific_error(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "e2b")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert "E2B_API_KEY is required" in caplog.text
+
+
+def test_e2b_backend_accepts_sdk_and_key(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "e2b")
+    monkeypatch.setenv("E2B_API_KEY", "test-key")
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
+
+    assert terminal_tool_module.check_terminal_requirements() is True
 
 
 def test_modal_backend_managed_mode_without_feature_flag_logs_clear_error(monkeypatch, caplog, tmp_path):

@@ -445,10 +445,12 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # E2B template alias or ID (e2b backend only).
+        "e2b_template": "base",
         # Vercel Sandbox runtime (vercel_sandbox backend only).
         # Supported: node24, node22, python3.13.
         "vercel_runtime": "node24",
-        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
+        # Container resource limits (docker, singularity, modal, daytona, e2b, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -4064,6 +4066,14 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     # ── Tool API keys ──
+    "E2B_API_KEY": {
+        "description": "E2B API key for the E2B terminal backend",
+        "prompt": "E2B API key",
+        "url": "https://e2b.dev/dashboard?tab=keys",
+        "tools": ["terminal", "read_file", "write_file", "execute_code"],
+        "password": True,
+        "category": "tool",
+    },
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",
         "prompt": "Exa API key",

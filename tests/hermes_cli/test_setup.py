@@ -182,7 +182,7 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select terminal backend:":
-            return 5
+            return 6
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
     prompt_values = iter(["python3.13", "yes", "2", "4096", "token", "project", "team"])
@@ -223,7 +223,7 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select terminal backend:":
-            return 5
+            return 6
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
     prompt_values = iter(["node24", "no", "1", "5120", "token", "", ""])

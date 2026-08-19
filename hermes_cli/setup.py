@@ -1342,12 +1342,13 @@ def setup_terminal_backend(config: dict):
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
+        "E2B - cloud sandbox with filesystem-only pause/resume",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "e2b", 6: "vercel_sandbox"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "e2b": 5, "vercel_sandbox": 6}
 
-    next_idx = 6
+    next_idx = 7
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1555,6 +1556,51 @@ def setup_terminal_backend(config: dict):
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
 
+    elif selected_backend == "e2b":
+        print_success("Terminal backend: E2B")
+        print_info("Hermes stays local and delegates terminal, file, and code execution to E2B.")
+        print_info("Persistent mode pauses filesystem-only; running processes do not survive cleanup.")
+        print_info("Sign up and create a key at: https://e2b.dev/dashboard?tab=keys")
+
+        try:
+            __import__("e2b")
+        except ImportError:
+            print_info("Installing E2B SDK...")
+            from hermes_cli.tools_config import _pip_install
+
+            result = _pip_install(["e2b>=2.40.0,<3"])
+            if result.returncode == 0:
+                print_success("E2B SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install 'hermes-agent[e2b]'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        print()
+        existing_key = get_env_value("E2B_API_KEY")
+        if existing_key:
+            print_info("  E2B API key: already configured")
+            if prompt_yes_no("  Update API key?", False):
+                api_key = prompt("    E2B API key", password=True)
+                if api_key:
+                    save_env_value("E2B_API_KEY", api_key)
+                    print_success("    Updated")
+        else:
+            api_key = prompt("    E2B API key", password=True)
+            if api_key:
+                save_env_value("E2B_API_KEY", api_key)
+                print_success("    Configured")
+
+        terminal = config["terminal"]
+        current_template = terminal.get("e2b_template") or "base"
+        terminal["e2b_template"] = prompt(
+            "  E2B template alias or ID", current_template
+        ).strip() or "base"
+        terminal["container_persistent"] = prompt_yes_no(
+            "  Preserve the sandbox filesystem between sessions?",
+            bool(terminal.get("container_persistent", True)),
+        )
+
     elif selected_backend == "vercel_sandbox":
         print_success("Terminal backend: Vercel Sandbox")
         print_info("Cloud microVM sandboxes with snapshot-backed filesystem persistence.")
@@ -1650,6 +1696,8 @@ def setup_terminal_backend(config: dict):
         save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
     if selected_backend == "vercel_sandbox":
         save_env_value("TERMINAL_VERCEL_RUNTIME", config["terminal"].get("vercel_runtime", "node24"))
+    if selected_backend == "e2b":
+        save_env_value("TERMINAL_E2B_TEMPLATE", config["terminal"].get("e2b_template", "base"))
     save_config(config)
     print()
     print_success(f"Terminal backend set to: {selected_backend}")

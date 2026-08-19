@@ -440,7 +440,7 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 #
 # Hardline only applies to environments that can actually damage the host
 # (local, ssh, container-host cron).  Containerized backends (docker,
-# singularity, modal, daytona) already bypass the dangerous-command layer
+# singularity, modal, daytona, e2b) already bypass the dangerous-command layer
 # because nothing they do can touch the host, so we leave that behavior
 # alone.
 #
@@ -3711,7 +3711,7 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     """
     if env_type == "docker":
         return not has_host_access
-    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
+    return env_type in ("singularity", "modal", "daytona", "e2b", "vercel_sandbox")
 
 
 def check_dangerous_command(command: str, env_type: str,
@@ -5015,8 +5015,8 @@ def check_execute_code_guard(code: str, env_type: str,
 
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command. Docker stops
-    # skipping once host paths are bind-mounted into the sandbox; vercel_sandbox
-    # has no host-bind concept so it stays always-skipped.
+    # skipping once host paths are bind-mounted into the sandbox; e2b and
+    # vercel_sandbox have no host-bind concept so they stay always-skipped.
     if env_type == "vercel_sandbox":
         return {"approved": True, "message": None}
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):

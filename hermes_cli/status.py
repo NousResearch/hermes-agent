@@ -461,6 +461,21 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "e2b":
+        template = os.getenv("TERMINAL_E2B_TEMPLATE") or terminal_cfg.get("e2b_template") or "base"
+        persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")
+        if persist is None:
+            persist_enabled = bool(terminal_cfg.get("container_persistent", True))
+        else:
+            persist_enabled = persist.lower() in {"1", "true", "yes", "on"}
+        sdk_ok = importlib.util.find_spec("e2b") is not None
+        sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[e2b]')"
+        key_ok = bool(get_env_value("E2B_API_KEY"))
+        print(f"  Template:     {template}")
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
+        print(f"  API key:      {check_mark(key_ok)} {'configured' if key_ok else '(not set)'}")
+        print(f"  Persistence:  {'paused filesystem' if persist_enabled else 'ephemeral filesystem'}")
+        print("  Processes:    live processes do not survive pause, cleanup, or sandbox recreation")
     elif terminal_env == "vercel_sandbox":
         runtime = os.getenv("TERMINAL_VERCEL_RUNTIME") or terminal_cfg.get("vercel_runtime") or "node24"
         persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")

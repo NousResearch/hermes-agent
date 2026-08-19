@@ -1,4 +1,4 @@
-// Loading and stall indicators mount only on the thread's last message.
+// Loading and activity indicators mount only on the thread's last message.
 // The tail-only gate from ba756333 keeps non-tail running bubbles silent,
 // including assistants followed only by a user or system row. The optimistic
 // placeholder flow renders exactly one status row. These contracts pin the
@@ -101,13 +101,13 @@ function runningAssistantMessage(id: string, text: string): ThreadMessage {
 
 function Harness({ messages, isRunning = false }: { messages: ThreadMessage[]; isRunning?: boolean }) {
   // isRunning: false at the runtime level. Per-message `status: {type:
-  // 'running'}` is what drives StreamStallIndicator mounting.
+  // 'running'}` is what drives TurnActivityIndicator mounting.
   // Passing isRunning: true makes useExternalStoreRuntime auto-append a
   // synthetic empty trailing assistant placeholder whenever the last message
   // is not already a running assistant, such as the trailing user prompt
   // cases below. That is the real production flow. The isRunning:true tests
   // prove that the placeholder is treated as the tail and renders its own
-  // loading row while the real bubble's stall row stays silent.
+  // loading row while the real bubble's activity row stays silent.
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages,
     isRunning,
@@ -121,7 +121,7 @@ function Harness({ messages, isRunning = false }: { messages: ThreadMessage[]; i
   )
 }
 
-describe('StreamStallIndicator tail gating (#68634)', () => {
+describe('TurnActivityIndicator tail gating (#68634)', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
@@ -162,8 +162,8 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
     const roots = container.querySelectorAll('[data-slot="aui_assistant-message-root"]')
     expect(roots.length).toBe(2)
     // The second assistant root is also the thread's any-role tail.
-    expect(roots[0]?.querySelector('[data-slot="aui_stream-stall"]')).toBeNull()
-    expect(roots[1]?.querySelector('[data-slot="aui_stream-stall"]')).not.toBeNull()
+    expect(roots[0]?.querySelector('[data-slot="aui_turn-activity"]')).toBeNull()
+    expect(roots[1]?.querySelector('[data-slot="aui_turn-activity"]')).not.toBeNull()
   })
 
   it('keeps a running assistant silent when a queued user prompt trails it and the runtime is idle', () => {
@@ -182,7 +182,7 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
     })
 
     expect(container.querySelector('[data-slot="aui_response-loading"]')).toBeNull()
-    expect(container.querySelector('[data-slot="aui_stream-stall"]')).toBeNull()
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).toBeNull()
   })
 
   it('keeps a running assistant silent when a steer system note trails it and the runtime is idle', () => {
@@ -201,7 +201,7 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
     })
 
     expect(container.querySelector('[data-slot="aui_response-loading"]')).toBeNull()
-    expect(container.querySelector('[data-slot="aui_stream-stall"]')).toBeNull()
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).toBeNull()
   })
 
   // In the production flow, isRunning: true with a trailing queued user prompt
@@ -231,7 +231,7 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
     // The surviving row belongs to the placeholder, while the real running
     // bubble's stall row stays silent.
     expect(document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
-    expect(document.querySelectorAll('[data-slot="aui_stream-stall"]').length).toBe(0)
+    expect(document.querySelectorAll('[data-slot="aui_turn-activity"]').length).toBe(0)
   })
 
   // Outside compaction, the placeholder uses the plain loading label and the
@@ -255,6 +255,6 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
     })
 
     expect(document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
-    expect(document.querySelectorAll('[data-slot="aui_stream-stall"]').length).toBe(0)
+    expect(document.querySelectorAll('[data-slot="aui_turn-activity"]').length).toBe(0)
   })
 })

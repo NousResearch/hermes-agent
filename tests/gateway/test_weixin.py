@@ -167,6 +167,30 @@ class TestWeixinStatePersistence:
 
         assert json.loads(account_path.read_text(encoding="utf-8")) == original
 
+    @pytest.mark.asyncio
+    async def test_context_token_persist_runs_off_event_loop_thread(self, tmp_path):
+        """atomic_json_write() calls os.fsync(), which blocks until the write
+        reaches stable storage. ContextTokenStore.set() runs on the event
+        loop for every inbound message carrying a context_token
+        (_process_message), so the persist step must be offloaded to a
+        thread — mirrors test_directory_write_runs_off_event_loop_thread in
+        test_channel_directory.py for the same #83906 bug class."""
+        import threading
+
+        store = ContextTokenStore(str(tmp_path))
+        loop_thread = threading.get_ident()
+        write_threads = []
+
+        def fake_write(path, data, *args, **kwargs):
+            write_threads.append(threading.get_ident())
+
+        with patch("gateway.platforms.weixin.atomic_json_write", side_effect=fake_write):
+            await store.set("acct-1", "user-1", "ctx-token-abc")
+
+        assert store.get("acct-1", "user-1") == "ctx-token-abc"
+        assert write_threads
+        assert all(tid != loop_thread for tid in write_threads)
+
 
 class TestWeixinQrLogin:
     @pytest.mark.asyncio

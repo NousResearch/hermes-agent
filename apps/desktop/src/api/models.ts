@@ -30,6 +30,7 @@ export function getGlobalModelOptions(
     refresh?: boolean
     includeUnconfigured?: boolean
     explicitOnly?: boolean
+    timeoutMs?: number
   },
   profile?: null | string
 ): Promise<ModelOptionsResponse> {
@@ -50,7 +51,7 @@ export function getGlobalModelOptions(
   return hermesApi<ModelOptionsResponse>({
     ...profileScoped(profile),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: opts?.timeoutMs ?? STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

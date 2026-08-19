@@ -243,7 +243,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
         }
 
         const message = reason instanceof Error ? reason.message : String(reason)
-        setError(prev => (prev ? `${prev}; ${message}` : message))
+        setError(prev => (prev ? `${prev}\n${message}` : message))
       }
 
       let modelInfoSettled = false
@@ -257,8 +257,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
 
         const fallback = auxiliaryMainFallback
         setMainModel(prev => prev ?? fallback)
-        setSelectedProvider(prev => prev || fallback.provider)
-        setSelectedModel(prev => prev || fallback.model)
+        setSelectedProvider(prev => (prev.length > 0 ? prev : fallback.provider))
+        setSelectedModel(prev => (prev.length > 0 ? prev : fallback.model))
       }
 
       const modelInfoRequest = getGlobalModelInfo(scopeProfile, {
@@ -281,8 +281,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
             setSelectedProvider(modelInfo.provider)
             setSelectedModel(modelInfo.model)
           } else {
-            setSelectedProvider(prev => prev || modelInfo.provider)
-            setSelectedModel(prev => prev || modelInfo.model)
+            setSelectedProvider(prev => (prev.length > 0 ? prev : modelInfo.provider))
+            setSelectedModel(prev => (prev.length > 0 ? prev : modelInfo.model))
           }
         })
         .catch(reportFailure)
@@ -295,7 +295,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
           }
         })
 
-      const modelOptionsRequest = getGlobalModelOptions(undefined, scopeProfile)
+      const modelOptionsRequest = getGlobalModelOptions({ timeoutMs: MODEL_SETTINGS_METADATA_TIMEOUT_MS }, scopeProfile)
         .then(modelOptions => {
           if (isCurrent()) {
             setProviders(modelOptions.providers || [])
@@ -340,12 +340,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
         })
         .catch(() => undefined)
 
-      await Promise.allSettled([
-        modelInfoRequest,
-        modelOptionsRequest,
-        auxiliaryModelsRequest,
-        moaModelsRequest
-      ])
+      await Promise.allSettled([modelInfoRequest, modelOptionsRequest, auxiliaryModelsRequest, moaModelsRequest])
 
       if (isCurrent()) {
         // The config record loads via its own shared query; a model switch can
@@ -976,7 +971,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
             )}
           </div>
         )}
-        {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
+        {error && <div className="mt-2 whitespace-pre-line text-xs text-destructive">{error}</div>}
         {switchStaleAux.length > 0 && (
           <div className="mt-2">
             <StaleAuxWarning

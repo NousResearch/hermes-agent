@@ -27,6 +27,10 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
         "browser_snapshot",
         "browser_console",
         "browser_get_images",
+        # Read-only vision analysis tools. These never mutate state, so they
+        # should count toward the idempotent streak rather than resetting it.
+        "vision_analyze",
+        "browser_vision",
         "mcp_filesystem_read_file",
         "mcp_filesystem_read_text_file",
         "mcp_filesystem_read_multiple_files",
@@ -66,7 +70,8 @@ class ToolCallGuardrailConfig:
 
     Warnings are enabled by default and never prevent tool execution. Hard stops
     are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    the user enables circuit-breaker behavior in config.yaml (the warning-first
+    contract).
     """
 
     warnings_enabled: bool = True
@@ -77,6 +82,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    idempotent_streak_warn_after: int = 5
+    idempotent_streak_halt_after: int = 10
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: "LoopCapConfig" = field(default_factory=lambda: LoopCapConfig())
@@ -110,6 +117,10 @@ class ToolCallGuardrailConfig:
                 warn_after.get("idempotent_no_progress", data.get("no_progress_warn_after")),
                 defaults.no_progress_warn_after,
             ),
+            idempotent_streak_warn_after=_positive_int(
+                warn_after.get("idempotent_streak", data.get("idempotent_streak_warn_after")),
+                defaults.idempotent_streak_warn_after,
+            ),
             exact_failure_block_after=_positive_int(
                 hard_stop_after.get("exact_failure", data.get("exact_failure_block_after")),
                 defaults.exact_failure_block_after,
@@ -123,6 +134,10 @@ class ToolCallGuardrailConfig:
                 defaults.no_progress_block_after,
             ),
             loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")),
+            idempotent_streak_halt_after=_positive_int(
+                hard_stop_after.get("idempotent_streak", data.get("idempotent_streak_halt_after")),
+                defaults.idempotent_streak_halt_after,
+            ),
         )
 
 
@@ -281,6 +296,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._idempotent_streak: int = 0
         self._halt_decision: ToolGuardrailDecision | None = None
         # Per-turn runaway-loop cap counters. Reset every turn (this method
         # runs at the start of each run_conversation), so the caps bound a
@@ -344,6 +360,27 @@ class ToolCallGuardrailController:
                     )
                     self._halt_decision = decision
                     return decision
+
+            # Idempotent streak: consecutive read-only calls without any
+            # mutating action. Models stuck in search/read loops without
+            # making progress (writing, executing, patching) are halted.
+            if self._idempotent_streak >= self.config.idempotent_streak_halt_after:
+                decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="idempotent_streak_halt",
+                    message=(
+                        f"Halted: {self._idempotent_streak} consecutive read-only "
+                        f"tool calls ({tool_name}) without any mutating action. "
+                        "You appear to be stuck in a search/read loop. Stop "
+                        "researching and take action: write code, run a command, "
+                        "or produce your final answer."
+                    ),
+                    tool_name=tool_name,
+                    count=self._idempotent_streak,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -412,9 +449,21 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
+        if self._is_mutating(tool_name):
+            # An explicit mutating action breaks the read-only streak. The reset
+            # criterion is deliberately narrow: only tools classified as
+            # mutating reset the idempotent streak. Exposed read-only tools that
+            # are simply absent from IDEMPOTENT_TOOL_NAMES (e.g. a future
+            # read-only helper) must NOT reset the streak — that would let a
+            # search/read loop escape detection by interleaving a nominally
+            # "unknown" tool. Unknown non-mutating tools are treated as part of
+            # the read-only streak.
             self._no_progress.pop(signature, None)
+            self._idempotent_streak = 0
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
+        # Idempotent tool succeeded — increment the streak
+        self._idempotent_streak += 1
 
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
@@ -437,12 +486,38 @@ class ToolCallGuardrailController:
                 signature=signature,
             )
 
+        if self.config.warnings_enabled and self._idempotent_streak >= self.config.idempotent_streak_warn_after:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="idempotent_streak_warning",
+                message=(
+                    f"{self._idempotent_streak} consecutive read-only tool calls "
+                    f"without any mutating action. You may be stuck in a loop. "
+                    "Consider taking action: write code, run a command, or produce "
+                    "your final answer."
+                ),
+                tool_name=tool_name,
+                count=self._idempotent_streak,
+                signature=signature,
+            )
+
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:
             return False
         return tool_name in self.config.idempotent_tools
+
+    def _is_mutating(self, tool_name: str) -> bool:
+        """Whether a tool is an explicit mutating action.
+
+        The idempotent-streak reset criterion keys strictly on this predicate:
+        only tools classified as mutating break the read-only streak. A tool
+        that is neither mutating nor on the idempotent allowlist (e.g. a
+        future read-only helper) does NOT reset the streak, so a search/read
+        loop cannot escape detection by interleaving an "unknown" tool.
+        """
+        return tool_name in self.config.mutating_tools
 
     def _check_loop_cap(
         self,

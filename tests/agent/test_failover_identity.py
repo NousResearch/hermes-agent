@@ -354,3 +354,191 @@ class TestPeelReferenceGuidanceRoundTrip:
         ]
         peeled = peel_reference_guidance(messages, self._GUIDANCE)
         assert peeled == messages[:-1]
+
+
+# =============================================================================
+# Failover vision support sync
+# =============================================================================
+
+
+class TestFailoverVisionSupport:
+    """``_sync_failover_vision_support`` replaces image parts with auxiliary
+    vision descriptions when the failover model is text-only, so a retry
+    doesn't 400 on embedded image_url parts and the model still learns what
+    the image contained."""
+
+    def _agent(self, *, provider="deepseek", model="deepseek-v4-flash"):
+        return SimpleNamespace(
+            provider=provider,
+            model=model,
+            requested_provider=provider,
+            _vision_supported=True,
+        )
+
+    def _image_messages(self):
+        return [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look at this"},
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}},
+                ],
+            },
+        ]
+
+    def _patch_lookup(self, monkeypatch, result):
+        def _fake_lookup(provider, model, cfg, requested_provider=""):
+            return result
+
+        monkeypatch.setattr(
+            "agent.image_routing._lookup_supports_vision", _fake_lookup
+        )
+
+    def _patch_aux_vision(self, monkeypatch, description="a screenshot of a dashboard"):
+        def _fake_aux_vision(image_ref, timeout=90.0):
+            return description
+
+        monkeypatch.setattr(
+            "agent.conversation_loop._run_aux_vision_sync", _fake_aux_vision
+        )
+
+    def test_text_only_fallback_replaces_with_description(self, monkeypatch):
+        agent = self._agent(provider="deepseek", model="deepseek-v4-flash")
+        messages = self._image_messages()
+        self._patch_lookup(monkeypatch, False)
+        self._patch_aux_vision(monkeypatch, "deepseek dashboard with balance $0.98")
+
+        from agent.conversation_loop import _sync_failover_vision_support
+
+        replaced = _sync_failover_vision_support(agent, messages)
+        assert replaced is True
+        assert agent._vision_supported is False
+        user_content = messages[1]["content"]
+        # Image part replaced with a text description, original text kept.
+        assert all(p.get("type") != "image_url" for p in user_content)
+        texts = [p.get("text", "") for p in user_content if p.get("type") == "text"]
+        assert any("look at this" in t for t in texts)
+        assert any("dashboard with balance" in t for t in texts)
+
+    def test_aux_vision_failure_falls_back_to_placeholder(self, monkeypatch):
+        agent = self._agent(provider="deepseek", model="deepseek-v4-flash")
+        messages = self._image_messages()
+        self._patch_lookup(monkeypatch, False)
+        self._patch_aux_vision(monkeypatch, "")  # aux vision failed
+
+        from agent.conversation_loop import _sync_failover_vision_support
+
+        replaced = _sync_failover_vision_support(agent, messages)
+        assert replaced is True
+        assert agent._vision_supported is False
+        user_content = messages[1]["content"]
+        texts = [p.get("text", "") for p in user_content if p.get("type") == "text"]
+        assert any("image content removed" in t for t in texts)
+
+    def test_vision_fallback_keeps_images(self, monkeypatch):
+        agent = self._agent(provider="litellm", model="kimi-router")
+        messages = self._image_messages()
+        self._patch_lookup(monkeypatch, True)
+        self._patch_aux_vision(monkeypatch)
+
+        from agent.conversation_loop import _sync_failover_vision_support
+
+        replaced = _sync_failover_vision_support(agent, messages)
+        assert replaced is False
+        assert agent._vision_supported is True
+        user_content = messages[1]["content"]
+        assert any(p.get("type") == "image_url" for p in user_content)
+
+    def test_already_vision_unsupported_skips(self, monkeypatch):
+        agent = self._agent()
+        agent._vision_supported = False
+        messages = self._image_messages()
+        self._patch_lookup(monkeypatch, True)
+        self._patch_aux_vision(monkeypatch)
+
+        from agent.conversation_loop import _sync_failover_vision_support
+
+        replaced = _sync_failover_vision_support(agent, messages)
+        assert replaced is False
+        # Images untouched.
+        user_content = messages[1]["content"]
+        assert any(p.get("type") == "image_url" for p in user_content)
+
+    def test_tool_message_placeholder_preserves_linkage(self, monkeypatch):
+        """A tool message whose content was entirely images keeps its
+        message (and tool_call_id linkage); only the part is replaced."""
+        agent = self._agent()
+        self._patch_lookup(monkeypatch, False)
+        self._patch_aux_vision(monkeypatch, "")
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,BBBB"}}],
+            },
+        ]
+        from agent.conversation_loop import _sync_failover_vision_support
+
+        replaced = _sync_failover_vision_support(agent, messages)
+        assert replaced is True
+        assert len(messages) == 3  # tool message NOT deleted
+        assert messages[2]["role"] == "tool"
+        assert messages[2]["tool_call_id"] == "call_1"
+        content = messages[2]["content"]
+        assert isinstance(content, list)
+        assert content[0]["type"] == "text"
+        assert "image content removed" in content[0]["text"]
+
+
+class TestFailoverVisionDisablesFastPath:
+    """When _sync_failover_vision_support fires, it must also set the
+    module-level ``_failover_vision_disabled`` flag in vision_tools so that
+    ``_should_use_native_vision_fast_path`` returns False for the rest of the
+    turn.  Otherwise the fast path (which reads stale runtime-main globals
+    still pointing at the vision-capable primary) would deliver image bytes
+    to the text-only fallback model on every vision_analyze tool call."""
+
+    def test_text_only_failover_sets_vision_tools_flag(self, monkeypatch):
+        import tools.vision_tools as vt
+
+        vt._failover_vision_disabled = False  # reset
+        agent = SimpleNamespace(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            requested_provider="deepseek",
+            _vision_supported=True,
+        )
+        messages = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}},
+                ],
+            },
+        ]
+
+        def _fake_lookup(provider, model, cfg, requested_provider=""):
+            return False
+
+        def _fake_aux(image_ref, timeout=90.0):
+            return "a red car"
+
+        monkeypatch.setattr("agent.image_routing._lookup_supports_vision", _fake_lookup)
+        monkeypatch.setattr("agent.conversation_loop._run_aux_vision_sync", _fake_aux)
+
+        from agent.conversation_loop import _sync_failover_vision_support
+
+        _sync_failover_vision_support(agent, messages)
+        assert vt._failover_vision_disabled is True
+
+    def test_fast_path_returns_false_after_failover(self, monkeypatch):
+        import tools.vision_tools as vt
+
+        vt._failover_vision_disabled = True
+        assert vt._should_use_native_vision_fast_path() is False
+        vt._failover_vision_disabled = False  # cleanup

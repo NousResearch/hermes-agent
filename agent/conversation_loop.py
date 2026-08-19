@@ -16,6 +16,7 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -1425,6 +1426,160 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     return False
 
 
+def _run_aux_vision_sync(image_ref: str, timeout: float = 90.0) -> str:
+    """Describe an image via the auxiliary vision model from a sync context.
+
+    ``run_conversation`` (and therefore failover recovery) is synchronous,
+    while the vision tool is async.  This bridges the two with the same
+    pattern as ``context_references.preprocess_context_references_async``:
+    a running loop gets the coroutine executed in a worker thread, otherwise
+    ``asyncio.run`` is used directly.
+
+    Returns the analysis text, or "" when the aux vision call fails or
+    returns nothing usable (the caller falls back to a placeholder).
+    """
+    async def _describe() -> str:
+        try:
+            from tools.vision_tools import vision_analyze_tool
+
+            result = await vision_analyze_tool(
+                image_ref,
+                "Describe this image in detail. Include all visible text, "
+                "numbers, objects, UI elements and layout.",
+            )
+            import json as _json
+
+            try:
+                parsed = _json.loads(result)
+                if isinstance(parsed, dict):
+                    text = parsed.get("analysis") or parsed.get("error") or ""
+                    return str(text).strip()
+            except Exception:
+                pass
+            return str(result).strip()
+        except Exception:
+            return ""
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None and loop.is_running():
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _describe()).result(timeout=timeout)
+    return asyncio.run(_describe())
+
+
+def _extract_image_ref(part: Dict[str, Any]) -> str:
+    """Extract a usable image reference (data: or http(s): URL) from a
+    multimodal content part, or \"\" when the part carries none."""
+    ptype = part.get("type")
+    if ptype == "image_url":
+        nested = part.get("image_url")
+        if isinstance(nested, dict):
+            return str(nested.get("url") or "").strip()
+        return str(nested or "").strip()
+    if ptype == "input_image":
+        nested = part.get("image_url")
+        return str(nested or "").strip()
+    if ptype == "image":
+        # Anthropic-style base64 source — not a URL we can re-send;
+        # leave it to the placeholder path.
+        return ""
+    return ""
+
+
+def _sync_failover_vision_support(agent, api_messages) -> bool:
+    """After a provider failover, verify the new model accepts image input.
+
+    The image-input mode (native vs text) is decided once per turn against
+    the PRIMARY model. If the primary dies and the fallback chain lands on
+    a text-only model, image_url parts already embedded in api_messages are
+    rejected with HTTP 400 (e.g. DeepSeek's "unknown variant `image_url`").
+    Instead of dropping the pixels outright, each image is described through
+    the auxiliary vision model and the part is replaced with a text
+    description in place — the failover model still learns what the image
+    contained, without ever shipping image bytes it rejects.
+
+    Returns True if any image part was replaced.
+    """
+    if not getattr(agent, "_vision_supported", True):
+        return False
+    try:
+        from agent.image_routing import _lookup_supports_vision
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        supports = _lookup_supports_vision(
+            getattr(agent, "provider", "") or "",
+            getattr(agent, "model", "") or "",
+            cfg,
+            requested_provider=getattr(agent, "requested_provider", "") or "",
+        )
+    except Exception:
+        logger.debug("failover vision sync: capability lookup failed", exc_info=True)
+        return False
+    if supports is not False:
+        # Vision-capable or unknown — leave images alone.  Unknown falls
+        # through to the existing reactive 4xx image-rejection recovery.
+        return False
+    if not isinstance(api_messages, list) or not api_messages:
+        return False
+
+    # Collect every multimodal part that carries an image reference.
+    image_sites = []  # (message, part)
+    for msg in api_messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if (
+                isinstance(part, dict)
+                and part.get("type") in ("image_url", "image", "input_image")
+            ):
+                image_sites.append((msg, part))
+    if not image_sites:
+        return False
+
+    replaced = 0
+    for _msg, part in image_sites:
+        ref = _extract_image_ref(part)
+        description = _run_aux_vision_sync(ref) if ref else ""
+        # Replace the image part with a text part in place, preserving the
+        # containing message (tool_call_id linkage etc.).
+        part.clear()
+        part["type"] = "text"
+        if description:
+            part["text"] = (
+                "[Image content — described by vision model: " + description + "]"
+            )
+        else:
+            part["text"] = (
+                "[image content removed — server does not support images]"
+            )
+        replaced += 1
+
+    agent._vision_supported = False
+    # Also set the module-level flag in vision_tools so that
+    # _should_use_native_vision_fast_path() returns False for the rest of
+    # this turn — the runtime-main globals still point at the (vision-capable)
+    # primary, so without this the fast path would deliver image bytes to the
+    # text-only fallback model on every vision_analyze tool call.
+    try:
+        import tools.vision_tools as _vt
+        _vt._failover_vision_disabled = True
+    except Exception:
+        pass
+    logger.info(
+        "Failover vision sync: fallback model %s (%s) does not support "
+        "images — replaced %d image part(s) with vision descriptions",
+        agent.model, agent.provider, replaced,
+    )
+    return replaced > 0
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -1437,9 +1592,14 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     whole turn (and every gateway turn, since fallback re-activates per
     message while the primary is down) ships the stale identity.
 
+    Also verifies the failover model accepts image input (see
+    ``_sync_failover_vision_support``) so a text-only fallback strips
+    embedded image parts before the retry instead of 400-ing on them.
+
     Mutates ``api_messages[0]`` in place and returns the prompt to use as
     ``active_system_prompt`` for subsequent call-block rebuilds.
     """
+    _sync_failover_vision_support(agent, api_messages)
     sp = getattr(agent, "_cached_system_prompt", None)
     if not isinstance(sp, str) or not sp:
         return active_system_prompt

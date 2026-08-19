@@ -71,6 +71,15 @@ logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
+# Module-level flag set by _sync_failover_vision_support when a provider
+# failover lands on a text-only model.  Checked by
+# _should_use_native_vision_fast_path to avoid returning pixels to a model
+# that already had its inline images stripped/described — the runtime-main
+# globals still reflect the (vision-capable) primary, so without this flag
+# the fast path would short-circuit and deliver image bytes to a text-only
+# fallback model.  Cleared on primary restore (turn_context).
+_failover_vision_disabled: bool = False
+
 # Configurable HTTP download timeout for _download_image().
 # Separate from auxiliary.vision.timeout which governs the LLM API call.
 # Resolution: config.yaml auxiliary.vision.download_timeout → env var → 30s default.
@@ -1046,7 +1055,17 @@ def _should_use_native_vision_fast_path() -> bool:
     The override is the escape hatch for custom/local providers that aren't in
     the static allowlist. Best-effort: any resolution failure returns False so
     the caller falls back to the legacy aux-LLM path.
+
+    Returns False (forcing the aux-LLM text path) when a provider failover has
+    landed on a text-only model mid-turn — detected via
+    ``_failover_vision_disabled``, set by ``_sync_failover_vision_support``.
+    The runtime-main globals still reflect the (vision-capable) primary, so
+    without this check the fast path would deliver image bytes to a model
+    that already had its inline images stripped.
     """
+    if _failover_vision_disabled:
+        logger.debug("Native vision fast-path disabled: failover to text-only model")
+        return False
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
         from agent.image_routing import decide_image_input_mode, _lookup_supports_vision

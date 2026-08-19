@@ -585,6 +585,13 @@ def build_turn_context(
     if callable(_reset_consol):
         _reset_consol()
     agent._vision_supported = True
+    # Clear the failover-vision-disabled flag so vision_analyze's native fast
+    # path is re-enabled when the primary (vision-capable) model is restored.
+    try:
+        import tools.vision_tools as _vt
+        _vt._failover_vision_disabled = False
+    except Exception:
+        pass
 
     # Pre-turn connection health check: clean up dead TCP connections.
     if agent.api_mode != "anthropic_messages":

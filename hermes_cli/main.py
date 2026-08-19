@@ -8741,38 +8741,128 @@ def _recover_core_update_marker_locked() -> None:
             print(f"    {sys.executable} -m pip install -e '.[all]'")
 
 
-def _windows_running_hermes_launcher_locked() -> bool:
-    """True when a venv ``hermes*.exe`` shim is this process or an ancestor.
+def _norm_exe_path(path) -> str:
+    """Case-folded resolved path, for comparing executables on Windows."""
+    try:
+        return str(Path(path).resolve()).lower()
+    except OSError:
+        return str(path).lower()
 
-    Best-effort: returns False when psutil is unavailable or inspection fails.
+
+def _windows_shim_in_process_chain() -> Path | None:
+    """The venv console shim this process runs from or under, if any.
+
+    ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with
+    the shim itself as its script, and that keeps the shim open — without
+    ``FILE_SHARE_DELETE`` — for the whole process lifetime. So every
+    ``hermes ...`` command holds its own shim, and an editable install run
+    from one can never rewrite it (#88838, #89599).
+
+    Two independent probes, because either can come up empty. Process
+    ancestry finds the launcher when it is a separate parent process, but
+    needs psutil. This process's own launch paths (``sys.argv[0]``,
+    ``__main__.__file__``, the module spec origin) cover the rest — the
+    runpy/zipapp launch puts ``<shim>\\__main__.py`` there, which a plain
+    argv[0] check misses.
+
+    Candidates are intersected with the project venv's own shims, so a
+    ``hermes.exe`` belonging to some other install never matches.
     """
     if not _is_windows():
-        return False
+        return None
     scripts_dir = _venv_scripts_dir()
     if scripts_dir is None:
-        return False
-    shims = _hermes_exe_shims(scripts_dir)
+        return None
+    shims = {_norm_exe_path(shim): shim for shim in _hermes_exe_shims(scripts_dir)}
     if not shims:
-        return False
-    shim_set: set[str] = set()
-    for shim in shims:
-        try:
-            shim_set.add(str(shim.resolve()).lower())
-        except OSError:
-            shim_set.add(str(shim).lower())
+        return None
+
+    def _match(candidate) -> Path | None:
+        path = Path(candidate)
+        if path.name.lower() == "__main__.py":
+            path = path.parent
+        return shims.get(_norm_exe_path(path))
+
+    candidates: list[str] = list(sys.argv[:1])
+    main_mod = sys.modules.get("__main__")
+    for attr in (getattr(main_mod, "__file__", None),
+                 getattr(getattr(main_mod, "__spec__", None), "origin", None)):
+        if attr:
+            candidates.append(attr)
+    for candidate in candidates:
+        matched = _match(candidate)
+        if matched is not None:
+            return matched
+
     try:
         import psutil
 
         me = psutil.Process()
         for proc in [me] + list(me.parents()):
             try:
-                exe_norm = str(Path(proc.exe()).resolve()).lower()
+                matched = _match(proc.exe())
             except Exception:
                 continue
-            if exe_norm in shim_set:
-                return True
+            if matched is not None:
+                return matched
     except Exception:
+        return None
+    return None
+
+
+def _windows_running_hermes_launcher_locked() -> bool:
+    """True when a venv ``hermes*.exe`` shim is this process or an ancestor.
+
+    Best-effort: returns False when psutil is unavailable or inspection fails.
+    """
+    return _windows_shim_in_process_chain() is not None
+
+
+# Set on the re-exec'd child so it can never spawn another one.
+_UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
+
+
+def _reexec_update_off_windows_shim() -> bool:
+    """Hand this update to the venv interpreter, off the console shim.
+
+    Returns True when a child was spawned and the caller must return at once,
+    so this process exits and releases the shim before the child reaches
+    ``pip install -e .``. Returns False to continue in-process.
+
+    The child is spawned, not waited on — this process exiting IS the fix, so
+    the shell sees the spawn's status rather than the update's. The update
+    prints its own result, and ``--gateway`` writes the true exit code to
+    ``.update_exit_code`` for the gateway watcher before restarting.
+
+    Anything that stops the hand-off (no venv python, spawn refused) falls
+    through to the old in-process behaviour with the manual command printed,
+    so a broken venv still gets whatever the update can do rather than a
+    dead end.
+    """
+    if os.environ.get(_UPDATE_REEXEC_ENV) == "1":
         return False
+    shim = _windows_shim_in_process_chain()
+    if shim is None:
+        return False
+
+    from hermes_constants import venv_python_path
+
+    python_exe = venv_python_path(shim.parent.parent, windows=True)
+    cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
+    if python_exe.is_file():
+        try:
+            subprocess.Popen(cmd, env={**os.environ, _UPDATE_REEXEC_ENV: "1"})
+            print(
+                f"→ Windows: {shim.name} cannot replace itself while it runs; "
+                "continuing the update under the venv Python."
+            )
+            print("  Progress continues below; this shell returns immediately.")
+            return True
+        except OSError as exc:
+            logger.debug("Update re-exec via %s failed: %s", python_exe, exc)
+    print(f"  ⚠ Could not re-run the update off {shim.name}. If the install")
+    print("    fails to replace it, run this from a fresh shell instead:")
+    print(f"    {subprocess.list2cmdline(cmd)}")
     return False
 
 
@@ -9966,6 +10056,14 @@ def cmd_update(args):
             branch=branch,
             branch_explicit=bool(getattr(args, "branch", None)),
         )
+        return
+
+    # Windows: an update launched through venv\Scripts\hermes.exe holds that
+    # shim open for its whole run, and the dependency sync has to replace it.
+    # Hand off to the venv interpreter before anything else — in particular
+    # before the update lock, so the child claims the marker itself instead of
+    # adopting one this process is about to release.
+    if _reexec_update_off_windows_shim():
         return
 
     gateway_mode = getattr(args, "gateway", False)

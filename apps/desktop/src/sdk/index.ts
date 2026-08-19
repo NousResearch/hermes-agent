@@ -79,6 +79,8 @@ import {
 import { runGatewayRestart } from '@/store/system-actions'
 import type { UsageStats } from '@/types/hermes'
 
+import { planPluginOpenSession } from './plugin-open-session-plan'
+
 // -- state: readonly views over the app's live atoms -------------------------
 
 const readonlyAtom = <T>(atomLike: ReadableAtom<T>): ReadableAtom<T> => atomLike
@@ -238,12 +240,14 @@ function waitForFocusedSessionHydration({
   expectHistory,
   generation,
   profile,
+  requireActiveProfile,
   storedSessionId,
   timeoutMs
 }: {
   expectHistory: boolean
   generation: number
   profile: string
+  requireActiveProfile: boolean
   storedSessionId: string
   timeoutMs: number
 }): Promise<void> {
@@ -281,7 +285,8 @@ function waitForFocusedSessionHydration({
         return
       }
 
-      const profileMatches = normalizeProfileKey($activeGatewayProfile.get()) === profile
+      const profileMatches =
+        !requireActiveProfile || normalizeProfileKey($activeGatewayProfile.get()) === profile
       const sessionMatches = $selectedStoredSessionId.get() === storedSessionId
       const runtimeReady = Boolean($activeSessionId.get())
       const historyPainted = Boolean($messages.get().length)
@@ -336,8 +341,16 @@ function waitForFocusedSessionHydration({
 // regression. The trade is that a wake that is slow in BOTH phases can now take
 // up to twice the budget before it surfaces; that is a maintainer call and is
 // called out in the PR rather than buried here.
-async function awaitProfileActivation(profile: string, targetProfile: string, timeoutMs: number): Promise<void> {
-  const activation = ensureGatewayProfile(profile)
+// The caller supplies the dial itself, because WHICH backend to open is a
+// routing decision (a workspace switch moves chrome; a plain bot navigation
+// only opens the gateway) while the deadline enforced here is the same either
+// way.
+async function awaitProfileActivation(
+  dial: () => Promise<void>,
+  targetProfile: string,
+  timeoutMs: number
+): Promise<void> {
+  const activation = dial()
   let timer: number | undefined
 
   try {
@@ -548,14 +561,22 @@ export const host = {
     ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default'),
 
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
-   *  is navigation, not a workspace switch — keepAllProfilesScope defaults
-   *  true so Sessions stays on the unified list (the bot forever-chat is
-   *  hidden and would otherwise look like every session disappeared). */
+   *  is navigation, not a workspace or chrome API-home switch —
+   *  keepAllProfilesScope defaults true so `$activeGatewayProfile` /
+   *  Sessions REST stay on the previous (usually launch) backend while the
+   *  bot backend is dialed in the background. The bot forever-chat is hidden
+   *  and would otherwise look like every session disappeared. Pass false to
+   *  also scope chrome onto that profile and collapse the sidebar. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
     const profile = (options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
     const expectHistory = options.expectHistory ?? false
+    const plan = planPluginOpenSession({
+      activeProfile: $activeGatewayProfile.get(),
+      keepAllProfilesScope: options.keepAllProfilesScope,
+      profile
+    })
     // Wake-path phase timings. Logged ONLY on a hydration timeout (bridged
     // into desktop.log via the renderer-console tap), so a support bundle
     // pinpoints WHERE the budget went — profile activation vs hydration —
@@ -574,23 +595,27 @@ export const host = {
     const maxAttempts = options.awaitHydration && options.retryHydrationTimeoutOnce ? 2 : 1
 
     try {
-      if (profile && profile !== $activeGatewayProfile.get()) {
+      // WHICH backend to dial is the plan's call; HOW LONG to wait is the wake
+      // budget's. A workspace switch moves $activeGatewayProfile / chrome REST;
+      // a plain navigation only opens the bot's gateway so session.resume can
+      // hydrate, leaving chrome on the launch backend.
+      const dial = plan.switchWorkspace
+        ? () => ensureGatewayProfile(plan.switchWorkspace as string)
+        : plan.dialWithoutSwitching
+          ? () => openGatewayForProfile(plan.dialWithoutSwitching as string)
+          : null
+
+      if (dial) {
         // Bounded only on the hydration contract, which is where a budget and a
         // Retry surface both already exist. A plain open never asked for a
         // deadline and has nowhere to render one, so it keeps today's
         // behaviour rather than gaining a rejection its callers cannot handle.
-        await (options.awaitHydration
-          ? awaitProfileActivation(profile, targetProfile, hydrationTimeoutMs)
-          : ensureGatewayProfile(profile))
+        await (options.awaitHydration ? awaitProfileActivation(dial, targetProfile, hydrationTimeoutMs) : dial())
         profileActiveAt = Date.now()
       }
 
-      // Outside the dial branch on purpose: re-opening a bot whose profile is
-      // ALREADY active still has to restore the unified list. Scoped inside,
-      // the second open of the same bot left Sessions collapsed onto a profile
-      // whose forever-chat is hidden — an empty sidebar and no roster.
-      if (profile && options.keepAllProfilesScope !== false) {
-        setShowAllProfiles(true)
+      if (plan.showAllProfiles !== null) {
+        setShowAllProfiles(plan.showAllProfiles)
       }
 
       wakePhase = 'hydration'
@@ -648,6 +673,9 @@ export const host = {
               expectHistory,
               generation,
               profile: targetProfile,
+              // A background dial never moves $activeGatewayProfile, so gating
+              // hydration on it would wait for something that is not coming.
+              requireActiveProfile: plan.requireActiveProfileForHydration,
               storedSessionId,
               timeoutMs: hydrationTimeoutMs
             })

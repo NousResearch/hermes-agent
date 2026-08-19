@@ -102,7 +102,8 @@ vi.mock('@/store/gateway', async () => {
 const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile } = await import('@/hermes')
-const { requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } = await import('@/store/gateway')
+const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
+  await import('@/store/gateway')
 
 const { $activeGatewayProfile, $gatewaySwapTarget, $profiles, ensureGatewayProfile, refreshProfiles, setShowAllProfiles } =
   await import('@/store/profile')
@@ -290,9 +291,7 @@ describe('connection-aware plugin host APIs', () => {
 
 describe('profile-aware plugin session opens', () => {
   it('waits until the target Bot Chat runtime and history are on main before resolving', async () => {
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(async (target: null | string | undefined) => {
-      $activeGatewayProfile.set(target || 'default')
-    })
+    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
 
     let resolved = false
 
@@ -343,9 +342,7 @@ describe('profile-aware plugin session opens', () => {
   })
 
   it('requests an explicit resume on a cold open where selection has not settled (#89206)', async () => {
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(async (target: null | string | undefined) => {
-      $activeGatewayProfile.set(target || 'default')
-    })
+    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
 
     // Cold-start shape from the field: the persisted route already points at
     // the bot's stored session, but no selection, no runtime, no transcript.
@@ -398,9 +395,7 @@ describe('profile-aware plugin session opens', () => {
   })
 
   it('resolves a history-bearing wake on transcript paint without waiting for the runtime (paint-first)', async () => {
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(async (target: null | string | undefined) => {
-      $activeGatewayProfile.set(target || 'default')
-    })
+    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
 
     setMockAtom($selectedStoredSessionId, null)
     setMockAtom($activeSessionId, null)
@@ -554,9 +549,49 @@ describe('profile-aware plugin session opens', () => {
 
     await second
     expect(await firstOutcome).toMatch(/superseded/i)
-    expect($activeGatewayProfile.get()).toBe('hyoseob')
+    expect($activeGatewayProfile.get()).toBe('remote-worker')
     expect($selectedStoredSessionId.get()).toBe('chat-b')
     expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('keeps chrome API home on the previous profile when opening a Bot Chat', async () => {
+    $activeGatewayProfile.set('default')
+
+    await host.openSession('bot-chat', {
+      profile: 'worker',
+      keepAllProfilesScope: true
+    })
+
+    expect(ensureGatewayProfile).not.toHaveBeenCalled()
+    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+    expect($activeGatewayProfile.get()).toBe('default')
+  })
+
+  it('defaults keepAllProfilesScope to navigation instead of a workspace switch', async () => {
+    $activeGatewayProfile.set('default')
+
+    await host.openSession('bot-chat', { profile: 'worker' })
+
+    expect(ensureGatewayProfile).not.toHaveBeenCalled()
+    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+    expect($activeGatewayProfile.get()).toBe('default')
+  })
+
+  it('still switches workspace when keepAllProfilesScope is false', async () => {
+    $activeGatewayProfile.set('default')
+    vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
+
+    await host.openSession('stored-worker', {
+      profile: 'worker',
+      keepAllProfilesScope: false
+    })
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('worker')
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+    expect(setShowAllProfiles).toHaveBeenCalledWith(false)
+    expect($activeGatewayProfile.get()).toBe('worker')
   })
 
   it('keeps the Sessions sidebar in all-profiles even when the bot is already live', async () => {
@@ -593,6 +628,7 @@ describe('profile-aware plugin session opens', () => {
         intent: 'main',
         awaitHydration: true,
         expectHistory: true,
+        keepAllProfilesScope: false,
         hydrationTimeoutMs: 60
       })
     ).rejects.toThrow("Timed out loading medicina's session history.")
@@ -614,6 +650,7 @@ describe('profile-aware plugin session opens', () => {
         intent: 'main',
         awaitHydration: true,
         expectHistory: true,
+        keepAllProfilesScope: false,
         hydrationTimeoutMs: 60
       })
     ).rejects.toThrow('Timed out loading ')
@@ -651,7 +688,8 @@ describe('profile-aware plugin session opens', () => {
       intent: 'main',
       awaitHydration: true,
       expectHistory: true,
-      hydrationTimeoutMs: 200
+      keepAllProfilesScope: false,
+        hydrationTimeoutMs: 200
     })
 
     // 300ms total is past a single shared 200ms budget and inside hydration's
@@ -699,6 +737,7 @@ describe('profile-aware plugin session opens', () => {
         intent: 'main',
         awaitHydration: true,
         expectHistory: true,
+        keepAllProfilesScope: false,
         hydrationTimeoutMs: 40
       })
     ).rejects.toThrow('Timed out loading ')
@@ -722,7 +761,8 @@ describe('profile-aware plugin session opens', () => {
 
     let settled = 'pending'
 
-    void host.openSession('plain-chat', { profile: 'medicina', intent: 'main', hydrationTimeoutMs: 40 }).then(
+    void host.openSession('plain-chat', { profile: 'medicina', intent: 'main', keepAllProfilesScope: false,
+        hydrationTimeoutMs: 40 }).then(
       () => {
         settled = 'resolved'
       },

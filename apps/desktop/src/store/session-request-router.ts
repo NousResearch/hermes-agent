@@ -40,13 +40,20 @@ export function sessionRpcNeedsProfileRoute(
  */
 export function requestForSessionProfile<T>(
   ownerProfile: null | string | undefined,
-  ambientRequest: <R>(method: string, params?: Record<string, unknown>) => Promise<R>,
+  ambientRequest: <R>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) => Promise<R>,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  timeoutMs?: number,
+  signal?: AbortSignal
 ): Promise<T> {
   if (!sessionRpcNeedsProfileRoute(ownerProfile)) {
-    return ambientRequest<T>(method, params)
+    return ambientRequest<T>(method, params, timeoutMs, signal)
   }
 
-  return requestGatewayForProfile<T>(normKey(ownerProfile), method, params)
+  return requestGatewayForProfile<T>(normKey(ownerProfile), method, params, timeoutMs, signal)
 }

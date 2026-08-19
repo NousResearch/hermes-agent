@@ -27,7 +27,7 @@ IDEMPOTENT_TOOL_NAMES = frozenset({
 MUTATING_TOOL_NAMES = frozenset({
     "terminal", "execute_code", "write_file", "patch", "todo_list", "memory", "skill_manage",
     "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_navigate",
-    "send_message", "cronjob_manage", "delegate_task", "process_manage",
+    "send_message", "cronjob_manage", "delegate_task", "process_manage", "profile_manage",
 })
 
 # Pollers: legitimately re-invoked with identical args; the identical-call NOTICE never fires.

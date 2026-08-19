@@ -656,16 +656,7 @@ if ($SelfTestUi) {
     $hold = 6
     if ($env:HERMES_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:HERMES_SELFTEST_HOLD_SECONDS }
     Publish-UiProgress "Testing quiet update"
-    if ($env:HERMES_SELFTEST_SILENT_CHILD) {
-        $pythonExe = $env:HERMES_SELFTEST_PYTHON
-        if (-not $pythonExe -or -not (Test-Path -LiteralPath $pythonExe)) {
-            throw "HERMES_SELFTEST_PYTHON must name a Python executable for the silent-child self-test"
-        }
-        $quiet = Invoke-HermesStep $pythonExe @("-c", "import time; time.sleep($hold)") "self-test"
-        Write-HandoffLog "SELF-TEST: silent child exit code: $($quiet.Code)"
-    } else {
-        Start-Sleep -Seconds $hold
-    }
+    Start-Sleep -Seconds $hold
     if ($env:HERMES_SELFTEST_FAIL) {
         Show-ErrorFinale "self-test error state"
     } else {

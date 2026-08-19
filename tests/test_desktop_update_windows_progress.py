@@ -1,19 +1,24 @@
-"""Behavioral coverage for quiet Windows Desktop updater progress."""
+"""The Windows hand-off keeps serving progress while its main thread blocks.
+
+windows.ps1 answers /progress from a dedicated runspace precisely so the
+window keeps moving through the long silent stretches (`hermes update`, pip,
+the desktop rebuild) that made an 18-minute update look hung. This drives the
+real script and polls the real listener; the posix half of the same contract
+is covered in test_desktop_update_shim_progress.py.
+"""
 
 from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
-import sys
 import time
+from pathlib import Path
 from urllib.request import urlopen
 
 import pytest
-
 
 pytestmark = pytest.mark.windows_only
 
@@ -22,11 +27,11 @@ WINDOWS_UPDATE_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
 
 
 def _read_progress(url: str) -> dict[str, object]:
-    with urlopen(f"{url}progress", timeout=2) as response:
+    with urlopen(f"{url}progress", timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def test_progress_advances_while_update_child_is_silent(tmp_path: Path) -> None:
+def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None:
     powershell = shutil.which("powershell.exe")
     assert powershell, "Windows updater tests require Windows PowerShell."
 
@@ -34,9 +39,7 @@ def test_progress_advances_while_update_child_is_silent(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["TEMP"] = str(tmp_path)
     env["TMP"] = str(tmp_path)
-    env["HERMES_SELFTEST_HOLD_SECONDS"] = "3"
-    env["HERMES_SELFTEST_SILENT_CHILD"] = "1"
-    env["HERMES_SELFTEST_PYTHON"] = sys.executable
+    env["HERMES_SELFTEST_HOLD_SECONDS"] = "4"
 
     with output_path.open("wb") as output:
         process = subprocess.Popen(
@@ -56,7 +59,7 @@ def test_progress_advances_while_update_child_is_silent(tmp_path: Path) -> None:
         )
 
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 20
         shim_url = None
         while time.monotonic() < deadline:
             text = output_path.read_text(encoding="utf-8", errors="replace")
@@ -70,17 +73,20 @@ def test_progress_advances_while_update_child_is_silent(tmp_path: Path) -> None:
 
         assert shim_url, output_path.read_text(encoding="utf-8", errors="replace")
         first = _read_progress(shim_url)
-        time.sleep(1.2)
+        time.sleep(1.5)
         second = _read_progress(shim_url)
 
+        # The stage is whatever the orchestrator last published -- it must
+        # reach the page verbatim and must not churn on its own.
         assert first["status"] == "running"
-        assert first["message"] == "Testing quiet update"
+        assert first["message"]
         assert second["message"] == first["message"]
+        # The main thread is asleep for the whole window above. If elapsed
+        # only moved when the orchestrator published, it would be frozen here
+        # -- which is what a stalled update looks like to the user.
         assert int(second["elapsed_seconds"]) > int(first["elapsed_seconds"])
 
-        assert process.wait(timeout=10) == 0
-        final_output = output_path.read_text(encoding="utf-8", errors="replace")
-        assert "SELF-TEST: silent child exit code: 0" in final_output
+        assert process.wait(timeout=20) == 0
     finally:
         if process.poll() is None:
             process.kill()

@@ -22,7 +22,8 @@
 #     [-- <args...>]           linux: filtered launch args to replay
 #
 # The shim (ui.html in a chromeless browser app window) is decoration: it
-# polls /progress for `done` or `error` and reacts. It owns nothing --
+# polls /progress for the current stage or a terminal event and reacts. The
+# stages come from the gates below, never from child output. It owns nothing --
 # relaunch, result file, marker hygiene all happen here, identically, when
 # no renderer exists. No chromium-family browser found = no UI, fine.
 #

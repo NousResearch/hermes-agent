@@ -166,6 +166,54 @@ def _clear_task_cwd(task_id: str) -> None:
         logger.debug("Failed to clear ACP task cwd override", exc_info=True)
 
 
+def configured_fast_mode(config: dict[str, Any] | None = None) -> bool:
+    """Return the configured fast-mode default without mutating configuration."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            logger.debug("Could not load configured ACP fast mode", exc_info=True)
+            return False
+    agent_config = config.get("agent") if isinstance(config, dict) else None
+    raw = agent_config.get("service_tier") if isinstance(agent_config, dict) else None
+    return str(raw or "").strip().lower() in {"fast", "priority", "on"}
+
+
+def apply_fast_mode_to_agent(agent: Any, model: str | None, enabled: bool) -> None:
+    """Apply fast-mode intent to a live agent using the canonical model resolver."""
+    overrides = None
+    if enabled:
+        try:
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            overrides = resolve_fast_mode_overrides(model)
+        except Exception:
+            logger.debug("Could not resolve ACP fast-mode overrides", exc_info=True)
+
+    current = getattr(agent, "request_overrides", None)
+    merged = dict(current) if isinstance(current, dict) else {}
+    merged.pop("service_tier", None)
+    merged.pop("speed", None)
+    if overrides:
+        merged.update(overrides)
+    agent.request_overrides = merged or None
+    agent.service_tier = (
+        "priority"
+        if enabled and overrides and overrides.get("service_tier") == "priority"
+        else None
+    )
+
+
+def _agent_fast_mode_enabled(agent: Any) -> bool:
+    overrides = getattr(agent, "request_overrides", None)
+    return getattr(agent, "service_tier", None) == "priority" or bool(
+        isinstance(overrides, dict)
+        and (overrides.get("service_tier") == "priority" or overrides.get("speed") == "fast")
+    )
+
+
 @dataclass
 class SessionState:
     """Tracks per-session state for an ACP-managed Hermes agent."""
@@ -174,6 +222,7 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    fast_mode: bool = False
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
@@ -219,6 +268,7 @@ class SessionManager:
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", "") or "",
+            fast_mode=_agent_fast_mode_enabled(agent),
             cancel_event=threading.Event(),
         )
         with self._lock:
@@ -264,12 +314,14 @@ class SessionManager:
             session_id=new_id,
             cwd=cwd,
             model=original.model or None,
+            fast_mode=original.fast_mode,
         )
         state = SessionState(
             session_id=new_id,
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", original.model) or original.model,
+            fast_mode=original.fast_mode,
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
         )
@@ -432,7 +484,7 @@ class SessionManager:
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
-        session_meta = {"cwd": state.cwd}
+        session_meta = {"cwd": state.cwd, "fast_mode": state.fast_mode}
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
@@ -452,7 +504,7 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -532,6 +584,7 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        fast_mode = False
         mc = row.get("model_config")
         if mc:
             try:
@@ -541,6 +594,7 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    fast_mode = meta.get("fast_mode") is True
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -567,6 +621,7 @@ class SessionManager:
                 requested_provider=requested_provider,
                 base_url=restored_base_url,
                 api_mode=restored_api_mode,
+                fast_mode=fast_mode,
             )
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
@@ -578,6 +633,7 @@ class SessionManager:
             cwd=cwd,
             model=model or getattr(agent, "model", "") or "",
             history=history,
+            fast_mode=fast_mode,
             cancel_event=threading.Event(),
         )
         with self._lock:
@@ -608,15 +664,21 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        fast_mode: bool | None = None,
     ):
         if self._agent_factory is not None:
-            return self._agent_factory()
+            agent = self._agent_factory()
+            if fast_mode is not None:
+                apply_fast_mode_to_agent(agent, model or getattr(agent, "model", None), fast_mode)
+            return agent
 
         from run_agent import AIAgent
         from hermes_cli.config import load_config
+        from hermes_cli.models import resolve_fast_mode_overrides
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         config = load_config()
+        effective_fast_mode = configured_fast_mode(config) if fast_mode is None else fast_mode
         model_cfg = config.get("model")
         default_model = ""
         config_provider = None
@@ -632,6 +694,11 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        fast_overrides = (
+            resolve_fast_mode_overrides(model or default_model)
+            if effective_fast_mode
+            else None
+        )
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
@@ -642,6 +709,12 @@ class SessionManager:
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,
+            "service_tier": (
+                "priority"
+                if fast_overrides and fast_overrides.get("service_tier") == "priority"
+                else None
+            ),
+            "request_overrides": fast_overrides,
         }
 
         try:
@@ -685,6 +758,7 @@ class SessionManager:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
         agent = AIAgent(**kwargs)
+        apply_fast_mode_to_agent(agent, model or default_model, effective_fast_mode)
         # Codex app-server sessions are spawned lazily on the first turn. Stamp
         # the ACP workspace onto the agent so the Codex runtime starts from the
         # editor/session cwd instead of the Hermes daemon's process cwd.

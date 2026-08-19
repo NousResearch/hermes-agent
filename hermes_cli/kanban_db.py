@@ -9386,6 +9386,52 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+# Event kinds that mean "an operator, a reviewer, or the board deliberately
+# asked for another run of this task":
+#
+#   status            manual phase move (an operator dragging done -> ready)
+#   promoted          dependency satisfied, task promoted into ready
+#   promoted_manual   operator forced the promotion (``promote_task``)
+#   unblocked         explicit ``unblock_task``
+#   reclaimed         a dead/superseded run was reclaimed
+#   changes_requested reviewer sent the implementer back (``request_changes``)
+#   review_reopened   review lane reopened for a re-run
+#
+# The respawn guard's evidence rules treat any of these, landing at or after
+# the evidence they would otherwise defer on, as superseding that evidence.
+_RESPAWN_REQUEUE_EVENT_KINDS = (
+    "status",
+    "promoted",
+    "promoted_manual",
+    "unblocked",
+    "reclaimed",
+    "changes_requested",
+    "review_reopened",
+)
+
+
+def _requeued_since(
+    conn: sqlite3.Connection, task_id: str, since: int
+) -> bool:
+    """Return True if an explicit re-queue event landed at/after ``since``.
+
+    ``since`` is a unix timestamp taken from the piece of evidence the guard
+    is about to defer on (a completed run, a PR-URL comment). Event and
+    comment timestamps are both second-granularity and the CLI writes its
+    ``UNBLOCK: <reason>`` comment in the same second as the ``unblocked``
+    event, so the comparison is inclusive — a re-queue in the same second as
+    the evidence counts as being after it.
+    """
+    placeholders = ", ".join("?" for _ in _RESPAWN_REQUEUE_EVENT_KINDS)
+    return conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND created_at >= ? "
+        f"AND kind IN ({placeholders}) "
+        "LIMIT 1",
+        (task_id, since, *_RESPAWN_REQUEUE_EVENT_KINDS),
+    ).fetchone() is not None
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -9431,13 +9477,19 @@ def check_respawn_guard(
         A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
         seconds. Useful work already succeeded for this task; wait for an
         explicit re-queue rather than immediately re-spawning. Bypassed when an
-        explicit re-queue event (status change, promote, unblock, reclaim)
+        explicit re-queue event (``_RESPAWN_REQUEUE_EVENT_KINDS``: status
+        change, promote, unblock, reclaim, changes-requested, review-reopen)
         arrives AFTER that completion — that's a deliberate re-run request.
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
+        Bypassed on the same condition as ``recent_success``: an explicit
+        re-queue event arriving AFTER the newest PR-URL comment is a
+        deliberate "work that PR again" request. A PR URL posted after the
+        re-queue re-arms the rule, so duplicate-PR protection still covers
+        the resumed round.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9515,23 +9567,31 @@ def check_respawn_guard(
     ).fetchone()
     if recent_completed:
         completed_at = int(recent_completed["ended_at"] or 0)
-        requeued_after = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
-            "LIMIT 1",
-            (task_id, completed_at),
-        ).fetchone()
-        if not requeued_after:
+        if not _requeued_since(conn, task_id, completed_at):
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Same exception as rule 3: an explicit re-queue AFTER the newest
+    #    PR-URL comment means someone deliberately asked for another run on
+    #    that PR. This is the whole review-remediation lifecycle — a worker
+    #    opens a PR, comments the URL, blocks for review; a human (or review
+    #    tooling) resolves the thread and unblocks the SAME card so the next
+    #    run pushes fixes to the SAME branch. Without the bypass the card
+    #    lands back in ``ready`` and every dispatcher tick defers it for up
+    #    to ``_RESPAWN_GUARD_PR_WINDOW`` with only a ``respawn_guarded``
+    #    event to show for it, so one card cannot carry work from first
+    #    commit through to merge.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            # Newest-first, so the first match is the freshest PR evidence.
+            if _requeued_since(conn, task_id, int(c["created_at"] or 0)):
+                break
             return "active_pr"
 
     return None

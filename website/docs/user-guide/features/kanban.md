@@ -816,6 +816,8 @@ hermes kanban create "nightly backup audit" \
 
 The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
 
+`recent_success` and `active_pr` are evidence rules, and a deliberate re-queue overrides them: if an unblock, a promotion, a reclaim, a reviewer's changes-requested, a review reopen, or a manual phase move lands *after* the run completed / the PR comment was posted, the dispatcher spawns the task instead of deferring it. That is what lets one card carry work from first commit through review remediation to merge — a worker opens a PR, comments the link, and blocks for review; you unblock the same card and the next run pushes fixes to the same branch. A PR link posted *after* the re-queue re-arms `active_pr`, so a task still cannot quietly open a second PR.
+
 ### Drag-to-delete and bulk delete (dashboard)
 
 The dashboard exposes a **trash drop zone** on the kanban page — drag any card into it to delete the task (cascades through `task_events`, child links, and subscriptions). A confirmation prompt protects against accidents. Bulk delete is also reachable via `DELETE /api/plugins/kanban/tasks` with a JSON body `{"ids": ["t_abc", "t_def", ...]}`.

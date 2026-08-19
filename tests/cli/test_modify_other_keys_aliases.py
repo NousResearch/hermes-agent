@@ -433,3 +433,62 @@ def test_cmd_backspace_alias_not_clobbered():
     install_cmd_backspace_alias()
     install_modify_other_keys_aliases()
     assert _parse("\x1b[127;9u") == [Keys.ControlU]
+
+
+# ---------------------------------------------------------------------------
+# Lock-bit variants (#89651): kitty/ghostty OR the CapsLock (64) / NumLock
+# (128) state into the CSI-u modifier parameter, so with a lock enabled
+# every combo arrives shifted (ESC[99;133u instead of ESC[99;5u) and died
+# as literal text without these aliases.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("letter", CTRL_LETTERS)
+def test_ctrl_letter_with_numlock_parses_as_raw_byte(letter):
+    """Ctrl+<letter> with NumLock on (modifier + 128) must parse identically
+    to the raw control byte — the exact garbage from #89651 ([127;133u)."""
+    raw_byte = chr(ord(letter) - ord('a') + 1)
+    raw_result = _parse(raw_byte)
+
+    numlock_seq = f"\x1b[{ord(letter)};133u"  # 5 + 128
+    assert _parse(numlock_seq) == raw_result, (
+        f"NumLock Ctrl+{letter} ({numlock_seq!r}) should parse identically "
+        f"to raw {raw_byte!r}"
+    )
+
+
+@pytest.mark.parametrize("letter", ["a", "c", "z"])
+def test_ctrl_letter_with_capslock_parses_as_raw_byte(letter):
+    raw_byte = chr(ord(letter) - ord('a') + 1)
+    capslock_seq = f"\x1b[{ord(letter)};69u"  # 5 + 64
+    assert _parse(capslock_seq) == _parse(raw_byte)
+
+
+def test_ctrl_c_with_both_locks_parses_as_raw_byte():
+    """Ctrl+C with CapsLock and NumLock both on (5 + 64 + 128 = 197)."""
+    assert _parse("\x1b[99;197u") == _parse("\x03")
+
+
+def test_alt_letter_with_numlock_keeps_escape_prefix():
+    assert _parse("\x1b[97;131u") == [Keys.Escape, "a"]  # 3 + 128
+
+
+def test_shift_letter_with_capslock_types_uppercase():
+    assert _parse("\x1b[97;66u") == ["A"]  # 2 + 64
+
+
+def test_esc_key_with_numlock_is_escape():
+    assert _parse("\x1b[27;129u") == [Keys.Escape]  # 1 + 128
+    assert _parse("\x1b[27;133u") == [Keys.Escape]  # 5 + 128
+
+
+def test_ctrl_backspace_with_numlock_is_backward_kill_word():
+    """The exact sequence from the #89651 report ([127;133u)."""
+    assert _parse("\x1b[127;133u") == [Keys.Escape, Keys.ControlH]
+
+
+def test_modify_other_keys_tilde_form_has_no_lock_variants():
+    """The xterm modifyOtherKeys encoding never carries lock bits, so no
+    +64/+128 variants of the ESC[27;N;CP~ form may be installed."""
+    for seq in ("\x1b[27;69;99~", "\x1b[27;133;99~", "\x1b[27;197;99~"):
+        assert seq not in ANSI_SEQUENCES

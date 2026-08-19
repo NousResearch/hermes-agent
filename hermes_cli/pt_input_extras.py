@@ -181,6 +181,11 @@ def install_modify_other_keys_aliases() -> int:
       Ctrl+Alt+Shift=8): normalized onto the same targets — Ctrl-bearing
       combos behave as the Ctrl key (Alt adds an ``Escape`` prefix),
       matching how dte/kakoune normalize these protocols.
+    * **Lock-bit variants**: every CSI-u mapping above is also installed
+      with the CapsLock (64) and NumLock (128) bits ORed into the modifier
+      parameter — kitty/ghostty include them while a lock is on, and
+      without the variants every key combo dies with the lock enabled
+      (``ESC[99;133u`` instead of ``ESC[99;5u``, #89651).
     * **Esc key**: ``ESC[27u`` / ``ESC[27;<mod>u`` (Kitty disambiguate mode
       reports Esc this way, #56684) → ``Keys.Escape``.
     * **Modified Enter/Tab/Backspace/Space**: Alt+Enter → the Alt+Enter
@@ -244,15 +249,24 @@ def install_modify_other_keys_aliases() -> int:
 
     changed = 0
 
+    # Kitty CSI-u encodes CapsLock/NumLock state as extra modifier bits
+    # (caps=64, num=128) ORed into the parameter: with NumLock on, Ctrl+C
+    # arrives as ESC[99;133u (5 + 128) instead of ESC[99;5u. Terminals
+    # that report these bits (kitty, ghostty) break every key combo while
+    # a lock is on (#89651) unless the lock variants are mapped too. The
+    # xterm modifyOtherKeys encoding never carries the lock bits, so only
+    # the CSI-u form needs them.
+    _CSI_U_LOCK_BIT_VARIANTS = (0, 64, 128, 192)
+
     def _install_paired(modifier: int, mapping: dict) -> None:
         """Install both modifyOtherKeys (ESC[27;N;CP~) and CSI-u (ESC[CP;Nu)
         mappings for the given modifier and codepoint→key mapping."""
         nonlocal changed
         for codepoint, key_val in mapping.items():
-            for seq in (
-                f"\x1b[27;{modifier};{codepoint}~",
-                f"\x1b[{codepoint};{modifier}u",
-            ):
+            seqs = [f"\x1b[27;{modifier};{codepoint}~"]
+            for lock_bits in _CSI_U_LOCK_BIT_VARIANTS:
+                seqs.append(f"\x1b[{codepoint};{modifier + lock_bits}u")
+            for seq in seqs:
                 if seq not in ANSI_SEQUENCES:
                     ANSI_SEQUENCES[seq] = key_val
                     changed += 1
@@ -319,9 +333,16 @@ def install_modify_other_keys_aliases() -> int:
     # Disambiguate mode reports the Esc key as CSI-u so it is
     # distinguishable from the ESC byte that starts escape sequences
     # (#56684 — previously leaked "[27u" as literal text into the prompt).
-    # Modifiers run to 16 because kitty reports Cmd as the super bit
-    # (mod 9+) — same reason install_cmd_backspace_alias maps 9/10.
-    for seq in ["\x1b[27u"] + [f"\x1b[27;{m}u" for m in range(2, 17)]:
+    # Modifiers run from 1 to 16: kitty reports Cmd as the super bit
+    # (mod 9+) — same reason install_cmd_backspace_alias maps 9/10 — and
+    # the lock-bit variants of the modifier-less form (1+64/128/192) are
+    # how a lone Esc keypress arrives with a lock on. Lock bits (caps/num)
+    # get the same variant treatment as _install_paired.
+    for seq in ["\x1b[27u"] + [
+        f"\x1b[27;{m + lock_bits}u"
+        for m in range(1, 17)
+        for lock_bits in _CSI_U_LOCK_BIT_VARIANTS
+    ]:
         if seq not in ANSI_SEQUENCES:
             ANSI_SEQUENCES[seq] = Keys.Escape
             changed += 1

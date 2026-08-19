@@ -1,4 +1,5 @@
 name: CI
+# cache-buster: force workflow re-parse after zero-job dispatch window (2026-08-19)
 
 # Orchestrator workflow. Runs ``detect-changes`` once, then conditionally
 # calls the sub-workflows that a PR can actually affect. A final

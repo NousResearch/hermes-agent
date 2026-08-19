@@ -17,49 +17,6 @@ from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
 
 
-IDEMPOTENT_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "search_files",
-        "web_search",
-        "web_extract",
-        "session_search",
-        "browser_snapshot",
-        "browser_console",
-        "browser_get_images",
-        "mcp_filesystem_read_file",
-        "mcp_filesystem_read_text_file",
-        "mcp_filesystem_read_multiple_files",
-        "mcp_filesystem_list_directory",
-        "mcp_filesystem_list_directory_with_sizes",
-        "mcp_filesystem_directory_tree",
-        "mcp_filesystem_get_file_info",
-        "mcp_filesystem_search_files",
-    }
-)
-
-MUTATING_TOOL_NAMES = frozenset(
-    {
-        "terminal",
-        "execute_code",
-        "write_file",
-        "patch",
-        "todo",
-        "memory",
-        "skill_manage",
-        "browser_click",
-        "browser_type",
-        "browser_press",
-        "browser_scroll",
-        "browser_navigate",
-        "send_message",
-        "cronjob",
-        "delegate_task",
-        "process",
-    }
-)
-
-
 @dataclass(frozen=True)
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
@@ -77,8 +34,6 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
-    idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
-    mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: "LoopCapConfig" = field(default_factory=lambda: LoopCapConfig())
 
     @classmethod
@@ -325,25 +280,25 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
-        if self._is_idempotent(tool_name):
-            record = self._no_progress.get(signature)
-            if record is not None:
-                _result_hash, repeat_count = record
-                if repeat_count >= self.config.no_progress_block_after:
-                    decision = ToolGuardrailDecision(
-                        action="block",
-                        code="idempotent_no_progress_block",
-                        message=(
-                            f"Blocked {tool_name}: this read-only call returned the same "
-                            f"result {repeat_count} times. Stop repeating it unchanged; "
-                            "use the result already provided or try a different query."
-                        ),
-                        tool_name=tool_name,
-                        count=repeat_count,
-                        signature=signature,
-                    )
-                    self._halt_decision = decision
-                    return decision
+        record = self._no_progress.get(signature)
+        if record is not None:
+            _result_hash, repeat_count = record
+            if repeat_count >= self.config.no_progress_block_after:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="no_progress_block",
+                    message=(
+                        f"Blocked {tool_name}: this call returned the same result "
+                        f"{repeat_count} times with identical arguments. Stop "
+                        "repeating it unchanged; use the result already provided "
+                        "or change the approach."
+                    ),
+                    tool_name=tool_name,
+                    count=repeat_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -412,10 +367,10 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
-            self._no_progress.pop(signature, None)
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
-
+        # No-progress tracking applies to every tool, not just read-only ones:
+        # a successful call repeated with identical arguments that keeps
+        # returning the identical result (e.g. the same `terminal` command
+        # producing the same output) is definitionally making no progress.
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
         repeat_count = 1
@@ -426,11 +381,11 @@ class ToolCallGuardrailController:
         if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
             return ToolGuardrailDecision(
                 action="warn",
-                code="idempotent_no_progress_warning",
+                code="no_progress_warning",
                 message=(
-                    f"{tool_name} returned the same result {repeat_count} times. "
-                    "Use the result already provided or change the query instead of "
-                    "repeating it unchanged."
+                    f"{tool_name} returned the same result {repeat_count} times "
+                    "with identical arguments. Use the result already provided "
+                    "or change the approach instead of repeating it unchanged."
                 ),
                 tool_name=tool_name,
                 count=repeat_count,
@@ -438,11 +393,6 @@ class ToolCallGuardrailController:
             )
 
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
-
-    def _is_idempotent(self, tool_name: str) -> bool:
-        if tool_name in self.config.mutating_tools:
-            return False
-        return tool_name in self.config.idempotent_tools
 
     def _check_loop_cap(
         self,

@@ -1977,12 +1977,11 @@ class APIServerAdapter(BasePlatformAdapter):
           - ``_PROFILE_REJECTED`` for an unknown/unconfigured profile.
           - ``_PROFILE_CONFLICT`` when prefix and header disagree.
         """
-        path_profile = (request.match_info.get("profile") or "").strip()
-        header_profile = (request.headers.get("X-Hermes-Profile") or "").strip()
-        if path_profile and header_profile and path_profile != header_profile:
-            return _PROFILE_CONFLICT
-        profile = path_profile or header_profile
-        if not profile:
+        raw_path_profile = (request.match_info.get("profile") or "").strip()
+        raw_header_profile = (
+            request.headers.get("X-Hermes-Profile") or ""
+        ).strip()
+        if not (raw_path_profile or raw_header_profile):
             return None
         runner = getattr(self, "gateway_runner", None)
         cfg = getattr(runner, "config", None)
@@ -1991,7 +1990,19 @@ class APIServerAdapter(BasePlatformAdapter):
             # the single-profile gateway (don't 404 a would-be valid route).
             return None
         try:
-            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.profiles import normalize_profile_name, profiles_to_serve
+
+            path_profile = (
+                normalize_profile_name(raw_path_profile) if raw_path_profile else ""
+            )
+            header_profile = (
+                normalize_profile_name(raw_header_profile)
+                if raw_header_profile
+                else ""
+            )
+            if path_profile and header_profile and path_profile != header_profile:
+                return _PROFILE_CONFLICT
+            profile = path_profile or header_profile
 
             served = {
                 name

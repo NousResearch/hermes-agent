@@ -90,6 +90,23 @@ class TestApiServerProfileResolution:
             cast(Any, _FakeReq("worker", "reviewer"))
         ) is _PROFILE_CONFLICT
 
+    def test_prefix_and_header_are_compared_after_normalization(self, monkeypatch):
+        adapter = _make_adapter(multiplex=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", "/profiles/default"),
+                ("worker", "/profiles/worker"),
+            ],
+        )
+
+        assert adapter._resolve_request_profile(
+            cast(Any, _FakeReq("worker", "Worker"))
+        ) == "worker"
+        assert adapter._resolve_request_profile(
+            cast(Any, _FakeReq(header_profile="WORKER"))
+        ) == "worker"
+
 
 class TestApiServerRouteTable:
     def test_route_table_includes_models_options_and_chat(self):

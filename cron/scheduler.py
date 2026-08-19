@@ -3865,6 +3865,12 @@ def _build_job_prompt(
                 if not output_files:
                     continue  # silent skip — no output yet
                 latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                # Cron artifacts archive both the assembled prompt and the response.
+                # Chained jobs need the response: truncating the archive from the
+                # front can discard the actual handoff while reinjecting prompt bloat.
+                response_marker = "\n## Response\n"
+                if response_marker in latest_output:
+                    latest_output = latest_output.rsplit(response_marker, 1)[1].strip()
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:

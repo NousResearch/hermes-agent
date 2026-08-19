@@ -257,6 +257,28 @@
       profileHome = name: "${hermesHome}/profiles/${name}";
       runAsProfileUser =
         "${pkgs.util-linux}/bin/runuser -u ${lib.escapeShellArg cfg.user} -g ${lib.escapeShellArg cfg.group} -- ";
+      # `install /dev/stdin` reopens /proc/self/fd/0 after runuser drops
+      # privileges, which fails when root opened a root-only source. Read the
+      # inherited descriptor directly and atomically replace the destination.
+      profileInstallFromStdin = pkgs.writeShellScript "hermes-profile-install-from-stdin" ''
+        set -eu
+
+        mode="$1"
+        destination="$2"
+        destination_dir="$(${pkgs.coreutils}/bin/dirname -- "$destination")"
+        temporary="$(${pkgs.coreutils}/bin/mktemp --tmpdir="$destination_dir" .hermes-install.XXXXXX)"
+
+        cleanup() {
+          ${pkgs.coreutils}/bin/rm -f -- "$temporary"
+        }
+        trap cleanup EXIT
+        trap 'exit 1' HUP INT TERM
+
+        ${pkgs.coreutils}/bin/cat > "$temporary"
+        ${pkgs.coreutils}/bin/chmod "$mode" "$temporary"
+        ${pkgs.coreutils}/bin/mv -fT -- "$temporary" "$destination"
+        trap - EXIT
+      '';
       # Declare the shared parent explicitly. Otherwise tmpfiles creates it as
       # root while its parent is service-owned, then refuses that unsafe owner
       # transition when canonicalizing any profile path on later activations.
@@ -350,7 +372,7 @@
             inherit (profile) environment;
           };
           installFromStdin = mode: destination: source: ''
-            ${runAsUser}${pkgs.coreutils}/bin/install -m ${mode} /dev/stdin ${lib.escapeShellArg destination} < ${source}
+            ${runAsUser}${profileInstallFromStdin} ${mode} ${lib.escapeShellArg destination} < ${source}
           '';
           configSetup = lib.optionalString (profile.configFile != null) (
             installFromStdin configYamlMode "${home}/config.yaml" (lib.escapeShellArg (toString profile.configFile))

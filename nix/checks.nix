@@ -623,6 +623,16 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             coderUnit = units.hermes-agent-coder;
             activation = cfg.system.activationScripts."hermes-agent-setup".text;
             containerActivation = containerCfg.system.activationScripts."hermes-agent-setup".text;
+            stdinInstallerLine = lib.findFirst (
+              line: lib.hasInfix "hermes-profile-install-from-stdin" line
+            ) null (lib.splitString "\n" activation);
+            stdinInstaller =
+              if stdinInstallerLine == null then
+                null
+              else
+                lib.findFirst (
+                  word: lib.hasInfix "hermes-profile-install-from-stdin" word
+                ) null (lib.splitString " " stdinInstallerLine);
 
             failures =
               lib.optional (
@@ -662,13 +672,19 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 !lib.hasInfix "/run/hermes-agent-profile-env.XXXXXX" activation
               ) "activation must stage root-readable profile environment files outside user-writable state"
               ++ lib.optional (
-                !lib.hasInfix "/dev/stdin /var/lib/hermes/.hermes/profiles/coder/.env < \"$_hermes_profile_env\"" activation
+                stdinInstaller == null
+              ) "activation must install root-readable profile sources through inherited stdin"
+              ++ lib.optional (
+                lib.hasInfix "/dev/stdin" activation
+              ) "activation must not reopen inherited stdin after dropping privileges"
+              ++ lib.optional (
+                !lib.hasInfix "0640 /var/lib/hermes/.hermes/profiles/coder/.env < \"$_hermes_profile_env\"" activation
               ) "activation must install the staged profile environment as the unprivileged service user"
               ++ lib.optional (
-                !lib.hasInfix "/dev/stdin /var/lib/hermes/.hermes/profiles/coder/auth.json < /nix/store/" activation
-              ) "activation must install profile auth through stdin as the unprivileged service user"
+                !lib.hasInfix "0600 /var/lib/hermes/.hermes/profiles/coder/auth.json < /nix/store/" activation
+              ) "activation must install profile auth through inherited stdin as the unprivileged service user"
               ++ lib.optional (
-                !lib.hasInfix "/dev/stdin /var/lib/hermes/.hermes/profiles/research/config.yaml < /nix/store/" activation
+                !lib.hasInfix "0640 /var/lib/hermes/.hermes/profiles/research/config.yaml < /nix/store/" activation
               ) "activation must install an external profile config through stdin as the unprivileged service user"
               ++ lib.optional (
                 !lib.hasInfix "/var/lib/hermes/.hermes/profiles/coder/.container-mode" containerActivation
@@ -689,6 +705,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
                 ${pkgs.bash}/bin/bash -n ${pkgs.writeText "hermes-nixos-profiles-activation" activation}
                 ${pkgs.bash}/bin/bash -n ${pkgs.writeText "hermes-nixos-container-profiles-activation" containerActivation}
+                source_file="$TMPDIR/root-only-source"
+                destination="$TMPDIR/installed-source"
+                printf 'inherited descriptor\n' > "$source_file"
+                exec 3<"$source_file"
+                chmod 000 "$source_file"
+                ${stdinInstaller} 0640 "$destination" <&3
+                test "$(cat "$destination")" = "inherited descriptor"
+                test "$(stat -c %a "$destination")" = 640
                 echo "PASS: NixOS declaratively configures independent named profiles"
                 mkdir -p $out
                 echo "ok" > $out/result

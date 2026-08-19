@@ -7,6 +7,8 @@ Must never import hermes_state (cycle); shared constants live in hermes_state_co
 import logging
 import json
 import time
+from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
@@ -77,6 +79,48 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
 
 
 _PROMPT_RESOLVED_SQL = "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved"
+
+
+def _export_timings(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Text-free timing evidence for a session export (port of nearai/ironclaw#7735).
+
+    Exports get attached to bug reports; a reader should not have to infer from raw
+    timestamps whether a slow turn was one long model gap or many small tool
+    intervals. Hermes persists no model/tool stopwatch samples, so message
+    timestamps are the durable floor (``complete`` is therefore always False).
+    Ids, roles, counts and durations only — never prompt text, arguments or results.
+    """
+    timestamped = []
+    for msg in messages:
+        try:
+            timestamped.append((msg, float(msg.get("timestamp"))))
+        except (TypeError, ValueError):
+            continue
+    role_counts = Counter(str(msg.get("role") or "unknown") for msg in messages)
+    tool_calls_emitted = sum(
+        len(tc) if isinstance(tc, list) else 1 for tc in (msg.get("tool_calls") for msg in messages) if tc)
+    intervals = [{
+        "from_message_id": prev.get("id"), "to_message_id": nxt.get("id"),
+        "from_role": prev.get("role"), "to_role": nxt.get("role"),
+        "gap_ms": max(0, int(round((nxt_ts - prev_ts) * 1000))),
+    } for (prev, prev_ts), (nxt, nxt_ts) in zip(timestamped, timestamped[1:])]
+    iso = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()  # noqa: E731
+    first_ts, last_ts = (timestamped[0][1], timestamped[-1][1]) if timestamped else (None, None)
+    return {
+        "source": "message_timestamps",
+        "available": bool(timestamped),
+        "complete": False,
+        "unavailable_reason": None if timestamped else "no_timestamped_messages",
+        "message_timestamps": {"available": len(timestamped), "missing": len(messages) - len(timestamped)},
+        "first_message_at": iso(first_ts) if first_ts is not None else None,
+        "last_message_at": iso(last_ts) if last_ts is not None else None,
+        "wall_clock_ms": max(0, int(round((last_ts - first_ts) * 1000))) if timestamped else None,
+        "largest_gap_ms": max(i["gap_ms"] for i in intervals) if intervals else None,
+        "role_counts": dict(role_counts),
+        "tool_result_count": role_counts.get("tool", 0),
+        "tool_calls_emitted": tool_calls_emitted,
+        "intervals": intervals,
+    }
 
 
 class SessionPortabilityMixin:
@@ -235,7 +279,8 @@ class SessionPortabilityMixin:
     # ── Export ─────────────────────────────────────────────────────────────
 
     def _with_messages(self, session: Dict[str, Any]) -> Dict[str, Any]:
-        return {**session, "messages": self.get_messages(session["id"])}
+        messages = self.get_messages(session["id"])
+        return {**session, "messages": messages, "timings": _export_timings(messages)}
 
     def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
@@ -274,7 +319,8 @@ class SessionPortabilityMixin:
                 messages_by_session[row["session_id"]].append(
                     self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True)
                 )
-        return [{**session, "messages": messages_by_session[session["id"]]} for session in sessions]
+        return [{**session, "messages": messages_by_session[session["id"]],
+                 "timings": _export_timings(messages_by_session[session["id"]])} for session in sessions]
 
     def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> Dict[str, Any]:
         """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session

@@ -20,10 +20,17 @@ from tools.skills_guard import (
 
 PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
 
-# Never scanned: VCS internals, caches, vendored envs.
+# Never scanned: VCS internals, caches, vendored envs. Test trees hold adversarial
+# fixtures on purpose — a test asserting the trust boundary holds round-trips the
+# injection string verbatim, it is not an attack payload. Any single critical makes
+# the verdict `dangerous`, which --force explicitly cannot override, so scanning
+# tests made security-conscious plugins unconditionally uninstallable and taught
+# authors to obfuscate the very strings their tests need (#89610).
 EXCLUDED_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox"}
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+    "tests", "test", "testing", "spec", "specs", "fixtures",
+}
 
 # Code files, where "reads an env secret" / "HTTP call with a key" is normal (requires_env).
 CODE_FILE_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".bash", ".rb", ".pl", ".php"}

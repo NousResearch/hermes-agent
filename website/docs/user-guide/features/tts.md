@@ -347,6 +347,7 @@ Use `{{` and `}}` for literal braces.
 | `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
 | `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
+| `skip_markdown_strip` | `false` | When `true`, the input text is passed to the command verbatim (Markdown left intact). For providers that consume raw markup themselves, e.g. SSML or Markdown-aware engines; with the default `false`, Markdown formatting is stripped so it isn't read aloud. |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
 
 #### Behavior notes

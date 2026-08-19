@@ -5,6 +5,7 @@ import time
 import json
 import threading
 from pathlib import Path
+import sys
 from unittest import mock
 
 import pytest
@@ -630,6 +631,190 @@ class TestMessageStorage:
         assert conv[0]["content"] == "Visible answer"
         assert isinstance(conv[0].get("timestamp"), float)
 
+    def test_get_messages_preserves_unmatched_inline_memory_context_suffix(self, db):
+        """Transcript views must not truncate ordinary inline tag prose."""
+        db.create_session(session_id="s-inline", source="cli")
+        db.append_message(
+            "s-inline",
+            role="user",
+            content="Explain <memory-context> to me",
+        )
+
+        conv = db.get_messages_as_conversation("s-inline")
+
+        assert conv[0]["content"] == "Explain  to me"
+
+    def test_get_messages_fails_closed_for_sentence_shaped_close_reopen(self, db):
+        db.create_session(session_id="s-close-reopen", source="cli")
+        db.append_message(
+            "s-close-reopen",
+            role="user",
+            content=(
+                "Visible </memory-context>INJECTED<memory-context>"
+                " PRIVATE SESSION payload leaked."
+            ),
+        )
+
+        conv = db.get_messages_as_conversation("s-close-reopen")
+
+        assert conv[0]["content"] == "Visible"
+        assert "INJECTED" not in conv[0]["content"]
+        assert "PRIVATE" not in conv[0]["content"]
+
+    def test_get_messages_fails_closed_for_close_reopen_beyond_inline_cap(self, db):
+        db.create_session(session_id="s-close-reopen-cap", source="cli")
+        db.append_message(
+            "s-close-reopen-cap",
+            role="user",
+            content=(
+                "Visible </memory-context>PRIVATE_SESSION_CAP"
+                + ("x" * 513)
+                + "<memory-context>hidden</memory-context> tail"
+            ),
+        )
+
+        conv = db.get_messages_as_conversation("s-close-reopen-cap")
+
+        assert conv[0]["content"] == "Visible  tail"
+        assert "PRIVATE_SESSION_CAP" not in conv[0]["content"]
+
+    def test_get_messages_fails_closed_for_unmatched_assistant_context(self, db):
+        """Persisted provider output must not expose an unterminated fence."""
+        db.create_session(session_id="s-assistant-fence", source="cli")
+        db.append_message(
+            "s-assistant-fence",
+            role="assistant",
+            content="Answer <memory-context>PRIVATE_ASSISTANT_CONTEXT",
+        )
+
+        conv = db.get_messages_as_conversation("s-assistant-fence")
+
+        assert conv[0]["content"] == "Answer"
+        assert "PRIVATE_ASSISTANT_CONTEXT" not in conv[0]["content"]
+
+    @pytest.mark.parametrize("role", ["tool", "custom"])
+    def test_get_messages_fences_string_content_for_fallback_roles(self, db, role):
+        """Provider/tool strings cannot bypass transcript fencing by role."""
+        db.create_session(session_id=f"s-{role}-fence", source="cli")
+        kwargs = {"tool_call_id": "call-1"} if role == "tool" else {}
+        db.append_message(
+            f"s-{role}-fence",
+            role=role,
+            content=(
+                "Visible <memory-context>PRIVATE_TOOL_CONTEXT"
+                "</memory-context> suffix"
+            ),
+            **kwargs,
+        )
+
+        conv = db.get_messages_as_conversation(f"s-{role}-fence")
+
+        assert conv[0]["content"] == "Visible  suffix"
+        assert "PRIVATE_TOOL_CONTEXT" not in conv[0]["content"]
+
+    @pytest.mark.parametrize("role", ["system", "developer", "custom-extension"])
+    def test_provider_sidecar_replays_extension_role_after_display_fence(
+        self, db, role
+    ):
+        """Display fencing must not destroy exact wire bytes for any role."""
+        from agent.turn_context import substitute_api_content
+
+        raw = "Policy docs: <memory-context> means a literal tag; keep this suffix."
+        session_id = f"s-{role}-sidecar"
+        db.create_session(session_id=session_id, source="cli")
+        db.append_message(
+            session_id,
+            role=role,
+            content=raw,
+            api_content=raw,
+        )
+
+        display = db.get_messages_as_conversation(session_id)[0]
+        replay = db.get_messages_as_conversation(
+            session_id, repair_alternation=True
+        )[0]
+        assert "keep this suffix" not in display["content"]
+        assert replay["api_content"] == raw
+
+        outbound = dict(replay)
+        substitute_api_content(outbound)
+        assert outbound["content"] == raw
+
+    @pytest.mark.parametrize(
+        ("role", "content"),
+        [
+            ("tool", "  line 1\n    line 2\n"),
+            ("custom", "\tcustom\n"),
+        ],
+    )
+    def test_get_messages_preserves_fallback_role_outer_whitespace(
+        self, db, role, content
+    ):
+        db.create_session(session_id=f"s-{role}-whitespace", source="cli")
+        kwargs = {"tool_call_id": "call-1"} if role == "tool" else {}
+        db.append_message(
+            f"s-{role}-whitespace",
+            role=role,
+            content=content,
+            **kwargs,
+        )
+
+        conv = db.get_messages_as_conversation(f"s-{role}-whitespace")
+
+        assert conv[0]["content"] == content
+
+    def test_get_messages_preserves_structured_fallback_role_content(self, db):
+        """Only string projections are fenced; structured tool data stays raw."""
+        structured = [
+            "raw",
+            {"text": "<memory-context>PRIVATE_STRUCTURED</memory-context>"},
+        ]
+        db.create_session(session_id="s-tool-structured", source="cli")
+        db.append_message(
+            "s-tool-structured",
+            role="tool",
+            content=structured,
+            tool_call_id="call-1",
+        )
+
+        conv = db.get_messages_as_conversation("s-tool-structured")
+
+        # Default conversation reads are human-facing display projections, so
+        # structured provider strings are fenced recursively. Model replay opts
+        # into the raw projection and preserves the exact structured bytes.
+        assert conv[0]["content"] == ["raw", {"text": ""}]
+        replay = db.get_messages_as_conversation(
+            "s-tool-structured", display_projection=False
+        )
+        assert replay[0]["content"] == structured
+
+    def test_tool_call_arguments_are_fenced_only_in_display_projection(self, db):
+        private = "<memory-context>PRIVATE_DB_TOOL_ARGS</memory-context>"
+        tool_calls = [
+            {
+                "id": "call-display",
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "arguments": '{"note": "' + private + '"}',
+                },
+            }
+        ]
+        db.create_session(session_id="s-tool-call-display", source="cli")
+        db.append_message(
+            "s-tool-call-display",
+            role="assistant",
+            content="visible answer",
+            tool_calls=tool_calls,
+        )
+
+        display = db.get_messages_as_conversation("s-tool-call-display")[0]
+        replay = db.get_messages_as_conversation(
+            "s-tool-call-display", display_projection=False
+        )[0]
+        assert "PRIVATE_DB_TOOL_ARGS" not in repr(display["tool_calls"])
+        assert "PRIVATE_DB_TOOL_ARGS" in repr(replay["tool_calls"])
+
     def test_reasoning_persisted_and_restored(self, db):
         """Reasoning text is stored for assistant messages and restored by
         get_messages_as_conversation() so providers receive coherent multi-turn
@@ -654,6 +839,80 @@ class TestMessageStorage:
         # user and tool messages must NOT carry reasoning
         assert "reasoning" not in conv[0]
         assert "reasoning" not in conv[2]
+
+    def test_reasoning_context_is_fenced_only_in_display_projection(self, db):
+        """Provider replay stays raw while human resume views hide recall context."""
+        private = "<memory-context>\nPRIVATE_REASONING_81312\n</memory-context>"
+        nested = {"summary": private, "items": ["visible", private]}
+        db.create_session(session_id="s-reasoning-projection", source="telegram")
+        db.append_message(
+            "s-reasoning-projection",
+            role="assistant",
+            content="visible answer",
+            reasoning=private,
+            reasoning_content=private,
+            reasoning_details=nested,
+        )
+
+        model_history, display_history = db.get_resume_conversations(
+            "s-reasoning-projection"
+        )
+        default_display = db.get_messages_as_conversation(
+            "s-reasoning-projection"
+        )[0]
+        direct_model_replay = db.get_messages_as_conversation(
+            "s-reasoning-projection", repair_alternation=True
+        )[0]
+
+        model = model_history[0]
+        display = display_history[0]
+        assert model["reasoning"] == private
+        assert model["reasoning_content"] == private
+        assert model["reasoning_details"] == nested
+        assert direct_model_replay["reasoning"] == private
+        assert default_display["reasoning"] == ""
+        assert "PRIVATE_REASONING_81312" not in display["reasoning"]
+        assert "PRIVATE_REASONING_81312" not in display["reasoning_content"]
+        assert "PRIVATE_REASONING_81312" not in json.dumps(
+            display["reasoning_details"]
+        )
+
+    @pytest.mark.parametrize(
+        "field", ["reasoning_details", "codex_reasoning_items"]
+    )
+    def test_deep_reasoning_metadata_degrades_only_display_projection(
+        self, db, field
+    ):
+        """Malformed provider nesting cannot crash a human-facing restore."""
+        depth = 900
+        raw = "[" * depth + '"leaf"' + "]" * depth
+        db.create_session(session_id=f"s-deep-{field}", source="telegram")
+        db.append_message(
+            f"s-deep-{field}", role="assistant", content="visible answer"
+        )
+        db._conn.execute(
+            f"UPDATE messages SET {field} = ? WHERE session_id = ?",
+            (raw, f"s-deep-{field}"),
+        )
+        db._conn.commit()
+
+        replay = db.get_messages_as_conversation(
+            f"s-deep-{field}", repair_alternation=True
+        )[0]
+        replay_leaf = replay[field]
+        for _ in range(depth):
+            replay_leaf = replay_leaf[0]
+        previous_limit = sys.getrecursionlimit()
+        try:
+            # Keep replay comfortably below the normal interpreter limit, then
+            # explicitly exercise the display fail-soft path at a lower limit.
+            sys.setrecursionlimit(256)
+            display = db.get_messages_as_conversation(f"s-deep-{field}")[0]
+        finally:
+            sys.setrecursionlimit(previous_limit)
+
+        assert replay_leaf == "leaf"
+        assert display[field] is None
 
 
 

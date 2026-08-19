@@ -2220,11 +2220,12 @@ class AIAgent:
                 if _row_api_content == content:
                     _row_api_content = None
                 # Load-time sanitize divergence: get_messages_as_conversation
-                # replays user/assistant rows through
-                # ``sanitize_context(content).strip()``, so content that
-                # sanitize would rewrite (echoed/pasted <memory-context>
-                # fences or system notes) replays different bytes after a
-                # session reload even though THIS turn sent it verbatim.
+                # replays every string row through a transcript sanitizer, so
+                # content that sanitize would rewrite (echoed/pasted
+                # <memory-context> fences or system notes) replays different
+                # bytes after a session reload even though THIS turn sent it
+                # verbatim. This includes tool and extension-defined roles,
+                # whose string projections use the strict assistant fence.
                 # Capture the sent bytes in the sidecar so a reloaded session
                 # replays what was actually on the wire. Compared in wire form
                 # (both sides .strip()-ed — the api_messages build strips
@@ -2232,7 +2233,6 @@ class AIAgent:
                 # whitespace doesn't grow redundant sidecars.
                 if (
                     _row_api_content is None
-                    and role in ("user", "assistant")
                     and isinstance(content, str)
                     and content
                     and sanitize_context(content).strip() != content.strip()
@@ -6921,6 +6921,34 @@ class AIAgent:
             logger.debug("on_stream_delta plugin hook enqueue failed", exc_info=True)
         if delivered:
             self._record_streamed_assistant_text(text)
+
+    def _fire_tool_suppressed_stream_delta(self, text: str) -> None:
+        """Fence tool-adjacent content for the display sink.
+
+        Chat-completions providers sometimes emit content in the same response
+        as tool calls.  That lane intentionally bypasses the normal think-tag
+        scrubber so gateway/CLI consumers can extract reasoning tags, but it
+        must still share the memory-context scrubber before display. TTS is
+        deliberately not fed here because this content is tool scaffolding,
+        not spoken answer text.
+        """
+        if self._stream_writer_superseded():
+            self._note_dropped_stream_writer("_fire_tool_suppressed_stream_delta")
+            return
+        if not isinstance(text, str) or not text:
+            return
+        scrubber = getattr(self, "_stream_context_scrubber", None)
+        if scrubber is not None:
+            text = scrubber.feed(text)
+        else:
+            text = sanitize_context(text)
+        if not text or self.stream_delta_callback is None:
+            return
+        try:
+            self.stream_delta_callback(text)
+        except Exception:
+            return
+        self._record_streamed_assistant_text(text)
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""

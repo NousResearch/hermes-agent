@@ -854,7 +854,8 @@ class TestMemoryContextFencing:
         assert "</memory-context>" not in result
         assert "<memory-context>" not in result
         assert "fact one" in result
-        assert "fact two" in result
+        assert "fact two" not in result
+        assert "INJECTED" not in result
 
     def test_sanitize_context_case_insensitive(self):
         from agent.memory_manager import sanitize_context

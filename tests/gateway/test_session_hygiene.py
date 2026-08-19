@@ -1196,3 +1196,57 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
         assert escalated["remaining_seconds"] == pytest.approx(900, abs=5)
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notice_kind", ["abort", "aux_fallback"])
+async def test_hygiene_compression_notices_fence_provider_exception_details(
+    monkeypatch, tmp_path, notice_kind
+):
+    from hermes_state import SessionDB
+
+    private = f"PRIVATE_SENTINEL_81312_HYGIENE_{notice_kind.upper()}"
+    session_id = f"sess-81312-hygiene-{notice_kind}"
+    db = SessionDB(db_path=tmp_path / f"{notice_kind}.db")
+    db.create_session(session_id, "telegram")
+
+    class CompressionAgent:
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id", session_id)
+            self._session_db = kwargs.get("session_db")
+            self._last_compaction_in_place = True
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=notice_kind == "abort",
+                _last_summary_error=(
+                    f"<memory-context>\n{private}\n</memory-context>"
+                    if notice_kind == "abort"
+                    else None
+                ),
+                _last_aux_model_failure_model=(
+                    "broken-model" if notice_kind == "aux_fallback" else None
+                ),
+                _last_aux_model_failure_error=(
+                    f"<memory-context>\n{private}\n</memory-context>"
+                    if notice_kind == "aux_fallback"
+                    else None
+                ),
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            return (messages, None)
+
+    try:
+        runner, adapter, event = _make_cooldown_runner(
+            monkeypatch, tmp_path, CompressionAgent, db, session_id
+        )
+        assert await runner._handle_message(event) == "ok"
+
+        notices = [call["content"] for call in adapter.sent]
+        assert all(private not in notice for notice in notices)
+        assert all("memory-context" not in notice for notice in notices)
+        assert any("provider error" in notice for notice in notices)
+    finally:
+        db.close()

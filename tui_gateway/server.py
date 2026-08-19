@@ -23,6 +23,11 @@ from agent.secret_scope import (
     reset_secret_scope,
     set_secret_scope,
 )
+from agent.memory_manager import (
+    StreamingContextScrubber,
+    sanitize_context,
+    sanitize_context_for_transcript,
+)
 from hermes_constants import (
     DEFAULT_INDICATOR_STYLE,
     INDICATOR_STYLES,
@@ -158,6 +163,8 @@ _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
+_display_scrubbers: dict[str, dict[str, StreamingContextScrubber]] = {}
+_display_scrubbers_lock = threading.Lock()
 _session_resume_lock = threading.Lock()
 try:
     _slash_timeout = float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S") or "45")
@@ -1850,7 +1857,9 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
     if is_error:
-        message = str(frame.get("message") or "compute host turn failed")
+        message = sanitize_context(
+            str(frame.get("message") or "compute host turn failed")
+        ) or "compute host turn failed"
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
     _apply_compute_host_metadata_mirror(session, frame)
     try:
@@ -1992,6 +2001,9 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
 
 def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
+    if not body:
+        return
+    body = sanitize_context(body).strip()
     if not body:
         return
     out_kind = kind if text is not None else "status"
@@ -2244,7 +2256,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
             return _err(
                 rid,
                 5032,
-                session.get("agent_error")
+                sanitize_context(str(session.get("agent_error") or ""))
                 or "agent initialization failed before completing",
             )
         if not notified_slow and waited >= _AGENT_BUILD_SLOW_NOTICE_AFTER:
@@ -2270,7 +2282,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
             )
     if notified_slow:
         _emit("notification.clear", sid, {"key": _AGENT_BUILD_SLOW_NOTICE_KEY})
-    err = session.get("agent_error")
+    err = sanitize_context(str(session.get("agent_error") or ""))
     return _err(rid, 5032, err) if err else None
 
 
@@ -2438,7 +2450,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # review summaries would leak to stdout instead of the chat.
             try:
                 agent.background_review_callback = lambda message, _sid=sid: _emit(
-                    "review.summary", _sid, {"text": str(message)}
+                    "review.summary", _sid, {"text": sanitize_context(str(message))}
                 )
                 agent.memory_notifications = _load_memory_notifications()
             except Exception:
@@ -2470,7 +2482,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _schedule_mcp_late_refresh(sid, agent)
         except Exception as e:
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
+            _emit(
+                "error",
+                sid,
+                {"message": f"agent init failed: {sanitize_context(str(e))}"},
+            )
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
@@ -3588,8 +3604,17 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
         wire = [
             {
                 "qid": entry["qid"],
-                "question": entry["question"],
-                "choices": entry["choices"],
+                "question": sanitize_context(str(entry.get("question") or "")).strip()
+                or "[details withheld]",
+                "choices": (
+                    [
+                        sanitize_context(str(choice or "")).strip()
+                        or "[details withheld]"
+                        for choice in entry.get("choices")
+                    ]
+                    if entry.get("choices") is not None
+                    else None
+                ),
                 "multi_select": bool(entry["multi_select"]),
             }
             for entry in questions
@@ -3601,20 +3626,14 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
             timeout=_clarify_timeout_seconds(),
             batch_qids=[entry["qid"] for entry in questions],
         )
-    # multi_select is a pass-through hint: renderers with checkbox
-    # support can honor it; older renderers ignore the extra field
-    # and stay single-select (a single answer still parses as a
-    # one-element list on the tool side). Only emitted when True so
-    # single-select payloads keep the exact pre-multi-select shape.
-    return _block(
-        "clarify.request",
+    # Single-question calls use the security fence shared with the historical
+    # bridge. The helper preserves the exact payload shape for older renderers
+    # while omitting fully fenced prompts instead of rendering provider text.
+    return _request_tui_clarify(
         sid,
-        (
-            {"question": q, "choices": c, "multi_select": True}
-            if multi_select
-            else {"question": q, "choices": c}
-        ),
-        timeout=_clarify_timeout_seconds(),
+        q,
+        c,
+        multi_select=multi_select,
     )
 
 
@@ -5216,7 +5235,12 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         _emit(
             "error",
             sid,
-            {"message": f"Could not switch to configured model {model}: {e}"},
+            {
+                "message": (
+                    f"Could not switch to configured model {model}: "
+                    f"{sanitize_context(str(e))}"
+                )
+            },
         )
 
 
@@ -5254,7 +5278,7 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
         _emit(
             "error",
             sid,
-            {"message": f"Could not switch model: {e}"},
+            {"message": f"Could not switch model: {sanitize_context(str(e))}"},
         )
 
 
@@ -5829,8 +5853,43 @@ def _tool_ctx(name: str, args: dict) -> str:
     try:
         from agent.display import build_tool_preview
 
-        return build_tool_preview(name, args, max_len=80) or ""
+        display_args = _sanitize_tool_display_value(args)
+        return build_tool_preview(name, display_args, max_len=80) or ""
     except Exception:
+        return ""
+
+
+def _sanitize_tool_display_value(value: Any) -> Any:
+    """Return a recursively fenced copy of provider-generated tool arguments."""
+    try:
+        if isinstance(value, str):
+            return sanitize_context(value)
+        if isinstance(value, dict):
+            safe: dict[Any, Any] = {}
+            next_suffix: dict[str, int] = {}
+            for key, item in value.items():
+                safe_key = _sanitize_tool_display_value(key)
+                try:
+                    hash(safe_key)
+                except TypeError:
+                    safe_key = str(safe_key)
+                if safe_key in safe:
+                    base = str(safe_key)
+                    suffix = next_suffix.get(base, 2)
+                    candidate = f"{base}#{suffix}"
+                    while candidate in safe:
+                        suffix += 1
+                        candidate = f"{base}#{suffix}"
+                    next_suffix[base] = suffix + 1
+                    safe_key = candidate
+                safe[safe_key] = _sanitize_tool_display_value(item)
+            return safe
+        if isinstance(value, list):
+            return [_sanitize_tool_display_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(_sanitize_tool_display_value(item) for item in value)
+        return value
+    except RecursionError:
         return ""
 
 
@@ -5917,9 +5976,10 @@ def _redact_tui_verbose_text(text: str) -> str:
 
 def _tool_args_text(args: dict) -> str:
     try:
-        raw = json.dumps(args or {}, indent=2, ensure_ascii=False, default=str)
+        display_args = _sanitize_tool_display_value(args or {})
+        raw = json.dumps(display_args, indent=2, ensure_ascii=False, default=str)
     except Exception:
-        raw = str(args or {})
+        return ""
     return _redact_tui_verbose_text(raw)
 
 
@@ -5930,7 +5990,7 @@ def _tool_result_text(result: object) -> str:
         raw = _multimodal_text_summary(result)
     except Exception:
         raw = str(result)
-    return _redact_tui_verbose_text(raw)
+    return _redact_tui_verbose_text(sanitize_context(str(raw or "")))
 
 
 def _fmt_tool_duration(seconds: float | None) -> str:
@@ -6005,7 +6065,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         # tool.start ships them too, the expanded row is complete while the
         # tool runs, at the cost of one duplicate transient payload per call.
         if args:
-            payload["args"] = args
+            payload["args"] = _sanitize_tool_display_value(args)
         if _session_verbose(sid):
             args_text = _tool_args_text(args)
             if args_text:
@@ -6016,7 +6076,13 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
-    payload = {"tool_id": tool_call_id, "name": name, "args": args}
+    # Keep execution arguments raw for the edit-diff renderer below, but send
+    # only a recursively fenced presentation copy to the TUI event stream.
+    payload = {
+        "tool_id": tool_call_id,
+        "name": name,
+        "args": _sanitize_tool_display_value(args),
+    }
     session = _sessions.get(sid)
     snapshot = None
     started_at = None
@@ -6027,21 +6093,21 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if duration_s is not None:
         payload["duration_s"] = duration_s
     try:
-        payload["result"] = json.loads(result)
+        payload["result"] = _sanitize_tool_display_value(json.loads(result))
     except Exception:
-        payload["result"] = result
+        payload["result"] = sanitize_context(str(result or ""))
     summary = _tool_summary(name, result, duration_s)
     if summary:
-        payload["summary"] = summary
+        payload["summary"] = sanitize_context(summary)
     if _session_verbose(sid):
-        result_text = _tool_result_text(result)
+        result_text = sanitize_context(_tool_result_text(result))
         if result_text:
             payload["result_text"] = result_text
     if name == "todo":
         try:
             data = json.loads(result)
             if isinstance(data, dict) and isinstance(data.get("todos"), list):
-                payload["todos"] = data.get("todos")
+                payload["todos"] = _sanitize_tool_display_value(data.get("todos"))
         except Exception:
             pass
     try:
@@ -6055,11 +6121,52 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             snapshot=snapshot,
             print_fn=rendered.append,
         ):
-            payload["inline_diff"] = "\n".join(rendered)
+            payload["inline_diff"] = sanitize_context("\n".join(rendered))
     except Exception:
         pass
     if _tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name):
         _emit("tool.complete", sid, payload)
+
+
+def _tui_subagent_stream_key(event_type: str, payload: dict) -> str:
+    """Return a turn-local key for one child's streamed presentation text."""
+    identity = (
+        payload.get("child_session_id")
+        or payload.get("subagent_id")
+        or f"task:{payload.get('task_index', 0)}"
+    )
+    return f"{event_type}:{identity}"
+
+
+def _feed_tui_subagent_display_delta(
+    sid: str,
+    event_type: str,
+    payload: dict,
+    text: object,
+) -> str:
+    """Fence a parent-side child stream without sharing the mirror parser."""
+    key = _tui_subagent_stream_key(event_type, payload)
+    try:
+        with _display_scrubbers_lock:
+            scrubbers = _display_scrubbers.setdefault(sid, {})
+            scrubber = scrubbers.setdefault(key, StreamingContextScrubber())
+            return scrubber.feed(str(text or ""))
+    except Exception:
+        # Presentation is fail closed and a corrupt stream cannot poison later
+        # deltas from the same delegated child.
+        with _display_scrubbers_lock:
+            _display_scrubbers.setdefault(sid, {})[key] = StreamingContextScrubber()
+        return ""
+
+
+def _discard_tui_subagent_display_state(sid: str, payload: dict) -> None:
+    """Retire parser state when one delegated child finishes."""
+    with _display_scrubbers_lock:
+        scrubbers = _display_scrubbers.get(sid)
+        if scrubbers is None:
+            return
+        for event_type in ("subagent.text", "subagent.thinking"):
+            scrubbers.pop(_tui_subagent_stream_key(event_type, payload), None)
 
 
 def _on_tool_progress(
@@ -6085,13 +6192,15 @@ def _on_tool_progress(
             "tool_id": str(_kwargs.get("tool_call_id") or ""),
             "name": str(name),
             "risk": str(metadata.get("risk") or "low"),
-            "findings": [str(item) for item in metadata.get("findings", [])],
+            "findings": [
+                sanitize_context(str(item)) for item in metadata.get("findings", [])
+            ],
             "redacted": bool(metadata.get("redacted", False)),
         }
         _emit("tool.output_risk", sid, payload)
         return
     if event_type == "reasoning.available" and preview:
-        payload: dict[str, object] = {"text": str(preview)}
+        payload: dict[str, object] = {"text": sanitize_context(str(preview))}
         if _session_verbose(sid):
             payload["verbose"] = True
         _emit("reasoning.available", sid, payload)
@@ -6103,7 +6212,7 @@ def _on_tool_progress(
         # `preview` is the reference text.
         ref_payload: dict[str, object] = {
             "label": str(name),
-            "text": str(preview or ""),
+            "text": sanitize_context(str(preview or "")),
         }
         if _kwargs.get("moa_index") is not None:
             ref_payload["index"] = _kwargs.get("moa_index")
@@ -6153,7 +6262,7 @@ def _on_tool_progress(
         return
     if event_type.startswith("subagent."):
         payload = {
-            "goal": str(_kwargs.get("goal") or ""),
+            "goal": sanitize_context(str(_kwargs.get("goal") or "")),
             "task_count": int(_kwargs.get("task_count") or 1),
             "task_index": int(_kwargs.get("task_index") or 0),
         }
@@ -6191,20 +6300,30 @@ def _on_tool_progress(
         if _kwargs.get("files_written"):
             payload["files_written"] = [str(p) for p in _kwargs["files_written"]]
         if _kwargs.get("output_tail"):
-            payload["output_tail"] = list(_kwargs["output_tail"])  # list of dicts
+            payload["output_tail"] = _sanitize_tool_display_value(
+                list(_kwargs["output_tail"])
+            )  # list of dicts
         if name:
             payload["tool_name"] = str(name)
+        raw_stream_text = str(preview) if preview is not None else None
         if preview:
-            payload["text"] = str(preview)
+            if event_type == "subagent.thinking":
+                visible = _feed_tui_subagent_display_delta(
+                    sid, event_type, payload, raw_stream_text
+                )
+                if visible:
+                    payload["text"] = visible
+            elif event_type != "subagent.text":
+                payload["text"] = sanitize_context(raw_stream_text)
         if _kwargs.get("status"):
-            payload["status"] = str(_kwargs["status"])
+            payload["status"] = sanitize_context(str(_kwargs["status"]))
         if _kwargs.get("summary"):
-            payload["summary"] = str(_kwargs["summary"])
+            payload["summary"] = sanitize_context(str(_kwargs["summary"]))
         if _kwargs.get("duration_seconds") is not None:
             payload["duration_seconds"] = float(_kwargs["duration_seconds"])
         if preview and event_type == "subagent.tool":
-            payload["tool_preview"] = str(preview)
-            payload["text"] = str(preview)
+            payload["tool_preview"] = sanitize_context(str(preview))
+            payload["text"] = sanitize_context(str(preview))
         # subagent.text is the child's per-token reply, relayed solely to feed a
         # watch window's live mirror. It is meaningless on the parent session
         # (which shows the child via the spawn tree, not its reply body), so
@@ -6213,7 +6332,17 @@ def _on_tool_progress(
         # catch-all. The mirror keys off the child sid and is unaffected.
         if event_type != "subagent.text":
             _emit(event_type, sid, payload)
-        _mirror_subagent_to_child(event_type, payload)
+        _mirror_subagent_to_child(
+            event_type,
+            payload,
+            (
+                raw_stream_text
+                if event_type in {"subagent.text", "subagent.thinking"}
+                else None
+            ),
+        )
+        if event_type == "subagent.complete":
+            _discard_tui_subagent_display_state(sid, payload)
 
 
 # ── Child-session live mirror ────────────────────────────────────────
@@ -6243,7 +6372,11 @@ def _child_run_active(child_key: str) -> bool:
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
-def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
+def _mirror_subagent_to_child(
+    event_type: str,
+    payload: dict,
+    raw_stream_text: str | None = None,
+) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
@@ -6270,18 +6403,30 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             st["started"] = True
             _emit("message.start", csid)
         if event_type == "subagent.thinking":
-            if text := str(payload.get("text") or ""):
+            scrubber = st.setdefault("thinking_scrubber", StreamingContextScrubber())
+            stream_text = (
+                raw_stream_text
+                if raw_stream_text is not None
+                else str(payload.get("text") or "")
+            )
+            if text := scrubber.feed(stream_text):
                 _emit("reasoning.delta", csid, {"text": text})
         elif event_type == "subagent.text":
             # The child's streamed reply text — the actual "agent talking".
             # Relayed token-by-token from the child's run_conversation
             # stream_callback, so the watch window streams the reply live.
-            if text := str(payload.get("text") or ""):
+            scrubber = st.setdefault("text_scrubber", StreamingContextScrubber())
+            stream_text = (
+                raw_stream_text
+                if raw_stream_text is not None
+                else str(payload.get("text") or "")
+            )
+            if text := scrubber.feed(stream_text):
                 _emit("message.delta", csid, {"text": text})
         elif event_type == "subagent.start":
             # One-time header line (the child's goal) so a freshly opened window
             # shows immediate context before the first reply token streams.
-            if text := str(payload.get("text") or ""):
+            if text := sanitize_context(str(payload.get("text") or "")):
                 _emit("message.delta", csid, {"text": f"{text}\n"})
         elif event_type == "subagent.tool":
             if st["open_tool"]:
@@ -6292,14 +6437,28 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
                 "tool_id": f"submirror:{child_key}:{st['seq']}",
                 "args": {},
             }
-            if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
+            if preview := sanitize_context(
+                str(payload.get("tool_preview") or payload.get("text") or "")
+            ):
                 tool["preview"] = preview
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
         elif event_type == "subagent.complete":
+            for key, event_name in (
+                ("thinking_scrubber", "reasoning.delta"),
+                ("text_scrubber", "message.delta"),
+            ):
+                scrubber = st.pop(key, None)
+                if scrubber is not None:
+                    with contextlib.suppress(Exception):
+                        tail = scrubber.flush()
+                        if tail:
+                            _emit(event_name, csid, {"text": tail})
             if st["open_tool"]:
                 _emit("tool.complete", csid, st["open_tool"])
-            summary = str(payload.get("summary") or payload.get("text") or "")
+            summary = sanitize_context(
+                str(payload.get("summary") or payload.get("text") or "")
+            )
             _emit("message.complete", csid, {"text": summary})
             _child_mirrors.pop(child_key, None)
 
@@ -6317,14 +6476,14 @@ def _agent_cbs(sid: str) -> dict:
         ),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "thinking_callback": lambda text: _emit_tui_display_stream_delta(
+            sid, "thinking", text
+        ),
         # Affection reaction (ily / <3 / good bot) → hearts. Core-detected, so
         # the TUI heart and desktop floating hearts share one signal.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
-        "reasoning_callback": lambda text: _emit(
-            "reasoning.delta",
-            sid,
-            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+        "reasoning_callback": lambda text: _emit_tui_display_stream_delta(
+            sid, "reasoning", text
         ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
@@ -6336,7 +6495,7 @@ def _agent_cbs(sid: str) -> dict:
             "notification.show",
             sid,
             {
-                "text": n.text,
+                "text": sanitize_context(str(n.text or "")),
                 "level": n.level,
                 "kind": n.kind,
                 "ttl_ms": n.ttl_ms,
@@ -6404,14 +6563,138 @@ def _agent_cbs(sid: str) -> dict:
     # this, and the finally block clears it so a stale closure can't fire.
     if _load_interim_assistant_messages():
         callbacks["interim_assistant_callback"] = (
-            lambda text, *, already_streamed=False: _emit(
-                "message.interim",
+            lambda text, *, already_streamed=False: _emit_tui_interim_assistant(
                 sid,
-                {"text": str(text), "already_streamed": bool(already_streamed)},
+                text,
+                already_streamed=already_streamed,
             )
         )
 
     return callbacks
+
+
+def _request_tui_clarify(
+    sid: str,
+    question: object,
+    choices: list[object] | None,
+    *,
+    multi_select: bool = False,
+) -> str:
+    """Fence provider text in the human-facing clarify presentation only."""
+    safe_question = sanitize_context(str(question or "")).strip()
+    if not safe_question:
+        return "[clarify prompt could not be delivered]"
+
+    safe_choices = None
+    if choices is not None:
+        safe_choices = []
+        for choice in choices:
+            safe_choice = sanitize_context(str(choice)).strip()
+            # Preserve the provider's choice indices after fencing. A removed
+            # choice must remain selectable without exposing its contents.
+            safe_choices.append(safe_choice or "[details withheld]")
+
+    # multi_select is a pass-through hint: renderers with checkbox support can
+    # honor it; older renderers ignore the extra field and stay single-select
+    # (a single answer still parses as a one-element list on the tool side).
+    # Only emit it when true so single-select payloads retain their exact shape.
+    payload = {"question": safe_question, "choices": safe_choices}
+    if multi_select:
+        payload["multi_select"] = True
+    return _block(
+        "clarify.request",
+        sid,
+        payload,
+        timeout=_clarify_timeout_seconds(),
+    )
+
+
+def _reset_tui_display_scrubbers(sid: str) -> None:
+    """Start independent strict reasoning/thinking scrubbers for one turn."""
+    with _display_scrubbers_lock:
+        _display_scrubbers[sid] = {
+            "reasoning": StreamingContextScrubber(),
+            "thinking": StreamingContextScrubber(),
+            "text": StreamingContextScrubber(),
+        }
+
+
+def _feed_tui_display_stream_delta(sid: str, stream: str, text: object) -> str:
+    """Fence one provider delta without losing split-tag parser state."""
+    if stream not in {"reasoning", "thinking", "text"}:
+        return ""
+    try:
+        with _display_scrubbers_lock:
+            scrubbers = _display_scrubbers.setdefault(sid, {})
+            scrubber = scrubbers.setdefault(stream, StreamingContextScrubber())
+            return scrubber.feed(str(text or ""))
+    except Exception:
+        # Presentation fencing is fail closed: replace corrupt parser state and
+        # omit this delta instead of exposing the provider text.
+        with _display_scrubbers_lock:
+            _display_scrubbers.setdefault(sid, {})[stream] = StreamingContextScrubber()
+        return ""
+
+
+def _emit_tui_display_stream_delta(sid: str, stream: str, text: object) -> None:
+    visible = _feed_tui_display_stream_delta(sid, stream, text)
+    if not visible:
+        return
+    event_type = "reasoning.delta" if stream == "reasoning" else "thinking.delta"
+    payload = {"text": visible}
+    if stream == "reasoning" and _session_verbose(sid):
+        payload["verbose"] = True
+    _emit(event_type, sid, payload)
+
+
+def _flush_tui_display_scrubbers(sid: str) -> None:
+    """Flush and retire per-turn display scrubbers at provider EOF."""
+    with _display_scrubbers_lock:
+        scrubbers = _display_scrubbers.pop(sid, {})
+    for stream, scrubber in scrubbers.items():
+        try:
+            visible = scrubber.flush()
+        except Exception:
+            visible = ""
+        if not visible:
+            continue
+        event_type = (
+            "reasoning.delta"
+            if stream == "reasoning"
+            else "thinking.delta"
+            if stream == "thinking"
+            else "message.delta"
+        )
+        payload = {"text": visible}
+        if stream == "reasoning" and _session_verbose(sid):
+            payload["verbose"] = True
+        _emit(event_type, sid, payload)
+
+
+def _discard_tui_display_scrubbers(sid: str) -> None:
+    """Drop unfinished per-turn parser state without emitting provider text."""
+    with _display_scrubbers_lock:
+        _display_scrubbers.pop(sid, None)
+
+
+def _emit_tui_interim_assistant(
+    sid: str,
+    text: object,
+    *,
+    already_streamed: bool = False,
+) -> None:
+    """Emit a strict presentation copy of completed interim assistant text."""
+    try:
+        visible = sanitize_context(str(text or ""))
+    except Exception:
+        return
+    if visible == "":
+        return
+    _emit(
+        "message.interim",
+        sid,
+        {"text": visible, "already_streamed": bool(already_streamed)},
+    )
 
 
 def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
@@ -6788,7 +7071,7 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
     started_at: dict[str, float] = {}
 
     def progress(message: str, level: str = "info") -> None:
-        text = str(message or "").strip()
+        text = sanitize_context(str(message or "")).strip()
         if text:
             _emit("preview.restart.progress", parent, {"task_id": task_id, "level": level, "text": text})
 
@@ -7286,7 +7569,7 @@ def _init_session(
     # this callback the review would write the skill/memory change silently.
     try:
         agent.background_review_callback = lambda message, _sid=sid: _emit(
-            "review.summary", _sid, {"text": str(message)}
+            "review.summary", _sid, {"text": sanitize_context(str(message))}
         )
         # Honor display.memory_notifications (off | on | verbose) like the
         # messaging gateway and CLI do — otherwise the review always behaved as
@@ -7659,9 +7942,14 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         # this projection.
         if m.get("display_kind") == "hidden":
             continue
-        content_text = _coerce_message_text(m.get("content"))
-        if _is_display_hidden_marker(role, content_text):
+        raw_content_text = _coerce_message_text(m.get("content"))
+        if _is_display_hidden_marker(role, raw_content_text):
             continue
+        content_text = (
+            sanitize_context_for_transcript(raw_content_text)
+            if role == "user"
+            else sanitize_context(raw_content_text)
+        )
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn = tc.get("function", {})
@@ -7686,7 +7974,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             # rebuilds it from args. When only the preview shipped, that
             # truncation was permanent.
             if args:
-                tool_msg["args"] = args
+                tool_msg["args"] = _sanitize_tool_display_value(args)
             messages.append(tool_msg)
             continue
         # An assistant turn may carry only reasoning/thinking content with no
@@ -7731,7 +8019,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if role == "assistant":
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
-                    msg[key] = m.get(key)
+                    msg[key] = _sanitize_tool_display_value(m.get(key))
         # Forward display-only timeline metadata so the TUI can render
         # model switches and delegation completions as events instead of
         # opaque user messages, and hide compaction handoffs entirely.
@@ -8409,10 +8697,17 @@ def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
         return None
-    user = str(turn.get("user") or "").strip()
-    assistant = str(turn.get("assistant") or "")
+    # Keep the raw turn in ``session`` for model recovery, but never expose
+    # provider-derived assistant/error text through reconnect snapshots.
+    # User-authored text uses the lenient transcript fence so documentation
+    # mentions remain readable; model-facing fields use the strict fence.
+    user = sanitize_context_for_transcript(str(turn.get("user") or "")).strip()
+    assistant = sanitize_context(str(turn.get("assistant") or ""))
     streaming = bool(turn.get("streaming"))
-    error = str(turn.get("error") or "").strip()
+    raw_error = str(turn.get("error") or "").strip()
+    error = sanitize_context(raw_error).strip()
+    if raw_error and not error:
+        error = "turn failed"
     if not user and not assistant and not streaming and not error:
         return None
     snapshot = {
@@ -8423,9 +8718,12 @@ def _inflight_snapshot(session: dict) -> dict | None:
     raw_corrections = turn.get("corrections") or []
     raw_offsets = turn.get("correction_offsets") or []
     correction_pairs = [
-        (str(c), raw_offsets[i] if i < len(raw_offsets) else None)
+        (
+            sanitize_context_for_transcript(str(c)).strip(),
+            raw_offsets[i] if i < len(raw_offsets) else None,
+        )
         for i, c in enumerate(raw_corrections)
-        if str(c).strip()
+        if sanitize_context_for_transcript(str(c)).strip()
     ]
     if correction_pairs:
         # Mid-turn redirects. Carried alongside the original prompt (not over
@@ -8462,7 +8760,10 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
         message = str(turn.get("error") or "turn failed")
         partial = str(turn.get("assistant") or "")
         cols = int(session.get("cols", 80))
-    text = partial or f"Error: {message}"
+    message = sanitize_context(message) or "turn failed"
+    text = sanitize_context(partial)
+    if not text:
+        text = f"Error: {message}"
     agent = session.get("agent")
     payload = {
         "text": text,
@@ -8510,7 +8811,7 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
     queued = session.get("queued_prompt")
     if not isinstance(queued, dict):
         return None
-    user = _inflight_text(queued.get("text"))
+    user = sanitize_context_for_transcript(_inflight_text(queued.get("text"))).strip()
     return {"user": user} if user else None
 
 
@@ -8721,18 +9022,26 @@ def _session_live_status(sid: str, session: dict) -> str:
 
 def _message_preview(history: list) -> str:
     for msg in reversed(history or []):
-        text = _content_display_text(msg.get("content", msg.get("text", ""))).strip()
+        raw = _content_display_text(msg.get("content", msg.get("text", "")))
+        role = msg.get("role") if isinstance(msg, dict) else None
+        text = (
+            sanitize_context_for_transcript(raw)
+            if role == "user"
+            else sanitize_context(raw)
+        ).strip()
         if text:
             return " ".join(text.split())[:160]
     return ""
 
 
 def _session_live_title(session: dict, key: str) -> str:
-    title = str(session.get("pending_title") or "").strip()
+    title = sanitize_context(str(session.get("pending_title") or "")).strip()
     try:
         with _session_db(session) as db:
             if db is not None:
-                title = str(db.get_session_title(key) or title or "").strip()
+                title = sanitize_context(
+                    str(db.get_session_title(key) or title or "")
+                ).strip()
     except Exception:
         pass
     return title
@@ -10116,7 +10425,7 @@ def _notification_poller_loop(
                 _kanban_texts = []
             if _kanban_texts:
                 for _kb_text in _kanban_texts:
-                    _emit("status.update", sid, {"kind": "process", "text": _kb_text})
+                    _status_update(sid, "process", _kb_text)
                 # Events are cursor-claimed (never re-queued), so buffer them
                 # until the session is idle instead of dropping the agent turn.
                 session.setdefault("_kanban_pending", []).extend(_kanban_texts)
@@ -10192,7 +10501,7 @@ def _notification_poller_loop(
         # visible independently.
         _dedup_key = _notification_event_dedup_key(evt)
         if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
+            _status_update(sid, "process", text)
             _emitted.add(_dedup_key)
 
         _requeued = False
@@ -10278,7 +10587,7 @@ def _notification_poller_loop(
 
         _dedup_key = _notification_event_dedup_key(evt)
         if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
+            _status_update(sid, "process", text)
             _emitted.add(_dedup_key)
 
         with session["history_lock"]:
@@ -10690,6 +10999,7 @@ def _run_prompt_submit(
         len(text) if isinstance(text, str) else "-",
         len(images),
     )
+    _reset_tui_display_scrubbers(sid)
     _emit("message.start", sid)
 
     def run():
@@ -10931,11 +11241,14 @@ def _run_prompt_submit(
             def _stream(delta):
                 with session["history_lock"]:
                     _append_inflight_delta(session, delta)
-                payload = {"text": delta}
-                if streamer and (r := streamer.feed(delta)) is not None:
+                visible_delta = _feed_tui_display_stream_delta(sid, "text", delta)
+                if not visible_delta:
+                    return
+                payload = {"text": visible_delta}
+                if streamer and (r := streamer.feed(visible_delta)) is not None:
                     payload["rendered"] = r
-                if tts_queue is not None and isinstance(delta, str):
-                    tts_queue.put(delta)
+                if tts_queue is not None:
+                    tts_queue.put(visible_delta)
                 _emit("message.delta", sid, payload)
 
             # Surface interim assistant text (commentary emitted alongside
@@ -10945,10 +11258,11 @@ def _run_prompt_submit(
             # Gated on display.interim_assistant_messages (default true).
             if _load_interim_assistant_messages():
                 def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
-                    _emit("message.interim", sid, {
-                        "text": text,
-                        "already_streamed": already_streamed,
-                    })
+                    _emit_tui_interim_assistant(
+                        sid,
+                        text,
+                        already_streamed=already_streamed,
+                    )
 
                 agent.interim_assistant_callback = _interim_assistant_cb
             else:
@@ -10987,6 +11301,7 @@ def _run_prompt_submit(
             _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
             try:
                 result = agent.run_conversation(run_message, **run_kwargs)
+                _flush_tui_display_scrubbers(sid)
             finally:
                 # Stop AND join before anything below emits: an in-flight tick
                 # surviving past message.complete would roll the client's final
@@ -11175,9 +11490,24 @@ def _run_prompt_submit(
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
-            if last_reasoning:
-                payload["reasoning"] = last_reasoning
+            display_raw = sanitize_context(raw) if isinstance(raw, str) else raw
+            safe_error = ""
+            if status == "error":
+                safe_error = sanitize_context(
+                    str((result.get("error") if isinstance(result, dict) else "") or raw)
+                ).strip()
+                if not display_raw:
+                    display_raw = f"Error: {safe_error or 'turn failed'}"
+            display_reasoning = (
+                sanitize_context(last_reasoning) if isinstance(last_reasoning, str) else ""
+            )
+            payload = {
+                "text": display_raw,
+                "usage": _get_usage(agent),
+                "status": status,
+            }
+            if display_reasoning:
+                payload["reasoning"] = display_reasoning
             if status_note:
                 payload["warning"] = status_note
             if result.get("response_previewed"):
@@ -11189,7 +11519,7 @@ def _run_prompt_submit(
             if _billing_block:
                 payload["billing"] = _billing_block
                 payload["failure_reason"] = result.get("failure_reason")
-            rendered = render_message(raw, cols)
+            rendered = render_message(display_raw, cols)
             if rendered:
                 payload["rendered"] = rendered
             with session["history_lock"]:
@@ -11206,9 +11536,7 @@ def _run_prompt_submit(
                 else:
                     _clear_inflight_turn(session)
             if status == "error":
-                payload["error"] = str(
-                    (result.get("error") if isinstance(result, dict) else "") or raw
-                )
+                payload["error"] = safe_error or "turn failed"
                 payload["recoverable"] = True
             _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
@@ -11278,11 +11606,7 @@ def _run_prompt_submit(
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:
-                                _emit(
-                                    "status.update",
-                                    sid,
-                                    {"kind": "goal", "text": verdict_msg},
-                                )
+                                _status_update(sid, "goal", verdict_msg)
                             if decision.get("should_continue"):
                                 cont_prompt = decision.get("continuation_prompt") or ""
                                 if cont_prompt:
@@ -11357,7 +11681,7 @@ def _run_prompt_submit(
                 and _voice_tts_enabled()
             ):
                 try:
-                    spoken = raw
+                    spoken = display_raw
                     # Barge-aware: spoken interruptions must cut this
                     # fallback playback too, not just the streaming path.
                     threading.Thread(
@@ -11403,8 +11727,9 @@ def _run_prompt_submit(
                     file=sys.stderr,
                     flush=True,
                 )
-                _emit("error", sid, {"message": str(e)})
+                _emit("error", sid, {"message": sanitize_context(str(e))})
         finally:
+            _discard_tui_display_scrubbers(sid)
             # Drop both local snapshots of the pre-turn history before asking
             # glibc to return pages. session["history"] already points at the
             # new/pruned result; retaining either list defeats this trim.

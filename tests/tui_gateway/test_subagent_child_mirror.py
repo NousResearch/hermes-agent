@@ -238,3 +238,50 @@ def test_text_mirrors_as_message_delta(server, emits):
     ]
 
 
+@pytest.mark.parametrize(
+    ("event_type", "child_delta_event"),
+    [
+        ("subagent.text", "message.delta"),
+        ("subagent.thinking", "reasoning.delta"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("opening_deltas", "private_text", "visible_text"),
+    [
+        (["<memory-context>"], "PRIVATE_COMPLETE_OPENER", "visible-complete"),
+        (["<memory-con", "text>"], "PRIVATE_SPLIT_OPENER", "visible-split"),
+    ],
+)
+def test_relay_fences_context_across_subagent_stream_deltas(
+    server,
+    emits,
+    event_type,
+    child_delta_event,
+    opening_deltas,
+    private_text,
+    visible_text,
+):
+    """Parent projection and child mirror keep independent parser state.
+
+    In particular, the parent must not sanitize a delta before the child
+    mirror's streaming scrubber sees it: a complete or split opening tag is
+    otherwise discarded and the following private body is rendered raw.
+    """
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+
+    for delta in opening_deltas:
+        _relay(server, event_type, preview=delta, child_session_id="child-1")
+    _relay(server, event_type, preview=private_text, child_session_id="child-1")
+    _relay(
+        server,
+        event_type,
+        preview=f"</memory-context>{visible_text}",
+        child_session_id="child-1",
+    )
+
+    parent = [(event, payload) for event, sid, payload in emits if sid == "parent-sid"]
+    child = [(event, payload) for event, sid, payload in emits if sid == "live-1"]
+    assert private_text not in repr(parent)
+    assert private_text not in repr(child)
+    assert (child_delta_event, {"text": visible_text}) in child
+

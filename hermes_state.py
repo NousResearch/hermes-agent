@@ -34,7 +34,7 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import sanitize_context, sanitize_context_for_transcript
 from agent.session_activity import ActivityProvenance
 from agent.message_sanitization import _sanitize_surrogates
 from agent.skill_commands import (
@@ -9773,7 +9773,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if isinstance(tool_calls, str):
                 try:
                     tool_calls = json.loads(tool_calls)
-                except (json.JSONDecodeError, TypeError):
+                except (json.JSONDecodeError, TypeError, RecursionError):
                     tool_calls = []
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
@@ -10257,7 +10257,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
+                except (json.JSONDecodeError, TypeError, RecursionError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
                     msg["tool_calls"] = []
             if msg.get("display_metadata") is not None:
@@ -10471,6 +10471,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_inactive: bool = False,
         repair_alternation: bool = False,
         include_row_ids: bool = False,
+        display_projection: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -10488,7 +10489,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         single request for the rest of the session's life — the repair
         mutates only the per-request list, never the stored transcript.
         Inspection/export consumers keep the default and see the transcript
-        verbatim.
+        as a human-safe display projection. Live replay callers already pass
+        ``repair_alternation=True`` and retain raw provider reasoning fields.
+        ``display_projection`` can override that inference for specialized
+        callers; ``api_content`` always remains byte-exact.
         """
         session_ids = [session_id]
         if include_ancestors and not self._is_explicit_branch_session(session_id):
@@ -10512,12 +10516,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 tuple(session_ids),
             ).fetchall()
 
+        if display_projection is None:
+            display_projection = not repair_alternation
+
         return self._rows_to_conversation(
             rows,
             session_id=session_id,
             include_ancestors=include_ancestors,
             repair_alternation=repair_alternation,
             include_row_ids=include_row_ids,
+            display_projection=display_projection,
         )
 
     # Columns every conversation projection decodes. Shared by
@@ -10538,6 +10546,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_ancestors: bool,
         repair_alternation: bool,
         include_row_ids: bool = False,
+        display_projection: bool = False,
     ) -> List[Dict[str, Any]]:
         """Decode fetched message rows into the OpenAI conversation format.
 
@@ -10549,8 +10558,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
-            if row["role"] in {"user", "assistant"} and isinstance(content, str):
-                content = sanitize_context(content).strip()
+            if isinstance(content, str):
+                if row["role"] == "user":
+                    # User transcript prose may mention the delimiter inline;
+                    # hide complete/block-shaped recalled context without
+                    # truncating that ordinary input.
+                    content = sanitize_context_for_transcript(content).strip()
+                elif row["role"] == "assistant":
+                    # Assistant rows are persisted provider output and must
+                    # fail closed on an unmatched opener before TUI/CLI,
+                    # resume, and export projections consume them.
+                    content = sanitize_context(content).strip()
+                else:
+                    # Tool output and extension-defined roles can contain
+                    # provider-derived text too.  Their string projection is
+                    # user-visible and model-replayed, so apply the same
+                    # fail-closed fence as assistant output.  Structured
+                    # content remains byte/shape preserving below.
+                    content = sanitize_context(content)
+            elif display_projection:
+                # Structured multimodal/provider content is a display sink as
+                # well. Keep raw structured values for model replay, but
+                # recursively fence the human-facing projection.
+                try:
+                    content = self._sanitize_display_value(
+                        content, strict=row["role"] != "user"
+                    )
+                except RecursionError:
+                    logger.warning(
+                        "Failed to sanitize structured content for display; "
+                        "dropping the structured payload"
+                    )
+                    content = None
             msg = {"role": row["role"], "content": content}
             # Durable per-message identity for surfaces that need to address a
             # specific row later (desktop reactions). OPT-IN: only the gateway
@@ -10584,8 +10623,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 msg["effect_disposition"] = row["effect_disposition"]
             if row["tool_calls"]:
                 try:
-                    msg["tool_calls"] = json.loads(row["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
+                    decoded_tool_calls = json.loads(row["tool_calls"])
+                    msg["tool_calls"] = (
+                        self._sanitize_display_value(decoded_tool_calls, strict=True)
+                        if display_projection
+                        else decoded_tool_calls
+                    )
+                except (json.JSONDecodeError, TypeError, RecursionError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []
             # Surface the platform-side message id (e.g. yuanbao msg_id,
@@ -10604,26 +10648,64 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if row["finish_reason"]:
                     msg["finish_reason"] = row["finish_reason"]
                 if row["reasoning"]:
-                    msg["reasoning"] = row["reasoning"]
+                    msg["reasoning"] = (
+                        self._sanitize_reasoning_display_value(row["reasoning"])
+                        if display_projection
+                        else row["reasoning"]
+                    )
                 if row["reasoning_content"] is not None:
-                    msg["reasoning_content"] = row["reasoning_content"]
+                    msg["reasoning_content"] = (
+                        self._sanitize_reasoning_display_value(
+                            row["reasoning_content"]
+                        )
+                        if display_projection
+                        else row["reasoning_content"]
+                    )
                 if row["reasoning_details"]:
                     try:
-                        msg["reasoning_details"] = json.loads(row["reasoning_details"])
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning("Failed to deserialize reasoning_details, falling back to None")
+                        reasoning_details = json.loads(row["reasoning_details"])
+                        msg["reasoning_details"] = (
+                            self._sanitize_reasoning_display_value(reasoning_details)
+                            if display_projection
+                            else reasoning_details
+                        )
+                    except (json.JSONDecodeError, TypeError, RecursionError):
+                        logger.warning(
+                            "Failed to deserialize or sanitize reasoning_details, "
+                            "falling back to None"
+                        )
                         msg["reasoning_details"] = None
                 if row["codex_reasoning_items"]:
                     try:
-                        msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning("Failed to deserialize codex_reasoning_items, falling back to None")
+                        codex_reasoning_items = json.loads(
+                            row["codex_reasoning_items"]
+                        )
+                        msg["codex_reasoning_items"] = (
+                            self._sanitize_reasoning_display_value(
+                                codex_reasoning_items
+                            )
+                            if display_projection
+                            else codex_reasoning_items
+                        )
+                    except (json.JSONDecodeError, TypeError, RecursionError):
+                        logger.warning(
+                            "Failed to deserialize or sanitize "
+                            "codex_reasoning_items, falling back to None"
+                        )
                         msg["codex_reasoning_items"] = None
                 if row["codex_message_items"]:
                     try:
-                        msg["codex_message_items"] = json.loads(row["codex_message_items"])
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning("Failed to deserialize codex_message_items, falling back to None")
+                        codex_message_items = json.loads(row["codex_message_items"])
+                        msg["codex_message_items"] = (
+                            self._sanitize_reasoning_display_value(codex_message_items)
+                            if display_projection
+                            else codex_message_items
+                        )
+                    except (json.JSONDecodeError, TypeError, RecursionError):
+                        logger.warning(
+                            "Failed to deserialize or sanitize codex_message_items, "
+                            "falling back to None"
+                        )
                         msg["codex_message_items"] = None
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
@@ -10662,6 +10744,43 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     session_id,
                 )
         return messages
+
+    @classmethod
+    def _sanitize_reasoning_display_value(cls, value: Any) -> Any:
+        """Copy reasoning metadata with provider recall fenced for display."""
+        return cls._sanitize_display_value(value, strict=True)
+
+    @classmethod
+    def _sanitize_display_value(cls, value: Any, *, strict: bool = True) -> Any:
+        """Recursively fence display strings, including structured keys."""
+        sanitizer = sanitize_context if strict else sanitize_context_for_transcript
+        if isinstance(value, str):
+            return sanitizer(value)
+        if isinstance(value, dict):
+            safe: dict[Any, Any] = {}
+            next_suffix: dict[str, int] = {}
+            for key, item in value.items():
+                safe_key = cls._sanitize_display_value(key, strict=strict)
+                try:
+                    hash(safe_key)
+                except TypeError:
+                    safe_key = str(safe_key)
+                if safe_key in safe:
+                    base = str(safe_key)
+                    suffix = next_suffix.get(base, 2)
+                    candidate = f"{base}#{suffix}"
+                    while candidate in safe:
+                        suffix += 1
+                        candidate = f"{base}#{suffix}"
+                    next_suffix[base] = suffix + 1
+                    safe_key = candidate
+                safe[safe_key] = cls._sanitize_display_value(item, strict=strict)
+            return safe
+        if isinstance(value, list):
+            return [cls._sanitize_display_value(item, strict=strict) for item in value]
+        if isinstance(value, tuple):
+            return tuple(cls._sanitize_display_value(item, strict=strict) for item in value)
+        return value
 
     def get_resume_conversations(
         self, session_id: str
@@ -10710,6 +10829,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_ancestors=False,
             repair_alternation=True,
             include_row_ids=True,
+            display_projection=False,
         )
         display_history = self._rows_to_conversation(
             rows,
@@ -10717,6 +10837,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_ancestors=True,
             repair_alternation=False,
             include_row_ids=True,
+            display_projection=True,
         )
         return model_history, display_history
 
@@ -10846,6 +10967,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             session_id=session_id,
             include_ancestors=True,
             repair_alternation=False,
+            display_projection=True,
         )
 
     def _is_explicit_branch_session(self, session_id: str) -> bool:

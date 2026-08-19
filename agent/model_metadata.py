@@ -3401,7 +3401,7 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
       from its clean stored content (2.00x on a 40KB sidecar).
 
       The substitution mirrors that helper's guard exactly: only a non-empty
-      STRING sidecar on a ``user``/``assistant`` row displaces ``content``.
+      STRING sidecar on a message with a non-empty role displaces ``content``.
       Any other sidecar shape is popped and discarded on the wire without
       touching ``content``, so a shadow that substituted unconditionally
       would UNDERcount those rows — the dangerous direction, since it makes
@@ -3414,7 +3414,8 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     sidecar_wins = (
         isinstance(sidecar, str)
         and bool(sidecar)
-        and msg.get("role") in ("user", "assistant")
+        and isinstance(msg.get("role"), str)
+        and bool(msg.get("role"))
     )
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():

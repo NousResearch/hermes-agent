@@ -30,6 +30,7 @@ import logging
 import re
 import inspect
 import threading
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Dict, List, Optional
 
@@ -160,23 +161,48 @@ def inject_memory_provider_tools(agent: Any) -> int:
 # Context fencing helpers
 # ---------------------------------------------------------------------------
 
-_FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
-_INTERNAL_CONTEXT_RE = re.compile(
-    r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
+_CONTEXT_TAG_PADDING_LIMIT = 64
+_CONTEXT_TAG_PADDING_RE = rf"\s{{0,{_CONTEXT_TAG_PADDING_LIMIT}}}"
+_CONTEXT_OPEN_TAG_RE = re.compile(
+    rf'<{_CONTEXT_TAG_PADDING_RE}memory-context{_CONTEXT_TAG_PADDING_RE}>',
     re.IGNORECASE,
 )
+_CONTEXT_CLOSE_TAG_RE = re.compile(
+    rf'</{_CONTEXT_TAG_PADDING_RE}memory-context{_CONTEXT_TAG_PADDING_RE}>',
+    re.IGNORECASE,
+)
+# Only ``<`` followed by a character that can begin the supported tag grammar
+# needs Python-level classification.  Let the regex engine skip runs of
+# ordinary angle brackets in linear time.
+_CONTEXT_TAG_CANDIDATE_RE = re.compile(r"<(?=[/mM\s]|$)")
 _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
 )
 
 
-def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
-    text = _INTERNAL_CONTEXT_RE.sub('', text)
+def sanitize_context(text: str, *, strict: bool = True) -> str:
+    """Strip fence tags, injected context blocks, and system notes.
+
+    ``strict=True`` is the provider-output mode: an ambiguous inline opener
+    with no block terminator fails closed at EOF so recalled payload cannot be
+    exposed. Transcript/display projections can opt into ``strict=False`` to
+    preserve the suffix of an unmatched inline mention such as
+    ``"Explain <memory-context> to me"``; complete and block-shaped fences are
+    still removed in either mode.
+    """
+    # Use the streaming parser for complete strings too.  Keeping one grammar
+    # prevents a response from being safe in the final path but unsafe while
+    # streamed (or vice versa), including mixed-case/whitespace tag variants.
+    scrubber = StreamingContextScrubber(strict=strict)
+    text = scrubber.feed(text) + scrubber.flush()
     text = _INTERNAL_NOTE_RE.sub('', text)
-    text = _FENCE_TAG_RE.sub('', text)
     return text
+
+
+def sanitize_context_for_transcript(text: str) -> str:
+    """Remove recalled-context fences while preserving ordinary inline prose."""
+    return sanitize_context(text, strict=False)
 
 
 class StreamingContextScrubber:
@@ -203,22 +229,88 @@ class StreamingContextScrubber:
     The scrubber is re-entrant per agent instance.  Callers building new
     top-level responses (new turn) should create a fresh scrubber or call
     ``reset()``.
+
+    Tag padding is accepted up to ``_MAX_TAG_PADDING`` whitespace characters
+    on each side of the name. Longer tag-like prefixes are retained only while
+    the bounded parser can still distinguish them from ordinary prose; a
+    confirmed over-budget memory-context opener fails closed.
+
+    Inline openers are held only up to ``_MAX_AMBIGUOUS_INLINE_LEN``. At EOF,
+    strict provider-output mode discards every unmatched opener. Lenient
+    transcript/user mode uses a small anchored grammar to restore ordinary
+    prose that explicitly documents the tag. This keeps chunk boundaries from
+    changing the decision and prevents arbitrary provider payload from
+    bypassing the fence.
     """
 
     _OPEN_TAG = "<memory-context>"
     _CLOSE_TAG = "</memory-context>"
+    _MAX_TAG_PADDING = _CONTEXT_TAG_PADDING_LIMIT
+    _MAX_TAG_LEN = len(_CLOSE_TAG) + (2 * _MAX_TAG_PADDING)
+    _MAX_AMBIGUOUS_INLINE_LEN = 512
+    # A standalone closer needs a little more lookahead than an individual
+    # tag candidate: the following opener can begin just beyond the candidate
+    # budget. Keep that decision finite, and fail closed if it is exhausted.
+    _MAX_POST_CLOSE_LEN = 2 * _MAX_AMBIGUOUS_INLINE_LEN
 
-    def __init__(self) -> None:
+    def __init__(self, *, strict: bool = True) -> None:
+        self._strict = bool(strict)
         self._in_span: bool = False
+        self._span_depth: int = 0
         self._buf: str = ""
+        self._ambiguous_inline: bool = False
+        self._after_standalone_close: bool = False
+        self._post_close_prefix: str = ""
+        self._post_close_buf: str = ""
+        self._discard_post_close: bool = False
         self._at_block_boundary: bool = True
+        self._pending_at_block_boundary: bool = True
+        # ``_feed_once`` can discover another already-buffered suffix that
+        # needs to be parsed in a different state.  Keep that transition on an
+        # explicit queue rather than recursively re-entering ``feed``: a long
+        # response containing many inline fences must not consume one Python
+        # stack frame per fence.
+        self._feed_queue: deque[str] = deque()
+        self._feed_active: bool = False
 
     def reset(self) -> None:
         self._in_span = False
+        self._span_depth = 0
         self._buf = ""
+        self._ambiguous_inline = False
+        self._after_standalone_close = False
+        self._post_close_prefix = ""
+        self._post_close_buf = ""
+        self._discard_post_close = False
         self._at_block_boundary = True
+        self._pending_at_block_boundary = True
+        self._feed_queue.clear()
+        self._feed_active = False
 
     def feed(self, text: str) -> str:
+        """Return visible text while iteratively draining state transitions."""
+        if not text:
+            return ""
+
+        if self._feed_active:
+            # Internal state transitions historically called ``feed`` again.
+            # Queue the continuation at the front so it is consumed before
+            # any later input, while the outermost call owns visible output.
+            self._feed_queue.appendleft(text)
+            return ""
+
+        self._feed_active = True
+        self._feed_queue.append(text)
+        out: list[str] = []
+        try:
+            while self._feed_queue:
+                out.append(self._feed_once(self._feed_queue.popleft()))
+        finally:
+            self._feed_active = False
+            self._feed_queue.clear()
+        return "".join(out)
+
+    def _feed_once(self, text: str) -> str:
         """Return the visible portion of ``text`` after scrubbing.
 
         Any trailing fragment that could be the start of an open/close tag
@@ -227,108 +319,465 @@ class StreamingContextScrubber:
         """
         if not text:
             return ""
+
+        if self._after_standalone_close:
+            return self._feed_after_standalone_close(text)
+        if self._discard_post_close:
+            return ""
+        if self._ambiguous_inline:
+            return self._feed_ambiguous(text)
+
+        had_pending = bool(self._buf)
+        pending_at_block_boundary = self._pending_at_block_boundary
         buf = self._buf + text
         self._buf = ""
         out: list[str] = []
+        cursor = 0
 
-        while buf:
+        while cursor < len(buf):
             if self._in_span:
-                idx = buf.lower().find(self._CLOSE_TAG)
-                if idx == -1:
-                    # Hold back a potential partial close tag; drop the rest
-                    held = self._max_partial_suffix(buf, self._CLOSE_TAG)
-                    self._buf = buf[-held:] if held else ""
+                # Treat supported openers inside a fenced span as nested.
+                # Provider-controlled memory can contain delimiter-like text;
+                # accepting the first closer would expose everything between
+                # an inner close and the matching outer close.
+                tag_match = _CONTEXT_TAG_CANDIDATE_RE.search(buf, cursor)
+                if tag_match is None:
+                    self._buf = self._partial_span_tag_suffix(buf[cursor:])
                     return "".join(out)
-                # Found close — skip span content + tag, continue
-                buf = buf[idx + len(self._CLOSE_TAG):]
-                self._in_span = False
-            else:
-                idx = self._find_boundary_open_tag(buf)
-                if idx == -1:
-                    # No open tag — hold back a potential partial open tag
-                    held = (
-                        self._max_pending_open_suffix(buf)
-                        or self._max_partial_suffix(buf, self._OPEN_TAG)
-                    )
-                    if held:
-                        self._append_visible(out, buf[:-held])
-                        self._buf = buf[-held:]
+                cursor = tag_match.start()
+                closing = cursor + 1 < len(buf) and buf[cursor + 1] == "/"
+                status, tag_end = self._classify_tag_prefix(
+                    buf, closing=closing, start=cursor
+                )
+                if status == "partial":
+                    self._buf = buf[cursor:]
+                    return "".join(out)
+                if status == "over_budget":
+                    # A complete tag-like opener with unsupported padding is
+                    # still untrusted provider context.  Count it as nested so
+                    # its closer cannot terminate the enclosing fence and
+                    # expose the rest of the outer payload.  Unsupported
+                    # closers remain inert: accepting one would reduce the
+                    # depth based on a delimiter outside the supported grammar.
+                    if not closing:
+                        self._span_depth += 1
+                    cursor += max(tag_end, 1)
+                    continue
+                if status == "invalid":
+                    cursor += max(tag_end, 1)
+                    continue
+                cursor += tag_end
+                if closing:
+                    self._span_depth -= 1
+                    if self._span_depth == 0:
+                        self._in_span = False
+                        # A pending fragment consumed while inside the span
+                        # describes the closer, not the next candidate.  Do
+                        # not let its saved block-boundary state misclassify
+                        # an immediately following lenient inline reference.
+                        had_pending = False
+                else:
+                    self._span_depth += 1
+                continue
+
+            tag_match = _CONTEXT_TAG_CANDIDATE_RE.search(buf, cursor)
+            if tag_match is None:
+                self._append_visible(out, buf[cursor:])
+                return "".join(out)
+            tag_idx = tag_match.start()
+
+            if tag_idx > cursor:
+                self._append_visible(out, buf[cursor:tag_idx])
+                cursor = tag_idx
+                had_pending = False
+
+            candidate_at_block_boundary = (
+                pending_at_block_boundary if had_pending else self._at_block_boundary
+            )
+            had_pending = False
+
+            closing = cursor + 1 < len(buf) and buf[cursor + 1] == "/"
+            status, tag_end = self._classify_tag_prefix(
+                buf, closing=closing, start=cursor
+            )
+
+            if status == "invalid":
+                self._append_visible(out, buf[cursor])
+                cursor += 1
+                continue
+
+            if status == "partial":
+                candidate = buf[cursor:]
+                if len(candidate) > self._MAX_AMBIGUOUS_INLINE_LEN:
+                    # A prefix that remains tag-like after the absolute buffer
+                    # budget is untrusted. This caps retained memory and avoids
+                    # quadratic copies under character-wise streaming.
+                    if closing:
+                        self._append_visible(out, candidate)
                     else:
-                        self._append_visible(out, buf)
+                        self._enter_span()
                     return "".join(out)
-                # Emit text before the tag, enter span
-                if idx > 0:
-                    self._append_visible(out, buf[:idx])
-                buf = buf[idx + len(self._OPEN_TAG):]
-                self._in_span = True
+                self._buf = candidate
+                self._pending_at_block_boundary = candidate_at_block_boundary
+                return "".join(out)
+
+            if status == "over_budget":
+                if closing:
+                    # Unsupported standalone closers cannot disclose content
+                    # and remain ordinary text in both one-shot and streaming
+                    # paths.
+                    self._append_visible(out, buf[cursor : cursor + tag_end])
+                    cursor += tag_end
+                    continue
+                # Once the complete name confirms that an over-budget prefix
+                # is a memory fence, preserve only preceding visible text.
+                self._enter_span()
+                cursor += tag_end
+                continue
+
+            if closing:
+                # A standalone closer may be an attempt by recalled provider
+                # data to escape a fence before reopening it. Hold the suffix
+                # until EOF or a following opener makes that distinction
+                # unambiguous; the bounded strict path fails closed rather
+                # than releasing attacker-controlled padding.
+                self._after_standalone_close = True
+                return "".join(out) + self._feed_after_standalone_close(
+                    buf[cursor + tag_end :]
+                )
+
+            after_start = cursor + tag_end
+            line_start = after_start
+            while line_start < len(buf) and buf[line_start] in " \t":
+                line_start += 1
+            if candidate_at_block_boundary or (
+                line_start < len(buf) and buf[line_start] in "\r\n"
+            ):
+                self._enter_span()
+                cursor = after_start
+                continue
+
+            # When the decisive delimiter is already in this input buffer,
+            # stay in the current cursor loop.  Re-queuing ``buf[after_start:]``
+            # would copy the entire remaining suffix once per inline fence,
+            # making a long response with many complete fence pairs quadratic.
+            if _CONTEXT_OPEN_TAG_RE.search(
+                buf, after_start
+            ) is not None or _CONTEXT_CLOSE_TAG_RE.search(buf, after_start) is not None:
+                self._enter_span()
+                cursor = after_start
+                continue
+
+            if len(buf) - cursor > self._MAX_AMBIGUOUS_INLINE_LEN:
+                # The closer may arrive in a later provider chunk. Releasing
+                # an over-budget suffix here would therefore make lenient
+                # sanitization chunk-dependent and could expose a complete
+                # recalled-context payload. Supported documentation
+                # references are intentionally bounded and resolve at EOF.
+                self._enter_span()
+                cursor = after_start
+                continue
+
+            # A complete inline opener is ambiguous: it may begin a leaked
+            # span or be a short documentation reference. Hold the bounded
+            # candidate until a closer, a line break, the budget, or EOF makes
+            # the decision independent of provider chunking.
+            self._buf = buf[cursor:]
+            self._ambiguous_inline = True
+            self._pending_at_block_boundary = candidate_at_block_boundary
+            return "".join(out)
 
         return "".join(out)
+
+    def _feed_after_standalone_close(self, text: str) -> str:
+        """Hold a standalone-close suffix until a later opener or EOF.
+
+        ``</memory-context>INJECTED<memory-context>...`` is an escape attempt:
+        both the injected middle and reopened suffix must be discarded. A
+        closer with no later opener retains the historical behavior of
+        stripping only the delimiter when the stream is flushed.
+        """
+        candidate = self._post_close_prefix + self._post_close_buf + text
+        self._post_close_prefix = ""
+        self._post_close_buf = ""
+        cursor = 0
+
+        while cursor < len(candidate):
+            tag_match = _CONTEXT_TAG_CANDIDATE_RE.search(candidate, cursor)
+            if tag_match is None:
+                break
+            tag_idx = tag_match.start()
+            if tag_idx > self._MAX_POST_CLOSE_LEN:
+                # A visible projection cannot release a long suffix and later
+                # retract it if an opener arrives. Once the finite
+                # lookahead is exhausted, both modes discard the remainder of
+                # this response. Lenient mode cannot release an earlier prefix
+                # either: a later opener would make it attacker-controlled
+                # close/reopen content. This is deliberately response-scoped
+                # state, not retained attacker text.
+                self._after_standalone_close = False
+                self._discard_post_close = True
+                return ""
+            closing = tag_idx + 1 < len(candidate) and candidate[tag_idx + 1] == "/"
+            status, tag_end = self._classify_tag_prefix(
+                candidate, closing=closing, start=tag_idx
+            )
+            if status == "partial":
+                if len(candidate) > self._MAX_POST_CLOSE_LEN:
+                    # The complete retained suffix is no longer eligible for
+                    # the bounded close/open documentation grammar.  Discard
+                    # its decided prefix, but keep parsing the unresolved tag
+                    # candidate: releasing it as prose (lenient) or blindly
+                    # discarding all later chunks (strict) would make the
+                    # result depend on where the provider split the tag.
+                    self._after_standalone_close = False
+                    self._discard_post_close = True
+                    return ""
+                self._store_post_close_candidate(candidate)
+                return ""
+            if not closing and status in {"complete", "over_budget"}:
+                if (
+                    not self._strict
+                    and not self._discard_post_close
+                    and status == "complete"
+                    and len(candidate) <= self._MAX_AMBIGUOUS_INLINE_LEN
+                ):
+                    # A transcript can legitimately document both delimiter
+                    # spellings in one sentence. Keep the bounded suffix until
+                    # EOF so the explicit-reference grammar can distinguish
+                    # that prose from a close/reopen escape attempt without
+                    # making the answer depend on provider chunking.
+                    cursor = tag_idx + tag_end
+                    continue
+                self._after_standalone_close = False
+                self._discard_post_close = False
+                self._enter_span()
+                return self.feed(candidate[tag_idx + tag_end :])
+            cursor = tag_idx + max(tag_end, 1)
+
+        if self._discard_post_close:
+            # The ambiguity budget was crossed while a later tag was still
+            # incomplete. If its continuation proves invalid, the discarded
+            # prefix cannot be reconstructed safely; fail closed for the
+            # remainder of this response without retaining attacker input.
+            self._after_standalone_close = False
+            self._post_close_prefix = ""
+            self._post_close_buf = ""
+            return ""
+
+        if len(candidate) > self._MAX_POST_CLOSE_LEN:
+            self._after_standalone_close = False
+            self._discard_post_close = True
+            return ""
+
+        self._store_post_close_candidate(candidate)
+        return ""
+
+    def _store_post_close_candidate(self, candidate: str) -> None:
+        """Retain bounded close-suffix lookahead with a bounded tag tail."""
+        split_at = max(0, len(candidate) - self._MAX_AMBIGUOUS_INLINE_LEN)
+        self._post_close_prefix = candidate[:split_at]
+        self._post_close_buf = candidate[split_at:]
+
+    def _feed_ambiguous(self, text: str) -> str:
+        """Advance a bounded inline-opener candidate."""
+        candidate = self._buf + text
+        self._buf = ""
+
+        open_status, open_end = self._classify_tag_prefix(candidate, closing=False)
+        if open_status != "complete":
+            # This is defensive: ambiguous mode is entered only after a
+            # complete supported opener.
+            self._ambiguous_inline = False
+            self._enter_span()
+            return ""
+
+        if _CONTEXT_OPEN_TAG_RE.search(candidate, open_end) is not None or (
+            _CONTEXT_CLOSE_TAG_RE.search(candidate, open_end) is not None
+        ):
+            self._ambiguous_inline = False
+            self._enter_span()
+            return self.feed(candidate[open_end:])
+
+        after = candidate[open_end:]
+        if after.lstrip(" \t").startswith(("\r", "\n")):
+            self._ambiguous_inline = False
+            self._enter_span()
+            return self.feed(after)
+
+        if len(candidate) > self._MAX_AMBIGUOUS_INLINE_LEN:
+            self._ambiguous_inline = False
+            self._enter_span()
+            # Parse the capped candidate tail once in span mode before
+            # discarding it.  It may already contain a complete nested opener
+            # (including an over-padding-budget opener) followed by only a
+            # *partial* closer.  Keeping just that partial suffix would forget
+            # the nested depth, so the completed closer in the next chunk
+            # could terminate the outer fence and expose its remaining
+            # payload.  The in-span parser retains only a bounded tag suffix.
+            return self.feed(after)
+
+        self._buf = candidate
+        return ""
 
     def flush(self) -> str:
         """Emit any held-back buffer at end-of-stream.
 
         If we're still inside an unterminated span the remaining content is
         discarded (safer: leaking partial memory context is worse than a
-        truncated answer).  Otherwise the held-back partial-tag tail is
-        emitted verbatim (it turned out not to be a real tag).
+        truncated answer).  A held partial-tag tail is emitted verbatim, but a
+        complete ambiguous opener is restored only for explicit inline
+        tag-reference prose in lenient transcript/user mode.
         """
         if self._in_span:
             self._buf = ""
             self._in_span = False
+            self._span_depth = 0
+            self._ambiguous_inline = False
+            self._after_standalone_close = False
+            self._post_close_prefix = ""
+            self._post_close_buf = ""
+            self._discard_post_close = False
             return ""
+        if self._discard_post_close:
+            self._discard_post_close = False
+            self._after_standalone_close = False
+            self._post_close_prefix = ""
+            self._post_close_buf = ""
+            return ""
+        if self._after_standalone_close:
+            tail = self._post_close_prefix + self._post_close_buf
+            self._after_standalone_close = False
+            self._post_close_prefix = ""
+            self._post_close_buf = ""
+            if not self._strict:
+                # A close/reopen sequence is indistinguishable from an escape
+                # when its intervening prose is attacker controlled.  Do not
+                # guess from sentence shape: re-run every candidate through
+                # the strict standalone-close path. Ordinary standalone closer
+                # prose (with no later opener) remains visible there.
+                strict_scrubber = type(self)(strict=True)
+                tail = (
+                    strict_scrubber.feed(self._CLOSE_TAG + tail)
+                    + strict_scrubber.flush()
+                )
+            if tail:
+                self._update_block_boundary(tail)
+            return tail
         tail = self._buf
         self._buf = ""
+        ambiguous_inline = self._ambiguous_inline
+        self._ambiguous_inline = False
+        if ambiguous_inline:
+            # Provider output cannot prove that prose following an unmatched
+            # opener is documentation rather than recalled private payload.
+            # Strict mode therefore never restores it. Transcript/user mode
+            # retains the bounded documentation grammar for compatibility.
+            if self._strict:
+                return ""
+            if not self._is_explicit_inline_tag_reference(tail):
+                open_status, open_end = self._classify_tag_prefix(
+                    tail, closing=False
+                )
+                if open_status != "complete":
+                    return tail
+                tail = tail[open_end:]
+        if tail:
+            self._update_block_boundary(tail)
         return tail
 
-    @staticmethod
-    def _max_partial_suffix(buf: str, tag: str) -> int:
-        """Return the length of the longest buf-suffix that is a tag-prefix.
+    @classmethod
+    def _classify_tag_prefix(
+        cls, candidate: str, *, closing: bool, start: int = 0
+    ) -> tuple[str, int]:
+        """Classify a candidate beginning with ``<``.
 
-        Case-insensitive.  Returns 0 if no suffix could start the tag.
+        The result is ``complete``, ``partial``, ``over_budget``, or
+        ``invalid`` plus the end offset for complete forms. A partial may
+        contain more than the supported padding while the name is still
+        unknown; the absolute candidate budget limits that ambiguity. Only
+        the finite grammar prefix is inspected, even when ``candidate`` also
+        contains a large ordinary-text suffix.
         """
-        tag_lower = tag.lower()
-        buf_lower = buf.lower()
-        max_check = min(len(buf_lower), len(tag_lower) - 1)
-        for i in range(max_check, 0, -1):
-            if tag_lower.startswith(buf_lower[-i:]):
-                return i
-        return 0
+        if start >= len(candidate) or candidate[start] != "<":
+            return "invalid", 0
+        pos = start + 1
+        if closing:
+            if pos >= len(candidate):
+                return "partial", 0
+            if candidate[pos] != "/":
+                return "invalid", 0
+            pos += 1
+        elif pos < len(candidate) and candidate[pos] == "/":
+            return "invalid", 0
 
-    def _find_boundary_open_tag(self, buf: str) -> int:
-        """Find an opening fence only when it starts a block-like span."""
-        buf_lower = buf.lower()
-        search_start = 0
-        while True:
-            idx = buf_lower.find(self._OPEN_TAG, search_start)
-            if idx == -1:
-                return -1
-            if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(buf, idx):
-                return idx
-            search_start = idx + 1
+        target = "memory-context"
+        padding_start = pos
+        while pos < len(candidate) and candidate[pos].isspace():
+            pos += 1
+            if pos - start > cls._MAX_AMBIGUOUS_INLINE_LEN:
+                return "over_budget", pos - start
+        leading_padding = pos - padding_start
+        if pos == len(candidate):
+            return "partial", 0
 
-    def _max_pending_open_suffix(self, buf: str) -> int:
-        """Hold a complete boundary tag until the following char confirms it."""
-        if not buf.lower().endswith(self._OPEN_TAG):
-            return 0
-        idx = len(buf) - len(self._OPEN_TAG)
-        if not self._is_block_boundary(buf, idx):
-            return 0
-        return len(self._OPEN_TAG)
+        name_len = min(len(candidate) - pos, len(target))
+        if candidate[pos : pos + name_len].lower() != target[:name_len]:
+            return "invalid", 0
+        if name_len < len(target):
+            return "partial", 0
+        pos += len(target)
+        if pos - start > cls._MAX_AMBIGUOUS_INLINE_LEN:
+            return "over_budget", pos - start
 
-    def _has_block_opener_suffix(self, buf: str, idx: int) -> bool:
-        after_idx = idx + len(self._OPEN_TAG)
-        if after_idx >= len(buf):
-            return False
-        return buf[after_idx] in "\r\n"
+        padding_start = pos
+        while pos < len(candidate) and candidate[pos].isspace():
+            pos += 1
+            if pos - start > cls._MAX_AMBIGUOUS_INLINE_LEN:
+                return "over_budget", pos - start
+        trailing_padding = pos - padding_start
+        if pos >= len(candidate):
+            return "partial", 0
+        if candidate[pos] != ">":
+            return "invalid", 0
 
-    def _is_block_boundary(self, buf: str, idx: int) -> bool:
-        if idx == 0:
-            return self._at_block_boundary
-        preceding = buf[:idx]
-        last_newline = preceding.rfind("\n")
-        if last_newline == -1:
-            return self._at_block_boundary and preceding.strip() == ""
-        return preceding[last_newline + 1:].strip() == ""
+        status = (
+            "over_budget"
+            if leading_padding > cls._MAX_TAG_PADDING
+            or trailing_padding > cls._MAX_TAG_PADDING
+            else "complete"
+        )
+        return status, pos + 1 - start
+
+    @classmethod
+    def _partial_tag_suffix(cls, buf: str, *, closing: bool) -> str:
+        """Return the bounded suffix that can still become a supported tag."""
+        idx = buf.rfind("<")
+        if idx < 0:
+            return ""
+        candidate = buf[idx:]
+        status, _ = cls._classify_tag_prefix(candidate, closing=closing)
+        if status != "partial" or len(candidate) > cls._MAX_TAG_LEN:
+            return ""
+        return candidate
+
+    @classmethod
+    def _partial_span_tag_suffix(cls, buf: str) -> str:
+        """Return a supported opener/closer fragment at a span boundary."""
+        idx = buf.rfind("<")
+        if idx < 0:
+            return ""
+        candidate = buf[idx:]
+        closing = len(candidate) > 1 and candidate[1] == "/"
+        status, _ = cls._classify_tag_prefix(candidate, closing=closing)
+        if status != "partial" or len(candidate) > cls._MAX_TAG_LEN:
+            return ""
+        return candidate
+
+    def _enter_span(self) -> None:
+        """Enter a new outer memory-context span."""
+        self._in_span = True
+        self._span_depth = 1
 
     def _append_visible(self, out: list[str], text: str) -> None:
         if not text:
@@ -338,10 +787,59 @@ class StreamingContextScrubber:
 
     def _update_block_boundary(self, text: str) -> None:
         last_newline = text.rfind("\n")
-        if last_newline != -1:
-            self._at_block_boundary = text[last_newline + 1:].strip() == ""
+        if last_newline >= 0:
+            self._at_block_boundary = not text[last_newline + 1:].strip(" \t\r")
         else:
-            self._at_block_boundary = self._at_block_boundary and text.strip() == ""
+            self._at_block_boundary = (
+                self._at_block_boundary and not text.strip(" \t\r")
+            )
+
+    @classmethod
+    def _is_explicit_inline_tag_reference(cls, candidate: str) -> bool:
+        """Recognize a bounded, single-line inline delimiter reference.
+
+        This intentionally uses only shape, not an English sentence
+        whitelist.  A reference must be a complete short sentence fragment
+        with a short multi-word clause after the delimiter and terminal
+        punctuation. Raw marker-label shapes require one extra word because
+        they are also common provider payload prefixes. Short values,
+        control-line payloads, nested tags, and unfinished provider output
+        remain fail-closed.
+        """
+        if len(candidate) > cls._MAX_AMBIGUOUS_INLINE_LEN:
+            return False
+        match = _CONTEXT_OPEN_TAG_RE.match(candidate)
+        if match is None or match.start() != 0:
+            return False
+        after = candidate[match.end():]
+        if (
+            not after
+            or "\r" in after
+            or "\n" in after
+            or _CONTEXT_OPEN_TAG_RE.search(after) is not None
+            or _CONTEXT_CLOSE_TAG_RE.search(after) is not None
+        ):
+            return False
+        backticked = after.startswith("`")
+        if backticked:
+            after = after[1:]
+        if not after.startswith((" ", "\t")):
+            return False
+        prose = after.strip(" \t")
+        if not prose or prose[-1] not in ".!?":
+            return False
+        if any(char in prose for char in "<>`"):
+            return False
+        words = re.findall(r"[^\W_]+", prose, re.UNICODE)
+        if len(words) < 3:
+            return False
+        marker_shape = backticked or words[0].casefold() in {
+            "block",
+            "fence",
+            "marker",
+            "tag",
+        }
+        return not marker_shape or len(words) >= 4
 
 
 def build_memory_context_block(raw_context: str) -> str:

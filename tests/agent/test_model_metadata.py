@@ -126,7 +126,7 @@ class TestEstimateMessagesTokensRough:
         """Only a sidecar shape the wire actually substitutes may displace content.
 
         ``substitute_api_content()`` overwrites ``content`` only for a
-        non-empty STRING sidecar on a user/assistant row; every other shape
+        non-empty STRING sidecar on a provider-bound role; every other shape
         is popped and discarded, leaving the clean ``content`` on the wire.
         The shadow must mirror that guard — substituting unconditionally
         would drop the real content from the estimate and UNDERcount, which
@@ -140,9 +140,28 @@ class TestEstimateMessagesTokensRough:
             msg = {"role": "user", "content": body, "api_content": bad_sidecar}
             assert estimate_messages_tokens_rough([msg]) >= baseline, bad_sidecar
 
-        # Same for a role the substitution never applies to.
-        tool_row = {"role": "tool", "content": body, "api_content": "ignored"}
-        assert estimate_messages_tokens_rough([tool_row]) >= baseline
+        # Extension roles use the same exact-wire sidecar contract.
+        system_row = {
+            "role": "system",
+            "content": body,
+            "api_content": "exact system bytes " * 2000,
+        }
+        assert estimate_messages_tokens_rough([system_row]) == estimate_messages_tokens_rough(
+            [{"role": "system", "content": system_row["api_content"]}]
+        )
+
+    def test_tool_api_content_is_counted_as_wire_replacement(self):
+        body = "clean tool result"
+        sidecar = "exact tool bytes " * 2000
+        persisted = {
+            "role": "tool",
+            "content": body,
+            "api_content": sidecar,
+        }
+        wire = {"role": "tool", "content": sidecar}
+
+        assert estimate_messages_tokens_rough([persisted]) == \
+            estimate_messages_tokens_rough([wire])
 
     def test_image_stripping_survives_shadow_extraction(self):
         """Non-regression for the ``_wire_message_shadow()`` extraction.

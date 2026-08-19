@@ -146,6 +146,28 @@ class TestChatCompletionsBasic:
         msgs = [{"role": "user", "content": "hi"}]
         assert transport.convert_messages(msgs) is msgs
 
+    def test_convert_messages_replays_tool_api_content_sidecar(self, transport):
+        """Tool rows must replay their persisted provider bytes, too.
+
+        Session reload sanitizes the display projection of tool results; the
+        sidecar is the only byte-exact copy left for the next API request.
+        """
+        msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "sanitized display result",
+                "api_content": "exact provider tool result",
+            }
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert result[0]["content"] == "exact provider tool result"
+        assert "api_content" not in result[0]
+        assert msgs[0]["content"] == "sanitized display result"
+        assert msgs[0]["api_content"] == "exact provider tool result"
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 

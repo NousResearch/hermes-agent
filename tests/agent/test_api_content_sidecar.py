@@ -30,7 +30,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.memory_manager import build_memory_context_block
-from agent.turn_context import build_turn_context, compose_user_api_content
+from agent.turn_context import (
+    build_turn_context,
+    compose_user_api_content,
+    substitute_api_content,
+)
 from hermes_state import SessionDB
 
 
@@ -47,6 +51,35 @@ class TestComposeUserApiContent:
         out = compose_user_api_content("hello", "likes tea", "PLUGIN-CTX")
         fenced = build_memory_context_block("likes tea")
         assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
+
+
+class TestApiContentRoleReplay:
+    def test_tool_sidecar_substitutes_for_provider_replay(self):
+        msg = {
+            "role": "tool",
+            "content": "sanitized display result",
+            "api_content": "exact bytes sent to the provider",
+        }
+
+        assert substitute_api_content(msg) == "exact bytes sent to the provider"
+        assert msg == {
+            "role": "tool",
+            "content": "exact bytes sent to the provider",
+        }
+
+    @pytest.mark.parametrize("role", ["system", "developer", "custom-extension"])
+    def test_extension_role_sidecar_substitutes_for_provider_replay(self, role):
+        msg = {
+            "role": role,
+            "content": "clean system content",
+            "api_content": "exact extension-role bytes",
+        }
+
+        assert substitute_api_content(msg) == "exact extension-role bytes"
+        assert msg == {
+            "role": role,
+            "content": "exact extension-role bytes",
+        }
 
 
 
@@ -807,7 +840,10 @@ class TestFlushSanitizeDivergenceCapture:
         db.create_session(session_id=sid, source="cli")
         try:
             agent = self._make_agent(db, sid)
-            raw = "what does a literal <memory-context> tag do?"
+            # A standalone closer is always sanitized. An inline opening-tag
+            # documentation reference is intentionally preserved by the
+            # bounded scrubber and would not exercise sidecar divergence.
+            raw = "what does a literal </memory-context> tag do?"
             assert sanitize_context(raw) != raw  # test precondition
             messages = [
                 {"role": "user", "content": raw},
@@ -821,6 +857,40 @@ class TestFlushSanitizeDivergenceCapture:
             assert msgs[1]["api_content"] == (
                 "it fences recalled memory <memory-context>"
             )
+        finally:
+            db.close()
+
+    def test_tool_content_sanitize_would_rewrite_is_captured(self, tmp_path):
+        """Tool strings keep their exact provider bytes across DB reloads.
+
+        The display transcript is still fail-closed, while ``api_content``
+        preserves the original tool result for model replay.
+        """
+        from agent.memory_manager import sanitize_context
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-tool-fence"
+        db.create_session(session_id=sid, source="cli")
+        try:
+            agent = self._make_agent(db, sid)
+            raw = (
+                "Visible <memory-context>PRIVATE_TOOL_CONTEXT"
+                "</memory-context> suffix"
+            )
+            messages = [
+                {"role": "tool", "content": raw, "tool_call_id": "call-1"}
+            ]
+
+            agent._flush_messages_to_session_db(messages, None)
+
+            stored = db.get_messages(sid)[0]
+            assert stored["content"] == raw
+            assert stored["api_content"] == raw
+            loaded = db.get_messages_as_conversation(sid)[0]
+            assert loaded["content"] == sanitize_context(raw).strip()
+            assert "PRIVATE_TOOL_CONTEXT" not in loaded["content"]
+            assert loaded["api_content"] == raw
+            assert loaded["tool_call_id"] == "call-1"
         finally:
             db.close()
 

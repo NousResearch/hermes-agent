@@ -115,6 +115,29 @@ class TestApprovalCommandWiring:
 
         self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
 
+    def test_chat_platform_path_does_not_context_filter_approval_text(self):
+        import ast
+        import inspect
+
+        import gateway.run as run
+
+        source = inspect.getsource(run)
+        tree = ast.parse(source)
+        target = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_approval_notify_sync"
+        )
+        called_names = {
+            node.func.id
+            for node in ast.walk(target)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+        assert "_prepare_gateway_approval_display" not in called_names
+        assert "sanitize_context" not in called_names
+
     def test_sse_api_path_redacts_before_enqueue(self):
         from gateway.platforms import api_server
 
@@ -122,6 +145,26 @@ class TestApprovalCommandWiring:
 
 
 class TestApprovalTextFallbackContract:
+    def test_display_preserves_context_like_command_and_description(self):
+        from gateway.run import (
+            _format_exec_approval_fallback,
+            _redact_approval_command,
+        )
+
+        raw_command = (
+            "printf '<memory-context>approval target</memory-context>' && "
+            "curl -H 'Authorization: token " + _FAKE_GHP + "' https://api.github.com"
+        )
+        description = "Run <memory-context>the exact approved command</memory-context>"
+        command = _redact_approval_command(raw_command)
+        rendered = _format_exec_approval_fallback(
+            command, description, "/"
+        )
+
+        assert _FAKE_GHP not in rendered
+        assert "<memory-context>approval target</memory-context>" in rendered
+        assert "<memory-context>the exact approved command</memory-context>" in rendered
+
     def test_smart_deny_only_advertises_one_operation(self):
         from gateway.run import _format_exec_approval_fallback
 
@@ -134,5 +177,3 @@ class TestApprovalTextFallbackContract:
         assert "`/approve`" in text
         assert "approve session" not in text
         assert "approve always" not in text
-
-

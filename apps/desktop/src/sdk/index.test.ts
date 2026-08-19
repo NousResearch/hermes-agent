@@ -107,3 +107,51 @@ describe('host.state turn flags', () => {
     $sessionTiles.set([])
   })
 })
+
+describe('host.connections', () => {
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+  const originalDesktop = desktopWindow.hermesDesktop
+
+  afterEach(() => {
+    desktopWindow.hermesDesktop = originalDesktop
+  })
+
+  const stubList = (value: unknown) => {
+    desktopWindow.hermesDesktop = {
+      ...originalDesktop,
+      connections: {
+        ...originalDesktop?.connections,
+        list: async () => value
+      }
+    } as Window['hermesDesktop']
+  }
+
+  it('returns connection rows from the desktop registry envelope (#89823)', async () => {
+    stubList({
+      connections: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        { id: 'remote', kind: 'remote', label: 'Remote gateway' }
+      ],
+      primary: 'local',
+      secureTokenStorage: true,
+      version: 2
+    })
+
+    const connections = await host.connections()
+
+    expect(Array.isArray(connections)).toBe(true)
+    expect(connections.map(connection => connection.id)).toEqual(['local', 'remote'])
+  })
+
+  it('falls back to an empty list when the registry has no connection rows', async () => {
+    stubList({ primary: '', secureTokenStorage: true, version: 1 })
+
+    await expect(host.connections()).resolves.toEqual([])
+  })
+
+  it('rejects on desktop builds without the connection registry', async () => {
+    desktopWindow.hermesDesktop = undefined
+
+    await expect(host.connections()).rejects.toThrow('This Desktop build has no connection registry')
+  })
+})

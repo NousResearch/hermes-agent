@@ -810,7 +810,9 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = strip_internal_tool_trace_lines(
+        _redact_gateway_user_facing_secrets(str(text))
+    )
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
@@ -828,7 +830,9 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _gateway_surface_passes_raw_text(platform):
         return text
 
-    text = _redact_gateway_user_facing_secrets(text)
+    text = strip_internal_tool_trace_lines(_redact_gateway_user_facing_secrets(text))
+    if not text:
+        return None
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
@@ -2554,6 +2558,7 @@ from gateway.platforms.base import (
     _reply_anchor_for_event,
     build_auto_tts_output_path,
     merge_pending_message_event,
+    strip_internal_tool_trace_lines,
     utf16_len,
 )
 from gateway.shutdown_watchdog import (

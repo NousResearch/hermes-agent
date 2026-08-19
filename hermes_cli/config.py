@@ -958,17 +958,13 @@ def ensure_hermes_home():
     home = get_hermes_home()
     key = str(home)
 
+    # Named profiles must be created explicitly (e.g. ``hermes profile create``).
+    # Check tombstones before the memo so a stale empty shell cannot skip
+    # the deleted-profile guard.
+    from hermes_constants import assert_named_profile_home_live
+    assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
-    # Named profiles must be created explicitly (e.g. ``hermes profile create``).
-    # If a stale process keeps running after the profile was renamed/deleted,
-    # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton
-    # and make the deleted profile reappear in Desktop/profile lists.
-    if home.parent.name == "profiles" and not home.exists():
-        raise FileNotFoundError(
-            f"Named profile home does not exist: {home}. "
-            "Create the profile explicitly before using it."
-        )
     if is_managed():
         old_umask = os.umask(0o007)
         try:

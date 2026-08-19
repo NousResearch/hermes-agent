@@ -34,6 +34,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_constants import (
+    clear_named_profile_deleted,
+    mark_named_profile_deleted,
+    named_profile_is_deleted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1022,6 +1027,8 @@ def list_profiles() -> List[ProfileInfo]:
                 continue  # already added as the built-in default above
             if not _PROFILE_ID_RE.match(name):
                 continue
+            if named_profile_is_deleted(entry):
+                continue
             model, provider = _read_config_model(entry)
             alias_name = alias_map.get(normalize_profile_name(name))
             if alias_name:
@@ -1107,6 +1114,8 @@ def profiles_to_serve(
                 continue  # default is the built-in entry already added above
             if not _PROFILE_ID_RE.match(name):
                 continue
+            if named_profile_is_deleted(entry):
+                continue
             if allowed is not None and name not in allowed:
                 continue
             serve.append((name, entry))
@@ -1173,8 +1182,11 @@ def create_profile(
         )
 
     profile_dir = get_profile_dir(canon)
+    if profile_dir.exists() and named_profile_is_deleted(profile_dir):
+        shutil.rmtree(profile_dir)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+    clear_named_profile_deleted(profile_dir)
 
     # Resolve clone source
     source_dir = None
@@ -1702,6 +1714,10 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # the rmtree below fail with ENOTEMPTY and — before the ensure_hermes_home
     # guard — resurrected the deleted tree.
     _stop_profile_backends(canon, profile_dir)
+
+    # Tombstone before rmtree so a stale serve/logging mkdir cannot relist
+    # this name as a live profile.
+    mark_named_profile_deleted(profile_dir)
 
     # 2c. Release this process's holographic memory-store connections into
     # the profile. The Desktop's *main* serve process opens memory_store.db

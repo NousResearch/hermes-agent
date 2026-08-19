@@ -227,6 +227,62 @@ def get_default_hermes_root() -> Path:
     return result
 
 
+# Named-profile deletion must survive stale mkdir from live serve/logging.
+# The marker lives beside the profile dir, not inside it, so rmtree cannot
+# erase the fact that the profile was deleted.
+_DELETED_PROFILES_DIR = ".deleted"
+
+
+def named_profile_home(path: str | Path) -> Path | None:
+    """Return ``<root>/profiles/<name>`` when *path* is that home or under it."""
+    current = Path(path)
+    for candidate in (current, *current.parents):
+        if candidate.parent.name == "profiles" and not candidate.name.startswith("."):
+            return candidate
+    return None
+
+
+def profile_tombstone_path(profile_home: Path) -> Path:
+    return profile_home.parent / _DELETED_PROFILES_DIR / profile_home.name
+
+
+def named_profile_is_deleted(profile_home: str | Path) -> bool:
+    return profile_tombstone_path(Path(profile_home)).exists()
+
+
+def mark_named_profile_deleted(profile_home: str | Path) -> None:
+    marker = profile_tombstone_path(Path(profile_home))
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("deleted\n", encoding="utf-8")
+
+
+def clear_named_profile_deleted(profile_home: str | Path) -> None:
+    profile_tombstone_path(Path(profile_home)).unlink(missing_ok=True)
+
+
+def assert_named_profile_home_live(path: str | Path) -> None:
+    """Refuse missing or tombstoned named profile homes.
+
+    Default ``HERMES_HOME`` (not under ``profiles/``) is unchanged.
+    """
+    home = named_profile_home(path)
+    if home is None:
+        return
+    if named_profile_is_deleted(home) or not home.exists():
+        raise FileNotFoundError(
+            f"Named profile home does not exist: {home}. "
+            "Create the profile explicitly before using it."
+        )
+
+
+def mkdir_under_hermes_home(path: str | Path) -> Path:
+    """Create *path*, but never materialize a deleted/missing named profile."""
+    target = Path(path)
+    assert_named_profile_home_live(target)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 

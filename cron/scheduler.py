@@ -2664,10 +2664,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         mirror_enabled = _cron_mirror_delivery_enabled(job, user_cfg)
     except Exception:
         mirror_enabled = False
-    mirror_text = ""
-    if mirror_enabled:
-        _, mirror_text = BasePlatformAdapter.extract_media(content)
-        mirror_text = (mirror_text or "").strip()
+    # Keep the cleaned delivery text available independently of the optional
+    # transcript-mirror knob. Continuable surfaces (notably in_channel) must
+    # seed their target session even when attach_to_session=false and
+    # cron.mirror_delivery=false; gating this value on mirror_enabled makes
+    # the seed receive an empty string and return False, which is exactly the
+    # live failure reproduced three times on Alice (job ef7bd2869d15).
+    _, mirror_text = BasePlatformAdapter.extract_media(content)
+    mirror_text = (mirror_text or "").strip()
 
     try:
         config = load_gateway_config()

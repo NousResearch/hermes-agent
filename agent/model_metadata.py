@@ -1726,11 +1726,28 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     # Available output = window - input. When the input alone is at or over
     # the window this stays None, so the caller correctly falls through to
     # compression instead of futilely shrinking the output cap.
+    #
+    # Caveat: when max_tokens is the BINDING constraint, vLLM does not report
+    # the real prompt size at all.  It back-computes a lower bound from the
+    # constraint itself -- "at least N input tokens" where
+    # N == window + 1 - requested_output -- so window - N is always exactly
+    # requested_output - 1.  Subtracting the caller's safety margin then walks
+    # the cap down ~65 tokens per retry while the reported input walks up by
+    # the same amount, burning every compression attempt without ever fitting.
+    # Detect that degenerate case and halve the requested cap instead: it
+    # carries the same guarantee (strictly below what was rejected) and
+    # converges in one or two retries.
     _m_vllm_input = re.search(
         r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower
     )
     if _m_ctx_tok and _m_vllm_input:
         _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))
+        _m_requested_out = re.search(r'requested (\d+)\s*output tokens', error_lower)
+        if 'at least' in error_lower and _m_requested_out:
+            _requested_out = int(_m_requested_out.group(1))
+            if _available >= _requested_out - 1:
+                # The budget is derived from the constraint, not measured.
+                return max(1, _requested_out // 2)
         if _available >= 1:
             return _available
 

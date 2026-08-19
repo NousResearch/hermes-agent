@@ -43,6 +43,20 @@ def clean_attachment_filename(name: object) -> str:
     return base
 
 
+def _is_command_boundary_char(ch: str) -> bool:
+    return ch.isspace() or unicodedata.category(ch) in {"Cc", "Cf"}
+
+
+def _strip_command_boundary_chars(text: str) -> str:
+    start = 0
+    end = len(text)
+    while start < end and _is_command_boundary_char(text[start]):
+        start += 1
+    while end > start and _is_command_boundary_char(text[end - 1]):
+        end -= 1
+    return text[start:end]
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
@@ -197,13 +211,15 @@ class MessageEvent:
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.allow_gateway_control and self._command_text().startswith("/")
+        return self.allow_gateway_control and _strip_command_boundary_chars(
+            self._command_text()
+        ).startswith("/")
 
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
-        raw = self._command_text().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
+        raw = _strip_command_boundary_chars(self._command_text()).split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
         # Reject file paths: valid command names never contain /
         return None if "/" in raw else raw
 
@@ -211,7 +227,7 @@ class MessageEvent:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
-        parts = self._command_text().lstrip().split(maxsplit=1)
+        parts = _strip_command_boundary_chars(self._command_text()).split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")

@@ -175,6 +175,15 @@ from gateway.config import Platform
 # returns housekeeping kinds (joins, canvas updates, …) — only kind 9 is
 # dispatched to the agent.
 _CHAT_KIND = 9
+# Kinds that carry agent-relevant conversation content and are dispatched
+# (#90309): chat messages (9) plus the Buzz forum kinds — 45001 is a forum
+# post (thread root) and 45003 a comment reply on it.  Block's own ACP
+# harness documents this set (``buzz-acp --kinds 9,46010,40007,45001,
+# 45002,45003``); the stream kinds (46010/40007/45002) are left out until
+# their dispatch semantics are confirmed.  ``_is_direct_message_event``
+# deliberately keeps the kind-9-only check: widening it there would let a
+# p-tagged forum post be reclassified as a DM and bypass mention gating.
+_DISPATCH_KINDS = frozenset({_CHAT_KIND, 45001, 45003})
 # How many events to request per poll / seed call.
 _FETCH_LIMIT = 50
 # Bound on the per-channel de-dupe set (events, not bytes).
@@ -1091,7 +1100,7 @@ class BuzzAdapter(BasePlatformAdapter):
         request = [
             "REQ",
             subscription_id,
-            {"kinds": [_CHAT_KIND], "#h": [channel_id], "since": since},
+            {"kinds": sorted(_DISPATCH_KINDS), "#h": [channel_id], "since": since},
         ]
         await websocket.send(json.dumps(request, separators=(",", ":")))
 
@@ -1309,7 +1318,7 @@ class BuzzAdapter(BasePlatformAdapter):
         state["seen"][event_id] = None
         state["last_ts"] = max(state["last_ts"], created_at)
 
-        if int(event.get("kind") or 0) != _CHAT_KIND:
+        if int(event.get("kind") or 0) not in _DISPATCH_KINDS:
             return
         pubkey = str(event.get("pubkey") or "").lower()
         content = event.get("content")

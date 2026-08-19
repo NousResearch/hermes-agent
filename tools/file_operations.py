@@ -364,6 +364,28 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
+def _aborted_stat_read_result(path: str, exit_code: int) -> Optional["ReadResult"]:
+    """Map a killed ``wc -c`` stat probe to an explicit abort error.
+
+    The read path stats the file with ``wc -c`` before reading it. A non-zero
+    exit normally means the file is missing, but two exit codes mean the probe
+    itself was aborted, not that the file is gone:
+
+      * 130 — the subprocess was killed by SIGINT. This fires when a client
+        disconnects mid-turn and the in-flight read is interrupted; reporting
+        it as "File not found" makes agents believe a file was deleted.
+      * 124 — the probe hit a ``timeout``/coreutils deadline.
+
+    Returns a ``ReadResult`` carrying the accurate error for those cases, or
+    ``None`` so the caller falls through to the file-not-found suggestion path.
+    """
+    if exit_code == 130:
+        return ReadResult(error=f"Read interrupted while checking file: {path}")
+    if exit_code == 124:
+        return ReadResult(error=f"Read timed out while checking file: {path}")
+    return None
+
+
 def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output.
 
@@ -1478,6 +1500,12 @@ class ShellFileOperations(FileOperations):
         stat_result = self._exec(self._size_probe_cmd(path))
 
         if stat_result.exit_code != 0:
+            # An interrupted/timed-out stat probe is not a missing file — a
+            # non-zero exit from an aborted probe must not masquerade as
+            # "File not found" (and must not trigger the fallbacks below).
+            aborted = _aborted_stat_read_result(path, stat_result.exit_code)
+            if aborted is not None:
+                return aborted
             # File not found. Before failing, try unicode-equivalent
             # spellings — NFC/NFD, narrow no-break space, curly quotes
             # render identically in a terminal, so the model retyping a
@@ -1762,6 +1790,9 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
         stat_result = self._exec(self._size_probe_cmd(path))
         if stat_result.exit_code != 0:
+            aborted = _aborted_stat_read_result(path, stat_result.exit_code)
+            if aborted is not None:
+                return aborted
             return self._suggest_similar_files(path)
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         if stat_output.strip() == NOT_REGULAR_SENTINEL:

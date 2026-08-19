@@ -327,7 +327,8 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is not None
         assert response.card.type == "raw"
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert card["header"]["template"] == "green"
         assert "Approved once" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
@@ -352,9 +353,38 @@ class TestCardActionCallbackResponse:
         with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
             response = adapter._on_card_action_trigger(data)
 
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert "Old Name" not in card["elements"][0]["content"]
         assert "ou_expired" in card["elements"][0]["content"]
+
+    def test_returns_json_card_for_update_prompt_action(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._update_prompt_state[7] = {
+            "session_key": "sess-up-7",
+            "message_id": "msg-up-7",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 7},
+            open_id="ou_bob",
+        )
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
+        assert card["header"]["template"] == "green"
+        assert "update prompt answered: yes" in card["header"]["title"]["content"].lower()
+        assert "Bob" in card["elements"][0]["content"]
 
     def test_rejects_approval_click_from_unauthorized_user(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -445,5 +475,3 @@ class TestResolveUpdatePrompt:
 
         assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
         assert 1 not in adapter._update_prompt_state
-
-

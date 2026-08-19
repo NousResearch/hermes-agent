@@ -4795,17 +4795,33 @@ function botActivitySession(bot) {
   return (preferred.last_active || 0) >= (last.last_active || 0) ? preferred : last
 }
 
+/** Worker liveness window: kanban/tool workers heartbeat last_activity_at
+ *  at least every 60s while running (agent/session_activity.py), so a
+ *  worker whose stamp is older than this is finished or stalled. Wider
+ *  than ACTIVE_WINDOW_S to bridge one missed heartbeat. */
+const WORKER_ACTIVE_WINDOW_S = 150
+
+/** True while this bot's freshest kanban/tool worker looks alive. Workers
+ *  never surface in conversation lists, so without this a profile grinding
+ *  through a 30-minute kanban task reads idle ("3 hr ago") the whole time
+ *  (hermes-agent#90268). Older gateways omit worker_session — always false. */
+function workerActiveAt(bot, now = Date.now()) {
+  const ts = bot?.worker_session?.last_active || 0
+  return Boolean(ts && now / 1000 - ts < WORKER_ACTIVE_WINDOW_S)
+}
+
 /** Bots that are working right now: the profile the gateway is running a
- *  turn for (busy), plus any bot whose last message landed inside the
- *  liveness window. Pure — output follows the input roster's order, so
- *  presence never reorders or hides the normal list. */
+ *  turn for (busy), any bot whose last message landed inside the liveness
+ *  window, plus any bot with a live kanban/tool worker. Pure — output
+ *  follows the input roster's order, so presence never reorders or hides
+ *  the normal list. */
 function activeBots(roster, activeProfile, gatewayState, now = Date.now()) {
   return (roster || []).filter(bot => {
     const busyTurn = !bot.remoteSource && bot.name === activeProfile && gatewayState === 'busy'
     const last = botActivitySession(bot)?.last_active || 0
     const inWindow = Boolean(last && now / 1000 - last < ACTIVE_WINDOW_S)
 
-    return busyTurn || inWindow
+    return busyTurn || inWindow || workerActiveAt(bot, now)
   })
 }
 
@@ -4838,9 +4854,15 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   // last_session alone shows "6d ago" on a bot you just messaged.
   const previewSession = bot.preferred_session || last
   const activitySession = botActivitySession(bot)
-  const activeNow = Boolean(
-    activitySession?.last_active && Date.now() / 1000 - activitySession.last_active < ACTIVE_WINDOW_S
-  )
+  // A live kanban/tool worker counts as activity (#90268): pulse + fresh
+  // age while it runs, falling back to chat activity when it ends.
+  const workerActive = workerActiveAt(bot)
+  const activeNow =
+    workerActive ||
+    Boolean(activitySession?.last_active && Date.now() / 1000 - activitySession.last_active < ACTIVE_WINDOW_S)
+  const rowAgeTs = workerActive
+    ? Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
+    : activitySession?.last_active || 0
   // Work pose only when this bot is actually doing something: the active
   // profile while the gateway is busy, or a bot that wrote within the
   // liveness window. Not every bot whenever the gateway is busy.
@@ -5018,13 +5040,13 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
               activeNow
                 ? jsx('span', {
                     className: 'hermes-bots-pulse size-1.5 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)',
-                    title: 'Active in the last 90s'
+                    title: workerActive ? 'Working on a task right now' : 'Active in the last 90s'
                   })
                 : null,
-              activitySession
+              rowAgeTs
                 ? jsx('span', {
                     className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
-                    children: relativeTime(activitySession.last_active * 1000)
+                    children: relativeTime(rowAgeTs * 1000)
                   })
                 : null
             ]

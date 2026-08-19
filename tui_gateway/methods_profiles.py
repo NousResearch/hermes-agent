@@ -128,29 +128,47 @@ def _(rid, params: dict) -> dict:
         except Exception:
             return None
 
-    def _latest_profile_session_row(profile_path):
-        """Most recent human-facing session in a profile's state.db, or None.
+    def _latest_profile_session_rows(profile_path):
+        """(newest human-facing session, newest worker session) for a profile.
 
-        Mirrors session.list's deny-list (drops ``tool`` sub-agent rows and
-        ``kanban`` dispatcher workers).  Best-effort: any failure (missing
-        state.db, locked db, older schema) degrades to None rather than
-        failing the whole profiles.list call.
+        First element mirrors session.list's deny-list (drops ``tool``
+        sub-agent rows and ``kanban`` dispatcher workers). Second element is
+        the newest DENIED row — the freshest kanban/tool worker — so roster
+        UIs can show that a profile is actively working even though worker
+        sessions never surface in conversation lists (hermes-agent#90268).
+        Workers heartbeat ``last_activity_at`` every ≤60s while running
+        (#72016), so a live worker's ``last_active`` stays fresh and the
+        client can apply its own liveness window. Best-effort: any failure
+        (missing state.db, locked db, older schema) degrades to (None, None)
+        rather than failing the whole profiles.list call.
         """
         try:
             from pathlib import Path
 
             db_path = Path(profile_path) / "state.db"
             if not db_path.exists():
-                return None
+                return None, None
             from hermes_state import SessionDB
 
             deny = frozenset({"kanban", "tool"})
             db = SessionDB(db_path=db_path)
             try:
+                human = None
+                worker = None
                 for s in db.list_sessions_rich(
                     source=None, limit=20, order_by_last_active=True, compact_rows=True
                 ):
-                    if (s.get("source") or "").strip().lower() in deny:
+                    src = (s.get("source") or "").strip().lower()
+                    if src in deny:
+                        if worker is None:
+                            worker = {
+                                "id": s["id"],
+                                "source": src,
+                                "title": s.get("title") or "",
+                                "last_active": s.get("last_active") or s.get("started_at") or 0,
+                            }
+                        continue
+                    if human is not None:
                         continue
                     row = {
                         "id": s["id"],
@@ -170,15 +188,17 @@ def _(rid, params: dict) -> dict:
                             row["preview"] = latest
                     except Exception:
                         pass
-                    return row
+                    human = row
+                    if worker is not None:
+                        break
+                return human, worker
             finally:
                 try:
                     db.close()
                 except Exception:
                     pass
         except Exception:
-            return None
-        return None
+            return None, None
 
     try:
         from hermes_cli.profiles import list_profiles
@@ -204,7 +224,12 @@ def _(rid, params: dict) -> dict:
                 "skill_count": getattr(p, "skill_count", 0) or 0,
             }
             if include_sessions:
-                row["last_session"] = _latest_profile_session_row(p.path)
+                last_row, worker_row = _latest_profile_session_rows(p.path)
+                row["last_session"] = last_row
+                # Freshest kanban/tool worker (or None) — lets rosters count
+                # a profile as active while its worker runs (#90268). Older
+                # clients ignore the extra field.
+                row["worker_session"] = worker_row
                 pin = preferred_ids.get(p.name)
                 if isinstance(pin, str) and pin.strip():
                     row["preferred_session"] = _preferred_session_row(p.path, pin.strip())

@@ -35,7 +35,7 @@ Restart the messaging gateway after changing the configuration.
 | `info_only` | Send a notice, then process the user's message immediately with the current overrides. |
 | `confirm` | Hold the message and show an interactive choice picker. The user can continue, reset the relevant override, or reset both overrides. If the prompt expires, the message is **not** submitted. |
 
-`confirm` requires a platform adapter with the generic interactive choice-picker capability. If the picker cannot be rendered, Hermes fails open and processes the message rather than losing it. Discord and Telegram support the picker.
+`confirm` requires a platform adapter with the generic interactive choice-picker capability. If the picker cannot be rendered, Hermes fails open and processes the message rather than losing it. Discord, Matrix, and Telegram support the picker. In a shared session, any user authorized for that chat/topic may choose an action; the picker is not restricted to the user who sent the held message.
 
 ## Detection policies
 
@@ -70,7 +70,7 @@ channels:
 
 ## Timing and bypasses
 
-- Idle time begins after the previous user-originated assistant response is **delivered by the platform adapter**, not when the user sent the request or when model generation ended. A two-hour task does not become stale while it is still running.
+- Idle time begins when the platform adapter's delivery lifecycle finishes for the previous user-originated turn, not when the user sent the request or when model generation ended. This completion callback also runs after a failed delivery attempt, so the clock records lifecycle completion rather than guaranteed receipt by the user. A two-hour task does not become stale while it is still running.
 - Internal events, slash commands, approvals, and messages steering an active turn bypass this feature.
 - A due idle/daily session auto-reset takes precedence; the message follows the normal reset boundary without showing a stale-override prompt.
 - The completion clock is stored with session routing metadata and survives gateway restarts.

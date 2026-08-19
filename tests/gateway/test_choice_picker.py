@@ -199,43 +199,122 @@ class TestTelegramChoicePickerLayout:
         assert [len(row) for row in markup.inline_keyboard] == expected_row_lengths
 
     @pytest.mark.asyncio
-    async def test_callback_state_is_isolated_per_topic(self):
+    async def test_two_same_topic_pickers_are_independently_selectable(
+        self, monkeypatch
+    ):
+        from plugins.platforms.telegram import adapter as telegram_adapter
         from plugins.platforms.telegram.adapter import TelegramAdapter
 
+        class _Markup:
+            def __init__(self, rows):
+                self.inline_keyboard = rows
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _Markup)
+
         adapter = TelegramAdapter.__new__(TelegramAdapter)
-        topic_one = AsyncMock(return_value="topic one selected")
-        topic_two = AsyncMock(return_value="topic two selected")
-        adapter._choice_picker_state = {
-            ("123", "10"): {
-                "msg_id": 41,
-                "choices": [{"value": "continue"}],
-                "on_choice_selected": topic_one,
-            },
-            ("123", "20"): {
-                "msg_id": 42,
-                "choices": [{"value": "defaults"}],
-                "on_choice_selected": topic_two,
-            },
-        }
+        adapter.platform = Platform.TELEGRAM
+        adapter._bot = object()
+        adapter._reply_to_mode = "off"
+        adapter._choice_picker_state = {}
+        adapter._choice_picker_cleanup_tasks = set()
         adapter._is_callback_user_authorized = lambda *_args, **_kwargs: True
         adapter.format_message = lambda text: text
-        query = SimpleNamespace(
-            message=SimpleNamespace(
-                message_id=41,
-                message_thread_id=10,
-                chat_id=123,
-                chat=SimpleNamespace(type="supergroup"),
-            ),
-            from_user=SimpleNamespace(id=7, first_name="User"),
-            edit_message_text=AsyncMock(),
-            answer=AsyncMock(),
+        adapter._reply_to_message_id_for_send = lambda *_args, **_kwargs: None
+        adapter._thread_kwargs_for_send = lambda *_args, **_kwargs: {
+            "message_thread_id": 10
+        }
+        adapter._link_preview_kwargs = lambda: {}
+        adapter._send_message_with_thread_fallback = AsyncMock(
+            side_effect=[
+                SimpleNamespace(message_id=41, message_thread_id=10),
+                SimpleNamespace(message_id=42, message_thread_id=10),
+            ]
         )
 
-        await adapter._handle_choice_picker_callback(query, "cp:0", "123")
+        picker_one = AsyncMock(return_value="user one selected")
+        picker_two = AsyncMock(return_value="user two selected")
+        for session_key, callback in (
+            ("session-user-1", picker_one),
+            ("session-user-2", picker_two),
+        ):
+            result = await adapter.send_choice_picker(
+                chat_id="123",
+                title="Choose",
+                choices=[{"value": "continue", "label": "Continue"}],
+                session_key=session_key,
+                on_choice_selected=callback,
+                metadata={"thread_id": "10"},
+            )
+            assert result.success is True
 
-        topic_one.assert_awaited_once_with("123", "continue")
-        topic_two.assert_not_awaited()
-        assert ("123", "10") not in adapter._choice_picker_state
-        assert ("123", "20") in adapter._choice_picker_state
+        assert set(adapter._choice_picker_state) == {
+            ("123", "41"),
+            ("123", "42"),
+        }
+
+        def _query(message_id, user_id):
+            return SimpleNamespace(
+                message=SimpleNamespace(
+                    message_id=message_id,
+                    message_thread_id=10,
+                    chat_id=123,
+                    chat=SimpleNamespace(type="supergroup"),
+                ),
+                from_user=SimpleNamespace(id=user_id, first_name="User"),
+                edit_message_text=AsyncMock(),
+                answer=AsyncMock(),
+            )
+
+        await adapter._handle_choice_picker_callback(_query(41, 7), "cp:0", "123")
+
+        picker_one.assert_awaited_once_with("123", "continue")
+        picker_two.assert_not_awaited()
+        assert ("123", "41") not in adapter._choice_picker_state
+        assert ("123", "42") in adapter._choice_picker_state
+
+        await adapter._handle_choice_picker_callback(_query(42, 8), "cp:0", "123")
+
+        picker_two.assert_awaited_once_with("123", "continue")
+        assert adapter._choice_picker_state == {}
+
+    @pytest.mark.asyncio
+    async def test_timed_picker_cleans_up_only_its_own_message_state(self, monkeypatch):
+        from plugins.platforms.telegram import adapter as telegram_adapter
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        class _Markup:
+            def __init__(self, rows):
+                self.inline_keyboard = rows
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _Markup)
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        adapter.platform = Platform.TELEGRAM
+        adapter._bot = object()
+        adapter._reply_to_mode = "off"
+        adapter._choice_picker_state = {
+            ("123", "41"): {"existing": True},
+        }
+        adapter._choice_picker_cleanup_tasks = set()
+        adapter.format_message = lambda text: text
+        adapter._reply_to_message_id_for_send = lambda *_args, **_kwargs: None
+        adapter._thread_kwargs_for_send = lambda *_args, **_kwargs: {}
+        adapter._link_preview_kwargs = lambda: {}
+        adapter._send_message_with_thread_fallback = AsyncMock(
+            return_value=SimpleNamespace(message_id=42)
+        )
+
+        result = await adapter.send_choice_picker(
+            chat_id="123",
+            title="Choose",
+            choices=[{"value": "continue", "label": "Continue"}],
+            session_key="session-key",
+            on_choice_selected=AsyncMock(),
+            metadata={"choice_timeout_seconds": 0},
+        )
+        assert result.success is True
+        await asyncio.gather(*adapter._choice_picker_cleanup_tasks)
+
+        assert ("123", "41") in adapter._choice_picker_state
+        assert ("123", "42") not in adapter._choice_picker_state
 
 

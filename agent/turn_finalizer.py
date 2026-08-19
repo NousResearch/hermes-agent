@@ -96,6 +96,25 @@ def _clone_background_review_messages(messages):
     return [_clone_message_for_send(message) for message in messages]
 
 
+def _requested_service_tier(agent) -> str | None:
+    """The service tier this turn asked for, or None — a billing audit field
+    (``hermes_cli/oneshot.py``: pipelines confirm the tier they believe they are paying for went
+    out on the wire). Two config paths write the tier into ``request_overrides``: the fast-mode
+    resolver writes it TOP-LEVEL (the shape the transports send) and a ``custom_providers`` entry
+    nests it under ``extra_body`` (``agent/agent_init.py``) — reading only ``extra_body`` reported
+    None for every fast-mode turn, so both are read, top-level winning because that is what the
+    transport puts on the request. ``speed: fast`` (Anthropic Fast Mode) is deliberately not
+    reported — a different parameter, not a service tier."""
+    overrides = getattr(agent, "request_overrides", None) or {}
+    if not isinstance(overrides, dict):
+        return None
+    tier = overrides.get("service_tier")
+    if tier:
+        return tier
+    extra_body = overrides.get("extra_body")
+    return extra_body.get("service_tier") if isinstance(extra_body, dict) else None
+
+
 def _invoke_hook_safely(name: str, logger: logging.Logger, **kwargs) -> list:
     """Fire a lifecycle plugin hook; a failing hook is logged, never fatal."""
     try:
@@ -557,10 +576,9 @@ def finalize_turn(
             else getattr(agent.context_compressor, "last_prompt_tokens", 0)
         ) or 0,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_COST_KEYS},
-        # Requested service tier, for billing audits (`hermes -z --usage-file`).
-        "service_tier": (
-            (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
-        ).get("service_tier"),
+        # Requested service tier, for billing audits (`hermes -z --usage-file`). See
+        # _requested_service_tier for why both override shapes must be read.
+        "service_tier": _requested_service_tier(agent),
         "session_id": agent.session_id,
     }
     if agent._tool_guardrail_halt_decision is not None:

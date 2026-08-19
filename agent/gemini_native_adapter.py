@@ -666,13 +666,10 @@ class GeminiNativeClient:
         service_tier: Optional[str] = None, timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
-        # Custom-provider configs carry the tier in extra_body; the fast-mode
-        # resolver passes it as a top-level kwarg. Accept both, preferring the
-        # explicit kwarg.
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
-            service_tier=service_tier or extra.get("service_tier"),
+            service_tier=service_tier,
         )
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"

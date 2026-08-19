@@ -424,6 +424,25 @@ async def test_confirm_picker_failure_fails_open_without_losing_message():
 
 
 @pytest.mark.asyncio
+async def test_confirm_hold_expires_while_picker_is_still_rendering():
+    runner = _runner("confirm")
+
+    async def render_after_expiry(**_kwargs):
+        assert runner._schedule_stale_override_prompt_expiry.called
+        runner._stale_override_pending.pop("session-key", None)
+        return True
+
+    runner._adapter.send_choice_picker = AsyncMock(side_effect=render_after_expiry)
+
+    handled, response = await runner._maybe_handle_stale_override_notice(
+        _event(), "session-key"
+    )
+
+    assert (handled, response) == (True, None)
+    runner._adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_pending_prompt_rejects_newer_message_without_replacing_original():
     runner = _runner("confirm")
     original = _event("first")
@@ -443,6 +462,21 @@ async def test_commands_and_internal_messages_bypass_notice(event):
     handled, response = await runner._maybe_handle_stale_override_notice(
         event, "session-key"
     )
+    assert (handled, response) == (False, None)
+    runner.async_session_store.get_session_metadata.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rewritten_slash_command_bypasses_notice():
+    runner = _runner("confirm")
+    event = _event("expanded command prompt")
+
+    handled, response = await runner._maybe_handle_stale_override_notice(
+        event,
+        "session-key",
+        was_slash_command=True,
+    )
+
     assert (handled, response) == (False, None)
     runner.async_session_store.get_session_metadata.assert_not_awaited()
 

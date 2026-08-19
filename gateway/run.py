@@ -2333,7 +2333,11 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home, get_hermes_home_override
+from hermes_constants import (
+    get_hermes_home,
+    get_hermes_home_override,
+    hermes_home_key,
+)
 from utils import atomic_json_write, base_url_hostname, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -9082,6 +9086,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         event: MessageEvent,
         session_key: str,
+        *,
+        was_slash_command: bool = False,
     ) -> tuple[bool, Optional[str]]:
         """Notify or hold the first ordinary message after an idle override.
 
@@ -9095,7 +9101,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "_stale_override_notice_bypass", False
         ):
             return False, None
-        if getattr(event, "internal", False) or event.is_command():
+        if (
+            getattr(event, "internal", False)
+            or was_slash_command
+            or event.is_command()
+        ):
             return False, None
 
         config = getattr(getattr(self, "config", None), "stale_override_notice", None)
@@ -9203,6 +9213,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         token = object()
         pending_map[session_key] = {"token": token, "event": event}
+        # Start the bounded hold before rendering the picker. A wedged platform
+        # send must not retain the original user input indefinitely.
+        self._schedule_stale_override_prompt_expiry(session_key, token)
 
         # This decision prompt uses long action labels whose distinction matters
         # more than density. Adapters may use this hint to render one action per
@@ -9289,6 +9302,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.warning("Failed to send stale-override confirmation", exc_info=True)
             result = None
+        current_pending = pending_map.get(session_key)
+        if (
+            current_pending is None
+            or current_pending.get("token") is not token
+        ):
+            # The confirmation window elapsed (or a conversation boundary
+            # cleared it) while the picker was rendering. Expiration is
+            # fail-closed: never revive or replay the held input here.
+            return True, None
         if not bool(getattr(result, "success", False)):
             pending_map.pop(session_key, None)
             # Rendering failure must not eat the user's message.
@@ -9302,7 +9324,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             decision.model_stale,
             decision.reasoning_stale,
         )
-        self._schedule_stale_override_prompt_expiry(session_key, token)
         return True, None
 
     def _resolve_session_agent_runtime(
@@ -19115,6 +19136,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         source: SessionSource,
         session_key: str,
+        cache_home_key: str,
         bundle_key: Optional[str],
         skill_key: Optional[str],
     ) -> Optional[str]:
@@ -19123,19 +19145,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Classification happens through cache-only resolvers at the ingress
         boundary.  Content loading is intentionally deferred until after that
         decision and this helper imports no plugin registry or command handler.
+        ``cache_home_key`` carries the same explicit profile identity into the
+        builders, so they never re-select an ambient profile/platform cache.
         ``None`` means expansion succeeded; a string is a user-facing failure.
         """
         user_instruction = event.get_command_args().strip()
         platform = source.platform.value if source.platform else None
 
         if bundle_key is not None:
-            from agent.skill_bundles import build_bundle_invocation_message
+            from agent.skill_bundles import (
+                build_bundle_invocation_message,
+                get_cached_skill_bundles,
+            )
+
+            bundles = get_cached_skill_bundles(cache_home_key, platform)
+            if bundles is None or bundle_key not in bundles:
+                return f"Failed to load skill bundle {bundle_key}."
 
             bundle_result = build_bundle_invocation_message(
                 bundle_key,
                 user_instruction,
                 task_id=session_key,
                 platform=platform,
+                bundles=bundles,
             )
             if not bundle_result:
                 return f"Failed to load skill bundle {bundle_key}."
@@ -19148,12 +19180,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from agent.skill_commands import (
             build_skill_invocation_message,
             build_stacked_skill_invocation_message,
-            get_skill_commands,
+            get_cached_skill_commands,
             split_stacked_skill_commands,
         )
         from agent.skill_utils import get_disabled_skill_names
 
-        skill_commands = get_skill_commands()
+        skill_commands = get_cached_skill_commands(cache_home_key, platform)
+        if skill_commands is None or skill_key not in skill_commands:
+            return f"Failed to load skill {skill_key}."
         skill_name = skill_commands.get(skill_key, {}).get("name", "")
         if platform and skill_name:
             disabled = get_disabled_skill_names(platform=platform)
@@ -19164,7 +19198,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         extra_keys, stacked_instruction = split_stacked_skill_commands(
-            user_instruction
+            user_instruction,
+            commands=skill_commands,
         )
         if extra_keys and platform:
             disabled = get_disabled_skill_names(platform=platform)
@@ -19185,6 +19220,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 [skill_key, *extra_keys],
                 stacked_instruction,
                 task_id=session_key,
+                commands=skill_commands,
             )
             if not stacked_result:
                 return f"Failed to load stacked skills for {skill_key}."
@@ -19195,6 +19231,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             skill_key,
             user_instruction,
             task_id=session_key,
+            commands=skill_commands,
         )
         if not message:
             return f"Failed to load skill {skill_key}."
@@ -19730,6 +19767,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not _is_quick_command:
                     # Proven cache-only resolvers: no scan, config read, plugin
                     # import/registration, or secret refresh.
+                    _scoped_home = get_hermes_home_override()
+                    _expected_home_key = hermes_home_key(
+                        _scoped_home if _scoped_home is not None else _hermes_home
+                    )
+                    _message_platform = (
+                        source.platform.value if source.platform else ""
+                    )
                     from agent.skill_bundles import (
                         resolve_cached_bundle_command_key,
                     )
@@ -19738,11 +19782,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
                     _dynamic_bundle_key = resolve_cached_bundle_command_key(
-                        _inbound_command
+                        _inbound_command,
+                        _expected_home_key,
+                        _message_platform,
                     )
                     if _dynamic_bundle_key is None:
                         _dynamic_skill_key = resolve_cached_skill_command_key(
-                            _inbound_command
+                            _inbound_command,
+                            _expected_home_key,
+                            _message_platform,
                         )
 
             if _dynamic_bundle_key is not None or _dynamic_skill_key is not None:
@@ -19751,6 +19799,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event,
                         source=source,
                         session_key=_authoritative_key,
+                        cache_home_key=_expected_home_key,
                         bundle_key=_dynamic_bundle_key,
                         skill_key=_dynamic_skill_key,
                     )
@@ -21193,7 +21242,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # deliberately after command and running-agent handling: slash control
         # traffic and active-turn steering must never be blocked by the notice.
         _override_handled, _override_response = (
-            await self._maybe_handle_stale_override_notice(event, _quick_key)
+            await self._maybe_handle_stale_override_notice(
+                event,
+                _quick_key,
+                was_slash_command=bool(_inbound_command),
+            )
         )
         if _override_handled:
             return _override_response

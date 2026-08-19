@@ -602,6 +602,63 @@ def test_consumer_codex_wire_guard_preserves_compatible_endpoint_retention():
     assert sanitized is not request
 
 
+@pytest.mark.parametrize(
+    "base_url,model,expect_dropped",
+    [
+        # Consumer ChatGPT Codex: the endpoint rejects retention outright.
+        ("https://chatgpt.com/backend-api/codex", "gpt-5.6-sol", True),
+        ("https://chatgpt.com/backend-api/codex", "gpt-5-codex", True),
+        # Hosts that support 24h retention must keep it (#70083, #88601).
+        ("https://api.meta.ai/v1", "gpt-5.6-sol", False),
+        ("https://bedrock-mantle.us-east-1.api.aws/v1", "openai.gpt-5.5", False),
+        # Non-Codex OpenAI and a same-host/different-path backend are both
+        # outside the consumer-Codex contract the guard enforces.
+        ("https://api.openai.com/v1", "gpt-5.6-sol", False),
+        ("https://chatgpt.com/backend-api/other", "gpt-5.6-sol", False),
+    ],
+)
+def test_wire_guard_scopes_retention_drop_by_real_endpoint(
+    monkeypatch,
+    base_url,
+    model,
+    expect_dropped,
+):
+    """The drop is scoped by the real endpoint, not by a stubbed predicate.
+
+    The sibling test above pins the helper's contract against an explicit
+    boolean. This one drives ``_is_codex_backend()`` off a real ``AIAgent``
+    built on each base URL, so a change to the hostname/path predicate that
+    widened the drop onto retention-supporting hosts would fail here.
+    """
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model=model,
+        api_mode="codex_responses",
+        base_url=base_url,
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    request = {
+        "model": model,
+        "prompt_cache_key": "cache-key-sentinel",
+        "prompt_cache_retention": "24h",
+        "input": [{"role": "user", "content": "hi"}],
+    }
+    sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert ("prompt_cache_retention" not in sanitized) is expect_dropped
+    # Cache-key routing is independent of retention: the guard must never
+    # disturb the prompt-cache key, on any endpoint.
+    assert sanitized["prompt_cache_key"] == "cache-key-sentinel"
+    assert request["prompt_cache_retention"] == "24h"
+
+
 def test_run_codex_stream_returns_collected_items_when_stream_ends_without_terminal(monkeypatch):
     """The event-driven path tolerates streams that end without a terminal frame.
 

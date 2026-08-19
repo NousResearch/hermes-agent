@@ -1322,12 +1322,16 @@ def _sanitize_consumer_codex_request(
     rejected by the provider.
     """
     sanitized = dict(request)
+    # Resolved defensively on purpose: run_codex_stream is also driven with
+    # lightweight stand-in agents that carry only the attributes a given path
+    # needs (see tests/agent/test_codex_request_transport_diagnostics.py), so a
+    # bare agent._is_codex_backend() here would raise AttributeError on them.
     backend_predicate = getattr(agent, "_is_codex_backend", None)
     is_consumer_codex = (
         bool(backend_predicate()) if callable(backend_predicate) else False
     )
     if is_consumer_codex and "prompt_cache_retention" in sanitized:
-        sanitized.pop("prompt_cache_retention", None)
+        sanitized.pop("prompt_cache_retention")
         logger.warning(
             "Dropped unsupported prompt_cache_retention at consumer Codex "
             "wire boundary (model=%s).",

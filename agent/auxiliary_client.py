@@ -4717,6 +4717,23 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     return False
 
 
+def _pool_owns_api_key(provider: str, api_key: str) -> bool:
+    """Return whether *api_key* identifies an entry in *provider*'s pool."""
+    if not api_key:
+        return False
+    try:
+        pool = load_pool(_normalize_aux_provider(provider))
+        lookup = getattr(pool, "entry_id_for_api_key", None)
+        return bool(lookup(api_key)) if callable(lookup) else False
+    except Exception as exc:
+        logger.debug(
+            "Auxiliary client: could not match failed key to %s pool: %s",
+            provider,
+            exc,
+        )
+        return False
+
+
 def _retry_same_provider_sync(
     *,
     task: Optional[str],
@@ -9814,6 +9831,7 @@ def _call_llm_impl(
         # _select_unlocked() return the NEXT key by mistake).
         _client_api_key = str(getattr(client, "api_key", "") or "")
         if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
+            failed_key_was_pooled = _pool_owns_api_key(pool_provider, _client_api_key)
             recovery_err = first_err
             # Skip the extra retry for clear payment/quota errors — the endpoint
             # won't accept another request with the same exhausted key.
@@ -9841,7 +9859,10 @@ def _call_llm_impl(
                         resolved_provider=resolved_provider,
                         resolved_model=resolved_model,
                         resolved_base_url=resolved_base_url,
-                        resolved_api_key=resolved_api_key,
+                        # A MoA slot may have captured a pool key in its runtime
+                        # snapshot. Drop only that stale snapshot; a caller-pinned
+                        # key that is not in the pool must remain authoritative.
+                        resolved_api_key=None if failed_key_was_pooled else resolved_api_key,
                         resolved_api_mode=resolved_api_mode,
                         main_runtime=main_runtime,
                         final_model=final_model,
@@ -10551,6 +10572,7 @@ async def _async_call_llm_impl(
         pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
         _client_api_key = str(getattr(client, "api_key", "") or "")
         if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
+            failed_key_was_pooled = _pool_owns_api_key(pool_provider, _client_api_key)
             recovery_err = first_err
             # Skip the extra retry for clear payment/quota errors — the endpoint
             # won't accept another request with the same exhausted key.
@@ -10578,7 +10600,9 @@ async def _async_call_llm_impl(
                         resolved_provider=resolved_provider,
                         resolved_model=resolved_model,
                         resolved_base_url=resolved_base_url,
-                        resolved_api_key=resolved_api_key,
+                        # Match sync recovery: only a pool-sourced runtime
+                        # snapshot is invalidated by pool rotation.
+                        resolved_api_key=None if failed_key_was_pooled else resolved_api_key,
                         resolved_api_mode=resolved_api_mode,
                         final_model=final_model,
                         messages=messages,

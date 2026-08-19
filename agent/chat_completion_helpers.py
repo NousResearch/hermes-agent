@@ -33,7 +33,7 @@ from agent.error_classifier import (
     FailoverReason,
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
 )
-from agent.errors import EmptyStreamError
+from agent.errors import EmptyStreamError, is_streaming_not_supported_error
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
@@ -4974,10 +4974,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         agent._buffer_status(_exhausted_msg)
                     else:
                         _err_lower = str(e).lower()
-                        _is_stream_unsupported = (
-                            "stream" in _err_lower
-                            and "not supported" in _err_lower
-                        )
+                        _is_stream_unsupported = is_streaming_not_supported_error(e)
                         # AWS Bedrock (AnthropicBedrock SDK path): IAM policies
                         # with bedrock:InvokeModel but not
                         # InvokeModelWithResponseStream reject messages.stream()

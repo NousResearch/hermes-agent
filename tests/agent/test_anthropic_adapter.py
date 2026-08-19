@@ -12,6 +12,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
+    _is_stream_unavailable_error,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
@@ -43,6 +44,28 @@ class TestIsOAuthToken:
 
 
 
+
+
+class TestStreamUnavailableError:
+    @pytest.mark.parametrize(
+        "message",
+        (
+            "Streaming is not supported for this model",
+            "This provider does not support streaming",
+        ),
+    )
+    def test_explicit_stream_rejections_are_recognized(self, message):
+        assert _is_stream_unavailable_error(RuntimeError(message)) is True
+
+    @pytest.mark.parametrize(
+        "message",
+        (
+            "Upstream request failed: tool schema is not supported",
+            "Non-stream chat request is currently not supported",
+        ),
+    )
+    def test_unrelated_not_supported_errors_are_not_stream_rejections(self, message):
+        assert _is_stream_unavailable_error(RuntimeError(message)) is False
 
 
 class TestBuildAnthropicClient:

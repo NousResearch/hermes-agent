@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+from agent.errors import is_streaming_not_supported_error
 from agent.secret_scope import get_secret as _get_secret
 
 try:
@@ -3149,7 +3150,7 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
 def _is_stream_unavailable_error(exc: Exception) -> bool:
     """Return True when an Anthropic stream call should fall back to create()."""
     err_lower = str(exc).lower()
-    if "stream" in err_lower and "not supported" in err_lower:
+    if is_streaming_not_supported_error(exc):
         return True
     if "invokemodelwithresponsestream" in err_lower:
         from agent.bedrock_adapter import is_streaming_access_denied_error

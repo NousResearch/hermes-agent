@@ -264,6 +264,38 @@ class TestStreamingFallback:
         # The flag should be set so the main retry loop switches to non-streaming
         assert agent._disable_streaming is True
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_upstream_tool_schema_error_keeps_streaming_enabled(
+        self, mock_close, mock_create
+    ):
+        """An unsupported tool schema is not an unsupported response stream."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = Exception(
+            "Error from provider: Upstream request failed: "
+            "[unsupported_tool_schema] The tool schema is not supported "
+            "(tool_count_limit)."
+        )
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://opencode.ai/zen/go/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        setattr(agent, "api_mode", "chat_completions")
+        agent._interrupt_requested = False
+
+        with pytest.raises(Exception, match="unsupported_tool_schema"):
+            agent._interruptible_streaming_api_call({})
+
+        assert getattr(agent, "_disable_streaming", False) is False
+
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

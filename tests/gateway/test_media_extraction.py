@@ -138,6 +138,152 @@ caption
         assert tags == []
         assert voice is False
 
+    def test_gateway_auto_append_keeps_real_tts_media_tag(self):
+        """TTS tool media tags are still auto-appended when the model omits them."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Say this as audio"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_tts", "function": {"name": "text_to_speech"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_tts",
+                "content": '{"success": true, "media_tag": "[[audio_as_voice]]\\nMEDIA:/tmp/voice.ogg"}',
+            },
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/voice.ogg"]
+        assert voice is True
+
+    def test_gateway_auto_append_image_generate_json_path(self):
+        """image_generate returns a local path in JSON (no MEDIA: tag); it is
+        auto-appended so delivery doesn't depend on the model restating it."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make me a cat"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_img", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": '{"success": true, "image": "/tmp/gen/cat.png", "agent_visible_image": "/tmp/gen/cat.png"}',
+            },
+            {"role": "assistant", "content": "Here's your cat."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/gen/cat.png"]
+        assert voice is False
+
+    def test_gateway_auto_append_image_generate_all_images(self):
+        """A multi-output image tool result attaches every unique local image."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_img", "function": {"name": "image_generate"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": (
+                    '{"success": true, "image": "/tmp/gen/first.png", '
+                    '"images": ["/tmp/gen/first.png", "/tmp/gen/second.webp", '
+                    '"https://example.com/not-local.png"]}'
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/gen/first.png", "MEDIA:/tmp/gen/second.webp"]
+        assert voice is False
+
+    def test_gateway_auto_append_image_generate_prefers_host_path(self):
+        """When host and sandbox paths differ, the host-deliverable path wins."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make me a dog"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_img", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": '{"success": true, "host_image": "/host/dog.jpg", "image": "/host/dog.jpg", "agent_visible_image": "/sandbox/dog.jpg"}',
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/host/dog.jpg"]
+
+    def test_gateway_auto_append_image_generate_failure_and_url_ignored(self):
+        """Failed generations and remote URLs are not auto-delivered."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        def _img_msgs(content):
+            return [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "c", "function": {"name": "image_generate"}}
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c", "content": content},
+            ]
+
+        # Failed generation
+        tags, _ = _collect_auto_append_media_tags(
+            _img_msgs('{"success": false, "image": null, "error": "boom"}'),
+            history_offset=0,
+        )
+        assert tags == []
+
+        # Remote URL is not a local file path
+        tags, _ = _collect_auto_append_media_tags(
+            _img_msgs('{"success": true, "image": "https://fal.media/x/cat.png"}'),
+            history_offset=0,
+        )
+        assert tags == []
+
+    def test_gateway_auto_append_image_generate_dedupes_history(self):
+        """A generated image path already in history is not re-sent."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": '{"success": true, "image": "/tmp/gen/cat.png"}',
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(
+            messages, history_offset=0, history_media_paths={"/tmp/gen/cat.png"}
+        )
+        assert tags == []
 
     def test_collect_history_media_paths_includes_image_generate_json(self):
         """Regression for #46627: the history media-path collector must pick up
@@ -157,7 +303,10 @@ caption
             {
                 "role": "tool",
                 "tool_call_id": "c",
-                "content": '{"success": true, "image": "/tmp/gen/cat.png"}',
+                "content": (
+                    '{"success": true, "image": "/tmp/gen/cat.png", '
+                    '"images": ["/tmp/gen/cat.png", "/tmp/gen/cat-2.webp"]}'
+                ),
             },
             # A separate MEDIA: text tag from another tool, to confirm both shapes.
             {
@@ -168,6 +317,7 @@ caption
         ]
         paths = _collect_history_media_paths(history)
         assert "/tmp/gen/cat.png" in paths  # JSON-payload path (the bug)
+        assert "/tmp/gen/cat-2.webp" in paths  # Additional multi-output image
         assert "/tmp/voice/note.ogg" in paths  # MEDIA: text path (already worked)
 
     def test_non_streaming_dedup_excludes_current_turn_tool_output(self):

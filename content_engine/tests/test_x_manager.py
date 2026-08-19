@@ -80,13 +80,18 @@ def test_transform_returns_pending_artifact():
 # ── Lane 2: quote-tweet candidate scan ─────────────────────────────────────
 
 
-def _candidate(tweet_id="1", author="alice", text="a tweet", **pack_kw):
-    return {
+def _candidate(tweet_id="1", author="alice", text="a tweet", quote_draft=None, **pack_kw):
+    candidate = {
         "tweet_id": tweet_id,
         "author": author,
         "text": text,
         "pack": _pack(**pack_kw),
     }
+    if quote_draft is None:
+        quote_draft = f"A distinct response to tweet {tweet_id}"
+    if quote_draft:
+        candidate["quote_draft"] = quote_draft
+    return candidate
 
 
 def test_quote_scan_returns_3_to_5():
@@ -126,6 +131,28 @@ def test_quote_scan_embeds_source_context():
     assert "42" in first.pack.context["source_url"]
 
 
+def test_quote_scan_uses_distinct_quote_draft_not_source_tweet():
+    candidates = [
+        _candidate(tweet_id=str(i), text="Source tweet", quote_draft=f"A distinct take {i}")
+        for i in range(3)
+    ]
+    artifacts = xm.scan_quote_tweet_candidates(candidates)
+    assert [artifact.body for artifact in artifacts] == [
+        "A distinct take 0", "A distinct take 1", "A distinct take 2",
+    ]
+
+
+def test_quote_scan_drops_candidate_without_distinct_quote_draft():
+    candidates = [
+        _candidate(tweet_id="1", text="Source tweet", quote_draft="Source tweet"),
+        _candidate(tweet_id="2", text="Source tweet", quote_draft="Distinct two"),
+        _candidate(tweet_id="3", text="Source tweet", quote_draft="Distinct three"),
+        _candidate(tweet_id="4", text="Source tweet", quote_draft="Distinct four"),
+    ]
+    artifacts = xm.scan_quote_tweet_candidates(candidates)
+    assert len(artifacts) == 3
+
+
 # ── Lane 3: morning article drafts ─────────────────────────────────────────
 
 
@@ -156,6 +183,29 @@ def test_article_is_text_first():
     assert art.lane == xm.LANE_ARTICLE
     assert art.body.startswith("# Title")
     assert art.pack.is_complete()
+
+
+def test_stage_and_format_card_remains_pending_and_targets_manager_channel():
+    artifact = xm.transform_user_material({"text": "note"}, pack=_pack())
+    card = xm.stage_and_format_card(artifact)
+    assert card.channel_id == xm.X_MANAGER_CHANNEL_ID
+    assert card.artifact_id == artifact.id
+    assert "PENDING APPROVAL" in card.body
+    assert xm.list_artifacts(status=xm.STATUS_PENDING)[0]["id"] == artifact.id
+
+
+def test_morning_package_stages_up_to_two_finished_articles():
+    drafts = [
+        {
+            "signals": [{"summary": f"signal {i}"}],
+            "pack": _pack(claim=f"claim {i}"),
+            "body": f"# Article {i}\n\nBody",
+        }
+        for i in range(3)
+    ]
+    cards = xm.stage_morning_article_package(drafts)
+    assert len(cards) == 2
+    assert all(card.channel_id == xm.X_MANAGER_CHANNEL_ID for card in cards)
 
 
 # ── Approval-only / fail-closed persistence ────────────────────────────────

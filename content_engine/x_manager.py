@@ -46,6 +46,10 @@ REQUIRED_PACK_FIELDS = ("claim", "evidence", "mechanism", "position")
 QUOTE_SCAN_MIN = 3
 QUOTE_SCAN_MAX = 5
 
+# Dedicated approval channel. It is deliberately injectable at formatting time
+# so tests and future Discord adapters cannot silently route to #content.
+X_MANAGER_CHANNEL_ID = "1539435276160729148"
+
 # Approval status vocabulary. There is no "published" state reachable from
 # this module — publishing is a separate, human-driven step outside the
 # manager's surface.
@@ -105,6 +109,19 @@ class XArtifact:
     pack: ArgumentPack
     status: str = STATUS_PENDING
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+@dataclass
+class DeliveryCard:
+    """Pure approval-card payload for a Discord adapter to deliver later.
+
+    Keeping this as data, not an HTTP call, means manager code cannot publish
+    or talk to any social platform as a side effect.
+    """
+
+    artifact_id: str
+    channel_id: str
+    body: str
 
 
 # ── Persistence (approval-only, fail closed) ──────────────────────────────
@@ -193,6 +210,39 @@ def stage_for_approval(artifact: XArtifact) -> str:
     finally:
         conn.close()
     return artifact.id
+
+
+def format_approval_card(
+    artifact: XArtifact,
+    *,
+    channel_id: str = X_MANAGER_CHANNEL_ID,
+) -> DeliveryCard:
+    """Return a paste-ready pending-approval card without sending it anywhere."""
+    _validate_artifact(artifact)
+    return DeliveryCard(
+        artifact_id=artifact.id,
+        channel_id=channel_id,
+        body=(
+            f"**X manager · {artifact.lane} · PENDING APPROVAL**\n"
+            f"ID: `{artifact.id}`\n\n"
+            f"{artifact.body}\n\n"
+            f"**Claim:** {artifact.pack.claim}\n"
+            f"**Evidence:** {artifact.pack.evidence}\n"
+            f"**Mechanism:** {artifact.pack.mechanism}\n"
+            f"**Position:** {artifact.pack.position}\n\n"
+            "Approve or reject explicitly. This manager cannot publish."
+        ),
+    )
+
+
+def stage_and_format_card(
+    artifact: XArtifact,
+    *,
+    channel_id: str = X_MANAGER_CHANNEL_ID,
+) -> DeliveryCard:
+    """Stage an artifact then return its pending approval card, with no network I/O."""
+    stage_for_approval(artifact)
+    return format_approval_card(artifact, channel_id=channel_id)
 
 
 def decide(artifact_id: str, action: str, decided_by: str = "") -> bool:
@@ -305,9 +355,14 @@ def scan_quote_tweet_candidates(
     for c in candidates:
         tweet_id = c.get("tweet_id") or c.get("id") or ""
         author = c.get("author") or ""
-        text = (c.get("text") or "").strip()
+        source_text = (c.get("text") or "").strip()
+        quote_draft = (c.get("quote_draft") or "").strip()
         pack = c.get("pack")
-        if not tweet_id or not text or not isinstance(pack, ArgumentPack):
+        if not tweet_id or not source_text or not quote_draft or not isinstance(pack, ArgumentPack):
+            continue
+        # Re-staging the source tweet is not a quote tweet. It is a copy, so
+        # reject it rather than manufacturing a weak candidate.
+        if quote_draft.casefold() == source_text.casefold():
             continue
         if not pack.is_complete():
             continue
@@ -319,7 +374,7 @@ def scan_quote_tweet_candidates(
             id=_new_id(LANE_QUOTE_SCAN),
             lane=LANE_QUOTE_SCAN,
             brand=brand,
-            body=text,
+            body=quote_draft,
             pack=ArgumentPack(
                 claim=pack.claim,
                 evidence=pack.evidence,
@@ -375,3 +430,21 @@ def morning_article_drafts(
     )
     _validate_artifact(artifact)
     return artifact
+
+
+def stage_morning_article_package(
+    drafts: list[dict],
+    *,
+    channel_id: str = X_MANAGER_CHANNEL_ID,
+) -> list[DeliveryCard]:
+    """Stage at most two already-written, evidence-backed morning articles."""
+    cards: list[DeliveryCard] = []
+    for draft in drafts[:2]:
+        artifact = morning_article_drafts(
+            draft.get("signals") or [],
+            brand=draft.get("brand", "sahil_twitter"),
+            pack=draft.get("pack"),
+            body=draft.get("body", ""),
+        )
+        cards.append(stage_and_format_card(artifact, channel_id=channel_id))
+    return cards

@@ -7,7 +7,7 @@ The transport is now a file (--query-file) / stdin, and the protocol text
 must never regress to inlining the body into -q.
 """
 
-import subprocess
+
 import sys
 from pathlib import Path
 
@@ -50,17 +50,14 @@ def test_query_file_reads_hostile_text_verbatim(tmp_path, monkeypatch):
 
 
 def test_query_and_query_file_mutually_exclusive(tmp_path):
+    """argparse rejects -q + --query-file at parse time (exit 2), no env needed."""
+    import pytest
+
     f = tmp_path / "dm.txt"
     f.write_text("hello", encoding="utf-8")
-    proc = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; sys.path.insert(0, %r); "
-         "from hermes_cli.main import main; sys.argv=['hermes','chat','-q','x','--query-file',%r]; main()"
-         % (str(REPO), str(f))],
-        capture_output=True, text=True, timeout=120,
-    )
-    assert proc.returncode == 2
-    assert "mutually exclusive" in proc.stderr
+    with pytest.raises(SystemExit) as exc:
+        _parse(["chat", "-q", "x", "--query-file", str(f)])
+    assert exc.value.code == 2
 
 
 def test_bot_mode_protocol_never_inlines_message_into_shell():

@@ -300,10 +300,11 @@ def build_top_level_parser():
         help="Interactive chat with the agent",
         description="Start an interactive chat session with Hermes Agent",
     )
-    chat_parser.add_argument(
+    _query_group = chat_parser.add_mutually_exclusive_group()
+    _query_group.add_argument(
         "-q", "--query", help="Single query (non-interactive mode)"
     )
-    chat_parser.add_argument(
+    _query_group.add_argument(
         "--query-file",
         metavar="PATH",
         help=(

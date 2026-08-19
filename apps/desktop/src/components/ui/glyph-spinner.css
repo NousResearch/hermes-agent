@@ -47,7 +47,9 @@
    `[data-selectable-text='true'] *` rule carries the same (0,1,0) specificity,
    so relying on inheritance would make the winner depend on stylesheet order. */
 .glyph-spinner,
-.glyph-spinner * {
+.glyph-spinner *,
+[data-selectable-text='true'] .glyph-spinner,
+[data-selectable-text='true'] .glyph-spinner * {
   -webkit-user-select: none;
   user-select: none;
 }
@@ -64,6 +66,18 @@
    at once. */
 .glyph-spinner:not([data-paused='true']) .glyph-spinner__strip {
   will-change: transform;
+}
+
+/* The global renderer pause and the reduced-motion freeze stop the animation;
+   drop the layer hint there too, so parked spinners hold no compositor layer. */
+:root[data-renderer-animations-paused] .glyph-spinner__strip {
+  will-change: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glyph-spinner__strip {
+    will-change: auto;
+  }
 }
 
 .glyph-spinner__frame {

@@ -20,7 +20,7 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 
@@ -74,8 +74,12 @@ test.describe('GlyphSpinner (compositor animation)', () => {
         durationMs: animations[0]?.effect?.getTiming().duration ?? null,
         names: animations.map(a => (a as CSSAnimation).animationName),
         // A percentage translate makes the animation layout-dependent, which
-        // Chromium refuses to composite. The travel must resolve to a length.
-        transform: style.transform
+        // Chromium refuses to composite. Read the engine's own keyframes: a
+        // revert to translateY(-100%) shows up here, while the computed
+        // `style.transform` always serializes to a matrix and can't tell.
+        travel: ((animations[0]?.effect as KeyframeEffect | undefined)?.getKeyframes() ?? [])
+          .map(k => String((k as Keyframe & { transform?: string }).transform ?? ''))
+          .join(' | ')
       }
     }, STRIP)
 
@@ -88,9 +92,10 @@ test.describe('GlyphSpinner (compositor animation)', () => {
     // One full cycle is frames x interval, so the duration must be a positive
     // multiple of the frame count — not the single-frame interval.
     expect(observed.durationMs).toBeGreaterThan(0)
-    // A resolved matrix, never a percentage: `translateY(-100%)` would keep
+    // Length-typed travel, never a percentage: `translateY(-100%)` would keep
     // the animation off the compositor.
-    expect(observed.transform).not.toContain('%')
+    expect(observed.travel).toContain('calc(')
+    expect(observed.travel).not.toContain('%')
   })
 
   test('is promoted to a layer while running, and neither animates nor holds a layer when parked', async () => {
@@ -119,6 +124,7 @@ test.describe('GlyphSpinner (compositor animation)', () => {
       const previous = viewport.getAttribute('data-paused')
 
       viewport.setAttribute('data-paused', 'true')
+
       const state = {
         playState: getComputedStyle(el).animationPlayState,
         willChange: getComputedStyle(el).willChange
@@ -174,6 +180,7 @@ test.describe('GlyphSpinner (compositor animation)', () => {
       const textAtStart = el.textContent
 
       const deadline = performance.now() + duration
+
       while (performance.now() < deadline) {
         seen.add(getComputedStyle(el).transform)
         await new Promise(resolve => requestAnimationFrame(() => resolve(null)))

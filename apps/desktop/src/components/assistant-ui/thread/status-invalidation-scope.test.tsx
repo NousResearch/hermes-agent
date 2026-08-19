@@ -16,12 +16,14 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as messageReactionsModule from '@/components/assistant-ui/thread/use-message-reactions'
+
 import { Thread } from '.'
 
 let rootRenders = 0
 
 vi.mock('@/components/assistant-ui/thread/use-message-reactions', async importActual => {
-  const actual = await importActual<typeof import('@/components/assistant-ui/thread/use-message-reactions')>()
+  const actual = await importActual<typeof messageReactionsModule>()
 
   return {
     ...actual,

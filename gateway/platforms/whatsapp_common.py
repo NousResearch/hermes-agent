@@ -169,8 +169,14 @@ class WhatsAppBehaviorMixin:
         """
         source = getattr(self, "_dm_allowlist_source", None)
         if isinstance(source, str) and source != "config":
-            if source in os.environ:
-                return self._coerce_allow_list(os.environ.get(source, ""))
+            # _get_wsecret returns None when the key is absent in both the
+            # profile scope and (for the default profile) os.environ — the
+            # canonical sentinel for "key not set". An empty string ("") means
+            # the key is present but empty, which _coerce_allow_list("") maps
+            # to set() (deny-all) — the same as the revoke case below.
+            live = _get_wsecret(source)
+            if live is not None:
+                return self._coerce_allow_list(live)
             # Key removed (e.g. sole-entry pairing revoke) — do not revive the
             # stale construction snapshot.
             return set()

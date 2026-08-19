@@ -281,10 +281,12 @@ def generate_title(
             main_runtime=main_runtime,
             # LM Studio's Qwen3.x (MLX) returns EMPTY `content` under strict
             # json_schema response_format (it aborts instead of emitting the
-            # constrained object — observed with qwen3.6-27b). Use free-text
-            # and let _extract_title_text's JSON scan + prose fallback handle
-            # the shape, which it already does for non-compliant providers.
-            extra_body={"response_format": {"type": "text"}},
+            # constrained object — observed with qwen3.6-27b). Free text is the
+            # API default, so we send NO response_format at all: a provider
+            # strict about the field's values (only json_object/json_schema, or
+            # rejecting it outright) can never be handed a format it refuses.
+            # _extract_title_text's JSON scan + prose fallback handles the
+            # shape, which it already does for non-compliant providers.
         )
         title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that

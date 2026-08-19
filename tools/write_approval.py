@@ -162,7 +162,7 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
             records.append(json.loads(p.read_text(encoding="utf-8")))
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
-    records.sort(key=lambda r: r.get("created_at", 0))
+    records.sort(key=lambda r: r.get("created_at", 0), reverse=True)
     return records
 
 

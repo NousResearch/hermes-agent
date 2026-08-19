@@ -8,6 +8,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 """
 
 from __future__ import annotations
+from hermes_cli.cli_output import line_input
 
 import functools
 import importlib.metadata
@@ -484,7 +485,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
             if secret:
                 value = masked_secret_prompt(f"  {name}: ").strip()
             else:
-                value = input(f"  {name}: ").strip()
+                value = line_input(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[dim]  Skipped (you can set these later in {display_hermes_home()}/.env)[/dim]")
             return

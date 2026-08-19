@@ -3383,8 +3383,10 @@ def _spotify_interactive_setup(redirect_uri_hint: str) -> str:
         except Exception:
             pass
 
+    from hermes_cli.cli_output import line_input
+
     try:
-        raw = input("Spotify Client ID: ").strip()
+        raw = line_input("Spotify Client ID: ").strip()
     except (EOFError, KeyboardInterrupt):
         print()
         raise SystemExit("Spotify setup cancelled.")

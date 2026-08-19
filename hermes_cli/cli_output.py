@@ -82,7 +82,7 @@ def prompt(
         if password:
             value = masked_secret_prompt(display)
         else:
-            value = input(display)
+            value = line_input(display)
         value = value.strip()
         return value if value else (default or "")
     except (KeyboardInterrupt, EOFError):

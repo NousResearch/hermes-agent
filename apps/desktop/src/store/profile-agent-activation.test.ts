@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
 
+import { deferred } from '../test/deferred'
+
 // Registry-agent activation (ensureGatewayAgent — the SDK ensureAgent door).
 // Two regressions pinned here:
 //  1. Activating an ALREADY-OPEN registry agent must still resync
@@ -46,16 +48,6 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 
 const getConnectionFor =
   vi.fn<(payload: { connectionId?: null | string; profile?: null | string }) => Promise<HermesConnection>>()
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void
-
-  const promise = new Promise<void>(r => {
-    resolve = r
-  })
-
-  return { promise, resolve }
-}
 
 beforeEach(() => {
   getConnection.mockReset()

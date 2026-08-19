@@ -28,6 +28,7 @@
 import crypto from 'node:crypto'
 
 import { parseRemoteProfileListing } from './connection-registry'
+import { assertBootstrapNotSuperseded } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
 // Bumped when the desktop<->dashboard reuse contract changes in a way that makes
@@ -558,7 +559,7 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT
   const remoteLog = expandRemotePath(logPath)
 
   while (Date.now() < deadline) {
-    assertNotAborted(signal)
+    assertBootstrapNotSuperseded(signal)
 
     if (isAlive && !(await isAlive())) {
       const err: any = new Error('Remote dashboard process exited before announcing its port.')
@@ -696,14 +697,6 @@ async function cancelForwardSafe(deps, localPort, remotePort) {
   }
 }
 
-function assertNotAborted(signal) {
-  if (signal?.aborted) {
-    const error: any = new Error('SSH bootstrap was cancelled.')
-    error.kind = 'superseded'
-    throw error
-  }
-}
-
 function isForwardBindCollision(error) {
   return /address already in use|cannot listen to port|bind.*failed/i.test(String(error?.message || error || ''))
 }
@@ -769,7 +762,7 @@ async function connect(deps) {
 
   const log = msg => rememberLog(`[ssh-lifecycle] ${msg}`)
 
-  assertNotAborted(signal)
+  assertBootstrapNotSuperseded(signal)
   const platform = await probeRemotePlatform(ssh)
   log(`remote platform ${platform.os}/${platform.arch}`)
   const hermesPath = await locateHermes(ssh, remoteHermesPath)
@@ -810,7 +803,7 @@ async function connect(deps) {
       lock.hermesHome === hermesHome
 
     if (reusable) {
-      assertNotAborted(signal)
+      assertBootstrapNotSuperseded(signal)
       const localPort = await openForward(deps, lock.port)
 
       try {
@@ -827,7 +820,7 @@ async function connect(deps) {
         }
 
         if (reuseClassification === 'authenticated-stale') {
-          assertNotAborted(signal)
+          assertBootstrapNotSuperseded(signal)
           await cancelForwardSafe(deps, localPort, lock.port)
           await cleanupStale(ssh, ownershipId, lock)
         } else if (reuseClassification === 'authenticated-ok') {
@@ -840,7 +833,7 @@ async function connect(deps) {
             'reused remote dashboard'
           )
 
-          assertNotAborted(signal)
+          assertBootstrapNotSuperseded(signal)
           log(`reusing remote dashboard pid=${lock.pid} port=${lock.port}`)
 
           return {
@@ -868,12 +861,12 @@ async function connect(deps) {
         throw error
       }
     } else {
-      assertNotAborted(signal)
+      assertBootstrapNotSuperseded(signal)
       await cleanupStale(ssh, ownershipId, lock, pidAlive)
     }
   }
 
-  assertNotAborted(signal)
+  assertBootstrapNotSuperseded(signal)
   const spawnToken = mintToken()
 
   const { pid, spawnNonce, logPath, tokenFilePath } = await spawnRemoteDashboard(ssh, {
@@ -914,21 +907,21 @@ async function connect(deps) {
       isAlive: () => remotePidAlive(ssh, pid),
       signal
     })
-    assertNotAborted(signal)
+    assertBootstrapNotSuperseded(signal)
     log(`remote dashboard bound port ${remotePort}`)
 
     localPort = await openForward(deps, remotePort)
-    assertNotAborted(signal)
+    assertBootstrapNotSuperseded(signal)
     const baseUrl = `http://127.0.0.1:${localPort}`
     await waitForHermes(baseUrl, spawnToken)
-    assertNotAborted(signal)
+    assertBootstrapNotSuperseded(signal)
 
     const token = await adoptOwnedServedToken(adoptServedToken, baseUrl, spawnToken, ssh, pid, 'remote dashboard')
 
-    assertNotAborted(signal)
+    assertBootstrapNotSuperseded(signal)
     const tokenFingerprint = fingerprintToken(token)
     await writeLockfile(ssh, ownershipId, { ...ownedSpawn, port: remotePort, tokenFingerprint })
-    assertNotAborted(signal)
+    assertBootstrapNotSuperseded(signal)
 
     return {
       baseUrl,

@@ -29,7 +29,6 @@ import {
   shell,
   systemPreferences
 } from 'electron'
-import nodePty from 'node-pty'
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
@@ -60,7 +59,7 @@ import {
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { detectBundleSkew } from './bundle-skew'
-import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
+import { applyConnectionChange } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -120,7 +119,6 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
-import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { resolveDesktopRemoteRoute } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
@@ -149,7 +147,7 @@ import {
   stopFind
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
-import { readDirForIpc } from './fs-read-dir'
+import { registerFsIpc } from './fs-ipc'
 import {
   filenameFromContentDisposition,
   gatewayFilePath,
@@ -158,33 +156,7 @@ import {
   pumpStreamToFile
 } from './gateway-file-download'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
-import { scanGitRepos } from './git-repo-scan'
-import {
-  fileDiffVsHead,
-  repoStatus,
-  reviewCommit,
-  reviewCommitContext,
-  reviewCreatePr,
-  reviewDiff,
-  reviewFetchPrComment,
-  reviewList,
-  reviewPrList,
-  reviewPush,
-  reviewRevert,
-  reviewRevParse,
-  reviewShipInfo,
-  reviewStage,
-  reviewUnstage
-} from './git-review-ops'
-import { gitRootForIpc } from './git-root'
-import {
-  addWorktree,
-  listBaseBranches,
-  listBranches,
-  listWorktrees,
-  removeWorktree,
-  switchBranch
-} from './git-worktree-ops'
+import { registerGitIpc } from './git-ipc'
 import { clearStaleGitLocks } from './gitlock'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -206,6 +178,7 @@ import {
   writeSecretFileAtomic
 } from './hardening'
 import { cursorPointInWindow } from './hud-cursor'
+import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
@@ -234,6 +207,7 @@ import {
   electronProcessStartMarker,
   parentWatchdogEnv
 } from './parent-process-identity'
+import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   buildRegistryProfileRoutes,
   localRouteFallbackProfiles,
@@ -289,17 +263,11 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
-import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
-import {
-  buildInteractiveSshArgs,
-  createSshProbeConnection,
-  pickLocalPort,
-  redactSecrets,
-  SshConnection
-} from './ssh-connection'
+import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
+import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import {
   backgroundMaterialFor,
@@ -358,12 +326,7 @@ import {
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
-import {
-  buildWindowsInteractiveCommand,
-  connectWindowsRemote,
-  detectRemotePlatform,
-  helper
-} from './windows-remote-lifecycle'
+import { connectWindowsRemote, detectRemotePlatform, helper } from './windows-remote-lifecycle'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -860,7 +823,6 @@ const APP_ICON_PATHS = [
 ]
 
 let rendererTitleBarTheme = null
-const terminalSessions = new Map()
 
 // Force the NATIVE window appearance (vibrancy material, titlebar, the
 // pre-first-paint window background) to follow the APP theme instead of the
@@ -8888,11 +8850,7 @@ async function teardownSshConnection(profile) {
 
   sshConnections.delete(scope)
 
-  for (const [id, info] of [...terminalSessions.entries()]) {
-    if (info.sshScope === scope) {
-      disposeTerminalSession(id)
-    }
-  }
+  terminalIpc.disposeTerminalSessionsForSshScope(scope)
 
   try {
     if (state.localPort && state.remotePort) {
@@ -12165,232 +12123,23 @@ ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
   setAndPersistZoomLevel(window, percentToZoomLevel(Number(percent)))
 })
 
-// --- Pet overlay (pop-out mascot) -----------------------------------------
-// `request` is `{ bounds, screen }`. A fresh pop-out passes viewport-space
-// bounds (screen=false): convert to screen space by adding the main window's
-// content origin so the pet lands where it sat in-window. A remembered/dragged
-// spot passes screen-space bounds (screen=true) and is used as-is. We return the
-// resolved screen bounds so the renderer can persist exactly where it opened.
-ipcMain.handle('hermes:pet-overlay:open', async (_event, request) => {
-  const bounds = request && request.bounds ? request.bounds : request
-  const isScreen = Boolean(request && request.screen)
-  let screenBounds = bounds
-
-  try {
-    if (bounds && !isScreen && mainWindow && !mainWindow.isDestroyed()) {
-      const content = mainWindow.getContentBounds()
-      screenBounds = {
-        x: content.x + (bounds.x || 0),
-        y: content.y + (bounds.y || 0),
-        width: bounds.width,
-        height: bounds.height
-      }
-    }
-  } catch {
-    // Fall back to raw bounds if the window geometry is unavailable.
-  }
-
-  openPetOverlay(screenBounds)
-
-  return { ok: true, bounds: screenBounds }
-})
-ipcMain.handle('hermes:pet-overlay:close', async () => {
-  closePetOverlay()
-
-  return { ok: true }
-})
-// Drag/resize: the overlay reports new absolute screen bounds (it already knows
-// the pointer's screen coords). Drag keeps the size constant; the wheel-to-scale
-// gesture grows/shrinks it so the sprite is never cropped by the window edge.
-// The window is created non-resizable (no stray edge-drag on the transparent
-// frameless panel), which on Windows/Linux also blocks programmatic setBounds
-// sizing — so briefly flip resizable on whenever the size actually changes.
-ipcMain.on('hermes:pet-overlay:set-bounds', (_event, bounds) => {
-  if (!petOverlayWindow || petOverlayWindow.isDestroyed() || !bounds) {
-    return
-  }
-
-  const win = petOverlayWindow
-  const width = Math.max(80, Math.round(bounds.width))
-  const height = Math.max(80, Math.round(bounds.height))
-  const [curW, curH] = win.getSize()
-  const resizing = width !== curW || height !== curH
-
-  if (resizing && !win.isResizable()) {
-    win.setResizable(true)
-  }
-
-  win.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width, height })
-
-  if (resizing) {
-    win.setResizable(false)
-  }
-})
-// Click-through: the overlay window is a full rectangle but only the pet pixels
-// should be interactive. The renderer toggles this as the cursor enters/leaves
-// the sprite so transparent margins pass clicks to whatever is behind.
-ipcMain.on('hermes:pet-overlay:ignore-mouse', (_event, ignore) => {
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
-    petOverlayWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
-  }
-})
-// The overlay is a non-activating panel (focusable:false) so it never steals
-// the app's cmd/alt-tab anchor from the main window. But the pop-up composer
-// needs the keyboard, so the renderer asks us to flip it focusable + focus it
-// while the composer is open, then back to non-activating when it closes.
-ipcMain.on('hermes:pet-overlay:set-focusable', (_event, focusable) => {
-  if (!petOverlayWindow || petOverlayWindow.isDestroyed()) {
-    return
-  }
-
-  petOverlayWindow.setFocusable(Boolean(focusable))
-
-  if (focusable) {
-    petOverlayWindow.focus()
-  }
-})
-// Main renderer → overlay: forward the latest pet state for the overlay to render.
-ipcMain.on('hermes:pet-overlay:state', (_event, payload) => {
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
-    petOverlayWindow.webContents.send('hermes:pet-overlay:state', payload)
-  }
-})
-// Overlay → main renderer: control messages (pop back in, composer submit).
-ipcMain.on('hermes:pet-overlay:control', (_event, payload) => {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  // Double-click toggles the app window: hide it away if it's up front, bring it
-  // back if it's minimized/buried. Pure window control — nothing for the
-  // renderer to do, so don't forward it.
-  if (payload && payload.type === 'toggle-app') {
-    if (mainWindow.isMinimized() || !mainWindow.isVisible()) {
-      mainWindow.show()
-      mainWindow.focus()
-    } else {
-      mainWindow.minimize()
-    }
-
-    return
-  }
-
-  // The mail icon means "take me to the app": raise the main window (it may be
-  // minimized or buried) before the renderer navigates to the latest thread.
-  if (payload && payload.type === 'open-app') {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore()
-    }
-
-    mainWindow.show()
-    mainWindow.focus()
-  }
-
-  mainWindow.webContents.send('hermes:pet-overlay:control', payload)
+// --- Pet overlay (pop-out mascot) — see pet-overlay-ipc.ts. ---------------
+registerPetOverlayIpc({
+  getMainWindow: () => mainWindow,
+  getPetOverlayWindow: () => petOverlayWindow,
+  openPetOverlay,
+  closePetOverlay
 })
 
-// --- HUD mode (chrome-free floating chat) -----------------------------------
-ipcMain.handle('hermes:hud:open', async (_event, request) => {
-  openHudWindow(
-    typeof request?.sessionId === 'string' ? request.sessionId : null,
-    typeof request?.profile === 'string' ? request.profile : null
-  )
-
-  return { ok: true }
-})
-
-// Real frosted glass behind the band — the thing CSS backdrop-filter cannot do,
-// because Chromium composites a transparent window's page against nothing and
-// the desktop is not in its backdrop root. Vibrancy IS the window's content
-// view, so it frosts the whole rectangle; the HUD's layout leaves no dead
-// margins for that reason, and the renderer only turns it on while the band is
-// showing (idle HUD mode must be the bar and nothing else).
-ipcMain.handle('hermes:hud:vibrancy', (_event, on) => {
-  if (hudWindow && !hudWindow.isDestroyed() && IS_MAC) {
-    hudWindow.setVibrancy(on ? 'hud' : null)
+// --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
+registerHudIpc({
+  isMac: IS_MAC,
+  getHudWindow: () => hudWindow,
+  openHudWindow,
+  closeHudWindow,
+  setHudSessionId: value => {
+    hudSessionId = value
   }
-
-  return { ok: true }
-})
-
-// Let clicks fall through the HUD wherever it isn't really there. An
-// always-on-top window eats every click inside its rectangle, and most of that
-// rectangle is a faded-out band over whatever the user is actually working in.
-// `forward` keeps mousemove flowing so the renderer can re-arm when the cursor
-// reaches the bar.
-ipcMain.on('hermes:hud:ignore-mouse', (_event, ignore) => {
-  if (hudWindow && !hudWindow.isDestroyed()) {
-    hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
-  }
-})
-
-ipcMain.on('hermes:hud:move-by', (event, delta) => {
-  if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents) {
-    return
-  }
-
-  const dx = Number(delta?.x)
-  const dy = Number(delta?.y)
-  const width = Number(delta?.width)
-  const height = Number(delta?.height)
-
-  if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(width) || !Number.isFinite(height)) {
-    return
-  }
-
-  const [x, y] = hudWindow.getPosition()
-
-  // setBounds — NOT setPosition: on Windows, a transparent frameless window
-  // silently grows ~1px per setPosition call (worse at >100% DPI). The renderer
-  // snapshots outerWidth/outerHeight when the composer drag arms and re-pins
-  // to that size on every moveBy (same pattern as the pet overlay drag).
-  hudWindow.setBounds({
-    x: Math.round(x + dx),
-    y: Math.round(y + dy),
-    width: Math.round(width),
-    height: Math.round(height)
-  })
-})
-
-// Resize from the HUD's corner handle. The window is created non-resizable
-// (see spawnHudWindow — a transparent frameless window must not expose a
-// system resize hot-zone, or dragging grows it), which on Windows/Linux also
-// blocks programmatic setBounds sizing — so briefly flip resizable on while
-// the size actually changes, exactly like the pet overlay's wheel-scale does.
-ipcMain.on('hermes:hud:set-bounds', (event, bounds) => {
-  if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents || !bounds) {
-    return
-  }
-
-  const win = hudWindow
-  const width = Math.max(380, Math.round(Number(bounds.width)))
-  const height = Math.max(160, Math.round(Number(bounds.height)))
-  const [curW, curH] = win.getSize()
-  const resizing = width !== curW || height !== curH
-
-  if (resizing && !win.isResizable()) {
-    win.setResizable(true)
-  }
-
-  win.setBounds({ x: Math.round(Number(bounds.x)), y: Math.round(Number(bounds.y)), width, height })
-
-  if (resizing) {
-    win.setResizable(false)
-  }
-})
-
-// The HUD renderer reporting which session it is on, so the close broadcast
-// can hand it back to the app window (see hudSessionId).
-ipcMain.on('hermes:hud:session', (event, sessionId) => {
-  if (hudWindow && !hudWindow.isDestroyed() && event.sender === hudWindow.webContents) {
-    hudSessionId = typeof sessionId === 'string' && sessionId ? sessionId : null
-  }
-})
-
-ipcMain.handle('hermes:hud:close', async () => {
-  closeHudWindow()
-
-  return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
@@ -14417,565 +14166,30 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
   flushDesktopLogBufferSync()
 })
 
-function isExecutableFile(filePath) {
-  if (!filePath || !path.isAbsolute(filePath)) {
-    return false
-  }
-
-  try {
-    fs.accessSync(filePath, fs.constants.X_OK)
-
-    return true
-  } catch {
-    return false
-  }
-}
-
-function posixShellSpec(shellPath) {
-  const shellName = path.basename(shellPath)
-  const interactiveArgs = shellName.includes('zsh') || shellName.includes('bash') ? ['-il'] : ['-i']
-
-  return { args: interactiveArgs, command: shellPath, name: shellName }
-}
-
-// Windows PowerShell 5.1 ships at a fixed System32 path on every Windows box;
-// prefer it only after PowerShell 7+ (`pwsh`).
-function windowsPowerShellPath() {
-  const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows'
-  const builtin = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-
-  return isExecutableFile(builtin) ? builtin : findOnPath('powershell.exe')
-}
-
-// Map a resolved shell path to its spawn spec, picking interactive flags by
-// family: PowerShell drops its logo banner (so the prompt sits flush like the
-// POSIX shells), cmd needs nothing, and everything else (zsh/bash/fish/sh…)
-// gets POSIX interactive-login flags.
-function shellSpecFor(shellPath) {
-  const name = path.basename(shellPath).toLowerCase()
-
-  if (name.startsWith('pwsh') || name.startsWith('powershell')) {
-    return { args: ['-NoLogo'], command: shellPath, name }
-  }
-
-  if (name.startsWith('cmd')) {
-    return { args: [], command: shellPath, name }
-  }
-
-  return posixShellSpec(shellPath)
-}
-
-// Best installed Windows shell: PowerShell 7+ (`pwsh`), then Windows PowerShell
-// 5.1, then comspec/cmd.exe as the universal fallback.
-function windowsShellSpec() {
-  const command =
-    findOnPath('pwsh.exe') || findOnPath('pwsh') || windowsPowerShellPath() || process.env.COMSPEC || 'cmd.exe'
-
-  return shellSpecFor(command)
-}
-
-// Resolve the interactive shell for the embedded terminal: an explicit user
-// override wins, otherwise auto-detect the best one installed for the platform.
-function terminalShellCommand() {
-  // HERMES_DESKTOP_SHELL is the cross-platform escape hatch (a path or a bare
-  // name on PATH); $SHELL is honored on POSIX, where it's the user's canonical
-  // choice, but ignored on Windows, where it's usually a stray MSYS/Git path
-  // node-pty can't spawn natively.
-  const override = (process.env.HERMES_DESKTOP_SHELL || (IS_WINDOWS ? '' : process.env.SHELL) || '').trim()
-
-  if (override) {
-    const resolved = isExecutableFile(override) ? override : findOnPath(override)
-
-    if (resolved) {
-      return shellSpecFor(resolved)
-    }
-  }
-
-  if (IS_WINDOWS) {
-    return windowsShellSpec()
-  }
-
-  const shellPath = ['/bin/zsh', '/bin/bash', '/bin/sh'].find(candidate => isExecutableFile(candidate))
-
-  return posixShellSpec(shellPath || '/bin/sh')
-}
-
-function safeTerminalCwd(cwd) {
-  const candidate = path.resolve(String(cwd || app.getPath('home')))
-
-  try {
-    const stat = fs.statSync(candidate)
-
-    return stat.isDirectory() ? candidate : path.dirname(candidate)
-  } catch {
-    return app.getPath('home')
-  }
-}
-
-function terminalShellEnv() {
-  const env = { ...process.env }
-
-  // Electron is commonly launched through `npm run dev`; do not leak npm's
-  // managed prefix into a user's interactive shell (nvm/proto warn loudly).
-  for (const key of Object.keys(env)) {
-    if (key === 'npm_config_prefix' || key.startsWith('npm_config_') || key.startsWith('npm_package_')) {
-      delete env[key]
-    }
-  }
-
-  // Strip color/theme-detection vars that ride along when Electron is launched
-  // from a non-tty agent shell (Cursor's runner sets NO_COLOR/FORCE_COLOR=0
-  // /TERM=dumb; some terminals set COLORFGBG which would flip Hermes' TUI into
-  // light-mode). Our PTY is a real xterm-compat terminal — force truecolor.
-  delete env.NO_COLOR
-  delete env.FORCE_COLOR
-  delete env.COLORFGBG
-
-  env.COLORTERM = 'truecolor'
-  env.LC_CTYPE = env.LC_CTYPE || 'UTF-8'
-  env.TERM = 'xterm-256color'
-  env.TERM_PROGRAM = 'Hermes'
-  env.TERM_PROGRAM_VERSION = app.getVersion()
-
-  // Let a hermes/--tui launched in this pane know it's embedded in the desktop
-  // GUI (build_environment_hints surfaces this). Distinct from HERMES_DESKTOP,
-  // which marks the agent *backend* and gates cron/gateway behavior.
-  env.HERMES_DESKTOP_TERMINAL = '1'
-
-  return env
-}
-
-function terminalChannel(id, suffix) {
-  return `hermes:terminal:${id}:${suffix}`
-}
-
-// Best-effort read of a live PTY child's current working directory so a
-// reopened tab can restart the shell where the user last `cd`'d, instead of the
-// tab's original launch dir. Shell-agnostic (no prompt/OSC config needed) on
-// POSIX; Windows has no cheap per-process cwd query without a native module, so
-// it returns null and the caller falls back to the launch cwd.
-function readProcessCwd(pid) {
-  return new Promise(resolve => {
-    if (!Number.isInteger(pid) || pid <= 0) {
-      resolve(null)
-
-      return
-    }
-
-    if (process.platform === 'linux') {
-      fs.promises
-        .readlink(`/proc/${pid}/cwd`)
-        .then(target => resolve(target || null))
-        .catch(() => resolve(null))
-
-      return
-    }
-
-    if (process.platform === 'darwin') {
-      // lsof ships with macOS; -Fn emits the cwd fd's path on an `n<path>` line.
-      execFile('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 2000 }, (err, stdout) => {
-        if (err) {
-          resolve(null)
-
-          return
-        }
-
-        const line = String(stdout || '')
-          .split('\n')
-          .find(entry => entry.startsWith('n'))
-
-        resolve(line ? line.slice(1) : null)
-      })
-
-      return
-    }
-
-    resolve(null)
-  })
-}
-
-function disposeTerminalSession(id) {
-  const sessionInfo = terminalSessions.get(id)
-
-  if (!sessionInfo) {
-    return false
-  }
-
-  terminalSessions.delete(id)
-
-  try {
-    sessionInfo.pty.kill()
-  } catch {
-    // Process may already be gone.
-  }
-
-  return true
-}
-
-ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
-
-ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
-
-// Reveal a path in the OS file manager (Finder / Explorer / Files).
-ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
-  const target = String(targetPath || '').trim()
-
-  if (!target) {
-    return false
-  }
-
-  try {
-    shell.showItemInFolder(target)
-
-    return true
-  } catch {
-    return false
-  }
+// Local filesystem + plugin-root IPC (readDir/reveal/rename/trash/…) — see fs-ipc.ts.
+registerFsIpc({
+  hermesHome: HERMES_HOME,
+  readActiveDesktopProfile,
+  expandUserPath,
+  resolveRequestedPathForIpc,
+  directoryExists,
+  resolveGitBinary
 })
 
-// Open a DIRECTORY in the OS file manager, creating it first if needed. Unlike
-// `reveal` (which selects an existing item and silently no-ops on a missing
-// path — the "Open plugins folder" Windows bug), this is for the plugins door,
-// which often doesn't exist on first use. `shell.openPath` returns '' on
-// success or an error string; both mkdir + openPath failures are surfaced.
-ipcMain.handle('hermes:fs:openDir', async (_event, dirPath) => {
-  const dir = String(dirPath || '').trim()
+// Git-driven features (worktrees, review pane, repo scan) — see git-ipc.ts.
+registerGitIpc({ resolveGitBinary, resolveGhBinary })
 
-  if (!dir) {
-    return { ok: false, error: 'no path' }
-  }
-
-  try {
-    await fs.promises.mkdir(dir, { recursive: true })
-    const error = await shell.openPath(path.normalize(dir))
-
-    return error ? { ok: false, error } : { ok: true }
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
-  }
+// Embedded terminal PTY host (hermes:terminal:*) — see terminal-ipc.ts.
+const terminalIpc = registerTerminalIpc({
+  isWindows: IS_WINDOWS,
+  findOnPath,
+  rememberLog,
+  activeSshTerminalTarget,
+  ensureBackend: () => ensureBackend(primaryProfileKey()),
+  getSshConnectionState: scope => sshConnections.get(scope)
 })
 
-// The LOCAL Desktop runtime-plugin root: `<HERMES_HOME>/desktop-plugins`,
-// resolved from the main-process HERMES_HOME (see resolveHermesHome) — NOT from
-// the connected backend. A remote backend reports its own `hermes_home` over
-// the gateway, which is a path on the REMOTE box; deriving the plugin dir from
-// it yields `undefined/desktop-plugins` (or a non-existent remote path) and the
-// on-disk plugin door silently breaks (#66899). Electron owns this resolution
-// so it stays valid in every connection mode. Created on demand, like openDir.
-async function localPluginsRoot(dirName: string): Promise<string> {
-  // Profile-aware: a named Desktop profile gets its own plugin root under
-  // profiles/<name>/, matching the profile-scoped hermes_home the backend
-  // reported before this resolver existed. 'default'/unset pins the global root.
-  const profile = readActiveDesktopProfile()
-  const base = profile && profile !== 'default' ? path.join(HERMES_HOME, 'profiles', profile) : HERMES_HOME
-  const dir = path.join(base, dirName)
-
-  try {
-    await fs.promises.mkdir(dir, { recursive: true })
-  } catch {
-    // Best-effort create; return the path regardless so the reveal action can
-    // still surface a real openPath error and the scanner can retry later.
-  }
-
-  return dir
-}
-
-ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => localPluginsRoot('desktop-plugins'))
-
-// The LOCAL agent-plugin root (`<HERMES_HOME>/plugins`), same Electron-local
-// resolution as above. This is the desktop half of a UNIFIED plugin package:
-// an agent plugin may ship `desktop/plugin.js` alongside its Python code (the
-// same shape as `dashboard/manifest.json`), and the renderer's disk door scans
-// this root for it — one installable folder serving both SDKs.
-ipcMain.handle('hermes:fs:agentPluginsRoot', async () => localPluginsRoot('plugins'))
-
-ipcMain.handle('hermes:plugin:probe', async (_event, payload) => {
-  const identifier = String(payload?.identifier || payload?.repo || '').trim()
-
-  if (!identifier) {
-    return { ok: false, error: 'identifier is required', agent: false, desktop: false, warnings: [] }
-  }
-
-  return probePluginRepo(resolveGitBinary(), identifier)
-})
-
-ipcMain.handle('hermes:plugin:installDesktop', async (_event, payload) => {
-  const identifier = String(payload?.identifier || payload?.repo || '').trim()
-
-  if (!identifier) {
-    return { ok: false, error: 'identifier is required' }
-  }
-
-  const desktopPluginsRoot = await localPluginsRoot('desktop-plugins')
-
-  return installDesktopPluginFromGit(resolveGitBinary(), identifier, desktopPluginsRoot, Boolean(payload?.force))
-})
-
-// Rename a file/folder in place. The renderer passes the existing path + a new
-// base name; the destination is resolved in the SAME parent dir so a rename can
-// never move the item elsewhere or traverse out. Rejects on a name collision.
-ipcMain.handle('hermes:fs:rename', async (_event, targetPath, newName) => {
-  const src = String(targetPath || '').trim()
-  const name = String(newName || '').trim()
-
-  if (!src || !name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
-    throw new Error('Invalid rename')
-  }
-
-  const dst = path.join(path.dirname(src), name)
-
-  if (dst === src) {
-    return { path: dst }
-  }
-
-  if (fs.existsSync(dst)) {
-    throw new Error(`"${name}" already exists`)
-  }
-
-  await fs.promises.rename(src, dst)
-
-  return { path: dst }
-})
-
-// Write a small UTF-8 text file (e.g. a project's IDEA.md at creation). The path
-// is hardened (resolveRequestedPathForIpc) and the parent must already exist —
-// this never creates directory trees or escapes the allowed roots, and content
-// is size-capped so it can't be abused as a bulk-write primitive.
-ipcMain.handle('hermes:fs:writeText', async (_event, filePath, content) => {
-  const raw = String(filePath || '').trim()
-
-  if (!raw) {
-    throw new Error('Invalid path')
-  }
-
-  const text = String(content ?? '')
-
-  if (text.length > 1_000_000) {
-    throw new Error('Content too large')
-  }
-
-  const resolved = resolveRequestedPathForIpc(expandUserPath(raw), { purpose: 'Write text file' })
-
-  if (!directoryExists(path.dirname(resolved))) {
-    throw new Error('Parent directory does not exist')
-  }
-
-  await fs.promises.writeFile(resolved, text, 'utf8')
-
-  return { path: resolved }
-})
-
-// Move a file/folder to the OS trash (recoverable) — the VS Code "Delete"
-// default. `shell.trashItem` routes to Finder/Explorer/Files trash per platform.
-ipcMain.handle('hermes:fs:trash', async (_event, targetPath) => {
-  const target = String(targetPath || '').trim()
-
-  if (!target) {
-    throw new Error('Invalid delete')
-  }
-
-  await shell.trashItem(target)
-
-  return true
-})
-
-// Git-driven worktree management ("Start work" flow). Errors surface to the
-// renderer as rejected promises so it can toast a friendly message.
-ipcMain.handle('hermes:git:worktreeList', async (_event, repoPath) => listWorktrees(repoPath, resolveGitBinary()))
-
-ipcMain.handle('hermes:git:worktreeAdd', async (_event, repoPath, options) =>
-  addWorktree(repoPath, options || {}, resolveGitBinary())
-)
-
-ipcMain.handle('hermes:git:worktreeRemove', async (_event, repoPath, worktreePath, options) =>
-  removeWorktree(repoPath, worktreePath, options || {}, resolveGitBinary())
-)
-
-ipcMain.handle('hermes:git:branchSwitch', async (_event, repoPath, branch) =>
-  switchBranch(repoPath, branch, resolveGitBinary())
-)
-
-ipcMain.handle('hermes:git:branchList', async (_event, repoPath) => listBranches(repoPath, resolveGitBinary()))
-
-ipcMain.handle('hermes:git:baseBranchList', async (_event, repoPath) => listBaseBranches(repoPath, resolveGitBinary()))
-
-// Compact repo status (branch, ahead/behind, change counts + files) for the
-// composer coding rail. Returns null on a non-repo / remote backend so the rail
-// hides cleanly rather than erroring.
-ipcMain.handle('hermes:git:repoStatus', async (_event, repoPath) => repoStatus(repoPath, resolveGitBinary()))
-
-// Codex-style review pane: list changed files for a scope, fetch one file's
-// unified diff, and stage / unstage / revert. Reads return empty on failure;
-// mutations reject so the renderer can toast.
-ipcMain.handle('hermes:git:review:list', async (_event, repoPath, scope, baseRef) =>
-  reviewList(repoPath, scope, baseRef, resolveGitBinary())
-)
-ipcMain.handle('hermes:git:review:diff', async (_event, repoPath, filePath, scope, baseRef, staged) =>
-  reviewDiff(repoPath, filePath, scope, baseRef, staged, resolveGitBinary())
-)
-// Working-tree-vs-HEAD diff for one file (the preview's "show the diff" view).
-ipcMain.handle('hermes:git:fileDiff', async (_event, repoPath, filePath) =>
-  fileDiffVsHead(repoPath, filePath, resolveGitBinary())
-)
-ipcMain.handle('hermes:git:review:stage', async (_event, repoPath, filePath) =>
-  reviewStage(repoPath, filePath ?? null, resolveGitBinary())
-)
-ipcMain.handle('hermes:git:review:unstage', async (_event, repoPath, filePath) =>
-  reviewUnstage(repoPath, filePath ?? null, resolveGitBinary())
-)
-ipcMain.handle('hermes:git:review:revert', async (_event, repoPath, filePath) =>
-  reviewRevert(repoPath, filePath ?? null, resolveGitBinary())
-)
-ipcMain.handle('hermes:git:review:revParse', async (_event, repoPath, ref) =>
-  reviewRevParse(repoPath, ref, resolveGitBinary())
-)
-ipcMain.handle('hermes:git:review:commit', async (_event, repoPath, message, push) =>
-  reviewCommit(repoPath, message, Boolean(push), resolveGitBinary())
-)
-ipcMain.handle('hermes:git:review:commitContext', async (_event, repoPath) =>
-  reviewCommitContext(repoPath, resolveGitBinary())
-)
-ipcMain.handle('hermes:git:review:push', async (_event, repoPath) => reviewPush(repoPath, resolveGitBinary()))
-ipcMain.handle('hermes:git:review:shipInfo', async (_event, repoPath) => reviewShipInfo(repoPath, resolveGhBinary()))
-ipcMain.handle('hermes:git:review:prList', async (_event, repoPath, branches, numbers) =>
-  reviewPrList(repoPath, resolveGhBinary(), branches, numbers)
-)
-ipcMain.handle('hermes:git:review:fetchPrComment', async (_event, repoPath, url) =>
-  reviewFetchPrComment(repoPath, resolveGhBinary(), url)
-)
-ipcMain.handle('hermes:git:review:createPr', async (_event, repoPath) =>
-  reviewCreatePr(repoPath, resolveGitBinary(), resolveGhBinary())
-)
-
-// Repo-first project discovery: scan bounded roots for git repos (pure fs walk,
-// no native addon). Never throws to the renderer — failures yield an empty list.
-ipcMain.handle('hermes:git:scanRepos', async (_event, roots, options) => {
-  try {
-    return await scanGitRepos(roots || [], options || {})
-  } catch {
-    return []
-  }
-})
-
-// node-pty's published tarball ships the POSIX `spawn-helper` without an exec
-// bit; the dev flow resolves node-pty straight from node_modules (nothing
-// chmods it there), so the first terminal spawn dies with `posix_spawnp
-// failed`. Restore the bit once, lazily, right before the first spawn. Packaged
-// builds already stage an executable copy, so this is a no-op there.
-let _spawnHelperEnsured = false
-
-function ensureNodePtySpawnHelper() {
-  if (_spawnHelperEnsured || IS_WINDOWS) {
-    return
-  }
-
-  _spawnHelperEnsured = true
-
-  try {
-    const nodePtyRoot = path.dirname(require.resolve('node-pty/package.json'))
-    const { fixed, errors } = ensureSpawnHelperExecutable(nodePtyRoot)
-
-    for (const helperPath of fixed) {
-      rememberLog(`[terminal] restored +x on node-pty spawn-helper: ${helperPath}`)
-    }
-
-    for (const failure of errors) {
-      rememberLog(`[terminal] could not chmod spawn-helper ${failure.path}: ${failure.error}`)
-    }
-  } catch (error) {
-    rememberLog(`[terminal] spawn-helper exec check skipped: ${error instanceof Error ? error.message : String(error)}`)
-  }
-}
-
-ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
-  ensureNodePtySpawnHelper()
-
-  const id = crypto.randomUUID()
-  const { args, command, name } = terminalShellCommand()
-  const cwd = safeTerminalCwd(payload?.cwd)
-  const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
-  const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
-
-  const sshTarget = await resolveTerminalConnection(activeSshTerminalTarget, () => ensureBackend(primaryProfileKey()))
-  const remote = Boolean(sshTarget)
-  const remoteState = remote ? sshConnections.get(sshTarget.scope) : null
-
-  const remoteCommand =
-    remoteState?.remotePlatform === 'Windows'
-      ? buildWindowsInteractiveCommand(String(payload?.cwd || '').trim())
-      : undefined
-
-  const ptyProcess = remote
-    ? nodePty.spawn(
-        process.platform === 'win32'
-          ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-          : 'ssh',
-        buildInteractiveSshArgs(sshTarget.ssh, String(payload?.cwd || '').trim(), undefined, remoteCommand),
-        { cols, cwd: app.getPath('home'), env: terminalShellEnv(), name: 'xterm-256color', rows }
-      )
-    : nodePty.spawn(command, args, { cols, cwd, env: terminalShellEnv(), name: 'xterm-256color', rows })
-
-  terminalSessions.set(id, {
-    pty: ptyProcess,
-    webContentsId: event.sender.id,
-    ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
-  })
-
-  const send = (suffix, payload) => {
-    if (event.sender.isDestroyed()) {
-      return
-    }
-
-    event.sender.send(terminalChannel(id, suffix), payload)
-  }
-
-  ptyProcess.onData(data => send('data', data))
-  ptyProcess.onExit(({ exitCode, signal }) => {
-    terminalSessions.delete(id)
-    send('exit', { code: exitCode, signal: signal || null })
-  })
-  event.sender.once('destroyed', () => disposeTerminalSession(id))
-
-  return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
-})
-
-ipcMain.handle('hermes:terminal:write', (_event, id, data) => {
-  const sessionInfo = terminalSessions.get(String(id || ''))
-
-  if (!sessionInfo) {
-    return false
-  }
-
-  sessionInfo.pty.write(String(data || ''))
-
-  return true
-})
-
-ipcMain.handle('hermes:terminal:resize', (_event, id, size = {}) => {
-  const sessionInfo = terminalSessions.get(String(id || ''))
-
-  if (!sessionInfo) {
-    return false
-  }
-
-  const cols = Math.max(2, Number.parseInt(String(size?.cols || 80), 10) || 80)
-  const rows = Math.max(2, Number.parseInt(String(size?.rows || 24), 10) || 24)
-
-  sessionInfo.pty.resize(cols, rows)
-
-  return true
-})
-ipcMain.handle('hermes:terminal:cwd', async (_event, id) => {
-  const sessionInfo = terminalSessions.get(String(id || ''))
-
-  if (!sessionInfo) {
-    return null
-  }
-
-  return sessionInfo.sshScope !== undefined ? null : readProcessCwd(sessionInfo.pty.pid)
-})
-
-ipcMain.handle('hermes:terminal:dispose', (_event, id) => disposeTerminalSession(String(id || '')))
+const disposeTerminalSession = terminalIpc.disposeTerminalSession
 
 ipcMain.handle('hermes:updates:check', async () =>
   checkUpdates().catch(error => ({
@@ -15678,9 +14892,7 @@ app.on('before-quit', event => {
 
   // Kill open PTYs before environment teardown to avoid the node-pty#904
   // ThreadSafeFunction SIGABRT race.
-  for (const id of [...terminalSessions.keys()]) {
-    disposeTerminalSession(id)
-  }
+  terminalIpc.disposeAllTerminalSessions()
 
   void backendShutdown.run()
 })

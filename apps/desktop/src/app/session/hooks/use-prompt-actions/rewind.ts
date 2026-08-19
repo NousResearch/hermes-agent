@@ -94,7 +94,7 @@ export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: Su
 
 /**
  * Renderer-synthetic message ids (`${timestamp}-${index}-${role}` from
- * chat-messages.ts, plus older `user-…` / `assistant-…` shapes). Gateway
+ * chat-messages/hydration.ts, plus older `user-…` / `assistant-…` shapes). Gateway
  * history never carries them — only durable `row_id` / platform message_id.
  */
 export function isSyntheticRendererId(messageId: string | undefined): boolean {

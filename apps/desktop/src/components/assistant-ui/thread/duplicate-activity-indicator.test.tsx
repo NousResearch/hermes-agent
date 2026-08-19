@@ -11,64 +11,19 @@ import { __resetElapsedTimerRegistryForTests } from '@/components/chat/activity-
 import { setSessionCompacting } from '@/store/compaction'
 import { $activeSessionId, $turnStartedAt } from '@/store/session'
 
+import { stubThreadEnvironment, stubThreadViewportSize, userMessage } from '../test-utils'
+
 import { Thread } from '.'
 
 // Layout/observer stubs mirrored from streaming.test.tsx. jsdom has no
 // ResizeObserver, rAF, or real layout, and the Thread scroll container needs
 // non-zero dimensions to mount without throwing.
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
+stubThreadEnvironment()
 
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-vi.stubGlobal('CSS', { escape: (str: string) => str })
-
-Element.prototype.scrollTo = function scrollTo() {}
-
-Element.prototype.animate = function animate() {
-  return {
-    cancel: () => {},
-    finished: Promise.resolve()
-  } as unknown as Animation
-}
-
-function stubOffsetDimension(
-  prop: 'offsetHeight' | 'offsetWidth',
-  clientProp: 'clientHeight' | 'clientWidth',
-  fallback: number
-) {
-  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop)
-
-  Object.defineProperty(HTMLElement.prototype, prop, {
-    configurable: true,
-    get() {
-      return previous?.get?.call(this) || (this as HTMLElement)[clientProp] || fallback
-    }
-  })
-}
-
-stubOffsetDimension('offsetWidth', 'clientWidth', 800)
-stubOffsetDimension('offsetHeight', 'clientHeight', 600)
+stubThreadViewportSize()
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 const sessionId = 'session-68634'
-
-function userMessage(id: string, text: string): ThreadMessage {
-  return {
-    id,
-    role: 'user',
-    content: [{ type: 'text', text }],
-    attachments: [],
-    createdAt,
-    metadata: { custom: {} }
-  } as ThreadMessage
-}
 
 // This shape mirrors the `/steer` note appended by appendSessionTextMessage
 // in apps/desktop/src/app/session/hooks/use-prompt-actions/index.ts.

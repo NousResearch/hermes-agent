@@ -13,7 +13,6 @@ the real binary or network. Pins the behaviors the parent relies on:
 
 import stat
 import sys
-import textwrap
 import threading
 import time
 
@@ -29,41 +28,45 @@ from agent.pi_rpc_client import (
 
 # ---------------------------------------------------------------- fake pi
 
-FAKE_PI = textwrap.dedent(
-    """
-    import json, sys
-    def send(o): sys.stdout.write(json.dumps(o) + "\\n"); sys.stdout.flush()
-    send({"type": "ready"})
-    prompt_id = None
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        line = line.strip()
-        if not line:
-            continue
-        msg = json.loads(line)
-        if msg.get("type") == "prompt":
-            prompt_id = msg["id"]
-            # 1) tool-call markers (reasoning), 2) a question, 3) block
-            # here (NOT in the for-loop) until answered, 4) final answer
-            # echoing the response payload + footer.
-            send({"type": "assistant", "thought":
-                  '[pi-tool] bash {"cmd": "ls"}\n'
-                  "[pi-tool:ok] bash -> result 12 bytes"})
-            send({"type": "extension_ui_request", "id": 9001,
-                  "method": "input", "title": "Which DB port?"})
-            while True:
-                r = json.loads(sys.stdin.readline())
-                if r.get("type") == "extension_ui_response":
-                    ans = r.get("text")
-                    break
-            footer = "{\"status\": \"end_turn\", \"duration_s\": 1.5, \"touched_files\": []}"
-            send({"type": "assistant",
-                  "text": "answered with: %s\n```pi-delegation-result\n%s\n```" % (ans, footer)})
-            send({"type": "prompt_done", "id": prompt_id})
-    """
-)
+# The fake pi script. Built as a plain string (not a triple-quoted blob)
+# so indentation is explicit and a stray margin can never break dedent.
+FAKE_PI = "\n".join([
+    "import json, sys",
+    "last_text = ''",
+    "def send(o): sys.stdout.write(json.dumps(o) + chr(10)); sys.stdout.flush()",
+    'send({"type": "ready"})',
+    "while True:",
+    "    line = sys.stdin.readline()",
+    "    if not line: break",
+    "    line = line.strip()",
+    "    if not line: continue",
+    "    msg = json.loads(line)",
+    '    if msg.get("type") == "get_last_assistant_text":',
+    '        send({"type": "response", "id": msg["id"], "success": True,',
+    '              "data": {"text": last_text}})',
+    '        continue',
+    '    if msg.get("type") != "prompt": continue',
+    '    # acknowledge the request, then run the scripted exchange:',
+    '    # 1) tool-call markers (reasoning), 2) a question, 3) block',
+    '    # until answered, 4) final answer echoing the answer + footer.',
+    '    send({"type": "response", "id": msg["id"], "success": True})',
+    '    send({"type": "assistant", "thought":',
+    '          \'[pi-tool] bash {"cmd": "ls"}\\n[pi-tool:ok] bash -> result 12 bytes\'})',
+    '    send({"type": "message_update", "assistantMessageEvent":',
+    '          {"type": "thinking_delta", "delta":',
+    '           \'[pi-tool] bash {"cmd": "ls"}\\n[pi-tool:ok] bash -> result 12 bytes\\n\'}})',
+    '    send({"type": "extension_ui_request", "id": 9001,',
+    '          "method": "input", "title": "Which DB port?"})',
+    "    while True:",
+    "        r = json.loads(sys.stdin.readline())",
+    '        if r.get("type") == "extension_ui_response":',
+    '            ans = r.get("text"); break',
+    '    footer = \'{"status": "end_turn", "duration_s": 1.5, "touched_files": []}\'',
+    '    send({"type": "assistant", "text": "answered with: %s\\n```pi-delegation-result\\n%s\\n```" % (ans, footer)})',
+    '    last_text = "answered with: %s" % ans',
+    '    send({"type": "prompt_done", "id": msg["id"]})',
+    '    send({"type": "agent_settled"})',
+])
 
 
 @pytest.fixture
@@ -85,9 +88,11 @@ def make_client(fake_pi):
     return PiRPCClient(acp_command=fake_pi, base_url="pi://rpc-test")
 
 
-def create(client, content):
+def create(client, content, timeout=120):
     return client.chat.completions.create(
-        model="test-model", messages=[{"role": "user", "content": content}]
+        model="test-model",
+        messages=[{"role": "user", "content": content}],
+        timeout=timeout,
     )
 
 
@@ -156,14 +161,17 @@ def test_round_trip_markers_question_footer(fake_pi, clean_registry):
     # Background answerer stands in for steer_subagent's routing: as soon
     # as the child's question registers, answer it with free text.
     def answerer():
-        for _ in range(200):
+        # Poll far longer than the 600s file-level budget: under heavy
+        # parallel load the fake-pi spawn can take a while, and if this
+        # thread gives up the question waits on the full default timeout.
+        for _ in range(2000):
             if pending_questions:
                 answer_oldest_pending_question("5432")
                 return
-            time.sleep(0.05)
+            time.sleep(0.1)
     t = threading.Thread(target=answerer, daemon=True)
     t.start()
-    completion = create(client, "delegate this")
+    completion = create(client, "delegate this", timeout=180)
     t.join(timeout=5)
     msg = completion.choices[0].message
     # free-text answer reached the child and is echoed in its final text
@@ -179,7 +187,7 @@ def test_question_timeout_auto_answers(fake_pi, clean_registry, monkeypatch):
     monkeypatch.setattr("agent.pi_rpc_client._DEFAULT_QUESTION_TIMEOUT", 1.0)
     client = make_client(fake_pi)
     start = time.time()
-    completion = create(client, "go")
+    completion = create(client, "go", timeout=180)
     elapsed = time.time() - start
     # No steer ever arrives: after ~1s the input question is auto-answered
     # (cancelled policy), the run still completes with a footer.

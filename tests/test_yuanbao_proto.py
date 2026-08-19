@@ -20,6 +20,13 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import pytest
+from unittest.mock import patch
+from gateway.platforms.yuanbao_media import (
+    build_image_msg_body,
+    get_image_format,
+    is_image,
+    upload_to_cos,
+)
 from gateway.platforms.yuanbao_proto import (
     # 基础工具
     _encode_varint,
@@ -53,6 +60,54 @@ from gateway.platforms.yuanbao_proto import (
 # ===========================================================
 # 1. varint 编解码
 # ===========================================================
+
+class TestYuanbaoMediaMime:
+    def test_gif_mime_parameters_keep_image_format(self):
+        assert get_image_format(" image/gif; charset=binary ") == 2
+
+        body = build_image_msg_body(
+            "https://example.com/anim.gif",
+            uuid="gif-1",
+            size=123,
+            width=10,
+            height=10,
+            mime_type="IMAGE/GIF; charset=binary",
+        )
+        assert body[0]["msg_content"]["image_format"] == 2
+
+    def test_image_detection_normalizes_mime_parameters(self):
+        assert is_image("upload.bin", " IMAGE/GIF; charset=binary ") is True
+        assert is_image("upload.bin", " text/plain; charset=utf-8 ") is False
+
+    @pytest.mark.asyncio
+    async def test_upload_normalizes_image_mime_for_dimensions(self):
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def put(self, *args, **kwargs):
+                return type("Response", (), {"raise_for_status": lambda self: None})()
+
+        credentials = {
+            "encryptTmpSecretId": "id",
+            "encryptTmpSecretKey": "key",
+            "location": "x.gif",
+        }
+        with (
+            patch("gateway.platforms.yuanbao_media.httpx.AsyncClient", return_value=Client()),
+            patch(
+                "gateway.platforms.yuanbao_media.parse_image_size",
+                return_value={"width": 7, "height": 9},
+            ),
+        ):
+            result = await upload_to_cos(
+                b"gif", "x.gif", "IMAGE/GIF", credentials, "bucket", "region"
+            )
+        assert (result["width"], result["height"]) == (7, 9)
+
 
 class TestVarint:
     def test_small_values(self):

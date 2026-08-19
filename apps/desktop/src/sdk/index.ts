@@ -464,7 +464,9 @@ export const host = {
       throw new Error('This Desktop build has no connection registry. Update Hermes Desktop.')
     }
 
-    return bridge.list()
+    const registry = await bridge.list()
+
+    return Array.isArray(registry) ? registry : Array.isArray(registry?.connections) ? registry.connections : []
   },
 
   /** The union agent roster across every registered connection: one row per

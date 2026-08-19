@@ -336,8 +336,7 @@ export function TreeGroup({
   // close gesture: its tabs are shown/hidden (zone menu, ⌘K), never closed —
   // an accidental ✕ on standing chrome removed Bot Mode until the next launch.
   const closeableTab = (paneId: string) =>
-    !paneChrome(paneFor(paneId)).hideOnly &&
-    (!paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId))
+    !paneChrome(paneFor(paneId)).hideOnly && (!paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId))
 
   // A pane's own live label when it has one, else its registered string.
   const tabLabel = (paneId: string) => paneChrome(paneFor(paneId)).tabTitle?.() ?? paneFor(paneId)?.title ?? paneId

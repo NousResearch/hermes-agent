@@ -692,6 +692,7 @@ registry.register(
     const hideOnlyPanes = registry
       .getArea('panes')
       .filter(c => (c.data as { hideOnly?: boolean } | undefined)?.hideOnly)
+
     const wanted = new Set(hideOnlyPanes.map(c => c.id))
 
     for (const [paneId, dispose] of stripTabToggles) {

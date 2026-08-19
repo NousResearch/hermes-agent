@@ -106,9 +106,7 @@ describe('hide-only strip tabs', () => {
     registerPane('sessions', { placement: 'left', hideOnly: true })
     registerPane('hermes-bots:pane', { placement: 'left', hideOnly: true })
     registerPane('session-tile:x', { placement: 'main' })
-    $layoutTree.set(
-      group(['sessions', 'hermes-bots:pane', 'session-tile:x'], { active: 'sessions', id: 'g-mixed' })
-    )
+    $layoutTree.set(group(['sessions', 'hermes-bots:pane', 'session-tile:x'], { active: 'sessions', id: 'g-mixed' }))
 
     expect(isHideOnlyPane('sessions')).toBe(true)
     // Close-others measured from the tile must not sweep standing chrome.

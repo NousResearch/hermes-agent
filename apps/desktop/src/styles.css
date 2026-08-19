@@ -551,23 +551,25 @@
   }
 
   /* ── Window glass (Settings → Appearance → Window Translucency: Glass) ──
-     Set on <html> by store/translucency.ts; macOS chat windows only. Every
-     chat window already carries an NSVisualEffectView (`vibrancy: 'sidebar'`
-     in electron/main.ts) that WindowServer composites BELOW the web contents;
-     the page normally buries it under fully opaque surfaces.
+     Set on <html> by store/translucency.ts; chat windows on a glass-capable
+     OS (macOS vibrancy, Windows 11 DWM acrylic/mica). The native material
+     composites BELOW the web contents; the page normally buries it under
+     fully opaque surfaces.
 
      ONE PAINTER: <body> paints the glass tint exactly once, at
-     `--translucency-glass-keep` (set inline from the intensity slider, floor
-     30%), and the field tokens (chat / sidebar / editor surface) go fully
-     transparent. The field surfaces NEST — body > pane container > chat
-     section > transcript wrapper all wear these tokens — so thinning the
-     tokens themselves stacks the tint once per layer and a session pane ends
-     up near-opaque (~0.93 at 60%) while the landing page, with fewer layers,
-     reads far clearer. With a single painter the field alpha is the same
-     number on every route. Raised content (cards, popovers, bubbles, the
-     composer) keeps its own opaque fills over full-contrast text; regions
-     still read distinct through their borders and the material itself.
-     Unlike Clear, nothing on the page fades.
+     `--translucency-glass-keep` (set inline from the Tint slider, linear to
+     zero — the top of the lever is bare material), and the field tokens
+     (chat / sidebar / editor surface) go fully transparent. The field
+     surfaces NEST — body > pane container > chat section > transcript
+     wrapper all wear these tokens — so thinning the tokens themselves stacks
+     the tint once per layer and a session pane ends up near-opaque (~0.93 at
+     60%) while the landing page, with fewer layers, reads far clearer. With a
+     single painter the field alpha is the same number on every route. Raised
+     content (cards, popovers, bubbles, the composer) keeps its own opaque
+     fills over full-contrast text; regions still read distinct through their
+     borders and the material itself. Unlike Clear, nothing on the page fades
+     — the separate Fade lever does that natively, at the window level, and
+     defaults to off.
 
      The boot script in index.html pins an opaque inline background on <html>
      before first paint; it has to go transparent here or it sits behind the

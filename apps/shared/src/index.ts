@@ -63,6 +63,7 @@ export {
   type SkinColorToken
 } from './skin'
 export {
+  backgroundMaterialFor,
   clampIntensity,
   DEFAULT_GLASS_MATERIAL,
   DEFAULT_GLASS_SCOPE,
@@ -70,7 +71,10 @@ export {
   GLASS_SCOPES,
   glassActive,
   type GlassMaterial,
+  glassMaterialForPicker,
+  glassMaterialsFor,
   type GlassScope,
+  glassSupportedOn,
   glassSurfaceKeep,
   normalizeMaterial,
   normalizeMode,
@@ -83,8 +87,12 @@ export {
   TRANSLUCENCY_STEP,
   type TranslucencyMode,
   type TranslucencyState,
+  translucencySupportedOn,
   vibrancyFor,
-  windowOpacityFor
+  windowOpacityFor,
+  WINDOWS_BACKGROUND_MATERIALS,
+  WINDOWS_GLASS_MIN_BUILD,
+  type WindowsBackgroundMaterial
 } from './translucency'
 export {
   buildHermesWebSocketUrl,

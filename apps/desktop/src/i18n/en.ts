@@ -522,11 +522,12 @@ export const en: Translations = {
       terminalFontPreview: 'Glyph preview',
       terminalFontReset: 'Use default',
       translucencyTitle: 'Window Translucency',
-      translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
-      translucencyGlassDesc:
-        'Matte glass: the desktop shows through as a smooth blur while text stays sharp. macOS only.',
+      translucencyDesc: 'See your desktop through the whole window, text and all.',
+      translucencyGlassDesc: 'Matte glass: the desktop shows through as a smooth blur while text stays sharp.',
       translucencyModeClear: 'Clear',
       translucencyModeGlass: 'Glass',
+      translucencyTintTitle: 'Tint',
+      translucencyFadeTitle: 'Fade',
       translucencyFrostTitle: 'Frost',
       translucencyFrost: {
         'under-window': 'Deep',

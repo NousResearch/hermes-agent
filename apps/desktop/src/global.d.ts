@@ -247,6 +247,10 @@ declare global {
       setActiveWork?: (payload: HermesActiveWork) => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
+      /** Main-process fact: this OS can back glass with a native material. */
+      glassSupported?: boolean
+      /** Main-process fact: this OS can do any translucency at all (not Linux). */
+      translucencySupported?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void

@@ -424,6 +424,8 @@ export interface Translations {
       translucencyGlassDesc: string
       translucencyModeClear: string
       translucencyModeGlass: string
+      translucencyTintTitle: string
+      translucencyFadeTitle: string
       translucencyFrostTitle: string
       translucencyFrost: {
         'under-window': string

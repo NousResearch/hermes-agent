@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { Package, Palette, Settings2, Wrench } from '@/lib/icons'
 import { $agentPlugins, isDesktopRelevantPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { $gatewayState } from '@/store/session'
+import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -135,15 +136,21 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       label: appearance.uiScaleTitle,
       target: { setting: APPEARANCE_SETTING_IDS.uiScale, view: 'config:appearance' }
     },
-    {
-      context: appearanceContext,
-      description: appearance.translucencyDesc,
-      icon: Palette,
-      id: `setting:${APPEARANCE_SETTING_IDS.translucency}`,
-      keywords: ['opacity', 'transparent'],
-      label: appearance.translucencyTitle,
-      target: { setting: APPEARANCE_SETTING_IDS.translucency, view: 'config:appearance' }
-    },
+    // Linux has no translucency row to land on, and a palette hit that scrolls
+    // to nothing is worse than no hit.
+    ...(TRANSLUCENCY_SUPPORTED
+      ? [
+          {
+            context: appearanceContext,
+            description: appearance.translucencyDesc,
+            icon: Palette,
+            id: `setting:${APPEARANCE_SETTING_IDS.translucency}`,
+            keywords: ['opacity', 'transparent'],
+            label: appearance.translucencyTitle,
+            target: { setting: APPEARANCE_SETTING_IDS.translucency, view: 'config:appearance' as const }
+          }
+        ]
+      : []),
     {
       context: appearanceContext,
       description: appearance.backdropDesc,

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import re
 import subprocess
 import sys
@@ -99,70 +98,6 @@ ENGAGEMENT_THRESHOLD = 10
 
 # How many recent posts to scan per account
 POSTS_PER_ACCOUNT = 10
-
-# ──────────────────────────────────────────────────────────────────────
-# SAHIL'S BRAND VOICE — Quote Tweet Patterns
-# ──────────────────────────────────────────────────────────────────────
-
-# Quote tweet templates in Sahil's voice registers
-QUOTE_TWEET_PATTERNS = {
-    "direct_affirm": [
-        "This. {insight}",
-        "Exactly what I've been finding. {insight}",
-        "Same pattern here. {insight}",
-        "Real data on this. {insight}",
-    ],
-    "direct_extend": [
-        "Worth adding: {insight}",
-        "The next layer after this: {insight}",
-        "Building on this: {insight}",
-        "One thing that amplifies this: {insight}",
-    ],
-    "wry_observation": [
-        "Noticed this too. {insight}",
-        "The thing nobody's saying: {insight}",
-        "Every {topic} now does this. {insight}",
-    ],
-    "honest_debrief": [
-        "Tried the obvious approach here. {insight}",
-        "Spent {timeframe} on this exact problem. {insight}",
-        "Built 4 apps with this pattern. {insight}",
-    ],
-    "data_point": [
-        "Data point: {insight}",
-        "Tracked this across {n} projects. {insight}",
-        "Real numbers: {insight}",
-    ],
-}
-
-# Reply patterns in Sahil's voice (1-3 sentences, contextual)
-REPLY_PATTERNS = {
-    "add_data_point": [
-        "Data backs this — {data_point}.",
-        "Tracked similar numbers. {data_point}.",
-        "Veracode's latest eval backs this: {data_point}.",
-    ],
-    "share_experience": [
-        "Hit this same issue last week. {fix}.",
-        "Same pattern here. {fix}.",
-        "Ran into this building {app}. {fix}.",
-    ],
-    "ask_deepening": [
-        "How are you handling {edge_case}? That's where my setup breaks.",
-        "What's the approach when {edge_case}? Been thinking about this.",
-        "Genuine question: how do you handle {edge_case} at scale?",
-    ],
-    "dry_agreement": [
-        "True. Though I'd argue {nuance}.",
-        "Same. Adding: {nuance}.",
-        "Agreed. The real shift is {nuance}.",
-    ],
-    "build_on_insight": [
-        "The next layer: {insight}.",
-        "This plus {insight} is the real pattern.",
-        "What I found after this: {insight}.",
-    ],
-}
 
 # ──────────────────────────────────────────────────────────────────────
 # HELPERS
@@ -406,30 +341,6 @@ def _categorize_post(text: str) -> str:
     return "build_update"
 
 
-def _select_register(category: str) -> str:
-    """Select voice register based on category and random distribution.
-
-    ~60-65% Direct, ~20% Wry, ~15-20% Honest Debrief.
-    """
-    if category in ("football", "observation"):
-        # Wry is more natural for these
-        roll = random.random()
-        if roll < 0.60:
-            return "wry"
-        elif roll < 0.85:
-            return "direct"
-        else:
-            return "honest_debrief"
-
-    roll = random.random()
-    if roll < 0.60:
-        return "direct"
-    elif roll < 0.80:
-        return "wry"
-    else:
-        return "honest_debrief"
-
-
 # ──────────────────────────────────────────────────────────────────────
 # GENERATE QUOTE TWEET
 # ──────────────────────────────────────────────────────────────────────
@@ -603,11 +514,6 @@ def _quality_gate(draft: str, post_text: str) -> bool:
     return True
 
 
-def _fallback_response(tweet_text: str, response_type: str) -> str:
-    """DEPRECATED — kept for reference only. New code drops candidates on failure."""
-    return ""
-
-
 def _generate_quote_tweet(post: Dict) -> str:
     """Generate a quote tweet in Sahil's brand voice using LLM.
     
@@ -626,63 +532,6 @@ def _generate_reply(post: Dict) -> str:
     return _llm_generate_response(text, author, "reply")
 
 
-def _build_insight(text: str, category: str, register: str) -> str:
-    """Build a specific insight/commentary based on post content."""
-    lower = text.lower()
-
-    if category == "build_update":
-        if "shipped" in lower or "launch" in lower:
-            return "the real work starts after launch — retention, not acquisition"
-        return "shipping speed is the moat, but only if you're shipping the right thing"
-
-    if category == "technical_tip":
-        return "the setup cost is worth it when the pattern saves you 3x on every subsequent build"
-
-    if category == "opinion":
-        return "the data I've seen tells a slightly different story across 4 projects"
-
-    if category == "observation":
-        if register == "wry":
-            return "nobody's talking about why the obvious solution breaks at 10x scale"
-        return "the pattern holds until it doesn't — that's where the real learning is"
-
-    if category == "football":
-        if register == "wry":
-            return "the trauma is the brand at this point"
-        return "every United fan I know is already pacing"
-
-    if category == "ai_tools":
-        if register == "honest_debrief":
-            return "the AI wrote the feature in 30 seconds. I spent 3 hours debugging the schema it created"
-        return "context engineering matters more than model selection once you hit production"
-
-    return "the specifics matter more than the framework"
-
-
-def _extract_topic(text: str) -> str:
-    """Extract a short topic from the post text."""
-    lower = text.lower()
-    if "ai" in lower or "agent" in lower or "model" in lower:
-        return "AI tool"
-    if "ship" in lower or "build" in lower or "app" in lower:
-        return "indie project"
-    if "united" in lower or "football" in lower or "match" in lower:
-        return "football take"
-    return "tech take"
-
-
-def _build_detail_suffix(text: str, category: str) -> str:
-    """Build a short detail suffix to pad short quote tweets."""
-    suffixes = [
-        "Tracked this across 4 apps.",
-        "Real numbers change the conversation.",
-        "Specificity beats general advice every time.",
-        "The data backs this up.",
-        "Worth testing with your own numbers.",
-    ]
-    return random.choice(suffixes)
-
-
 # ──────────────────────────────────────────────────────────────────────
 # GENERATE REPLY
 # ──────────────────────────────────────────────────────────────────────
@@ -690,19 +539,6 @@ def _build_detail_suffix(text: str, category: str) -> str:
 
 # Old static-template functions removed — replaced by LLM-based generation above.
 # The scan_and_suggest pipeline follows.
-
-
-def _auto_like_tweet(tweet_id: str) -> bool:
-    """Like a tweet via xurl. Returns True on success."""
-    if not tweet_id:
-        return False
-    code, output = _run_xurl(["like", tweet_id])
-    if code == 0:
-        try:
-            return json.loads(output).get("data", {}).get("liked", False)
-        except (json.JSONDecodeError, AttributeError):
-            pass
-    return False
 
 
 def scan_and_suggest() -> List[Dict]:

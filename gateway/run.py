@@ -93,6 +93,8 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # 180s budget (is_reconnect=True preserves the offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_STALE_OVERRIDE_LAST_COMPLETED_KEY = "stale_override_last_completed_at"
+_STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS = 120.0
 # End reasons that mean the USER deliberately closed this thread of work
 # (/new -> session_reset / new_session, an explicit exit, or a /switch).
 # Shared by _classify_completion_target (pre-flight verdict) and
@@ -1960,7 +1962,11 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home, get_hermes_home_override
+from hermes_constants import (
+    get_hermes_home,
+    get_hermes_home_override,
+    hermes_home_key,
+)
 from utils import atomic_json_write, base_url_hostname, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -2634,6 +2640,9 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
+# Explicit result from the final synchronous claim check. ``None`` remains a
+# valid lease/error fallback value, so it cannot also encode a race winner.
+_ACTIVE_SESSION_ALREADY_RUNNING = object()
 
 # Conversation-scoped per-session state registry (legacy contract).
 # The state itself now lives in ``SessionState.conversation`` (see
@@ -2666,6 +2675,9 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     "_pending_model_notes",
     "_last_resolved_model",
     "_queued_events",
+    # A held stale-override message belongs to exactly one conversation.
+    # /new, /resume, compression, and auto-reset must make its old picker inert.
+    "_stale_override_pending",
     # Stall-watchdog "already notified" latch (#72016). Cleared on /new so a
     # fresh conversation can warn again if it later stalls with pending inbound.
     "_session_stall_notified",
@@ -7057,6 +7069,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        # Process-local held messages for stale-override confirmation prompts.
+        # The message itself is deliberately not persisted: a restart or prompt
+        # expiry must never submit user text without a fresh explicit choice.
+        self._stale_override_pending: Dict[str, Dict[str, Any]] = {}
 
         # Event-loop liveness heartbeat (#66892): rewritten every 30s while
         # the loop is dispatching. External supervisors use the file mtime /
@@ -7843,18 +7859,441 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return source
         return dataclasses.replace(source, thread_id=recovered)
 
+    async def _mark_stale_override_turn_completed(
+        self, session_key: str, *, is_internal: bool
+    ) -> None:
+        """Persist the completion clock used by stale-override notices.
+
+        Messaging turns call this when the adapter's delivery lifecycle
+        finishes (including failed delivery attempts); direct adapters without
+        that lifecycle hook fall back to calling it after agent return.
+        Internal/system turns never make an idle chat fresh.
+        """
+        if is_internal or not session_key:
+            return
+        try:
+            await self.async_session_store.set_session_metadata(
+                session_key, _STALE_OVERRIDE_LAST_COMPLETED_KEY, time.time()
+            )
+        except Exception:
+            logger.debug(
+                "Failed to persist stale-override completion clock for %s",
+                session_key,
+                exc_info=True,
+            )
+
+    async def _defer_stale_override_turn_completed(
+        self,
+        session_key: str,
+        *,
+        source: SessionSource,
+        run_generation: int,
+        is_internal: bool,
+    ) -> None:
+        """Start the idle clock after the delivery lifecycle, not generation."""
+        if is_internal or not session_key:
+            return
+
+        notice_config = getattr(self.config, "stale_override_notice", None)
+        if notice_config is None or notice_config.mode == "off":
+            return
+        try:
+            home_channel = self.config.get_home_channel(source.platform)
+        except Exception:
+            home_channel = None
+        from gateway.stale_override_notice import source_matches_channels
+
+        if not source_matches_channels(
+            source,
+            notice_config.channels,
+            home_channel=home_channel,
+        ):
+            return
+
+        adapter = self._adapter_for_source(source)
+        register = getattr(adapter, "register_post_delivery_callback", None)
+        if not callable(register):
+            # Direct/non-messaging adapters have no delivery lifecycle hook.
+            await self._mark_stale_override_turn_completed(
+                session_key, is_internal=False
+            )
+            return
+
+        async def _after_delivery() -> None:
+            await self._mark_stale_override_turn_completed(
+                session_key, is_internal=False
+            )
+
+        register(
+            session_key,
+            _after_delivery,
+            generation=run_generation,
+        )
+
+    def _stale_override_decision(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        notice_config,
+    ):
+        """Resolve which explicit session overrides differ from live defaults."""
+        from gateway.stale_override_notice import (
+            OverrideNoticeDecision,
+            reasoning_effort,
+            reasoning_matches_policy,
+            route_label,
+            routes_differ,
+        )
+
+        # Rehydrate before inspecting so a persisted /model override still
+        # triggers after a gateway restart.
+        self._rehydrate_session_model_override(session_key)
+        state = self._peek_session_state(session_key)
+        if state is None:
+            return OverrideNoticeDecision()
+
+        model_override = state.conversation.model_override
+        reasoning_override = state.conversation.reasoning_override
+
+        default_model, default_runtime = self._resolve_session_agent_runtime(
+            source=source,
+            session_key=session_key,
+            include_session_override=False,
+        )
+        current_model, current_runtime = self._resolve_session_agent_runtime(
+            source=source,
+            session_key=session_key,
+        )
+        default_provider = default_runtime.get("provider")
+        current_provider = current_runtime.get("provider")
+        model_stale = bool(
+            notice_config.model != "off"
+            and model_override is not None
+            and routes_differ(
+                current_model,
+                current_provider,
+                default_model,
+                default_provider,
+            )
+        )
+
+        # "Default reasoning" is the live per-model/global setting for the
+        # model this session currently uses. Clearing the session override
+        # returns to exactly this value.
+        default_reasoning = self._load_reasoning_config(current_model)
+        reasoning_stale = reasoning_matches_policy(
+            notice_config.reasoning,
+            reasoning_override,
+            default_reasoning,
+        )
+
+        return OverrideNoticeDecision(
+            model_stale=model_stale,
+            reasoning_stale=reasoning_stale,
+            current_route=route_label(current_model, current_provider),
+            default_route=route_label(default_model, default_provider),
+            current_reasoning=reasoning_effort(reasoning_override),
+            default_reasoning=reasoning_effort(default_reasoning),
+        )
+
+    async def _clear_stale_override_selection(
+        self, session_key: str, *, model: bool, reasoning: bool
+    ) -> None:
+        """Clear selected session overrides through their canonical stores."""
+        if model:
+            conversation = self._session_state(session_key).conversation
+            conversation.model_override = None
+            # A stale `/model --once` still has a post-turn restore snapshot.
+            # Restoring the default model from this prompt is an explicit
+            # cancellation of both the temporary model and that snapshot;
+            # otherwise finally would silently reintroduce the old override.
+            conversation.one_turn_restore = None
+            pending_notes = getattr(self, "_pending_model_notes", None)
+            if isinstance(pending_notes, dict):
+                # Do not prepend a stale "model was just switched" note to the
+                # held message after the user chose to clear that switch.
+                pending_notes.pop(session_key, None)
+            try:
+                await self.async_session_store.set_model_override(session_key, None)
+            except Exception:
+                # Match /model's best-effort write-through semantics: a store
+                # failure must not strand the held user message after the
+                # in-memory reset has already succeeded.
+                logger.debug(
+                    "Failed to persist stale-override model reset for %s",
+                    session_key,
+                    exc_info=True,
+                )
+        if reasoning:
+            self._set_session_reasoning_override(session_key, None)
+        if model or reasoning:
+            self._evict_cached_agent(session_key)
+
+    def _schedule_stale_override_prompt_expiry(
+        self, session_key: str, token: object
+    ) -> None:
+        """Expire a held message without ever submitting it implicitly."""
+
+        async def _expire() -> None:
+            await asyncio.sleep(_STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS)
+            pending = getattr(self, "_stale_override_pending", {}).get(session_key)
+            if pending is not None and pending.get("token") is token:
+                self._stale_override_pending.pop(session_key, None)
+                logger.info(
+                    "Stale-override prompt expired; pending message was not sent "
+                    "(session=%s)",
+                    session_key,
+                )
+
+        task = asyncio.create_task(_expire())
+        background = getattr(self, "_background_tasks", None)
+        if background is not None:
+            background.add(task)
+            task.add_done_callback(background.discard)
+
+    async def _maybe_handle_stale_override_notice(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> tuple[bool, Optional[str]]:
+        """Notify or hold the first ordinary message after an idle override.
+
+        Returns ``(handled, response)``. In info-only mode ``handled`` is False
+        after the notice is sent, allowing the current message to continue. In
+        confirm mode the message is held and re-dispatched only by the picker
+        callback; timeout is intentionally fail-closed.
+        """
+        metadata = getattr(event, "metadata", None)
+        if isinstance(metadata, dict) and metadata.pop(
+            "_stale_override_notice_bypass", False
+        ):
+            return False, None
+        if getattr(event, "internal", False) or event.is_command():
+            return False, None
+
+        config = getattr(getattr(self, "config", None), "stale_override_notice", None)
+        if config is None or config.mode == "off":
+            return False, None
+
+        from gateway.stale_override_notice import source_matches_channels
+
+        home = None
+        try:
+            home = self.config.get_home_channel(event.source.platform)
+        except Exception:
+            pass
+        if not source_matches_channels(
+            event.source, config.channels, home_channel=home
+        ):
+            return False, None
+
+        try:
+            completed_at = await self.async_session_store.get_session_metadata(
+                session_key, _STALE_OVERRIDE_LAST_COMPLETED_KEY, None
+            )
+            idle_seconds = max(0.0, time.time() - float(completed_at))
+        except (TypeError, ValueError):
+            return False, None
+        except Exception:
+            logger.debug("Failed to read stale-override completion clock", exc_info=True)
+            return False, None
+        if idle_seconds < config.idle_minutes * 60:
+            return False, None
+
+        # Evaluate session reset policy before inspecting overrides. The normal
+        # agent path performs this lookup later, but prompting first could offer
+        # "Continue" for an override that an idle/daily auto-reset would clear
+        # immediately. ``touch_activity=False`` preserves the prior activity
+        # clock; the normal path consumes ``was_auto_reset`` and runs the
+        # canonical conversation-boundary cleanup.
+        try:
+            session_entry = await self.async_session_store.get_or_create_session(
+                event.source,
+                touch_activity=False,
+            )
+        except Exception:
+            logger.debug(
+                "Failed stale-override reset-policy preflight", exc_info=True
+            )
+            return False, None
+        if getattr(session_entry, "was_auto_reset", False):
+            logger.info(
+                "Skipping stale-override prompt because session auto-reset is pending "
+                "(session=%s)",
+                session_key,
+            )
+            return False, None
+
+        decision = self._stale_override_decision(
+            source=event.source,
+            session_key=session_key,
+            notice_config=config,
+        )
+        if not decision.triggered:
+            return False, None
+
+        adapter = self._adapter_for_source(event.source)
+        if adapter is None:
+            # Never lose a user message just because a platform cannot render
+            # the notice. Unsupported/unavailable adapters fail open.
+            return False, None
+        notice_text = decision.message(
+            idle_seconds / 60.0, held=config.mode == "confirm"
+        )
+        send_metadata = self._thread_metadata_for_source(
+            event.source, self._reply_anchor_for_event(event)
+        )
+
+        if config.mode == "info_only":
+            try:
+                await adapter.send(
+                    event.source.chat_id,
+                    f"ℹ️ {notice_text}",
+                    metadata=send_metadata,
+                )
+            except Exception:
+                logger.warning("Failed to send stale-override info notice", exc_info=True)
+            return False, None
+
+        has_picker = getattr(type(adapter), "send_choice_picker", None) is not None
+        if not has_picker:
+            logger.warning(
+                "stale_override_notice mode=confirm requires send_choice_picker; "
+                "allowing message on platform=%s",
+                getattr(getattr(event.source, "platform", None), "value", "unknown"),
+            )
+            return False, None
+
+        pending_map = getattr(self, "_stale_override_pending", None)
+        if pending_map is None:
+            pending_map = {}
+            self._stale_override_pending = pending_map
+        if session_key in pending_map:
+            return True, (
+                "⚠️ A previous message is still waiting on the override prompt. "
+                "Use that picker first; this newer message was not sent."
+            )
+
+        token = object()
+        pending_map[session_key] = {"token": token, "event": event}
+
+        # This decision prompt uses long action labels whose distinction matters
+        # more than density. Adapters may use this hint to render one action per
+        # row without changing the compact layout of ordinary choice pickers.
+        send_metadata = dict(send_metadata or {})
+        send_metadata["choice_layout"] = "vertical"
+        send_metadata["choice_timeout_seconds"] = (
+            _STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS
+        )
+        # Per-user sessions must keep the held message and its override mutation
+        # bound to the initiating participant. Shared thread/group sessions keep
+        # the established authorized-participant behavior.
+        source = event.source
+        is_thread = bool(source.thread_id or source.prospective_thread_id)
+        owner_required = (
+            source.chat_type == "dm"
+            or (
+                is_thread
+                and getattr(self.config, "thread_sessions_per_user", False)
+            )
+            or (
+                source.chat_type != "dm"
+                and not is_thread
+                and getattr(self.config, "group_sessions_per_user", True)
+            )
+        )
+        if owner_required:
+            send_metadata["requester_user_id"] = str(
+                source.user_id_alt or source.user_id or ""
+            )
+
+        async def _on_choice_selected(_chat_id: str, value: str) -> str:
+            pending = getattr(self, "_stale_override_pending", {}).get(session_key)
+            if pending is None or pending.get("token") is not token:
+                return "Selection expired — the original message was not sent."
+            if value not in {
+                "continue",
+                "default_model",
+                "default_reasoning",
+                "defaults",
+            }:
+                return "Invalid selection — the original message was not sent."
+
+            reset_model = value in {"default_model", "defaults"}
+            reset_reasoning = value in {"default_reasoning", "defaults"}
+            logger.info(
+                "Stale-override selection accepted session=%s choice=%s "
+                "reset_model=%s reset_reasoning=%s",
+                session_key,
+                value,
+                reset_model,
+                reset_reasoning,
+            )
+            self._stale_override_pending.pop(session_key, None)
+            await self._clear_stale_override_selection(
+                session_key,
+                model=reset_model,
+                reasoning=reset_reasoning,
+            )
+            held_event = pending["event"]
+            if not isinstance(getattr(held_event, "metadata", None), dict):
+                held_event.metadata = {}
+            held_event.metadata["_stale_override_notice_bypass"] = True
+            resume_adapter = self._adapter_for_source(held_event.source) or adapter
+            await resume_adapter.handle_message(held_event)
+            logger.info(
+                "Stale-override held message re-dispatched session=%s choice=%s",
+                session_key,
+                value,
+            )
+            if value == "continue":
+                return "Continuing with the current override. Resuming your message…"
+            return "Override updated. Resuming your message…"
+
+        try:
+            result = await adapter.send_choice_picker(
+                chat_id=event.source.chat_id,
+                title=f"⚠️ {notice_text}",
+                choices=decision.choices(),
+                session_key=session_key,
+                on_choice_selected=_on_choice_selected,
+                metadata=send_metadata,
+            )
+        except Exception:
+            logger.warning("Failed to send stale-override confirmation", exc_info=True)
+            result = None
+        if not bool(getattr(result, "success", False)):
+            pending_map.pop(session_key, None)
+            # Rendering failure must not eat the user's message.
+            return False, None
+
+        logger.info(
+            "Stale-override prompt shown session=%s idle_seconds=%.1f "
+            "model_stale=%s reasoning_stale=%s",
+            session_key,
+            idle_seconds,
+            decision.model_stale,
+            decision.reasoning_stale,
+        )
+        self._schedule_stale_override_prompt_expiry(session_key, token)
+        return True, None
+
     def _resolve_session_agent_runtime(
         self,
         *,
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        include_session_override: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
         Priority (highest first): session ``/model`` → ``channel_overrides`` →
         global config/env (``_resolve_gateway_model(user_config)`` and default
-        provider resolution).
+        provider resolution). ``include_session_override=False`` resolves the
+        live baseline for policies that compare a session override with what
+        this channel would otherwise use.
         """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
@@ -7874,6 +8313,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         override = (
             _override_state.conversation.model_override if _override_state else None
         )
+        if not include_session_override:
+            override = None
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -9718,7 +10159,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> tuple[Any, Optional[str]]:
         """Claim a cross-process active-session slot for a new gateway turn."""
         if self._is_session_running(session_key):
-            return None, None
+            return _ACTIVE_SESSION_ALREADY_RUNNING, None
         local_limit_message = self._active_session_limit_message(session_key)
         if local_limit_message is not None:
             return None, local_limit_message
@@ -16048,6 +16489,187 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             f"mid-turn. Wait for the current response or `/stop` first."
         )
 
+    async def _route_late_canonical_busy_message(
+        self,
+        event: MessageEvent,
+        *,
+        source: SessionSource,
+        session_key: str,
+        command_def,
+        raw_text: str,
+    ) -> tuple[bool, Any]:
+        """Route a fall-through event that became canonical after command parsing.
+
+        Telegram slash commands retain their raw source until handlers such as
+        ``/topic`` have inspected it. If a command falls through to an agent
+        turn, topic recovery can therefore reveal a busy canonical session only
+        at the end of command dispatch. Reuse the established busy command and
+        generic-message routers here before any claim or pending sentinel write.
+        """
+        if not self._is_session_running(session_key):
+            return False, None
+
+        if command_def is not None:
+            # Fall-through handlers rewrite event.text for the eventual agent
+            # turn. Busy command handlers still need the exact inbound slash
+            # text so /queue and /steer parse their payload normally.
+            rewritten_text = event.text
+            event.text = raw_text
+            try:
+                response = await self._dispatch_busy_slash_command(
+                    event, command_def, session_key, source
+                )
+            finally:
+                event.text = rewritten_text
+            return True, response
+
+        # Skill/bundle commands are rewritten into ordinary agent prompts and
+        # have no CommandDef. In queue text mode the generic busy handler
+        # deliberately declines so the adapter can apply its normal debounce;
+        # invoke that same fallback explicitly under the canonical key.
+        handled = await self._handle_active_session_busy_message(event, session_key)
+        if handled:
+            return True, None
+        # Bare/direct adapters may not implement the richer busy-handler send
+        # surface. Preserve the established priority-path steer behavior rather
+        # than turning a valid steer into a generic retry response.
+        if self._effective_busy_input_mode(source) == "steer":
+            state = self._peek_session_state(session_key)
+            running_agent = state.turn.agent if state else None
+            steer_text = (event.text or "").strip()
+            if (
+                steer_text
+                and running_agent is not None
+                and running_agent is not _AGENT_PENDING_SENTINEL
+                and hasattr(running_agent, "steer")
+            ):
+                try:
+                    if running_agent.steer(steer_text):
+                        return True, None
+                except Exception:
+                    logger.warning(
+                        "Late canonical steer fallback failed for %s",
+                        session_key,
+                        exc_info=True,
+                    )
+        adapter = self._adapter_for_source(source)
+        queue_fallback = getattr(adapter, "_queue_busy_message_fallback", None)
+        if callable(queue_fallback):
+            await queue_fallback(session_key, event)
+            return True, None
+        return True, (
+            "⏳ Another turn is already running for this session. "
+            "Wait for it to finish, then resend your message."
+        )
+
+    def _expand_cached_dynamic_command_for_busy(
+        self,
+        event: MessageEvent,
+        *,
+        source: SessionSource,
+        session_key: str,
+        cache_home_key: str,
+        bundle_key: Optional[str],
+        skill_key: Optional[str],
+    ) -> Optional[str]:
+        """Expand a cache-classified skill/bundle after the busy decision.
+
+        Classification happens through cache-only resolvers at the ingress
+        boundary.  Content loading is intentionally deferred until after that
+        decision and this helper imports no plugin registry or command handler.
+        ``cache_home_key`` carries the same explicit profile identity into the
+        builders, so they never re-select an ambient profile/platform cache.
+        ``None`` means expansion succeeded; a string is a user-facing failure.
+        """
+        user_instruction = event.get_command_args().strip()
+        platform = source.platform.value if source.platform else None
+
+        if bundle_key is not None:
+            from agent.skill_bundles import (
+                build_bundle_invocation_message,
+                get_cached_skill_bundles,
+            )
+
+            bundles = get_cached_skill_bundles(cache_home_key, platform)
+            if bundles is None or bundle_key not in bundles:
+                return f"Failed to load skill bundle {bundle_key}."
+
+            bundle_result = build_bundle_invocation_message(
+                bundle_key,
+                user_instruction,
+                task_id=session_key,
+                platform=platform,
+                bundles=bundles,
+            )
+            if not bundle_result:
+                return f"Failed to load skill bundle {bundle_key}."
+            event.text = bundle_result[0]
+            return None
+
+        if skill_key is None:
+            return "Failed to resolve dynamic command."
+
+        from agent.skill_commands import (
+            build_skill_invocation_message,
+            build_stacked_skill_invocation_message,
+            get_cached_skill_commands,
+            split_stacked_skill_commands,
+        )
+        from agent.skill_utils import get_disabled_skill_names
+
+        skill_commands = get_cached_skill_commands(cache_home_key, platform)
+        if skill_commands is None or skill_key not in skill_commands:
+            return f"Failed to load skill {skill_key}."
+        skill_name = skill_commands.get(skill_key, {}).get("name", "")
+        if platform and skill_name:
+            disabled = get_disabled_skill_names(platform=platform)
+            if skill_name in disabled:
+                return (
+                    f"The **{skill_name}** skill is disabled for {platform}.\n"
+                    "Enable it with: `hermes skills config`"
+                )
+
+        extra_keys, stacked_instruction = split_stacked_skill_commands(
+            user_instruction,
+            commands=skill_commands,
+        )
+        if extra_keys and platform:
+            disabled = get_disabled_skill_names(platform=platform)
+            disabled_extra = [
+                skill_commands.get(key, {}).get("name", "")
+                for key in extra_keys
+                if skill_commands.get(key, {}).get("name", "") in disabled
+            ]
+            if disabled_extra:
+                return (
+                    f"The **{', '.join(disabled_extra)}** skill(s) in this "
+                    f"stacked invocation are disabled for {platform}.\n"
+                    "Enable them with: `hermes skills config`"
+                )
+
+        if extra_keys:
+            stacked_result = build_stacked_skill_invocation_message(
+                [skill_key, *extra_keys],
+                stacked_instruction,
+                task_id=session_key,
+                commands=skill_commands,
+            )
+            if not stacked_result:
+                return f"Failed to load stacked skills for {skill_key}."
+            event.text = stacked_result[0]
+            return None
+
+        message = build_skill_invocation_message(
+            skill_key,
+            user_instruction,
+            task_id=session_key,
+            commands=skill_commands,
+        )
+        if not message:
+            return f"Failed to load skill {skill_key}."
+        event.text = message
+        return None
+
     async def _handle_pause_command(self, event: MessageEvent):
         """`/pause [reason]` engages the global emergency stop; `/pause off`
         (aliases: resume/stop) lifts it.
@@ -16324,65 +16946,87 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
 
-        if (
-            getattr(self, "_startup_restore_in_progress", False)
-            and not is_internal
-            and not getattr(event, "_hermes_startup_restore_replay", False)
-        ):
-            self._queue_startup_restore_event(event)
-            return None
+        # Decide whether this ingress reaches an already-running canonical
+        # session before invoking discovery-capable pre-dispatch hooks. This
+        # probe is deliberately limited to the static CommandDef registry,
+        # topic-key normalization, and in-memory running state. Raw /topic and
+        # root-lobby /new retain their management-lane behavior and therefore
+        # remain on the ordinary idle/plugin path.
+        _probe_command = event.get_command()
+        from hermes_cli.commands import resolve_command as _resolve_probe_command
 
-        # scale-to-zero (Phase 0, 0.B/F13): stamp the gateway-scoped last-inbound
-        # clock for real (user-originated) inbound only. Internal/system events
-        # (background-process completions, startup-restore replays) are NOT
-        # traffic — counting them would keep a genuinely idle gateway awake. This
-        # clock is what the idle predicate (gateway/scale_to_zero.is_idle) reads.
-        if not is_internal:
-            self._scale_to_zero_note_real_inbound()
+        _probe_cmd_def = (
+            _resolve_probe_command(_probe_command) if _probe_command else None
+        )
+        _probe_canonical = (
+            _probe_cmd_def.name if _probe_cmd_def else _probe_command
+        )
+        _probe_management_lane = _probe_canonical == "topic"
+        if _probe_canonical == "new":
+            _probe_management_lane = await asyncio.to_thread(
+                self._is_telegram_topic_root_lobby, source
+            )
+        _probe_source = source
+        if source.platform == Platform.TELEGRAM:
+            _probe_source = await asyncio.to_thread(
+                self._normalize_source_for_session_key,
+                source,
+            )
+        _probe_key = self._session_key_for_source(_probe_source)
+        _preboundary_busy = (
+            not _probe_management_lane and self._is_session_running(_probe_key)
+        )
+        _idle_ingress_preprocessed = not _preboundary_busy
 
-        # Fire pre_gateway_dispatch plugin hook for user-originated messages.
-        # Plugins receive the MessageEvent and may return a dict influencing flow:
-        #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
-        #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
-        #   {"action": "allow"}   /   None          -> normal dispatch
-        # Hook runs BEFORE auth so plugins can handle unauthorized senders
-        # (e.g. customer handover ingest) without triggering the pairing flow.
-        if not is_internal:
-            try:
-                from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
-                    "pre_gateway_dispatch",
-                    event=event,
-                    gateway=self,
-                    # getattr: bare-runner tests build GatewayRunner via
-                    # object.__new__ without __init__ (pitfall #17), and the
-                    # hook must not fail dispatch over a missing attribute.
-                    session_store=getattr(self, "session_store", None),
-                )
-            except Exception as _hook_exc:
-                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
-                _hook_results = []
+        if _idle_ingress_preprocessed:
+            if (
+                getattr(self, "_startup_restore_in_progress", False)
+                and not is_internal
+                and not getattr(event, "_hermes_startup_restore_replay", False)
+            ):
+                self._queue_startup_restore_event(event)
+                return None
 
-            for _result in _hook_results:
-                if not isinstance(_result, dict):
-                    continue
-                _action = _result.get("action")
-                if _action == "skip":
-                    logger.info(
-                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                        _result.get("reason"),
-                        source.platform.value if source.platform else "unknown",
-                        source.chat_id or "unknown",
+            # Preserve the established idle ingress order: activity accounting
+            # and pre_gateway_dispatch run before sender authorization so an
+            # ingress plugin may own an otherwise unauthorized message.
+            if not is_internal:
+                self._scale_to_zero_note_real_inbound()
+                try:
+                    from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+
+                    _hook_results = _invoke_hook(
+                        "pre_gateway_dispatch",
+                        event=event,
+                        gateway=self,
+                        session_store=getattr(self, "session_store", None),
                     )
-                    return None
-                if _action == "rewrite":
-                    _new_text = _result.get("text")
-                    if isinstance(_new_text, str):
-                        event = dataclasses.replace(event, text=_new_text)
-                        source = event.source
-                    break
-                if _action == "allow":
-                    break
+                except Exception as _hook_exc:
+                    logger.warning(
+                        "pre_gateway_dispatch invocation failed: %s", _hook_exc
+                    )
+                    _hook_results = []
+
+                for _result in _hook_results:
+                    if not isinstance(_result, dict):
+                        continue
+                    _action = _result.get("action")
+                    if _action == "skip":
+                        logger.info(
+                            "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                            _result.get("reason"),
+                            source.platform.value if source.platform else "unknown",
+                            source.chat_id or "unknown",
+                        )
+                        return None
+                    if _action == "rewrite":
+                        _new_text = _result.get("text")
+                        if isinstance(_new_text, str):
+                            event = dataclasses.replace(event, text=_new_text)
+                            source = event.source
+                        break
+                    if _action == "allow":
+                        break
 
         if is_internal:
             pass
@@ -16453,6 +17097,222 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        # ── Side-effect-free active-session boundary ─────────────────────
+        # Everything above is limited to ContextVar isolation and fail-closed
+        # profile/channel/sender authorization. Those operations cannot discover
+        # plugins or refresh secrets. No hook, command discovery, quick alias
+        # expansion, startup queue mutation, or activity-clock write is allowed
+        # above this point.
+        _inbound_command = event.get_command()
+        _raw_inbound_text = event.text or ""
+        from hermes_cli.commands import resolve_command as _resolve_inbound_command
+
+        _inbound_cmd_def = (
+            _resolve_inbound_command(_inbound_command)
+            if _inbound_command
+            else None
+        )
+        _inbound_canonical = (
+            _inbound_cmd_def.name if _inbound_cmd_def else _inbound_command
+        )
+
+        # These management controls intentionally inspect the raw Telegram lane.
+        # Their access check reads static platform policy only; neither handler
+        # performs plugin discovery. They retain lobby semantics even if topic
+        # recovery would otherwise reveal a running canonical session.
+        if _inbound_canonical in {"new", "topic"}:
+            _denied = self._check_slash_access(source, _inbound_canonical)
+            if _denied is not None:
+                return _denied
+            if _inbound_canonical == "new" and await asyncio.to_thread(
+                self._is_telegram_topic_root_lobby, source
+            ):
+                return self._telegram_topic_root_new_message()
+            if _inbound_canonical == "topic":
+                return await self._handle_topic_command(event)
+
+        _source_canonicalized_early = False
+        _authoritative_source = source
+        if source.platform == Platform.TELEGRAM:
+            _authoritative_source = await asyncio.to_thread(
+                self._normalize_source_for_session_key,
+                source,
+            )
+        _authoritative_key = self._session_key_for_source(_authoritative_source)
+        _recovered_source = _authoritative_source is not source
+
+        # Only the recovered Telegram lane needs this early detour. Correctly
+        # keyed ingress must retain the established platform/profile busy path
+        # below (including priority, restart-drain, and per-profile modes).
+        if _recovered_source and self._is_session_running(_authoritative_key):
+            logger.info(
+                "telegram topic recovery before busy ingress routing: "
+                "chat=%s user=%s %r -> %s",
+                source.chat_id,
+                source.user_id,
+                source.thread_id,
+                _authoritative_source.thread_id,
+            )
+            source = _authoritative_source
+            event.source = _authoritative_source
+
+            if _inbound_cmd_def is not None:
+                # Match correctly-keyed busy ingress: status/context are visible
+                # pre-access; every other built-in uses static slash policy.
+                if _inbound_cmd_def.name not in {"status", "context"}:
+                    _denied = self._check_slash_access(
+                        source, _inbound_cmd_def.name
+                    )
+                    if _denied is not None:
+                        return _denied
+                _busy_handled, _busy_response = (
+                    await self._route_late_canonical_busy_message(
+                        event,
+                        source=source,
+                        session_key=_authoritative_key,
+                        command_def=_inbound_cmd_def,
+                        raw_text=_raw_inbound_text,
+                    )
+                )
+                if _busy_handled:
+                    return _busy_response
+
+            # Preserve the typed identity of every non-built-in. Quick execs,
+            # quick aliases (including aliases to /stop or /new), plugins, and
+            # unknown commands all enter generic busy routing untouched. Only a
+            # recovered, cache-advertised dynamic command may expand first.
+            _dynamic_bundle_key = None
+            _dynamic_skill_key = None
+            if _recovered_source and _inbound_command:
+                if isinstance(self.config, dict):
+                    _quick_commands = self.config.get("quick_commands", {}) or {}
+                else:
+                    _quick_commands = (
+                        getattr(self.config, "quick_commands", {}) or {}
+                    )
+                _is_quick_command = (
+                    isinstance(_quick_commands, dict)
+                    and _inbound_command in _quick_commands
+                )
+                if not _is_quick_command:
+                    # Proven cache-only resolvers: no scan, config read, plugin
+                    # import/registration, or secret refresh.
+                    _scoped_home = get_hermes_home_override()
+                    _expected_home_key = hermes_home_key(
+                        _scoped_home if _scoped_home is not None else _hermes_home
+                    )
+                    _message_platform = (
+                        source.platform.value if source.platform else ""
+                    )
+                    from agent.skill_bundles import (
+                        resolve_cached_bundle_command_key,
+                    )
+                    from agent.skill_commands import (
+                        resolve_cached_skill_command_key,
+                    )
+
+                    _dynamic_bundle_key = resolve_cached_bundle_command_key(
+                        _inbound_command,
+                        _expected_home_key,
+                        _message_platform,
+                    )
+                    if _dynamic_bundle_key is None:
+                        _dynamic_skill_key = resolve_cached_skill_command_key(
+                            _inbound_command,
+                            _expected_home_key,
+                            _message_platform,
+                        )
+
+            if _dynamic_bundle_key is not None or _dynamic_skill_key is not None:
+                try:
+                    _dynamic_error = self._expand_cached_dynamic_command_for_busy(
+                        event,
+                        source=source,
+                        session_key=_authoritative_key,
+                        cache_home_key=_expected_home_key,
+                        bundle_key=_dynamic_bundle_key,
+                        skill_key=_dynamic_skill_key,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Recovered busy dynamic command expansion failed",
+                        exc_info=True,
+                    )
+                    _dynamic_error = "Failed to load dynamic command."
+                if _dynamic_error is not None:
+                    return _dynamic_error
+
+            _busy_handled, _busy_response = (
+                await self._route_late_canonical_busy_message(
+                    event,
+                    source=source,
+                    session_key=_authoritative_key,
+                    command_def=None,
+                    raw_text=_raw_inbound_text,
+                )
+            )
+            if _busy_handled:
+                return _busy_response
+
+        if _recovered_source and not _inbound_command:
+            source = _authoritative_source
+            event.source = _authoritative_source
+            _source_canonicalized_early = True
+
+        if (
+            getattr(self, "_startup_restore_in_progress", False)
+            and not is_internal
+            and not getattr(event, "_hermes_startup_restore_replay", False)
+            and not _idle_ingress_preprocessed
+        ):
+            self._queue_startup_restore_event(event)
+            return None
+
+        # A busy probe can become idle while authorization awaits; only that
+        # race reaches this fallback. Normal idle ingress already ran this block
+        # in its established pre-auth position above.
+        if not is_internal and not _idle_ingress_preprocessed:
+            self._scale_to_zero_note_real_inbound()
+            try:
+                from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+
+                _hook_results = _invoke_hook(
+                    "pre_gateway_dispatch",
+                    event=event,
+                    gateway=self,
+                    session_store=getattr(self, "session_store", None),
+                )
+            except Exception as _hook_exc:
+                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
+                _hook_results = []
+
+            for _result in _hook_results:
+                if not isinstance(_result, dict):
+                    continue
+                _action = _result.get("action")
+                if _action == "skip":
+                    logger.info(
+                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                        _result.get("reason"),
+                        source.platform.value if source.platform else "unknown",
+                        source.chat_id or "unknown",
+                    )
+                    return None
+                if _action == "rewrite":
+                    _new_text = _result.get("text")
+                    if isinstance(_new_text, str):
+                        event = dataclasses.replace(event, text=_new_text)
+                        source = event.source
+                    break
+                if _action == "allow":
+                    break
+
+        # Hooks may rewrite command identity on the idle path. Recompute the
+        # values consumed by all later control and command dispatch.
+        _inbound_command = event.get_command()
+        _raw_inbound_text = event.text or ""
+        _quick_key = self._session_key_for_source(source)
 
         # Global emergency stop (`hermes pause`): give new turns a brief
         # paused notice instead of starting an agent run. Internal events
@@ -16533,7 +17393,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # IMPORTANT: recognized slash commands must bypass this interception.
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
-        _quick_key = self._session_key_for_source(source)
         allow_gateway_control = event.allow_gateway_control
         _up_state = self._peek_session_state(_quick_key)
         if (
@@ -17052,18 +17911,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _denied is not None:
                 return _denied
 
-        # pre_command observer hook (#64204): fires for every recognized
-        # slash command BEFORE core handling, mirroring the CLI fire-site in
-        # cli.py process_command. Observer-only in v1 (returns ignored).
-        #
-        # Placement matters: this cold-path dispatch is only reached when NO
-        # agent is running for the session. The running-agent intercept path
-        # above (/stop, /approve, busy_policy dispatch via
-        # _dispatch_busy_slash_command) deliberately does NOT fire this hook —
-        # those are control-plane operations on an in-flight run, and giving
-        # plugins an observation (and eventually veto) point there would let
-        # a slow or hostile plugin interfere with the operator's escape
-        # hatches for a live agent.
+        if canonical == "topic":
+            return await self._handle_topic_command(event)
+
+        _busy_command_text = event.text or _raw_inbound_text
+
+        # pre_command observer hook (#64204): fires for every recognized idle
+        # slash command before core handling, mirroring cli.py.
         if command and is_gateway_known_command(canonical):
             try:
                 from hermes_cli.plugins import fire_pre_command_hook
@@ -17081,13 +17935,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pre_cmd_err,
                 )
 
-        # Fire the ``command:<canonical>`` hook for any recognized slash
-        # command — built-in OR plugin-registered. Handlers can return a
-        # dict with ``{"decision": "deny" | "handled" | "rewrite", ...}``
-        # to intercept dispatch before core handling runs. This replaces
-        # the previous fire-and-forget emit(): return values are now
-        # honored, but handlers that return nothing behave exactly as
-        # before (telemetry-style hooks keep working).
+        # Fire the ``command:<canonical>`` decision hook only on the idle path.
         if command and is_gateway_known_command(canonical):
             raw_args = event.get_command_args().strip()
             hook_ctx = {
@@ -17134,14 +17982,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     command = event.get_command()
                     _cmd_def = _resolve_cmd(command) if command else None
                     canonical = _cmd_def.name if _cmd_def else command
+                    _busy_command_text = event.text or _raw_inbound_text
                     break
 
         if canonical == "pause":
             return await self._handle_pause_command(event)
 
         if canonical == "new":
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                return self._telegram_topic_root_new_message()
             async def _do_reset():
                 return await self._handle_reset_command(event)
             return await self._maybe_confirm_destructive_slash(
@@ -17154,9 +18001,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
                 execute=_do_reset,
             )
-
-        if canonical == "topic":
-            return await self._handle_topic_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)
@@ -17466,17 +18310,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             preset = moa_cfg["default_preset"]
             try:
                 event.text = moa_payload
-                _moa_state = self._session_state(_quick_key)
-                event._moa_restore_override = _moa_state.conversation.model_override
-                _moa_state.conversation.model_override = {
+                # Apply the one-turn override only after late Telegram topic
+                # recovery and its canonical busy check. Writing it under the
+                # raw key here can orphan state or mutate the wrong session.
+                _pending_moa_override = {
                     "provider": "moa",
                     "model": preset,
                     "base_url": "moa://local",
                     "api_key": "moa-virtual-provider",
                     "api_mode": "chat_completions",
                 }
-                self._evict_cached_agent(_quick_key)
-                event._moa_disable_after_turn = True
             except Exception:
                 return "Failed to prepare MoA turn."
 
@@ -17719,6 +18562,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
+        # Preserve the established late recovery path for internal/strictly
+        # routed events and slash commands that intentionally retained their raw
+        # inbound context through command handling but ultimately become agent
+        # turns (skills, /learn, /init, and similar fall-through commands).
+        canonical_source = source
+        if (
+            source.platform == Platform.TELEGRAM
+            and not _source_canonicalized_early
+        ):
+            canonical_source = await asyncio.to_thread(
+                self._normalize_source_for_session_key,
+                source,
+            )
+        if canonical_source is not source:
+            logger.info(
+                "telegram topic recovery: chat=%s user=%s %r -> %s",
+                source.chat_id,
+                source.user_id,
+                source.thread_id,
+                canonical_source.thread_id,
+            )
+            source = canonical_source
+            event.source = canonical_source
+            _quick_key = self._session_key_for_source(canonical_source)
+
+        _late_busy_handled, _late_busy_response = (
+            await self._route_late_canonical_busy_message(
+                event,
+                source=source,
+                session_key=_quick_key,
+                command_def=_cmd_def,
+                raw_text=_busy_command_text,
+            )
+        )
+        if _late_busy_handled:
+            return _late_busy_response
+
         if not is_internal and await asyncio.to_thread(
             self._is_telegram_topic_root_lobby, source
         ):
@@ -17749,6 +18629,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "please resend shortly."
             )
 
+        # First ordinary message after an idle period may need to disclose (or
+        # confirm) a still-active session /model or /reasoning override. This is
+        # deliberately after command and running-agent handling: slash control
+        # traffic and active-turn steering must never be blocked by the notice.
+        _override_handled, _override_response = (
+            await self._maybe_handle_stale_override_notice(event, _quick_key)
+        )
+        if _override_handled:
+            return _override_response
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
@@ -17766,6 +18656,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _quick_key,
             )
             return _limit_message
+        if _active_session_lease is _ACTIVE_SESSION_ALREADY_RUNNING:
+            # A canonical turn won the race after the earlier busy check. Route
+            # through the same busy seam; never overwrite its live agent with
+            # this turn's pending sentinel.
+            _race_handled, _race_response = (
+                await self._route_late_canonical_busy_message(
+                    event,
+                    source=source,
+                    session_key=_quick_key,
+                    command_def=_cmd_def,
+                    raw_text=_busy_command_text,
+                )
+            )
+            if _race_handled:
+                return _race_response
+            return (
+                "⏳ Another turn is already running for this session. "
+                "Wait for it to finish, then resend your message."
+            )
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease
@@ -17775,6 +18684,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            # /moa is a one-turn mutation. Install it only after every rejecting
+            # gate and an authoritative claim; all later exits cross this
+            # enclosing finally and restore the original override/cache state.
+            if "_pending_moa_override" in locals():
+                event._moa_restore_override = (
+                    _claim_state.conversation.model_override
+                )
+                _claim_state.conversation.model_override = _pending_moa_override
+                self._evict_cached_agent(_quick_key)
+                event._moa_disable_after_turn = True
             try:
                 _agent_result = await self._handle_message_with_agent(
                     event, source, _quick_key, _run_generation
@@ -17795,6 +18714,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "protect the transcript, this message was not processed. "
                     "Wait for the active turn to finish, then resend it."
                 )
+            await self._defer_stale_override_turn_completed(
+                _quick_key,
+                source=source,
+                run_generation=_run_generation,
+                is_internal=is_internal,
+            )
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result,
@@ -18593,22 +19518,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
 
-        # Get or create session
-        # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
-        # last-active topic so a cross-topic Reply or stripped plain reply
-        # doesn't fragment the conversation across sessions.
-        recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
-        if recovered is not None:
-            logger.info(
-                "telegram topic recovery: chat=%s user=%s %r -> %s",
-                source.chat_id, source.user_id, source.thread_id, recovered,
-            )
-            source = dataclasses.replace(source, thread_id=recovered)
-            try:
-                event.source = source
-            except Exception:
-                pass
-
+        # Get or create session. Telegram topic recovery already happened at
+        # authorized ingress, before the routing key was derived.
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(
             event_metadata.get("gateway_session_key") or ""

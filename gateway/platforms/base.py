@@ -5781,6 +5781,49 @@ class BasePlatformAdapter(ABC):
         )
         return True
 
+    async def _queue_busy_message_fallback(
+        self, session_key: str, event: MessageEvent
+    ) -> None:
+        """Apply the adapter's established queue/debounce fallback.
+
+        Usually this runs directly from ``handle_message`` after the gateway
+        busy handler declines an event. The gateway may also invoke it after
+        late session-key canonicalization, when returning to ``handle_message``
+        would derive the wrong/raw key or start a second dispatch.
+        """
+        if event.message_type == MessageType.PHOTO:
+            logger.debug(
+                "[%s] Queuing photo follow-up for session %s without interrupt",
+                self.name,
+                session_key,
+            )
+            merge_pending_message_event(self._pending_messages, session_key, event)
+            return
+
+        if self._is_queue_text_debounce_candidate(event):
+            logger.debug(
+                "[%s] New text message while session %s is active — "
+                "debouncing follow-up (busy_text_mode=queue, window=%.2fs)",
+                self.name,
+                session_key,
+                self._busy_text_debounce_seconds,
+            )
+            await self._queue_text_debounce(session_key, event)
+            return
+
+        logger.debug(
+            "[%s] New message while session %s is active — queuing follow-up "
+            "(no interrupt, will cascade after current turn)",
+            self.name,
+            session_key,
+        )
+        merge_pending_message_event(
+            self._pending_messages,
+            session_key,
+            event,
+            merge_text=event.message_type == MessageType.TEXT,
+        )
+
     def _discard_text_debounce(self, session_key: str) -> None:
         """Cancel and drop pending text debounce state for control commands."""
         state = self._text_debounce_store().pop(session_key, None)
@@ -6213,36 +6256,7 @@ class BasePlatformAdapter(ABC):
                 except Exception as e:
                     logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
 
-            # Special case: photo bursts/albums frequently arrive as multiple near-
-            # simultaneous messages. Queue them without interrupting the active run,
-            # then process them immediately after the current task finishes.
-            if event.message_type == MessageType.PHOTO:
-                logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                merge_pending_message_event(self._pending_messages, session_key, event)
-                return  # Don't interrupt now - will run after current task completes
-
-            if self._is_queue_text_debounce_candidate(event):
-                logger.debug(
-                    "[%s] New text message while session %s is active — "
-                    "debouncing follow-up (busy_text_mode=queue, window=%.2fs)",
-                    self.name,
-                    session_key,
-                    self._busy_text_debounce_seconds,
-                )
-                await self._queue_text_debounce(session_key, event)
-            else:
-                logger.debug(
-                    "[%s] New message while session %s is active — queuing follow-up "
-                    "(no interrupt, will cascade after current turn)",
-                    self.name,
-                    session_key,
-                )
-                merge_pending_message_event(
-                    self._pending_messages,
-                    session_key,
-                    event,
-                    merge_text=event.message_type == MessageType.TEXT,
-                )
+            await self._queue_busy_message_fallback(session_key, event)
             return  # Don't process now - will be handled after current task finishes
         
         # Mark session as active BEFORE spawning background task to close

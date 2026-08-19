@@ -882,9 +882,12 @@ class TelegramAdapter(BasePlatformAdapter):
             if self.config.extra.get("base_url")
             else 20 * 1024 * 1024
         )
-        # Interactive model picker state per chat
+        # Interactive picker state. Model picker remains one per chat; generic
+        # choice pickers are scoped by their own message identity so multiple
+        # authorized sessions can coexist even in the same chat/topic.
         self._model_picker_state: Dict[str, dict] = {}
-        self._choice_picker_state: Dict[str, dict] = {}
+        self._choice_picker_state: Dict[tuple[str, str], dict] = {}
+        self._choice_picker_cleanup_tasks: set[asyncio.Task] = set()
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -6450,9 +6453,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             if not buttons:
                 return SendResult(success=False, error="No choices")
-            # Two buttons per row keeps labels readable on mobile.
+            # Two buttons per row keeps ordinary pickers compact. Callers with
+            # long, consequential labels can request one action per row.
+            row_size = 1 if (metadata or {}).get("choice_layout") == "vertical" else 2
             keyboard = InlineKeyboardMarkup(
-                [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+                [buttons[i:i + row_size] for i in range(0, len(buttons), row_size)]
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
@@ -6473,12 +6478,42 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             )
 
-            self._choice_picker_state[str(chat_id)] = {
+            state_key = (str(chat_id), str(msg.message_id))
+            state = {
                 "msg_id": msg.message_id,
                 "choices": choices,
                 "session_key": session_key,
                 "on_choice_selected": on_choice_selected,
             }
+            if metadata is not None and "requester_user_id" in metadata:
+                # Optional ownership seam for callers whose picker controls a
+                # per-user session. Absence preserves established shared-picker
+                # behavior; presence with an empty identity deliberately fails
+                # closed in the callback path.
+                state["owner_user_id"] = str(
+                    metadata.get("requester_user_id") or ""
+                ).strip()
+            self._choice_picker_state[state_key] = state
+
+            timeout_seconds = (metadata or {}).get("choice_timeout_seconds")
+            if timeout_seconds is not None:
+                try:
+                    timeout_seconds = max(0.0, float(timeout_seconds))
+                except (TypeError, ValueError):
+                    timeout_seconds = None
+            if timeout_seconds is not None:
+                async def _expire_picker() -> None:
+                    await asyncio.sleep(timeout_seconds)
+                    if self._choice_picker_state.get(state_key) is state:
+                        self._choice_picker_state.pop(state_key, None)
+
+                task = asyncio.create_task(_expire_picker())
+                cleanup_tasks = getattr(self, "_choice_picker_cleanup_tasks", None)
+                if cleanup_tasks is None:
+                    cleanup_tasks = set()
+                    self._choice_picker_cleanup_tasks = cleanup_tasks
+                cleanup_tasks.add(task)
+                task.add_done_callback(cleanup_tasks.discard)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_choice_picker failed: %s", self.name, _redact_telegram_error_text(e))
@@ -6488,7 +6523,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self, query, data: str, chat_id: str
     ) -> None:
         """Handle choice picker button taps (cp:<index>)."""
-        state = self._choice_picker_state.get(chat_id)
+        query_message = getattr(query, "message", None)
+        query_message_id = getattr(query_message, "message_id", None)
+        state_key = (str(chat_id), str(query_message_id or ""))
+        state = self._choice_picker_state.get(state_key)
         if not state:
             await query.answer(text="Picker expired — run the command again.")
             return
@@ -6496,7 +6534,6 @@ class TelegramAdapter(BasePlatformAdapter):
         # Same authorization gate as approval buttons: unauthorized users in a
         # shared group must not flip session/config state via someone else's
         # picker message.
-        query_message = getattr(query, "message", None)
         query_chat = getattr(query_message, "chat", None)
         if not self._is_callback_user_authorized(
             str(getattr(query.from_user, "id", "")),
@@ -6507,6 +6544,14 @@ class TelegramAdapter(BasePlatformAdapter):
         ):
             await query.answer(text="⛔ You are not authorized to change this setting.")
             return
+
+        if "owner_user_id" in state:
+            actor_user_id = str(getattr(query.from_user, "id", "") or "").strip()
+            if not actor_user_id or actor_user_id != state["owner_user_id"]:
+                await query.answer(
+                    text="⛔ Only the user who opened this picker can use it."
+                )
+                return
 
         try:
             idx = int(data[3:])
@@ -6540,7 +6585,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass
         await query.answer()
-        self._choice_picker_state.pop(chat_id, None)
+        self._choice_picker_state.pop(state_key, None)
 
     _MODEL_PAGE_SIZE = 8
 

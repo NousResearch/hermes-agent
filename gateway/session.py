@@ -3000,8 +3000,9 @@ class SessionStore:
         """Persist a metadata value on a live session entry.
 
         Values must be small and JSON-serializable — they are written into
-        the routing index (state.db gateway_routing table + the legacy
-        sessions.json mirror) so they survive gateway restarts.
+        the primary state.db ``gateway_routing`` table so they survive gateway
+        restarts. The legacy sessions.json mirror is refreshed by structural or
+        full saves and may lag metadata between those saves.
 
         Metadata writes are internal bookkeeping and deliberately do NOT
         advance ``updated_at``: it is the user-activity clock that drives
@@ -3015,8 +3016,11 @@ class SessionStore:
             if entry is None:
                 return False
             entry.metadata[key] = value
-            self._save()
-            return True
+        # Metadata changes do not alter routing structure. Persist this one
+        # entry through the steady-state UPSERT path rather than rewriting the
+        # complete routing index and legacy JSON mirror on every completion.
+        self._save_entry(session_key)
+        return True
 
     def set_model_override(
         self, session_key: str, override: Optional[Dict[str, Any]]

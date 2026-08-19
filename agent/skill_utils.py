@@ -911,15 +911,15 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     if not identifier_path.is_absolute():
         return raw_identifier.lstrip("/")
 
-    # Look the primary skills root up on tools.skills_tool at CALL time
-    # (not via get_skills_dir()): callers and tests patch
-    # ``tools.skills_tool.SKILLS_DIR`` and skill_view() itself resolves
-    # against that module attribute, so normalization must agree with the
-    # exact root skill_view() will enforce.  Import deferred to avoid a
+    # Resolve the primary skills root through the same call-time seam used by
+    # skill_view().  ``_skills_dir()`` honors both an explicitly patched
+    # ``SKILLS_DIR`` and the active profile's HERMES_HOME override; reading the
+    # module attribute directly would pin multiplexed turns to the profile that
+    # happened to import tools.skills_tool first.  Import deferred to avoid a
     # module cycle (tools.skills_tool imports agent.skill_utils).
     try:
         from tools import skills_tool as _skills_tool
-        primary_root = Path(_skills_tool.SKILLS_DIR)
+        primary_root = Path(_skills_tool._skills_dir())
     except Exception:
         primary_root = get_skills_dir()
 

@@ -7862,6 +7862,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 on_choice_selected=on_choice_selected,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                requester_user_id=(
+                    metadata.get("requester_user_id")
+                    if metadata is not None and "requester_user_id" in metadata
+                    else None
+                ),
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -9495,12 +9500,18 @@ def _define_discord_view_classes() -> None:
             on_choice_selected,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            requester_user_id: Optional[Any] = None,
         ):
             super().__init__(timeout=120)
             self.choices = list(choices)[:25]  # Discord select cap
             self.on_choice_selected = on_choice_selected
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.requester_user_id = (
+                str(requester_user_id or "").strip()
+                if requester_user_id is not None
+                else None
+            )
             self.resolved = False
             self._message = None
 
@@ -9535,6 +9546,16 @@ def _define_discord_view_classes() -> None:
                     ephemeral=True,
                 )
                 return
+            if self.requester_user_id is not None:
+                actor_user_id = str(
+                    getattr(getattr(interaction, "user", None), "id", "") or ""
+                ).strip()
+                if not actor_user_id or actor_user_id != self.requester_user_id:
+                    await interaction.response.send_message(
+                        "⛔ Only the user who opened this picker can use it.",
+                        ephemeral=True,
+                    )
+                    return
             if self.resolved:
                 await interaction.response.defer()
                 return

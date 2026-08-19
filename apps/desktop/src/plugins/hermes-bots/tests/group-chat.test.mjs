@@ -553,6 +553,13 @@ test('source contract: active group styling suppresses bot styling', () => {
   assert.match(pluginSource, /active: groupChatName === row\.name/)
 })
 
+test('source contract: group roster rows expose a confirmed Delete Group action', () => {
+  assert.match(pluginSource, /function GroupRow\(\{ active, group, members, needsYou, onOpen, onDisband \}\)/)
+  assert.match(pluginSource, /children: 'Delete Group'/)
+  assert.match(pluginSource, /title: 'Delete group chat\?'/)
+  assert.match(pluginSource, /await disbandGroupChat\(deletingGroup\.name, deletingGroup\.members\)/)
+})
+
 test('disband: removes only this membership, room log, workspace, and needs-you state', async () => {
   const gc = load(() => '(pass)')
 

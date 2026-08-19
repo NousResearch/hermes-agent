@@ -98,6 +98,14 @@ class TestMessageEventIsCommand:
         event = MessageEvent(text="/new")
         assert event.is_command() is True
 
+    def test_slash_command_with_invisible_boundaries(self):
+        event = MessageEvent(text="\u2060 \n/deny\u2060\n")
+        assert event.is_command() is True
+
+    def test_invisible_boundaries_do_not_bypass_gateway_control(self):
+        event = MessageEvent(text="\u2060/new", allow_gateway_control=False)
+        assert event.is_command() is False
+
 
 class TestMessageEventGetCommand:
     def test_simple_command(self):
@@ -112,11 +120,19 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="hello")
         assert event.get_command() is None
 
+    def test_command_with_invisible_boundaries(self):
+        event = MessageEvent(text="\ufeff\u2060\n /MODEL gpt-5\u2060")
+        assert event.get_command() == "model"
+
 
 class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):
         event = MessageEvent(text="/new session id 123")
         assert event.get_command_args() == "session id 123"
+
+    def test_command_args_with_invisible_boundaries(self):
+        event = MessageEvent(text="\u2060\n/steer follow up after tool\u2060\n")
+        assert event.get_command_args() == "follow up after tool"
 
 
 # ---------------------------------------------------------------------------

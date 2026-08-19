@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -22,6 +23,20 @@ from urllib.parse import urlsplit
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
+
+
+def _is_command_boundary_char(ch: str) -> bool:
+    return ch.isspace() or unicodedata.category(ch) in {"Cc", "Cf"}
+
+
+def _strip_command_boundary_chars(text: str) -> str:
+    start = 0
+    end = len(text)
+    while start < end and _is_command_boundary_char(text[start]):
+        start += 1
+    while end > start and _is_command_boundary_char(text[end - 1]):
+        end -= 1
+    return text[start:end]
 
 
 def _consume_detached_handler_exception(task: "asyncio.Task") -> None:

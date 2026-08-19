@@ -4657,11 +4657,39 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                                              WHERE p.id = sessions.parent_session_id)),
                            git_branch = COALESCE(sessions.git_branch,
                                         (SELECT p.git_branch FROM sessions p
-                                          WHERE p.id = sessions.parent_session_id)),
-                           profile_name = COALESCE(sessions.profile_name,
+                                          WHERE p.id = sessions.parent_session_id))
+                     WHERE id = ? AND parent_session_id IS NOT NULL""",
+                    (session_id,),
+                )
+                # ``profile_name`` inherits under the SAME namespace fence as
+                # the routing columns below (upstream #74285, patched locally
+                # 2026-08-17). A gateway reset whose peer-fallback adopted a
+                # sibling profile's row links a default child (session_key
+                # ``agent:main:...``, profile_name NULL) to a non-default
+                # parent; the blind COALESCE then stamped the child with the
+                # PARENT's profile, mislabelling a default session as the
+                # sibling profile's for the rest of its lineage. Inherit only
+                # when the two rows agree on the ``agent:<ns>:`` namespace, or
+                # when either row is keyless (CLI/subagent lineage, where the
+                # parent's profile is the only signal available).
+                conn.execute(
+                    """UPDATE sessions
+                       SET profile_name = COALESCE(sessions.profile_name,
                                           (SELECT p.profile_name FROM sessions p
                                             WHERE p.id = sessions.parent_session_id))
-                     WHERE id = ? AND parent_session_id IS NOT NULL""",
+                     WHERE id = ? AND parent_session_id IS NOT NULL
+                       AND EXISTS (
+                           SELECT 1 FROM sessions p
+                           WHERE p.id = sessions.parent_session_id
+                             AND (
+                                 p.session_key IS NULL
+                                 OR sessions.session_key IS NULL
+                                 OR substr(p.session_key, 1,
+                                     instr(substr(p.session_key, 7), ':') + 6)
+                                    = substr(sessions.session_key, 1,
+                                        instr(substr(sessions.session_key, 7), ':') + 6)
+                             )
+                       )""",
                     (session_id,),
                 )
                 # Belt-and-suspenders for gateway routing metadata (#59527):
@@ -5225,8 +5253,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # Conservative fallback for rows created by current code but with a
             # temporarily-missing exact key: still require the complete peer
             # tuple so we never cross chats/threads/users.
+            #
+            # Profile fence (upstream #74285, patched locally 2026-08-17): for a
+            # Telegram DM ``chat_id == user_id`` and ``thread_id IS NULL`` for
+            # EVERY bot, so the peer tuple above is byte-identical across the
+            # profiles of a multiplexed gateway and this fallback would happily
+            # adopt a sibling profile's row — executing the wrong persona,
+            # credentials and filesystem scope. ``session_key`` already carries
+            # the namespace (``agent:main:...`` for default, ``agent:<p>:...``
+            # otherwise), so require the candidate to belong to the SAME
+            # namespace; a keyless candidate must agree on ``profile_name``
+            # instead ('' == default). Fail closed: no match mints a fresh
+            # session, which is strictly safer than borrowing another profile's.
             if chat_id is None or chat_type is None:
                 return None
+            _key_parts = str(session_key).split(":")
+            _req_ns = _key_parts[1] if len(_key_parts) >= 2 and _key_parts[0] == "agent" else ""
+            _ns_prefix = f"agent:{_req_ns}:%" if _req_ns else None
+            _req_profile = "" if _req_ns in ("", "main") else _req_ns
             row = self._conn.execute(
                 f"""
                 SELECT s.*,
@@ -5242,6 +5286,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
                   AND COALESCE(s.thread_id, '') = COALESCE(?, '')
+                  AND (
+                      CASE
+                          WHEN ? IS NULL THEN 1
+                          WHEN s.session_key IS NOT NULL THEN s.session_key LIKE ?
+                          ELSE COALESCE(s.profile_name, '') = ?
+                      END
+                  )
                   AND (s.ended_at IS NULL OR s.end_reason IN ('agent_close', 'ws_orphan_reap'))
                   AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
@@ -5261,7 +5312,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """,
-                (source, user_id, chat_id, chat_type, thread_id),
+                (
+                    source, user_id, chat_id, chat_type, thread_id,
+                    _ns_prefix, _ns_prefix, _req_profile,
+                ),
             ).fetchone()
         return self._session_row_dict(row) if row else None
 

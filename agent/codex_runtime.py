@@ -1319,7 +1319,9 @@ def _sanitize_consumer_codex_request(
 
     Explicit ``request_overrides`` are subject to the same endpoint contract:
     unsupported retention is dropped with a warning instead of being sent and
-    rejected by the provider.
+    rejected by the provider. The check covers both the top-level kwarg and a
+    nested ``extra_body`` entry — the OpenAI SDK merges ``extra_body`` into
+    the outgoing JSON body, so either shape reaches the endpoint.
     """
     sanitized = dict(request)
     # Resolved defensively on purpose: run_codex_stream is also driven with
@@ -1330,8 +1332,26 @@ def _sanitize_consumer_codex_request(
     is_consumer_codex = (
         bool(backend_predicate()) if callable(backend_predicate) else False
     )
-    if is_consumer_codex and "prompt_cache_retention" in sanitized:
+    if not is_consumer_codex:
+        return sanitized
+    dropped = False
+    if "prompt_cache_retention" in sanitized:
         sanitized.pop("prompt_cache_retention")
+        dropped = True
+    # The OpenAI SDK merges ``extra_body`` into the outgoing JSON body, so a
+    # nested ``extra_body.prompt_cache_retention`` reaches the endpoint just
+    # like the top-level field would. Copy before editing — the caller's
+    # mapping must not be mutated — and drop the mapping when it empties.
+    extra_body = sanitized.get("extra_body")
+    if isinstance(extra_body, dict) and "prompt_cache_retention" in extra_body:
+        extra_body = dict(extra_body)
+        extra_body.pop("prompt_cache_retention")
+        if extra_body:
+            sanitized["extra_body"] = extra_body
+        else:
+            sanitized.pop("extra_body")
+        dropped = True
+    if dropped:
         logger.warning(
             "Dropped unsupported prompt_cache_retention at consumer Codex "
             "wire boundary (model=%s).",

@@ -602,6 +602,65 @@ def test_consumer_codex_wire_guard_preserves_compatible_endpoint_retention():
     assert sanitized is not request
 
 
+def test_consumer_codex_wire_guard_strips_nested_extra_body_retention(caplog):
+    """The SDK merges ``extra_body`` into the JSON body, so a nested
+    ``extra_body.prompt_cache_retention`` reaches the endpoint exactly like the
+    top-level field — the guard must strip both shapes (#89897)."""
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    agent = SimpleNamespace(_is_codex_backend=lambda: True, model="gpt-5.6-sol")
+    extra_body = {"prompt_cache_retention": "24h", "unrelated": "keep"}
+    request = {
+        "model": "gpt-5.6-sol",
+        "prompt_cache_key": "cache-key-sentinel",
+        "extra_body": extra_body,
+    }
+
+    with caplog.at_level("WARNING", logger="agent.codex_runtime"):
+        sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert "prompt_cache_retention" not in sanitized.get("extra_body", {})
+    # Unrelated extra_body entries survive; the caller's mapping is untouched.
+    assert sanitized["extra_body"]["unrelated"] == "keep"
+    assert extra_body["prompt_cache_retention"] == "24h"
+    assert sanitized["prompt_cache_key"] == "cache-key-sentinel"
+    assert any(
+        "Dropped unsupported prompt_cache_retention" in record.message
+        for record in caplog.records
+    )
+
+
+def test_consumer_codex_wire_guard_drops_emptied_extra_body():
+    """When retention was extra_body's only entry, the emptied mapping is
+    removed rather than sent as ``extra_body={}``."""
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    agent = SimpleNamespace(_is_codex_backend=lambda: True, model="gpt-5.6-sol")
+    request = {
+        "model": "gpt-5.6-sol",
+        "extra_body": {"prompt_cache_retention": "24h"},
+    }
+
+    sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert "extra_body" not in sanitized
+
+
+def test_consumer_codex_wire_guard_preserves_nested_retention_on_compatible_endpoint():
+    """Compatible endpoints keep a nested extra_body retention untouched."""
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    agent = SimpleNamespace(_is_codex_backend=lambda: False)
+    request = {
+        "model": "openai.gpt-5.5",
+        "extra_body": {"prompt_cache_retention": "24h"},
+    }
+
+    sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert sanitized["extra_body"]["prompt_cache_retention"] == "24h"
+
+
 @pytest.mark.parametrize(
     "base_url,model,expect_dropped",
     [

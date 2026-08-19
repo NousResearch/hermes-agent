@@ -40,6 +40,56 @@ class TestSkillScopedPassthrough:
         assert not is_env_passthrough("")
 
 
+class TestRegistrationVisibleAcrossToolContextSnapshots:
+    """Skill registration must survive the tool-dispatch context snapshot.
+
+    Tool dispatch fans each tool call onto a worker whose context is a
+    copy_context() snapshot taken at submit time
+    (tools.thread_context.propagate_context_to_thread). A registration made
+    inside one tool's worker (skill_view) used to be stored in a ContextVar
+    and therefore never reached the submitting thread — the next tool's
+    snapshot always saw an empty allowlist, so a skill's declared env vars
+    never passed through to execute_code/terminal (#90004).
+    """
+
+    def test_registration_in_copied_context_is_visible_to_sibling_snapshot(self):
+        import contextvars
+
+        def _scenario():
+            # The submitting thread has NEVER touched the allowlist var
+            # (mirrors a fresh gateway turn where only tools register). Each
+            # worker snapshot therefore starts without a set of its own.
+            tool_a_ctx = contextvars.copy_context()
+            tool_a_ctx.run(
+                lambda: register_env_passthrough(["NOTION_API_KEY"])
+            )
+            # The NEXT tool's submit-time snapshot must still see it.
+            tool_b_ctx = contextvars.copy_context()
+            return tool_b_ctx.run(
+                lambda: is_env_passthrough("NOTION_API_KEY")
+            )
+
+        # Run the whole scenario inside a pristine context so the module's
+        # (test-fixture) current-context initialization cannot leak in.
+        pristine = contextvars.Context()
+        visible = pristine.run(_scenario)
+        assert visible is True
+
+    def test_registration_in_worker_thread_is_visible_to_main_thread(self):
+        import concurrent.futures
+        import contextvars
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            # Mirror tool_executor's propagate_context_to_thread snapshot:
+            # the worker runs inside a copy of the submitting context.
+            parent_ctx = contextvars.copy_context()
+            future = pool.submit(
+                parent_ctx.run, register_env_passthrough, ["AIRTABLE_API_KEY"]
+            )
+            future.result()
+        assert is_env_passthrough("AIRTABLE_API_KEY") is True
+
+
 class TestConfigPassthrough:
     def test_reads_from_config(self, tmp_path, monkeypatch):
         config = {"terminal": {"env_passthrough": ["MY_CUSTOM_KEY", "ANOTHER_TOKEN"]}}

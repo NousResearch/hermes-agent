@@ -499,21 +499,6 @@ export const host = {
   ensureAgent: async (connectionId: null | string, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default'),
 
-  /** Open a stored session that belongs to an agent on ANY registered source.
-   *  The connection id + profile are the durable route; the store handles
-   *  dialing / source activation, then the regular session-open path owns
-   *  navigation + hydration. */
-  openAgentSession: async (
-    connectionId: null | string,
-    profile: string,
-    storedSessionId: string,
-    options: Omit<PluginOpenSessionOptions, 'profile'> = {}
-  ): Promise<void> => {
-    await ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default')
-
-    return host.openSession(storedSessionId, { ...options, profile })
-  },
-
   /** Open a stored session — optionally pre-activating its profile first. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration

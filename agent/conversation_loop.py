@@ -1666,6 +1666,8 @@ def _redecorate_prompt_cache_for_provider(
             "_direct_native_anthropic_tool_cache_capability",
             lambda: False,
         )()
+        from agent.prompt_caching import envelope_tool_part_cache_markers_supported
+
         plan = build_prompt_cache_plan(
             messages,
             planned_tools,
@@ -1679,6 +1681,11 @@ def _redecorate_prompt_cache_for_provider(
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
             direct_native_tool_cache=direct_tool_cache,
+            # LiteLLM-style envelope routes forward part-level markers into
+            # tool_result.content[] → non-retryable 400 (#89886).
+            tool_part_markers=envelope_tool_part_cache_markers_supported(
+                getattr(agent, "provider", ""), getattr(agent, "base_url", "")
+            ),
         )
         messages = plan.messages
         planned_tools = plan.tools
@@ -2541,6 +2548,10 @@ def run_conversation(
         # the thinking-only drop is about to remove or merge away.
         tools_for_api = agent.tools
         if agent._use_prompt_caching and agent.provider != "moa":
+            from agent.prompt_caching import (
+                envelope_tool_part_cache_markers_supported,
+            )
+
             _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
             _initial_cache_plan = build_prompt_cache_plan(
                 api_messages,
@@ -2559,6 +2570,11 @@ def run_conversation(
                     else None
                 ),
                 direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
+                # LiteLLM-style envelope routes forward part-level markers into
+                # tool_result.content[] → non-retryable 400 (#89886).
+                tool_part_markers=envelope_tool_part_cache_markers_supported(
+                    getattr(agent, "provider", ""), getattr(agent, "base_url", "")
+                ),
             )
             api_messages = _initial_cache_plan.messages
             tools_for_api = _initial_cache_plan.tools

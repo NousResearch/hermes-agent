@@ -2274,6 +2274,7 @@ def plan_cache_sections_for_destination(
     from agent.prompt_caching import (
         build_prompt_cache_plan,
         effective_cache_ttl,
+        envelope_tool_part_cache_markers_supported,
         strip_anthropic_cache_control,
         strip_anthropic_tool_cache_control,
     )
@@ -2312,6 +2313,11 @@ def plan_cache_sections_for_destination(
             base_url=base_url,
             api_mode=api_mode,
             model=model,
+        ),
+        # LiteLLM-style envelope routes forward part-level markers into
+        # tool_result.content[] → non-retryable 400 (#89886).
+        tool_part_markers=envelope_tool_part_cache_markers_supported(
+            provider, base_url
         ),
     )
     return plan.messages, plan.tools

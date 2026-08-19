@@ -105,4 +105,43 @@ describe('the catalog owns model curation', () => {
 
     expect($modelVisibilityOpen.get()).toBe(true)
   })
+
+  it('renders a per-model price tag when the catalog carries pricing', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['gemini-2.5-flash'],
+          name: 'Google',
+          slug: 'google',
+          pricing: {
+            'gemini-2.5-flash': { input: '$0.35', output: '$1.25', cache: null, free: false }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+    await screen.findByText(/Gemini 2\.5 Flash/i)
+
+    // The compact In/Out $/Mtok tag, matching the overlay picker's columns.
+    expect(screen.getByText(/\$0\.35 \/ \$1\.25/i)).toBeTruthy()
+  })
+
+  it('renders a Free badge for a no-cost model', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['gemini-2.5-flash'],
+          name: 'Google',
+          slug: 'google',
+          pricing: { 'gemini-2.5-flash': { input: 'free', output: 'free', cache: null, free: true } }
+        }
+      ]
+    })
+
+    renderMenu()
+    await screen.findByText(/Gemini 2\.5 Flash/i)
+
+    expect(screen.getAllByText('Free').length).toBeGreaterThan(0)
+  })
 })

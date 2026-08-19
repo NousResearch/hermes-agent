@@ -267,7 +267,7 @@ def build_models_payload(
     if canonical_order:
         rows = _reorder_canonical(rows)
     if pricing:
-        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
+        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier, force_refresh=refresh)
     if capabilities:
         _apply_capabilities(rows)
     if featured:
@@ -747,6 +747,7 @@ def _apply_pricing(
     rows: list[dict],
     *,
     force_fresh_nous_tier: bool = False,
+    force_refresh: bool = False,
 ) -> None:
     """Enrich each provider row with per-model pricing + Nous tier gating.
 
@@ -764,6 +765,11 @@ def _apply_pricing(
     Prices are pre-formatted via ``_format_price_per_mtok`` so the GUI just
     renders strings — identical formatting to the CLI picker. All failures
     are swallowed (best-effort): a row simply gets no ``pricing`` key.
+
+    ``force_refresh`` busts the in-process pricing catalog cache so an
+    explicit "refresh models" action re-pulls live prices instead of showing
+    the process-start snapshot (the cache has no TTL for successful fetches).
+    Normal picker opens leave it false.
     """
     from hermes_cli.models import (
         _format_price_per_mtok,
@@ -782,7 +788,7 @@ def _apply_pricing(
         if not models:
             continue
         try:
-            raw_pricing = get_pricing_for_provider(slug) or {}
+            raw_pricing = get_pricing_for_provider(slug, force_refresh=force_refresh) or {}
         except Exception:
             raw_pricing = {}
         if not raw_pricing:

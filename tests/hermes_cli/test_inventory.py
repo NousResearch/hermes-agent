@@ -123,6 +123,36 @@ def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
     assert mock_list.call_args.kwargs["probe_current_custom_provider"] is False
 
 
+def test_refresh_models_busts_pricing_cache():
+    """The picker's "refresh models" action must also refresh live prices.
+
+    Pricing is cached in-process with no TTL for successful fetches, so a
+    long-running gateway/desktop backend would otherwise keep showing the
+    process-start price snapshot. An explicit refresh (refresh=True) must
+    forward force_refresh to the pricing fetch.
+    """
+    ctx = _empty_ctx()
+
+    def assert_called_with(force_refresh: bool) -> None:
+        with _list_auth_returning([_nous_row()]), patch(
+            "hermes_cli.models.get_pricing_for_provider",
+            return_value={},
+        ) as mock_pricing:
+            build_models_payload(
+                ctx,
+                pricing=True,
+                refresh=force_refresh,
+            )
+        assert mock_pricing.call_args.kwargs.get("force_refresh") is force_refresh
+
+    # Normal open — pricing comes from the in-process cache.
+    assert_called_with(force_refresh=False)
+
+    # Explicit refresh — bust the cache and re-pull live prices.
+    assert_called_with(force_refresh=True)
+
+
+
 def test_list_authenticated_providers_force_fresh_is_keyword_only():
     """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
 

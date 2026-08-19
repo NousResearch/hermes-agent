@@ -253,7 +253,7 @@ function ModelResults({
 
 // Compact In/Out $/Mtok price tag, mirroring the CLI picker's price columns.
 // Renders nothing when pricing is unavailable for the model.
-function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boolean }) {
+export function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boolean }) {
   const { t } = useI18n()
   const copy = t.modelPicker
 

@@ -281,6 +281,30 @@ class TestChatCompletionsBuildKwargs:
 
 
 
+    def test_max_tokens_is_clamped_to_output_token_ceiling(self, transport):
+        """A resolved cap above the context-window ceiling is clamped down so
+        strict servers (vLLM) never receive input + max_tokens > window."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            max_tokens=65536,
+            max_tokens_param_fn=lambda cap: {"max_tokens": cap},
+            output_token_ceiling=1024,
+        )
+        assert kw["max_tokens"] == 1024
+
+    def test_user_cap_below_ceiling_is_untouched(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            max_tokens=512,
+            max_tokens_param_fn=lambda cap: {"max_tokens": cap},
+            output_token_ceiling=1024,
+        )
+        assert kw["max_tokens"] == 512
+
     def test_tools_included(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]

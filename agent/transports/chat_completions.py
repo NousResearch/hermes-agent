@@ -273,15 +273,53 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
     return sanitized
 
 
+def _output_token_ceiling(api_kwargs: dict, params: dict) -> Any:
+    """Largest output cap that still fits the context window.
+
+    An explicit ``output_token_ceiling`` param wins (direct callers/tests). Otherwise
+    it is derived lazily from ``context_length`` + the estimated input — lazily so a
+    request with no resolved cap (nothing to clamp) never pays for an extra estimate.
+    Strict OpenAI-compatible servers (vLLM among them) 400 when
+    ``input + max_tokens > window``; see ``model_metadata.compute_output_token_ceiling``.
+    """
+    ceiling = params.get("output_token_ceiling")
+    if ceiling:
+        return ceiling
+    context_length = params.get("context_length")
+    if not context_length:
+        return None
+    try:
+        from agent.model_metadata import compute_output_token_ceiling, estimate_request_tokens_rough
+
+        return compute_output_token_ceiling(
+            context_length,
+            estimate_request_tokens_rough(api_kwargs.get("messages") or [], tools=api_kwargs.get("tools")),
+        )
+    except Exception:
+        return None
+
+
 def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:
-    """Preserve internal task/recovery budgets and provider protocol exceptions."""
+    """Preserve internal task/recovery budgets and provider protocol exceptions.
+
+    The resolved cap is clamped to the output-token ceiling (context window minus
+    estimated input) so strict servers like vLLM never receive an oversized cap.
+    """
     max_tokens_fn = params.get("max_tokens_param_fn")
+
+    def _resolved(cap: Any) -> Any:
+        cap = _raise_gemini_thinking_max_tokens(model, reasoning_config, cap)
+        ceiling = _output_token_ceiling(api_kwargs, params)
+        if ceiling:
+            cap = min(cap, ceiling)
+        return cap
+
     for candidate in (params.get("ephemeral_max_output_tokens"), params.get("max_tokens")):
         if candidate is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, candidate)))
+            api_kwargs.update(max_tokens_fn(_resolved(candidate)))
             return
     if profile_max and max_tokens_fn:
-        api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))
+        api_kwargs.update(max_tokens_fn(_resolved(profile_max)))
 
 
 

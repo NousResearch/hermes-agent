@@ -1351,6 +1351,13 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
 
     _prefs = _provider_preferences_for_agent(agent)
 
+    # Context window for the output-token ceiling. The transport derives the ceiling
+    # lazily (only when a cap is resolved) so requests with no cap pay no extra estimate;
+    # see agent.transports.chat_completions._output_token_ceiling.
+    _context_length = getattr(
+        getattr(agent, "context_compressor", None), "context_length", None
+    )
+
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
     _profile = None
     with contextlib.suppress(Exception):
@@ -1363,6 +1370,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
         tools=tools_for_api, base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),
         max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
+        context_length=_context_length,
         max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
@@ -1376,7 +1384,6 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     # Legacy flag path: only for a provider absent from the providers/ registry.
     return transport.build_kwargs(
         **_common,
-        model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
         is_nous=base_url_host_matches(_host, "nousresearch.com"),
         is_qwen_portal=_is_qwen,

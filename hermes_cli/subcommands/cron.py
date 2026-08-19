@@ -261,6 +261,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     cron_resume = cron_subparsers.add_parser("resume", help="Resume a paused job")
     cron_resume.add_argument("job_id", help="Job ID to resume")
+    cron_resume.add_argument("--at", dest="run_at", help="Re-arm at an ISO-8601 time")
+    cron_resume.add_argument("--run-now", action="store_true", help="Re-arm to run now")
 
     cron_run = cron_subparsers.add_parser(
         "run", help="Run a job on the next scheduler tick"

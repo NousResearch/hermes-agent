@@ -24,6 +24,7 @@ from cron.jobs import (
     pause_job,
     resume_job,
     trigger_job,
+    rearm_oneshot,
     JOBS_FILE,
 )
 from cron.scheduler import tick
@@ -37,6 +38,7 @@ __all__ = [
     "pause_job",
     "resume_job",
     "trigger_job",
+    "rearm_oneshot",
     "tick",
     "JOBS_FILE",
 ]

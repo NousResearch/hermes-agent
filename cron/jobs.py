@@ -2409,6 +2409,70 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     )
 
 
+def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
+    if not isinstance(claim, dict) or not claim.get("at"):
+        return False
+    try:
+        age = (now - _ensure_aware(datetime.fromisoformat(claim["at"]))).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age < ttl_seconds
+
+
+def rearm_oneshot(job_id: str, run_at: Any) -> Optional[Dict[str, Any]]:
+    """Re-arm a completed one-shot as an explicit new occurrence."""
+    job_ref = resolve_job_ref(job_id)
+    if not job_ref:
+        return None
+    if isinstance(run_at, datetime):
+        run_at = run_at.isoformat()
+    parsed_schedule = parse_schedule(str(run_at))
+    if parsed_schedule.get("kind") != "once":
+        raise ValueError(
+            "Cannot re-arm recurring jobs: re-arm is one-shot-only; "
+            "use plain resume or cron run."
+        )
+    next_run_at = compute_next_run(parsed_schedule)
+    if next_run_at is None:
+        requested = parsed_schedule.get("run_at") or run_at
+        raise ValueError(
+            f"Requested one-shot time {requested} is more than "
+            f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
+        )
+
+    with _jobs_lock():
+        jobs = load_jobs()
+        for index, job in enumerate(jobs):
+            if job.get("id") != job_ref["id"]:
+                continue
+            now = _hermes_now()
+            if _claim_is_live(job.get("run_claim"), now, _oneshot_run_claim_ttl_seconds()):
+                raise ValueError("Cannot re-arm one-shot over a live run claim.")
+            if _claim_is_live(job.get("fire_claim"), now, 300):
+                raise ValueError("Cannot re-arm one-shot over a live fire claim.")
+            if job.get("schedule", {}).get("kind") != "once":
+                raise ValueError(
+                    "Cannot re-arm recurring jobs: re-arm is one-shot-only; "
+                    "use plain resume or cron run."
+                )
+            repeat = job.get("repeat") or {}
+            repeat["completed"] = 0
+            job["schedule"] = parsed_schedule
+            job["schedule_display"] = parsed_schedule.get("display", str(run_at))
+            job["repeat"] = repeat
+            job["run_claim"] = None
+            job["fire_claim"] = None
+            job["enabled"] = True
+            job["state"] = "scheduled"
+            job["paused_at"] = None
+            job["paused_reason"] = None
+            job["next_run_at"] = next_run_at
+            jobs[index] = job
+            save_jobs(jobs)
+            return _normalize_job_record(job)
+    return None
+
+
 def remove_job(job_id: str) -> bool:
     """Remove a job by ID or name."""
     job = resolve_job_ref(job_id)

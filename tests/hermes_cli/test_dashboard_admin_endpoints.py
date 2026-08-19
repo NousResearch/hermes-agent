@@ -148,6 +148,22 @@ class TestCredentialPoolEndpoints:
         self.client, _ = _client()
 
 
+    def test_post_rejects_command_shaped_api_key_without_persisting(self):
+        from agent.credential_pool import load_pool
+
+        response = self.client.post(
+            "/api/credentials/pool",
+            json={
+                "provider": "openrouter",
+                "api_key": "openclaw config set models.providers.openai.apiKey sk-real",
+            },
+        )
+
+        assert response.status_code == 400
+        assert "raw API key" in response.json()["detail"]
+        assert load_pool("openrouter").entries() == []
+
+
 
     def test_env_seeded_delete_stays_deleted(self):
         """#55217: DELETE must suppress the source or load_pool() resurrects it.

@@ -24,6 +24,59 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
+def test_command_shaped_api_key_values_are_not_runtime_credentials():
+    from agent.credential_persistence import is_command_shaped_api_key
+
+    assert is_command_shaped_api_key(
+        "hermes auth add openrouter --api-key sk-or-real"
+    )
+    assert is_command_shaped_api_key(
+        "openclaw onboard --non-interactive --auth-choice=zai-coding-global"
+    )
+    assert not is_command_shaped_api_key("sk-hermes-auth-add-openrouter")
+    assert not is_command_shaped_api_key("hermes-secret-token")
+
+
+def test_select_skips_command_shaped_api_key_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-bad",
+                        "label": "copied-command",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "openclaw config set models.providers.openai.apiKey sk-real",
+                    },
+                    {
+                        "id": "cred-good",
+                        "label": "good",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-or-good",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    bad = next(entry for entry in pool.entries() if entry.id == "cred-bad")
+    selected = pool.select()
+
+    assert bad.runtime_api_key == ""
+    assert selected is not None
+    assert selected.id == "cred-good"
+
+
 
 
 

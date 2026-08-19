@@ -18,6 +18,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
 from agent.credential_persistence import (
+    is_command_shaped_api_key,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
 )
@@ -288,7 +289,10 @@ class PooledCredential:
                 ):
                     return token.strip()
             return ""
-        return str(self.access_token or "")
+        token = str(self.access_token or "").strip()
+        if is_command_shaped_api_key(token):
+            return ""
+        return token
 
     @property
     def runtime_base_url(self) -> Optional[str]:
@@ -2398,6 +2402,13 @@ class CredentialPool:
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
+        if entry.auth_type == AUTH_TYPE_API_KEY and is_command_shaped_api_key(
+            entry.access_token
+        ):
+            raise ValueError(
+                "API key input looks like a Hermes/OpenClaw command. "
+                "Paste only the raw API key value."
+            )
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)

@@ -7857,8 +7857,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> None:
         """Persist the completion clock used by stale-override notices.
 
-        Messaging turns call this from a post-delivery callback; direct adapters
-        without that lifecycle hook fall back to calling it after agent return.
+        Messaging turns call this when the adapter's delivery lifecycle
+        finishes (including failed delivery attempts); direct adapters without
+        that lifecycle hook fall back to calling it after agent return.
         Internal/system turns never make an idle chat fresh.
         """
         if is_internal or not session_key:
@@ -7882,7 +7883,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         run_generation: int,
         is_internal: bool,
     ) -> None:
-        """Start the idle clock after platform delivery, not agent generation."""
+        """Start the idle clock after the delivery lifecycle, not generation."""
         if is_internal or not session_key:
             return
 
@@ -8175,6 +8176,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # row without changing the compact layout of ordinary choice pickers.
         send_metadata = dict(send_metadata or {})
         send_metadata["choice_layout"] = "vertical"
+        send_metadata["choice_timeout_seconds"] = (
+            _STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS
+        )
 
         async def _on_choice_selected(_chat_id: str, value: str) -> str:
             pending = getattr(self, "_stale_override_pending", {}).get(session_key)
@@ -18128,6 +18132,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
+        # Telegram topic-mode DMs can arrive with a stripped/General thread id.
+        # Commands and active-turn controls above intentionally retain their
+        # existing inbound-source semantics. Canonicalize ordinary new turns
+        # here, before lobby/stale inspection, session claim, agent dispatch,
+        # and completion callback registration all consume the routing key.
+        canonical_source = source
+        if source.platform == Platform.TELEGRAM:
+            canonical_source = await asyncio.to_thread(
+                self._normalize_source_for_session_key,
+                source,
+            )
+        if canonical_source is not source:
+            logger.info(
+                "telegram topic recovery: chat=%s user=%s %r -> %s",
+                source.chat_id,
+                source.user_id,
+                source.thread_id,
+                canonical_source.thread_id,
+            )
+            source = canonical_source
+            event.source = canonical_source
+            _quick_key = self._session_key_for_source(canonical_source)
+
         if not is_internal and await asyncio.to_thread(
             self._is_telegram_topic_root_lobby, source
         ):
@@ -19018,22 +19045,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
 
-        # Get or create session
-        # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
-        # last-active topic so a cross-topic Reply or stripped plain reply
-        # doesn't fragment the conversation across sessions.
-        recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
-        if recovered is not None:
-            logger.info(
-                "telegram topic recovery: chat=%s user=%s %r -> %s",
-                source.chat_id, source.user_id, source.thread_id, recovered,
-            )
-            source = dataclasses.replace(source, thread_id=recovered)
-            try:
-                event.source = source
-            except Exception:
-                pass
-
+        # Get or create session. Telegram topic recovery already happened at
+        # authorized ingress, before the routing key was derived.
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(
             event_metadata.get("gateway_session_key") or ""

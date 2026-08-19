@@ -883,10 +883,11 @@ class TelegramAdapter(BasePlatformAdapter):
             else 20 * 1024 * 1024
         )
         # Interactive picker state. Model picker remains one per chat; generic
-        # choice pickers are scoped per chat + topic so simultaneous forum
-        # threads cannot invalidate one another.
+        # choice pickers are scoped by their own message identity so multiple
+        # authorized sessions can coexist even in the same chat/topic.
         self._model_picker_state: Dict[str, dict] = {}
         self._choice_picker_state: Dict[tuple[str, str], dict] = {}
+        self._choice_picker_cleanup_tasks: set[asyncio.Task] = set()
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -6477,17 +6478,34 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             )
 
-            sent_thread_id = getattr(msg, "message_thread_id", thread_id)
-            state_key = (
-                str(chat_id),
-                str(sent_thread_id) if sent_thread_id is not None else "",
-            )
-            self._choice_picker_state[state_key] = {
+            state_key = (str(chat_id), str(msg.message_id))
+            state = {
                 "msg_id": msg.message_id,
                 "choices": choices,
                 "session_key": session_key,
                 "on_choice_selected": on_choice_selected,
             }
+            self._choice_picker_state[state_key] = state
+
+            timeout_seconds = (metadata or {}).get("choice_timeout_seconds")
+            if timeout_seconds is not None:
+                try:
+                    timeout_seconds = max(0.0, float(timeout_seconds))
+                except (TypeError, ValueError):
+                    timeout_seconds = None
+            if timeout_seconds is not None:
+                async def _expire_picker() -> None:
+                    await asyncio.sleep(timeout_seconds)
+                    if self._choice_picker_state.get(state_key) is state:
+                        self._choice_picker_state.pop(state_key, None)
+
+                task = asyncio.create_task(_expire_picker())
+                cleanup_tasks = getattr(self, "_choice_picker_cleanup_tasks", None)
+                if cleanup_tasks is None:
+                    cleanup_tasks = set()
+                    self._choice_picker_cleanup_tasks = cleanup_tasks
+                cleanup_tasks.add(task)
+                task.add_done_callback(cleanup_tasks.discard)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_choice_picker failed: %s", self.name, _redact_telegram_error_text(e))
@@ -6498,11 +6516,8 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> None:
         """Handle choice picker button taps (cp:<index>)."""
         query_message = getattr(query, "message", None)
-        query_thread_id = getattr(query_message, "message_thread_id", None)
-        state_key = (
-            str(chat_id),
-            str(query_thread_id) if query_thread_id is not None else "",
-        )
+        query_message_id = getattr(query_message, "message_id", None)
+        state_key = (str(chat_id), str(query_message_id or ""))
         state = self._choice_picker_state.get(state_key)
         if not state:
             await query.answer(text="Picker expired — run the command again.")
@@ -6511,13 +6526,6 @@ class TelegramAdapter(BasePlatformAdapter):
         # Same authorization gate as approval buttons: unauthorized users in a
         # shared group must not flip session/config state via someone else's
         # picker message.
-        # Verify the callback's message id too: after a picker expires and a
-        # newer one replaces the topic slot, an old inline keyboard must not
-        # apply the newer picker's choice/callback.
-        query_message_id = getattr(query_message, "message_id", None)
-        if str(query_message_id or "") != str(state.get("msg_id") or ""):
-            await query.answer(text="Picker expired — use the latest prompt.")
-            return
         query_chat = getattr(query_message, "chat", None)
         if not self._is_callback_user_authorized(
             str(getattr(query.from_user, "id", "")),

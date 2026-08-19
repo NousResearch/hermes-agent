@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import HomeChannel, Platform
-from gateway.session import SessionSource
+from gateway.config import GatewayConfig, HomeChannel, Platform
+from gateway.session import SessionSource, SessionStore
 from gateway.stale_override_notice import (
     OverrideNoticeDecision,
     StaleOverrideNoticeConfig,
@@ -473,6 +473,28 @@ async def test_completion_clock_only_advances_for_user_turns():
     runner.async_session_store.set_session_metadata.assert_not_awaited()
 
 
+def test_completion_metadata_uses_single_entry_upsert(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    config = GatewayConfig(sessions_dir=tmp_path / ".hermes" / "sessions")
+    store = SessionStore(config.sessions_dir, config)
+    entry = store.get_or_create_session(_source())
+    real_save_entry = store._save_entry
+    store._save_entry = MagicMock(wraps=real_save_entry)
+    store._save = MagicMock(
+        side_effect=AssertionError("metadata update must not rewrite all sessions")
+    )
+
+    changed = store.set_session_metadata(
+        entry.session_key,
+        "stale_override_last_completed_at",
+        time.time(),
+    )
+
+    assert changed is True
+    store._save_entry.assert_called_once_with(entry.session_key)
+    store._save.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_completion_clock_is_deferred_until_platform_delivery():
     runner = _runner("info_only")
@@ -574,7 +596,7 @@ async def test_telegram_old_picker_message_cannot_resolve_new_chat_state():
     adapter = object.__new__(TelegramAdapter)
     callback = AsyncMock(return_value="should not run")
     adapter._choice_picker_state = {
-        ("123", ""): {
+        ("123", "200"): {
             "msg_id": 200,
             "choices": [{"value": "continue"}],
             "on_choice_selected": callback,
@@ -588,6 +610,6 @@ async def test_telegram_old_picker_message_cannot_resolve_new_chat_state():
     await adapter._handle_choice_picker_callback(query, "cp:0", "123")
 
     query.answer.assert_awaited_once_with(
-        text="Picker expired — use the latest prompt."
+        text="Picker expired — run the command again."
     )
     callback.assert_not_awaited()

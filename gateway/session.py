@@ -3015,8 +3015,11 @@ class SessionStore:
             if entry is None:
                 return False
             entry.metadata[key] = value
-            self._save()
-            return True
+        # Metadata changes do not alter routing structure. Persist this one
+        # entry through the steady-state UPSERT path rather than rewriting the
+        # complete routing index and legacy JSON mirror on every completion.
+        self._save_entry(session_key)
+        return True
 
     def set_model_override(
         self, session_key: str, override: Optional[Dict[str, Any]]

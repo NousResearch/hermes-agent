@@ -56,6 +56,7 @@ MUTATING_TOOL_NAMES = frozenset(
         "cronjob",
         "delegate_task",
         "process",
+        "profile_manage",
     }
 )
 

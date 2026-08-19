@@ -89,6 +89,10 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Profile (Bot) creation and configuration — only in schema when the
+    # current profile explicitly enables the `profiles` toolset. Gated via
+    # check_fn in tools/profile_manager_tool.py.
+    "profile_manage",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -330,6 +334,19 @@ TOOLSETS = {
             "kanban_unblock",
             "kanban_attach", "kanban_attach_url", "kanban_attachments",
         ],
+        "includes": [],
+    },
+
+    "profiles": {
+        "description": (
+            "Profile (Bot) management — create, configure, and list Hermes "
+            "profiles from inside a session. Opt-in only: the tool stays out "
+            "of the schema unless the profile lists `profiles` in its "
+            "toolsets, so agents cannot mint profiles by default. Deletion is "
+            "deliberately excluded; it stays behind the CLI and desktop "
+            "destructive-confirmation flows."
+        ),
+        "tools": ["profile_manage"],
         "includes": [],
     },
 

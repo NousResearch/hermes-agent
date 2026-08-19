@@ -2,8 +2,7 @@
 // mount and a transform keyframes animation scrolls between them. It has no
 // timer and performs no per-frame DOM write, because the setInterval +
 // `glyph.textContent` ticker this replaced was scheduling a document-scale
-// style recalculation on every tick (133 of 138 wide recalcs on the incident
-// trace).
+// style recalculation on every tick.
 //
 // These tests therefore pin the DATA and WIRING that make the CSS correct,
 // which is all jsdom can see — it has no animation engine, so the motion
@@ -153,5 +152,4 @@ describe('GlyphSpinner', () => {
 
     expect(viewport()?.hasAttribute('data-paused')).toBe(false)
   })
-
 })

@@ -18,6 +18,8 @@ import {
   setMainModelAssignment
 } from '@/store/cron-model-impact'
 
+import { deferred } from '../test/deferred'
+
 function response(impact: ModelAssignmentResponse['cron_model_impact']): ModelAssignmentResponse {
   return {
     ok: true,
@@ -36,16 +38,6 @@ function positive(name = 'Morning summary'): ModelAssignmentResponse['cron_model
     truncated: false,
     jobs: [{ id: 'job-1', name, drifted_axes: ['provider', 'model'] }]
   }
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(res => {
-    resolve = res
-  })
-
-  return { promise, resolve }
 }
 
 beforeEach(() => {

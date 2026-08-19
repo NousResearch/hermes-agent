@@ -59,6 +59,7 @@ describe('window translucency lever', () => {
   it('starts off, with glass pre-selected on macOS', () => {
     expect(initialTranslucency).toEqual({
       intensity: TRANSLUCENCY_MIN,
+      fade: TRANSLUCENCY_MIN,
       mode: GLASS_SUPPORTED ? 'glass' : 'clear',
       material: DEFAULT_GLASS_MATERIAL,
       scope: DEFAULT_GLASS_SCOPE
@@ -122,6 +123,7 @@ describe('window translucency lever', () => {
         op: 'write',
         value: JSON.stringify({
           intensity: 23,
+          fade: 0,
           mode: 'clear',
           material: DEFAULT_GLASS_MATERIAL,
           scope: DEFAULT_GLASS_SCOPE
@@ -150,6 +152,7 @@ describe('window translucency lever', () => {
       expect(calls).toHaveLength(5)
       expect(calls.at(-1)).toEqual({
         intensity: 40,
+        fade: 0,
         mode: 'clear',
         material: DEFAULT_GLASS_MATERIAL,
         scope: DEFAULT_GLASS_SCOPE
@@ -191,7 +194,7 @@ describe('glass mode', () => {
     setTranslucency(TRANSLUCENCY_MIN)
   })
 
-  it('rejects glass off macOS and applies it on macOS', () => {
+  it('rejects glass when the platform cannot back it', () => {
     setTranslucency(50)
     setTranslucencyMode('glass')
 

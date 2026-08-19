@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  backgroundMaterialFor,
   clampIntensity,
   DEFAULT_GLASS_MATERIAL,
   DEFAULT_GLASS_SCOPE,
@@ -18,6 +19,9 @@ import {
   GLASS_SCOPES,
   glassActive,
   type GlassMaterial,
+  glassMaterialForPicker,
+  glassMaterialsFor,
+  glassSupportedOn,
   glassSurfaceKeep,
   normalizeMaterial,
   normalizeMode,
@@ -28,9 +32,12 @@ import {
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_OPACITY_FLOOR,
   type TranslucencyState,
+  translucencySupportedOn,
   vibrancyFor,
   windowBackingOptions,
-  windowOpacityFor
+  windowOpacityFor,
+  WINDOWS_BACKGROUND_MATERIALS,
+  WINDOWS_GLASS_MIN_BUILD
 } from './translucency'
 
 /** The linear ramp the curve replaced. Endpoints must still agree with it. */
@@ -38,13 +45,15 @@ const legacyOpacity = (intensity: number) => 1 - (intensity / 100) * 0.7
 
 const clear = (intensity: number): TranslucencyState => ({
   intensity,
+  fade: 0,
   mode: 'clear',
   material: DEFAULT_GLASS_MATERIAL,
   scope: DEFAULT_GLASS_SCOPE
 })
 
-const glass = (intensity: number, material: GlassMaterial = DEFAULT_GLASS_MATERIAL): TranslucencyState => ({
+const glass = (intensity: number, material: GlassMaterial = DEFAULT_GLASS_MATERIAL, fade = 0): TranslucencyState => ({
   intensity,
+  fade,
   mode: 'glass',
   material,
   scope: DEFAULT_GLASS_SCOPE
@@ -78,7 +87,7 @@ describe('clampIntensity', () => {
 })
 
 describe('normalizeMode', () => {
-  it('accepts glass on macOS only — there is no vibrancy to ride elsewhere', () => {
+  it('accepts glass only on a platform that has a native material', () => {
     expect(normalizeMode('glass', true)).toBe('glass')
     expect(normalizeMode('glass', false)).toBe('clear')
   })
@@ -90,7 +99,7 @@ describe('normalizeMode', () => {
 
   // Glass is pre-selected so the better half of the feature is the one you
   // find, which is free because the intensity still starts at 0.
-  it('pre-selects glass on macOS when nothing is recorded', () => {
+  it('pre-selects glass when the platform supports it and nothing is recorded', () => {
     expect(normalizeMode(undefined, true)).toBe('glass')
     expect(normalizeMode('acrylic', true)).toBe('glass')
     expect(normalizeMode(42, true)).toBe('glass')
@@ -163,10 +172,22 @@ describe('windowOpacityFor', () => {
     expect(windowOpacityFor(clear(240))).toBe(windowOpacityFor(clear(TRANSLUCENCY_MAX)))
   })
 
-  it('never fades the native window in glass mode — the renderer paints that effect', () => {
+  // The tint is painted by the renderer, so the intensity lever must never
+  // reach setOpacity under glass — that separation is what keeps text sharp.
+  it('ignores the intensity lever entirely in glass mode', () => {
     expect(windowOpacityFor(glass(0))).toBe(1)
     expect(windowOpacityFor(glass(60))).toBe(1)
     expect(windowOpacityFor(glass(100))).toBe(1)
+  })
+
+  it('fades a glass window only through its own lever, on the ramp clear uses', () => {
+    expect(windowOpacityFor(glass(60, DEFAULT_GLASS_MATERIAL, 0))).toBe(1)
+    expect(windowOpacityFor(glass(60, DEFAULT_GLASS_MATERIAL, 40))).toBe(windowOpacityFor(clear(40)))
+    expect(windowOpacityFor(glass(0, DEFAULT_GLASS_MATERIAL, 100))).toBe(windowOpacityFor(clear(100)))
+  })
+
+  it('leaves fade inert under clear, where the intensity lever already is the opacity', () => {
+    expect(windowOpacityFor({ ...clear(40), fade: 100 })).toBe(windowOpacityFor(clear(40)))
   })
 })
 
@@ -224,10 +245,125 @@ describe('vibrancyFor', () => {
   })
 })
 
+describe('glassSupportedOn', () => {
+  it('is on for macOS regardless of kernel version', () => {
+    expect(glassSupportedOn('darwin')).toBe(true)
+    expect(glassSupportedOn('darwin', '24.6.0')).toBe(true)
+  })
+
+  it('is on for Windows 11 22H2 and newer, off for everything older', () => {
+    expect(glassSupportedOn('win32', `10.0.${WINDOWS_GLASS_MIN_BUILD}`)).toBe(true)
+    expect(glassSupportedOn('win32', `10.0.${WINDOWS_GLASS_MIN_BUILD}.1`)).toBe(true)
+    expect(glassSupportedOn('win32', `10.0.${WINDOWS_GLASS_MIN_BUILD - 1}`)).toBe(false)
+    expect(glassSupportedOn('win32', '10.0.19045')).toBe(false)
+    expect(glassSupportedOn('win32', '10.0')).toBe(false)
+    expect(glassSupportedOn('win32', '')).toBe(false)
+  })
+
+  it('is off on Linux — Electron has no first-party desktop material there', () => {
+    expect(glassSupportedOn('linux', '6.8.0')).toBe(false)
+  })
+})
+
+describe('backgroundMaterialFor', () => {
+  it('is none while glass is off so DWM does not keep drawing under the backing', () => {
+    expect(backgroundMaterialFor(glass(0, 'header'))).toBe('none')
+    expect(backgroundMaterialFor(clear(60))).toBe('none')
+  })
+
+  it('maps the sheer → heavy frost ladder onto acrylic / tabbed / mica', () => {
+    expect(backgroundMaterialFor(glass(60, 'under-window'))).toBe('acrylic')
+    expect(backgroundMaterialFor(glass(60, 'popover'))).toBe('tabbed')
+    expect(backgroundMaterialFor(glass(60, 'titlebar'))).toBe('mica')
+  })
+
+  // Windows 11 has three system materials for four rungs, so the two heaviest
+  // land on mica. The mapping stays total — a saved 'header' still resolves —
+  // and the picker drops the duplicate instead (see glassMaterialsFor).
+  it('collapses Glare onto mica with Bright', () => {
+    expect(backgroundMaterialFor(glass(60, 'header'))).toBe('mica')
+    expect(backgroundMaterialFor(glass(60, 'header'))).toBe(backgroundMaterialFor(glass(60, 'titlebar')))
+  })
+
+  it('resolves every shipped rung to a real system material', () => {
+    for (const material of GLASS_MATERIALS) {
+      expect(WINDOWS_BACKGROUND_MATERIALS, material).toContain(backgroundMaterialFor(glass(60, material)))
+    }
+  })
+})
+
+describe('translucencySupportedOn', () => {
+  it('covers the two platforms where setOpacity or a native material exists', () => {
+    expect(translucencySupportedOn('darwin')).toBe(true)
+    expect(translucencySupportedOn('win32')).toBe(true)
+  })
+
+  // Electron documents setOpacity as doing nothing on Linux, and there is no
+  // material either — so the setting has no working half to offer there.
+  it('is off on Linux, where neither mode does anything', () => {
+    expect(translucencySupportedOn('linux')).toBe(false)
+    expect(translucencySupportedOn('freebsd')).toBe(false)
+  })
+
+  // Win10 loses glass but keeps clear, so the row must survive there.
+  it('stays on for a Windows build too old for glass', () => {
+    const oldWindows = `10.0.${WINDOWS_GLASS_MIN_BUILD - 1}`
+
+    expect(glassSupportedOn('win32', oldWindows)).toBe(false)
+    expect(translucencySupportedOn('win32')).toBe(true)
+  })
+})
+
+describe('the frost rungs a platform offers', () => {
+  it('offers the whole ladder on macOS', () => {
+    expect(glassMaterialsFor(false)).toEqual(GLASS_MATERIALS)
+  })
+
+  // The census rule, now enforced on Windows too: no two options in the picker
+  // may composite to the same thing. Bright and Glare are both mica.
+  it('never offers two rungs that render the same Windows backdrop', () => {
+    const backdrops = glassMaterialsFor(true).map(material => backgroundMaterialFor(glass(60, material)))
+
+    expect(new Set(backdrops).size).toBe(backdrops.length)
+    expect(glassMaterialsFor(true).length).toBeLessThan(GLASS_MATERIALS.length)
+  })
+
+  it('keeps every distinct Windows backdrop reachable from the picker', () => {
+    const backdrops = new Set(glassMaterialsFor(true).map(material => backgroundMaterialFor(glass(60, material))))
+    const reachable = new Set(GLASS_MATERIALS.map(material => backgroundMaterialFor(glass(60, material))))
+
+    expect(backdrops).toEqual(reachable)
+  })
+
+  // Settings synced from a Mac carry a rung Windows has no button for. The
+  // picker highlights the button that renders the same backdrop rather than
+  // showing nothing selected — and does NOT rewrite what the Mac saved.
+  it('folds a dropped rung onto the button that looks the same', () => {
+    expect(glassMaterialForPicker('header', true)).toBe('titlebar')
+    expect(glassMaterialsFor(true)).toContain(glassMaterialForPicker('header', true))
+    expect(backgroundMaterialFor(glass(60, glassMaterialForPicker('header', true)))).toBe(
+      backgroundMaterialFor(glass(60, 'header'))
+    )
+  })
+
+  it('leaves every rung alone on macOS and every offered rung alone on Windows', () => {
+    for (const material of GLASS_MATERIALS) {
+      expect(glassMaterialForPicker(material, false)).toBe(material)
+    }
+
+    for (const material of glassMaterialsFor(true)) {
+      expect(glassMaterialForPicker(material, true)).toBe(material)
+    }
+  })
+})
+
 describe('normalizeState', () => {
   it('parses a modern payload', () => {
-    expect(normalizeState({ intensity: 40, mode: 'glass', material: 'header', scope: 'sidebar' }, true)).toEqual({
+    expect(
+      normalizeState({ intensity: 40, fade: 15, mode: 'glass', material: 'header', scope: 'sidebar' }, true)
+    ).toEqual({
       intensity: 40,
+      fade: 15,
       mode: 'glass',
       material: 'header',
       scope: 'sidebar'
@@ -239,19 +375,28 @@ describe('normalizeState', () => {
   it('keeps a legacy intensity-only payload on clear', () => {
     expect(normalizeState({ intensity: 70 }, true)).toEqual({
       intensity: 70,
+      fade: 0,
       mode: 'clear',
       material: DEFAULT_GLASS_MATERIAL,
       scope: DEFAULT_GLASS_SCOPE
     })
   })
 
-  it('survives junk payloads', () => {
-    const base = { intensity: 0, material: DEFAULT_GLASS_MATERIAL, scope: DEFAULT_GLASS_SCOPE }
+  // Fade arrived after glass shipped, so a profile written by the older build
+  // has no key for it and must come back unfaded rather than undefined.
+  it('defaults a payload written before fade existed to no fade', () => {
+    expect(normalizeState({ intensity: 60, mode: 'glass' }, true).fade).toBe(0)
+  })
 
-    // A fresh macOS profile lands on glass at zero intensity: selected, but off.
+  it('survives junk payloads', () => {
+    const base = { intensity: 0, fade: 0, material: DEFAULT_GLASS_MATERIAL, scope: DEFAULT_GLASS_SCOPE }
+
+    // A fresh glass-capable profile lands on glass at zero intensity: selected, but off.
     expect(normalizeState(null, true)).toEqual({ ...base, mode: 'glass' })
     expect(normalizeState('nope', true)).toEqual({ ...base, mode: 'glass' })
-    expect(normalizeState({ intensity: 'x', material: 'nope', mode: 'glass', scope: 'nope' }, false)).toEqual({
+    expect(
+      normalizeState({ intensity: 'x', fade: 'x', material: 'nope', mode: 'glass', scope: 'nope' }, false)
+    ).toEqual({
       ...base,
       mode: 'clear'
     })
@@ -266,8 +411,8 @@ describe('glassActive', () => {
   })
 })
 
-// The default must be selected-but-off: a fresh macOS profile shows Glass in
-// the picker while the window itself is untouched until the lever moves.
+// The default must be selected-but-off: a fresh glass-capable profile shows
+// Glass in the picker while the window itself is untouched until the lever moves.
 describe('a fresh profile', () => {
   const fresh = normalizeState(null, true)
 
@@ -326,12 +471,22 @@ describe('what an update actually changes natively', () => {
     expect(nativeDiff(clear(40), clear(41))).toEqual({ backing: false, material: false, opacity: true })
   })
 
+  // The one glass drag that reaches main, and it costs what a clear drag costs.
+  it('is only the opacity while dragging fade under glass', () => {
+    expect(nativeDiff(glass(60, DEFAULT_GLASS_MATERIAL, 40), glass(60, DEFAULT_GLASS_MATERIAL, 41))).toEqual({
+      backing: false,
+      material: false,
+      opacity: true
+    })
+  })
+
   it('is the material alone when the frost level changes', () => {
     expect(nativeDiff(glass(60, 'under-window'), glass(60, 'header'))).toEqual({
       backing: false,
       material: true,
       opacity: false
     })
+    expect(backgroundMaterialFor(glass(60, 'under-window'))).not.toBe(backgroundMaterialFor(glass(60, 'header')))
   })
 
   // Crossing zero flips glass on/off, which is exactly when the backing has to

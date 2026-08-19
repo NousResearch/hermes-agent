@@ -8,6 +8,7 @@ import {
   audioSpeakRequestTimeoutMs,
   audioTranscribeRequestTimeoutMs,
   deleteProfile,
+  deleteSession,
   getAllSessionMessages,
   getCronJobs,
   getGlobalModelInfo,
@@ -137,6 +138,30 @@ describe('Hermes REST helpers', () => {
     await getProfiles()
 
     expect(api).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'local', path: '/api/profiles' }))
+  })
+
+  it('preserves ambient and explicit-local ownership for session and profile requests', async () => {
+    setApiRequestConnection('remote-a')
+
+    await getSession('ambient-session')
+    await getSessionMessages('ambient-session')
+    await deleteSession('ambient-session')
+
+    for (const call of api.mock.calls) {
+      expect(call[0]).toEqual(expect.objectContaining({ connectionId: 'remote-a' }))
+    }
+
+    api.mockClear()
+    const localScope = { connectionId: 'local', profile: 'worker' }
+
+    await getSession('local-session', localScope)
+    await getSessionMessages('local-session', localScope)
+    await deleteSession('local-session', localScope)
+    await deleteProfile('worker', localScope)
+
+    for (const call of api.mock.calls) {
+      expect(call[0]).toEqual(expect.objectContaining({ connectionId: 'local', profile: 'worker' }))
+    }
   })
 
   it('defaults missing sidebar slices to empty session arrays', async () => {

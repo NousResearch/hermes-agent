@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getStatus } from '@/hermes'
 
+import { deferred } from '../../../test/deferred'
+
 import { useStatusSnapshot } from './use-status-snapshot'
 
 vi.mock('@/hermes', () => ({
@@ -10,18 +12,6 @@ vi.mock('@/hermes', () => ({
 }))
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
-
-function deferred<T>() {
-  let resolve: (value: T) => void = () => undefined
-  let reject: (reason?: unknown) => void = () => undefined
-
-  const promise = new Promise<T>((nextResolve, nextReject) => {
-    resolve = nextResolve
-    reject = nextReject
-  })
-
-  return { promise, reject, resolve }
-}
 
 async function flushAsync() {
   await act(async () => {

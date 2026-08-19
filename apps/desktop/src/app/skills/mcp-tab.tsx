@@ -38,12 +38,12 @@ import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { type McpImportEntry, parseMcpImport } from '@/lib/mcp-import'
 import { NEEDS_AUTH_RE, PROBE_TTL_MS, probeCache, probeKey, serverFingerprint } from '@/lib/mcp-probe-cache'
+import { getServers, isServerShape, type McpServers, normalizeEntry } from '@/lib/mcp-servers'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $activeSessionId } from '@/store/session'
-import type { HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -51,8 +51,6 @@ import { DetailPane, ICON_BUTTON, MASTER_DETAIL_WIDE_COLS } from '../master-deta
 import { PanelAddButton, PanelEmpty } from '../overlays/panel'
 import { prettyName } from '../settings/helpers'
 import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
-
-type McpServers = Record<string, Record<string, unknown>>
 
 // The editor always speaks the ecosystem's mcp.json document format — names
 // are the JSON keys, transport is inferred from `command` vs `url` — so any
@@ -62,21 +60,6 @@ const STARTER_ENTRY = { command: 'npx', args: ['-y', '@modelcontextprotocol/serv
 
 const pretty = (value: unknown) => JSON.stringify(value, null, 2)
 const wrapDoc = (entries: McpServers) => pretty({ mcpServers: entries })
-
-const isServerShape = (value: Record<string, unknown>) =>
-  typeof value.command === 'string' || typeof value.url === 'string'
-
-// Cursor/Claude write `type`; Hermes reads `transport`. Normalize on the way
-// in so pasted configs behave identically under the CLI/TUI loader.
-function normalizeEntry(entry: Record<string, unknown>): Record<string, unknown> {
-  if (typeof entry.type === 'string' && entry.transport === undefined) {
-    const { type, ...rest } = entry
-
-    return { ...rest, transport: type }
-  }
-
-  return entry
-}
 
 /** Accepts `{"mcpServers": {...}}` (ecosystem), a bare name→config map, or throws. */
 function parseServersDoc(raw: string): McpServers {
@@ -98,12 +81,6 @@ function parseServersDoc(raw: string): McpServers {
     wrapper && typeof wrapper === 'object' && !Array.isArray(wrapper) ? (wrapper as McpServers) : (doc as McpServers)
 
   return Object.fromEntries(Object.entries(map).map(([name, entry]) => [name, normalizeEntry(entry)]))
-}
-
-function getServers(config: HermesConfigRecord | null): McpServers {
-  const raw = config?.mcp_servers
-
-  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as McpServers) : {}
 }
 
 // The runtime gate is `enabled: false` — the same flag `hermes mcp` and the

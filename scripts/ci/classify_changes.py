@@ -45,6 +45,9 @@ must never skip one a change could break:
 * ``website/static/oauth/`` is python-relevant too: it publishes the OAuth
   Client ID Metadata Document that ``tests/tools/test_mcp_cimd.py`` checks
   against the pinned callback ports in ``tools/mcp_oauth.py``.
+* ``website/docs/`` and ``website/scripts/`` are python-relevant for the same
+  reason: the docs tree generates ``llms.txt``, and
+  ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
 """
 
 from __future__ import annotations
@@ -66,7 +69,16 @@ _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # callback ports in tools/mcp_oauth.py, so editing it alone must still run the
 # Python lane — otherwise dropping a redirect URI goes green here and breaks
 # every CIMD login on main.
-_PY_RELEVANT_SITE = ("website/static/oauth/",)
+# website/docs/ and website/scripts/ are asserted about the same way. The docs
+# tree generates llms.txt — the index every LLM (Hermes included, via the
+# hermes-agent skill) reads to learn what Hermes can do — and
+# tests/website/test_generate_llms_txt.py holds every page to appearing in it.
+# Skipping Python on a docs-only PR is how the index drifted to 53% coverage.
+_PY_RELEVANT_SITE = (
+    "website/static/oauth/",
+    "website/docs/",
+    "website/scripts/",
+)
 
 # CI-sensitive files: eslint config, workflow files, composite actions.
 # Changes here can influence what code the autofix job executes and pushes to

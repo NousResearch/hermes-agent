@@ -1761,6 +1761,12 @@ export function useSessionActions({
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
+      const removedOwner: SessionOwnerScope = removed?.connection_id
+        ? {
+            connectionId: removed.connection_id,
+            profile: removed.profile || 'default'
+          }
+        : removed?.profile
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
@@ -1783,10 +1789,15 @@ export function useSessionActions({
 
       try {
         if (closingRuntimeId) {
-          await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
+          await requestForSessionProfile(
+            removedOwner,
+            requestGateway,
+            'session.close',
+            { session_id: closingRuntimeId }
+          ).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId, removed?.profile)
+        await deleteSession(storedSessionId, removedOwner)
         // A deleted session's cached tail must not resurrect on a recycled id.
         dropTranscriptTail(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll

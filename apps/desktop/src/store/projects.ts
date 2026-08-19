@@ -9,8 +9,8 @@ import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
 import { getHermesConfig, hermesApi, type HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
-import { desktopGit, isGitEndpointMissingError } from '@/lib/desktop-git'
-import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { desktopGit } from '@/lib/desktop-git'
+import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
@@ -1097,7 +1097,7 @@ export async function startWorkInRepo(
     // backend's /api/git mirror, and an older backend may predate it. The raw
     // failure ("Expected JSON … but got HTML" / a bare 404) reads like a git
     // error — name the real remedy instead of degrading silently.
-    if (isDesktopFsRemoteMode() && isGitEndpointMissingError(err)) {
+    if (isDesktopFsRemoteMode() && isMissingRestEndpoint(err)) {
       throw new Error(translateNow('sidebar.projects.worktreeStaleBackend'))
     }
 

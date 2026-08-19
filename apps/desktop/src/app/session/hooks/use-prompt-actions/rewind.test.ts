@@ -139,7 +139,7 @@ describe('truncateSubmitParams', () => {
   })
 
   it('drops renderer-synthetic message ids but keeps durable row ids', () => {
-    // chat-messages.ts: `${timestamp}-${index}-${role}`
+    // chat-messages/hydration.ts: `${timestamp}-${index}-${role}`
     expect(truncateSubmitParams(1, '1723456789-0-user', 456)).toEqual({
       confirm_truncate: true,
       truncate_before_user_ordinal: 1,
@@ -490,7 +490,7 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
 })
 
 describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
-  // The no-payload settle gate in gateway-event.ts holds a running=false
+  // The no-payload settle gate in gateway-event/session-info.ts holds a running=false
   // heartbeat off while an optimistically armed turn waits for the backend —
   // but only for a bounded grace window measured from turnStartedAt. These
   // transforms are the arm sites for restore/edit/regenerate, so they must

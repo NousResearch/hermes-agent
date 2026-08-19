@@ -1445,13 +1445,28 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             or names a profile this single-profile gateway does not serve.
           - ``_PROFILE_CONFLICT`` when prefix and header disagree.
         """
-        path_profile = (request.match_info.get("profile") or "").strip()
-        header_profile = (request.headers.get("X-Hermes-Profile") or "").strip()
+        raw_path_profile = (request.match_info.get("profile") or "").strip()
+        raw_header_profile = (
+            request.headers.get("X-Hermes-Profile") or ""
+        ).strip()
+        if not (raw_path_profile or raw_header_profile):
+            return None
+        try:
+            from hermes_cli.profiles import normalize_profile_name
+
+            path_profile = (
+                normalize_profile_name(raw_path_profile) if raw_path_profile else ""
+            )
+            header_profile = (
+                normalize_profile_name(raw_header_profile)
+                if raw_header_profile
+                else ""
+            )
+        except Exception:
+            return _PROFILE_REJECTED
         if path_profile and header_profile and path_profile != header_profile:
             return _PROFILE_CONFLICT
         profile = path_profile or header_profile
-        if not profile:
-            return None
         cfg = getattr(self.gateway_runner, "config", None)
         if not getattr(cfg, "multiplex_profiles", False):
             return None if _prefix_names_served_profile(profile) else _PROFILE_REJECTED

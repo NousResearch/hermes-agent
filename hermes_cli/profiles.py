@@ -385,11 +385,12 @@ def get_profile_dir(name: str) -> Path:
 
 
 def profile_exists(name: str) -> bool:
-    """Check whether a profile directory exists."""
+    """Check whether a live (non-tombstoned) profile directory exists."""
     canon = normalize_profile_name(name)
     if canon == "default":
         return True
-    return get_profile_dir(canon).is_dir()
+    profile_dir = get_profile_dir(canon)
+    return profile_dir.is_dir() and not named_profile_is_deleted(profile_dir)
 
 
 def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
@@ -1183,6 +1184,10 @@ def create_profile(
 
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists() and named_profile_is_deleted(profile_dir):
+        # Empty shells left by post-delete mkdir may be replaced. Identity
+        # files mean the leftover is not a shell — fail closed, no rmtree.
+        if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
+            raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
@@ -1396,6 +1401,8 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
         if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
             continue
         if entry.name == "default":
+            continue
+        if named_profile_is_deleted(entry):
             continue
         env_path = entry / ".env"
         if env_path.exists():
@@ -2544,7 +2551,7 @@ def resolve_profile_env(profile_name: str) -> str:
         return str(root)
     profile_dir = root / "profiles" / canon
 
-    if not profile_dir.is_dir():
+    if not profile_dir.is_dir() or named_profile_is_deleted(profile_dir):
         raise FileNotFoundError(
             f"Profile '{canon}' does not exist. "
             f"Create it with: hermes profile create {canon}"

@@ -234,11 +234,22 @@ _DELETED_PROFILES_DIR = ".deleted"
 
 
 def named_profile_home(path: str | Path) -> Path | None:
-    """Return ``<root>/profiles/<name>`` when *path* is that home or under it."""
+    """Return ``<root>/profiles/<name>`` when *path* is that home or under it.
+
+    A named profile home is only ``.../profiles/<id>`` where ``<id>`` does
+    not start with ``.``. A default Hermes home whose path merely contains a
+    ``profiles`` segment (e.g. ``/tmp/foo/profiles/notahome/.hermes``) is not
+    a named profile. ``.../profiles/worker/logs`` still resolves to
+    ``.../profiles/worker``.
+    """
     current = Path(path)
     for candidate in (current, *current.parents):
         if candidate.parent.name == "profiles" and not candidate.name.startswith("."):
             return candidate
+        # Stop at a default Hermes home so a coincidental ``profiles/``
+        # ancestor is not treated as a named-profile root.
+        if candidate.name == ".hermes":
+            return None
     return None
 
 

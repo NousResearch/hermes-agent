@@ -209,6 +209,12 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         except ValueError:
             return None
         if safe.split("/", 1)[0] in _ALLOWED_SUPPORT_DIRS:
+            # Prose globs/placeholders — e.g. ``references/type-*.md`` or
+            # ``references/type-<name>.md`` (which the regex truncates to the
+            # bare prefix ``references/type-``) — are agent instructions, not
+            # files. Only tokens that can name an actual file are references.
+            if re.search(r"[*?<>]", safe) or "." not in safe.rsplit("/", 1)[-1]:
+                continue
             paths.add(safe)
     return paths
 
@@ -733,7 +739,9 @@ class GitHubSource(SkillSource):
                     return None
                 content = self._fetch_file_bytes(repo, item_path)
                 if content is None:
-                    return None
+                    logger.warning("Failed to fetch referenced skill support "
+                                   "file; continuing without it: %s", item_path)
+                    continue
                 files[rel_path] = content
             # A support file SKILL.md links must actually exist as a regular
             # file — a missing or symlinked referenced path rejects the
@@ -750,7 +758,9 @@ class GitHubSource(SkillSource):
             for rel_path in referenced:
                 content = self._fetch_file_bytes(repo, f"{skill_path.rstrip('/')}/{rel_path}")
                 if content is None:
-                    return None
+                    logger.warning("Failed to fetch referenced skill support "
+                                   "file; continuing without it: %s", rel_path)
+                    continue
                 files[rel_path] = content
             revision = ""
 

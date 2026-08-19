@@ -100,14 +100,12 @@ class TestHandleFunctionCall:
     def test_tool_request_and_execution_middleware_wrap_registry_dispatch(self, monkeypatch):
         seen = {}
 
-        def fake_invoke_middleware(kind, **kwargs):
-            if kind == "tool_request":
-                return [{
-                    "args": {**kwargs["args"], "rewritten": True},
-                    "source": "test-middleware",
-                    "reason": "rewrite",
-                }]
-            return []
+        def request_middleware(**kwargs):
+            return {
+                "args": {**kwargs["args"], "rewritten": True},
+                "source": "test-middleware",
+                "reason": "rewrite",
+            }
 
         def execution_middleware(**kwargs):
             seen["execution_args"] = kwargs["args"]
@@ -120,9 +118,13 @@ class TestHandleFunctionCall:
         manager = type(
             "Manager",
             (),
-            {"_middleware": {"tool_request": [fake_invoke_middleware], "tool_execution": [execution_middleware]}},
+            {
+                "_middleware": {
+                    "tool_request": [request_middleware],
+                    "tool_execution": [execution_middleware],
+                }
+            },
         )()
-        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
         monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
         hook_calls = []
         monkeypatch.setattr(

@@ -5339,6 +5339,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_freetext = False
         self._clarify_deadline = 0
         self._clarify_multi_base = None
+        self._clarify_prefill = ""
         self._sudo_state = None
         self._sudo_deadline = 0
         self._modal_input_snapshot = None
@@ -14948,7 +14949,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ``choices``, ``selected``, ``multi_select``, ``selected_indices``),
         so ↑/↓/Space/number keys operate on the active question unchanged.
         Open-ended questions drop straight into freetext, matching the
-        single-question path.
+        single-question path. Re-visiting an answered question restores the
+        cursor to the earlier selection (choice answers highlight their row,
+        an "Other" answer highlights the Other row) so the user can see and
+        edit what they picked.
         """
         questions_list = state["questions"]
         index = max(0, min(index, len(questions_list) - 1))
@@ -14961,17 +14965,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         state["selected_indices"] = set() if entry["multi_select"] else None
         self._clarify_freetext = not entry["choices"]
         self._clarify_multi_base = None
+        # Restore the earlier answer's cursor/checkbox position on re-visit.
+        meta = (state.get("answer_meta") or {}).get(entry["qid"])
+        choices = entry["choices"] or []
+        if meta is None:
+            return
+        if meta.get("kind") == "choice":
+            answer = state["answers"].get(entry["qid"])
+            if answer in choices:
+                state["selected"] = choices.index(answer)
+        elif meta.get("kind") == "other":
+            state["selected"] = len(choices)
+        elif meta.get("kind") == "multi":
+            checked = set()
+            for label in meta.get("choices") or []:
+                if label in choices:
+                    checked.add(choices.index(label))
+            if meta.get("other_text"):
+                checked.add(len(choices))
+            state["selected_indices"] = checked
 
-    def _clarify_batch_lock(self, state, answer) -> None:
+    def _clarify_batch_lock(self, state, answer, meta=None) -> None:
         """Lock ``answer`` for the active batch question and advance.
 
         Overwrites any earlier answer for the same question (locked answers
-        stay editable until the batch completes). Advances ``active`` to the
-        next unanswered question; when every question has an answer, puts the
-        answers dict on the response queue and tears down the panel.
+        stay editable until the batch completes). ``meta`` records how the
+        answer was produced ({"kind": "choice"|"other"|"multi", ...}) so a
+        re-visit can restore the cursor and prefill an "Other" edit. Advances
+        ``active`` to the next unanswered question; when every question has
+        an answer, puts the answers dict on the response queue and tears down
+        the panel.
         """
         entry = state["questions"][state["active"]]
         state["answers"][entry["qid"]] = answer
+        state.setdefault("answer_meta", {})[entry["qid"]] = meta or {"kind": "choice"}
         self._persist_prompt_summary("?", "Clarify", entry["question"], str(answer))
         total = len(state["questions"])
         for offset in range(1, total + 1):
@@ -14994,10 +15021,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         Multi-select questions lock a JSON array string of the checked
         labels (the tool core parses it via ``_parse_multi_select_response``).
         Selecting "Other" switches to freetext; the freetext submit path
-        locks the typed answer.
+        locks the typed answer. Entering "Other" on a question whose earlier
+        answer was typed prefills the composer with that text for editing.
         """
         choices = state.get("choices") or []
         selected = state.get("selected", 0)
+        entry = state["questions"][state["active"]]
+        meta = (state.get("answer_meta") or {}).get(entry["qid"]) or {}
         if state.get("multi_select"):
             indices = state.get("selected_indices") or set()
             sorted_idx = sorted(indices)
@@ -15008,16 +15038,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # freetext submit appends the typed answer to the array.
                 self._clarify_multi_base = selected_choices
                 self._clarify_freetext = True
+                self._clarify_prefill = meta.get("other_text") or ""
                 return
             self._clarify_batch_lock(
-                state, json.dumps(selected_choices, ensure_ascii=False)
+                state,
+                json.dumps(selected_choices, ensure_ascii=False),
+                meta={"kind": "multi", "choices": selected_choices, "other_text": ""},
             )
             return
         if selected < len(choices):
-            self._clarify_batch_lock(state, choices[selected])
+            self._clarify_batch_lock(
+                state, choices[selected], meta={"kind": "choice"}
+            )
             return
-        # "Other" highlighted → switch to freetext
+        # "Other" highlighted → switch to freetext; prefill an earlier typed
+        # answer so Enter on an answered Other edits instead of retyping.
         self._clarify_freetext = True
+        self._clarify_prefill = (
+            meta.get("other_text") or "" if meta.get("kind") == "other" else ""
+        )
 
     def _clarify_callback_batch(self, questions):
         """Batch clarify panel (A-compact): all questions, one active.
@@ -15038,6 +15077,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         state = {
             "questions": list(questions),
             "answers": {},
+            "answer_meta": {},
             "active": 0,
             "response_queue": response_queue,
             # Flat keys mirroring the active question — filled by
@@ -17194,11 +17234,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             # Multi-select "Other": append the typed answer to
                             # the checked labels as a JSON array string.
                             answer = json.dumps(base + [text], ensure_ascii=False)
+                            meta = {"kind": "multi", "choices": list(base), "other_text": text}
                             self._clarify_multi_base = None
                         else:
                             answer = text
+                            meta = {"kind": "other", "other_text": text}
                         self._clarify_freetext = False
-                        self._clarify_batch_lock(state, answer)
+                        self._clarify_prefill = ""
+                        self._clarify_batch_lock(state, answer, meta=meta)
                         event.app.current_buffer.reset()
                         event.app.invalidate()
                         return
@@ -17221,6 +17264,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # advances to the next unanswered question.
                 if state.get("questions"):
                     self._clarify_batch_enter(state)
+                    # Editing an earlier "Other" answer: prefill the composer
+                    # with the previously typed text.
+                    if self._clarify_freetext and self._clarify_prefill:
+                        event.app.current_buffer.text = self._clarify_prefill
+                        event.app.current_buffer.cursor_position = len(self._clarify_prefill)
+                        self._clarify_prefill = ""
                     event.app.invalidate()
                     return
                 selected = state["selected"]
@@ -17647,6 +17696,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if state and state.get("questions"):
                 self._clarify_batch_set_active(
                     state, (state["active"] + 1) % len(state["questions"])
+                )
+                event.app.invalidate()
+
+        # Shift-Tab walks backwards through the questions.
+        @kb.add('s-tab', filter=Condition(lambda: bool(self._clarify_state) and bool(self._clarify_state.get("questions")) and not self._clarify_freetext), eager=True)
+        def clarify_batch_backtab(event):
+            state = self._clarify_state
+            if state and state.get("questions"):
+                self._clarify_batch_set_active(
+                    state, (state["active"] - 1) % len(state["questions"])
                 )
                 event.app.invalidate()
 
@@ -18622,6 +18681,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             def _status_rows(width):
                 """(style, text) rows for the status list + expanded active question."""
                 rows = []
+                answer_meta = state.get("answer_meta") or {}
                 for idx, entry in enumerate(questions_list):
                     answered = entry["qid"] in answers
                     if answered:
@@ -18631,11 +18691,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     else:
                         marker = "·"
                     label = f"{marker} {entry['question']}"
-                    if answered:
-                        label += f" → {answers[entry['qid']]}"
                     row_style = 'class:clarify-selected' if idx == active else 'class:clarify-choice'
                     for wrapped in _wrap_panel_text(label, width, subsequent_indent="  "):
                         rows.append((row_style, wrapped))
+                    if answered:
+                        # The locked answer on its own line, in its own color,
+                        # so the current answer stays readable while walking
+                        # the list with Tab/Shift-Tab.
+                        for wrapped in _wrap_panel_text(
+                            f"    {answers[entry['qid']]}", width, subsequent_indent="    "
+                        ):
+                            rows.append(('class:clarify-answer', wrapped))
                     if idx != active:
                         continue
                     # Expanded active question: numbered choices + Other.
@@ -18660,14 +18726,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             mid = f"{cb} {other_num_prefix}"
                         else:
                             mid = other_num_prefix
+                        # An earlier typed answer stays visible next to Other;
+                        # Enter on it edits (the composer is prefilled).
+                        meta = answer_meta.get(entry["qid"]) or {}
+                        other_text = meta.get("other_text") or ""
+                        other_suffix = f"Other: {other_text}" if other_text else None
                         if cli_ref._clarify_freetext:
-                            other_label = f"  ❯ {mid}. Other (type below)"
+                            other_label = f"  ❯ {mid}. " + (other_suffix or "Other (type below)")
                             other_style = 'class:clarify-active-other'
                         elif selected == other_idx:
-                            other_label = f"  ❯ {mid}. Other (type your answer)"
+                            other_label = f"  ❯ {mid}. " + (other_suffix or "Other (type your answer)")
                             other_style = 'class:clarify-selected'
                         else:
-                            other_label = f"    {mid}. Other (type your answer)"
+                            other_label = f"    {mid}. " + (other_suffix or "Other (type your answer)")
                             other_style = 'class:clarify-choice'
                         for wrapped in _wrap_panel_text(other_label, width, subsequent_indent="      "):
                             rows.append((other_style, wrapped))
@@ -19236,6 +19307,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'clarify-choice': '#AAAAAA',
             'clarify-selected': '#FFD700 bold',
             'clarify-active-other': '#FFD700 italic',
+            'clarify-answer': '#98FB98',
             'clarify-countdown': '#CD7F32',
             # Sudo password panel
             'sudo-prompt': '#FF6B6B bold',

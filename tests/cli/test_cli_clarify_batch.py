@@ -21,6 +21,7 @@ def _make_cli_stub():
     cli._clarify_state = None
     cli._clarify_freetext = False
     cli._clarify_multi_base = None
+    cli._clarify_prefill = ""
     cli._clarify_deadline = None
     cli._paint_now = MagicMock()
     cli._persist_prompt_summary = MagicMock()
@@ -235,3 +236,108 @@ class TestClarifyBatchPanel:
         cli._clarify_state["response_queue"].put("a")
         thread.join(timeout=2)
         assert result["value"] == "a"
+
+
+class TestClarifyBatchNavigation:
+    """Shift-Tab, answer restore on re-visit, and Other edit-prefill."""
+
+    def test_backward_navigation_wraps(self):
+        cli = _make_cli_stub()
+        questions = [
+            _q(0, "Color?", ["red", "blue"]),
+            _q(1, "Size?", ["small", "large"]),
+            _q(2, "Speed?", ["slow", "fast"]),
+        ]
+        thread, result = _start_batch(cli, questions)
+        state = cli._clarify_state
+
+        # Shift-Tab from question 0 wraps to the last question.
+        cli._clarify_batch_set_active(state, (state["active"] - 1) % 3)
+        assert state["active"] == 2
+        cli._clarify_batch_set_active(state, (state["active"] - 1) % 3)
+        assert state["active"] == 1
+
+        state["response_queue"].put("cancel")
+        thread.join(timeout=2)
+
+    def test_revisit_choice_answer_restores_cursor(self):
+        cli = _make_cli_stub()
+        questions = [
+            _q(0, "Color?", ["red", "blue"]),
+            _q(1, "Size?", ["small", "large"]),
+        ]
+        thread, result = _start_batch(cli, questions)
+        state = cli._clarify_state
+
+        # Lock "blue" (index 1) on q0; the cursor advances to q1.
+        state["selected"] = 1
+        cli._clarify_batch_enter(state)
+        assert state["active"] == 1
+
+        # Tab back to q0: the cursor sits on the earlier answer, not row 0.
+        cli._clarify_batch_set_active(state, 0)
+        assert state["selected"] == 1
+
+        state["response_queue"].put("cancel")
+        thread.join(timeout=2)
+
+    def test_revisit_other_answer_highlights_other_and_prefills_edit(self):
+        cli = _make_cli_stub()
+        questions = [
+            _q(0, "Color?", ["red", "blue"]),
+            _q(1, "Size?", ["small", "large"]),
+        ]
+        thread, result = _start_batch(cli, questions)
+        state = cli._clarify_state
+
+        # Answer q0 via Other: select the Other row, then the freetext
+        # submit path locks the typed text with its meta.
+        state["selected"] = 2
+        cli._clarify_batch_enter(state)
+        assert cli._clarify_freetext is True
+        cli._clarify_freetext = False
+        cli._clarify_batch_lock(
+            state, "chartreuse", meta={"kind": "other", "other_text": "chartreuse"}
+        )
+        assert state["active"] == 1
+
+        # Tab back to q0: the cursor highlights the Other row.
+        cli._clarify_batch_set_active(state, 0)
+        assert state["selected"] == 2
+
+        # Enter on the answered Other switches to freetext and prefills the
+        # earlier text for editing.
+        cli._clarify_batch_enter(state)
+        assert cli._clarify_freetext is True
+        assert cli._clarify_prefill == "chartreuse"
+
+        state["response_queue"].put("cancel")
+        thread.join(timeout=2)
+
+    def test_reanswer_overwrites_and_updates_meta(self):
+        cli = _make_cli_stub()
+        questions = [
+            _q(0, "Color?", ["red", "blue"]),
+            _q(1, "Size?", ["small", "large"]),
+        ]
+        thread, result = _start_batch(cli, questions)
+        state = cli._clarify_state
+
+        # First answer via Other.
+        cli._clarify_batch_lock(
+            state, "teal", meta={"kind": "other", "other_text": "teal"}
+        )
+        # Re-visit and overwrite with a plain choice.
+        cli._clarify_batch_set_active(state, 0)
+        assert state["selected"] == 2
+        state["selected"] = 0
+        cli._clarify_batch_enter(state)
+        assert state["answers"]["q0"] == "red"
+        assert state["answer_meta"]["q0"] == {"kind": "choice"}
+
+        # Finish q1 so the batch resolves with the overwritten answer.
+        cli._clarify_batch_set_active(state, 1)
+        cli._clarify_batch_enter(state)
+        thread.join(timeout=2)
+        assert result["value"] == {"answers": {"q0": "red", "q1": "small"}}
+

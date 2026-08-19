@@ -737,6 +737,7 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"|non-retryable\s+error"
     r"|rate\s+limited\s+after\s+\d+\s+retries"
     r"|error\s+code\s*:"
+    r"|unexpected\s+status\s+401\s+unauthorized:\s+missing\s+bearer\s+or\s+basic\s+authentication\s+in\s+header\b"
     r"|http\s*\d{3}\b"
     r"|incorrect\s+api\s+key"
     r"|invalid\s+api\s+key"

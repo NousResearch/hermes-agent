@@ -102,6 +102,24 @@ try:
 except Exception:
     pass
 
+# Startup-liveness watchdog (OOF-298): for gateway runs, arm BEFORE the heavy
+# module-level import graph below — an import-time deadlock (native-extension
+# init, contended import lock) is exactly the "wedged before the event loop,
+# no logs, live PID" class this watchdog exists for. ``hermes_startup_watchdog``
+# is stdlib-only, so importing it here cannot itself wedge on application
+# code. argv sniffing is deliberately crude: over-arming is harmless (any
+# non-gateway command either exits well inside the deadline or... should be
+# covered anyway if it wedges), while under-arming recreates OOF-298.
+# GatewayRunner disarms once the event loop is confirmed live.
+if "gateway" in sys.argv[1:] and "run" in sys.argv[1:]:
+    try:
+        from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
+
+        _arm_sw()
+        del _arm_sw
+    except Exception:
+        pass
+
 
 def _exit_after_oneshot(rc: object) -> None:
     """Exit one-shot mode without letting late native finalizers change rc.

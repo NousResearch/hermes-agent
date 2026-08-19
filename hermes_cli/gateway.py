@@ -6441,15 +6441,15 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
 
-    # Startup-liveness watchdog (OOF-298): armed before config load, imports,
-    # and DB opens so a deadlock anywhere in the pre-event-loop window still
-    # gets the process respawned by the service supervisor instead of wedging
-    # as a live-PID zombie that s6/systemd will never restart. Disarmed by
-    # GatewayRunner once the event loop is confirmed live. Placed after the
+    # Startup-liveness watchdog (OOF-298), idempotent backstop: normal
+    # ``hermes gateway run`` invocations already armed in hermes_cli.main's
+    # argv fast-path (before the heavy import graph), but programmatic
+    # callers can enter run_gateway() directly. Placed after the
     # process-conflict guards: a --replace loser exiting above must not have
-    # armed a watchdog first.
+    # armed a watchdog first. Disarmed by GatewayRunner once the event loop
+    # is confirmed live.
     try:
-        from gateway.startup_watchdog import arm_startup_watchdog
+        from hermes_startup_watchdog import arm_startup_watchdog
         arm_startup_watchdog()
     except Exception:
         pass
@@ -6636,6 +6636,15 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
                 _storm.window_s,
                 _storm.backoff_s,
             )
+            # The backoff sleep is intentional idle time — tell the startup
+            # watchdog (OOF-298) so it isn't mistaken for a parked deadlock
+            # and hard-exited mid-backoff (which would defeat the breaker).
+            try:
+                from gateway.startup_watchdog import kick_startup_watchdog
+
+                kick_startup_watchdog(extra_s=_storm.backoff_s)
+            except Exception:
+                pass
             _time.sleep(_storm.backoff_s)
     except Exception as _be:
         logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)

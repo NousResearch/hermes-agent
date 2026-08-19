@@ -21704,6 +21704,13 @@ def main(
     # Handle gateway mode (messaging + cron)
     if gateway:
         import asyncio
+        # Startup-liveness watchdog (OOF-298): this legacy entry point must
+        # be covered too — arm before importing the gateway graph.
+        try:
+            from hermes_startup_watchdog import arm_startup_watchdog
+            arm_startup_watchdog()
+        except Exception:
+            pass
         from gateway.run import start_gateway
         print("Starting Hermes Gateway (messaging platforms)...")
         asyncio.run(start_gateway())

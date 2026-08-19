@@ -7470,6 +7470,24 @@ function CreateRoutineDialog({ bot, open, onClose }) {
   })
 }
 
+/** Keeps $selectedBot in sync with the focused chat's owner profile.
+ *  nanostores' `.listen()` never replays the current value the way
+ *  `.subscribe()` does, so a disable → profile switch → re-enable sequence
+ *  would otherwise leave $selectedBot pointed at whichever bot was active
+ *  before the plugin was disabled — reseeding here on every register() call
+ *  closes that gap. Returns the unbind function for ctx.onDispose. */
+function bindProfileSync(profileStore) {
+  const current = profileStore.get?.()
+  if (current && typeof current === 'string') {
+    $selectedBot.set(current)
+  }
+  return profileStore.listen(profile => {
+    if (profile && typeof profile === 'string') {
+      $selectedBot.set(profile)
+    }
+  })
+}
+
 function RoutinesPane() {
   const selected = useValue($selectedBot)
   const focusedProfile = useValue($focusedBotProfile)
@@ -9858,11 +9876,7 @@ export default {
     // Capture the unbinds: without them a disable → re-enable cycle stacks a
     // duplicate listener per cycle (same survives-disable class as the face
     // clock before its onDispose hook — these kept firing until app restart).
-    const unbindProfileListener = $focusedBotProfile.listen(profile => {
-      if (profile && typeof profile === 'string') {
-        $selectedBot.set(profile)
-      }
-    })
+    const unbindProfileListener = bindProfileSync($focusedBotProfile)
     const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
 
     if (typeof ctx.onDispose === 'function') {

@@ -48,6 +48,6 @@ test('RoutinesPane scopes the Cronjobs tile to the focused chat owner', () => {
   assert.ok(!/useValue\(host\.state\.profile\)/.test(pane), 'the tile must not read the socket-home atom directly')
 })
 
-test('the $selectedBot tracker listens on the focused profile ladder (unbind captured)', () => {
-  assert.match(source, /const unbindProfileListener = \$focusedBotProfile\.listen\(profile => \{/)
+test('the $selectedBot tracker binds the focused profile ladder (reseed + unbind captured)', () => {
+  assert.match(source, /const unbindProfileListener = bindProfileSync\(\$focusedBotProfile\)/)
 })

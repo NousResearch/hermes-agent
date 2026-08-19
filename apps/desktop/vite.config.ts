@@ -164,7 +164,12 @@ export default defineConfig(({ command }) => ({
   // session. It's pure ESM with no CJS deps, so serving it unoptimized is
   // free. Query and bare forms all listed — exclusion matches exact ids.
   optimizeDeps: {
-    exclude: ['driver.js', 'driver.js/dist/driver.js.iife.js', 'driver.js/dist/driver.js.iife.js?raw', 'driver.js/dist/driver.css?raw']
+    exclude: [
+      'driver.js',
+      'driver.js/dist/driver.js.iife.js',
+      'driver.js/dist/driver.js.iife.js?raw',
+      'driver.js/dist/driver.css?raw'
+    ]
   },
   resolve: {
     alias: {

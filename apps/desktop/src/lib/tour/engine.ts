@@ -348,7 +348,7 @@ export function runTourEngine(
     const driver = holder.driver
 
     if (!driver || !driver.isActive()) {
-      return { error: "No tour is running — start one first.", success: false }
+      return { error: 'No tour is running — start one first.', success: false }
     }
 
     if (kind === 'next' && driver.isLastStep()) {

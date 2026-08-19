@@ -78,13 +78,7 @@ export function ConfigField({
   // point at one setting (`[data-tour="field-model"]`) without hunting through
   // the section for an nth-child path. See lib/tour.
   const row = (action: ReactNode, wide = false) => (
-    <ListRow
-      action={action}
-      data-tour={`field-${schemaKey}`}
-      description={descriptionNode}
-      title={label}
-      wide={wide}
-    />
+    <ListRow action={action} data-tour={`field-${schemaKey}`} description={descriptionNode} title={label} wide={wide} />
   )
 
   // `fallback_providers` is a list of {provider, model} objects; the generic

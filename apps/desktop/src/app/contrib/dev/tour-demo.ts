@@ -45,7 +45,7 @@ function demoSteps(): TourStep[] {
     {
       navigate: ARTIFACTS_ROUTE,
       selector: '[data-tour="page-tabs"]',
-      text: 'Here we are. This row filters what the page lists, with a live count beside each one. We\'ll take them in turn.',
+      text: "Here we are. This row filters what the page lists, with a live count beside each one. We'll take them in turn.",
       title: 'Artifacts, filtered'
     },
     {

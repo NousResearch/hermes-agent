@@ -445,8 +445,22 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             conn, review_id, summary="PR ready",
             expected_run_id=claimed.current_run_id,
         )
-        # Ready-lane task with the same fresh PR comment.
+        # Ready-lane task with the same fresh PR comment. It also needs a
+        # finished run: the ready-lane active_pr rule guards a *re*-spawn ("a
+        # prior worker already opened a PR"), so a task with no run history at
+        # all reads as a first spawn and the PR link as inherited context —
+        # see test_respawn_guard_active_pr_never_ran_task_is_not_guarded in
+        # tests/hermes_cli/test_kanban_db.py. ``crashed`` keeps the
+        # recent_success and rate_limit_cooldown rules out of the way.
         ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
+        _prior = int(__import__("time").time()) - 3600
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, "
+                "started_at, ended_at) VALUES (?, 'worker', 'released', "
+                "'crashed', ?, ?)",
+                (ready_id, _prior, _prior),
+            )
         kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
 
         assert kb.check_respawn_guard(conn, ready_id) == "active_pr"

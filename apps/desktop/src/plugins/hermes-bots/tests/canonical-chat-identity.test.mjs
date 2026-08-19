@@ -112,7 +112,7 @@ test('pin: preferred_session present opens the resolved session and keeps the pi
       intent: 'main',
       awaitHydration: true,
       expectHistory: true,
-      keepAllProfilesScope: false,
+      keepAllProfilesScope: true,
       retryHydrationTimeoutOnce: true
     }
   }])

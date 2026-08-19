@@ -24,6 +24,27 @@ from gateway.stale_override_notice import (
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
+def _write_profile_skill(hermes_home, name, body):
+    skill_dir = hermes_home / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                f"name: {name}",
+                f"description: Test skill {name}",
+                "---",
+                f"# {name}",
+                "",
+                body,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return skill_dir
+
+
 def _runner_with_store(config, store, db):
     runner = object.__new__(GatewayRunner)
     runner.config = config
@@ -73,6 +94,9 @@ def _busy_topic_command_runner(
     """Build a stripped Telegram source whose canonical topic lane is busy."""
     hermes_home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    import gateway.run as gateway_run_module
+
+    monkeypatch.setattr(gateway_run_module, "_hermes_home", hermes_home)
     config = GatewayConfig(
         platforms={
             Platform.TELEGRAM: PlatformConfig(enabled=True, token="e2e-test-token")
@@ -709,6 +733,9 @@ async def test_stripped_topic_dynamic_skill_preserves_busy_mode(
     """No-CommandDef skill turns must queue/steer under the canonical key."""
     hermes_home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    import gateway.run as gateway_run_module
+
+    monkeypatch.setattr(gateway_run_module, "_hermes_home", hermes_home)
     config = GatewayConfig(
         platforms={
             Platform.TELEGRAM: PlatformConfig(enabled=True, token="e2e-test-token")
@@ -740,6 +767,30 @@ async def test_stripped_topic_dynamic_skill_preserves_busy_mode(
     monkeypatch.setattr(
         "agent.skill_commands._skill_commands",
         {"/race-skill": {"name": "race-skill"}},
+    )
+    import agent.skill_commands as skill_commands_module
+    from hermes_constants import hermes_home_key
+
+    monkeypatch.setattr(
+        skill_commands_module,
+        "_skill_command_snapshots",
+        {
+            (hermes_home_key(hermes_home), "telegram"): {
+                "/race-skill": {"name": "race-skill"},
+            }
+        },
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        skill_commands_module,
+        "_skill_commands_home",
+        skill_commands_module._resolve_skill_commands_home(),
+    )
+    monkeypatch.setattr(
+        skill_commands_module,
+        "_skill_commands_platform",
+        skill_commands_module._resolve_skill_commands_platform(),
     )
     monkeypatch.setattr(
         "agent.skill_commands.get_skill_commands",
@@ -818,51 +869,207 @@ async def test_stripped_topic_dynamic_skill_preserves_busy_mode(
 
 
 @pytest.mark.asyncio
-async def test_stripped_topic_dynamic_bundle_expands_once_without_discovery(
+async def test_stripped_topic_ignores_dynamic_skill_cache_from_other_profile(
     tmp_path, monkeypatch
 ):
     runner, raw_source, canonical_key, active_agent, adapter = (
         _busy_topic_command_runner(tmp_path, monkeypatch, busy_mode="steer")
     )
+    import agent.skill_commands as skill_commands_module
+
     monkeypatch.setattr(
-        "agent.skill_bundles._bundles_cache",
-        {"/race-bundle": {"name": "race-bundle"}},
+        skill_commands_module,
+        "_skill_commands",
+        {"/only-a": {"name": "only-a"}},
     )
-    build_bundle = MagicMock(
-        return_value=("loaded dynamic bundle prompt", ["one"], [])
+    from hermes_constants import hermes_home_key
+
+    monkeypatch.setattr(
+        skill_commands_module,
+        "_skill_command_snapshots",
+        {
+            (hermes_home_key("/profiles/profile-a"), "telegram"): {
+                "/only-a": {"name": "only-a"},
+            }
+        },
+        raising=False,
     )
     monkeypatch.setattr(
-        "agent.skill_bundles.build_bundle_invocation_message", build_bundle
-    )
-    forbidden_discovery = MagicMock(
-        side_effect=AssertionError("bundle busy routing touched plugin discovery")
+        skill_commands_module, "_skill_commands_home", "/profiles/profile-a"
     )
     monkeypatch.setattr(
-        "hermes_cli.plugins.get_plugin_command_handler", forbidden_discovery
+        skill_commands_module,
+        "_skill_commands_platform",
+        skill_commands_module._resolve_skill_commands_platform(),
     )
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_commands", forbidden_discovery)
+    build_skill = MagicMock(
+        side_effect=AssertionError("stale profile cache expanded a skill")
+    )
     monkeypatch.setattr(
-        "hermes_cli.plugins.PluginManager.discover_and_load", forbidden_discovery
+        skill_commands_module, "build_skill_invocation_message", build_skill
     )
-    monkeypatch.setattr(
-        "hermes_cli.commands.is_gateway_known_command", forbidden_discovery
-    )
-    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", forbidden_discovery)
 
     result = await runner._handle_message(
-        MessageEvent(text="/race-bundle inspect", source=raw_source)
+        MessageEvent(text="/only-a inspect", source=raw_source)
     )
 
     assert result is None
-    assert active_agent.steered == ["loaded dynamic bundle prompt"]
-    assert runner._peek_session_state(canonical_key).turn.agent is active_agent
-    build_bundle.assert_called_once_with(
-        "/race-bundle",
-        "inspect",
-        task_id=canonical_key,
-        platform="telegram",
+    assert active_agent.steered == ["/only-a inspect"]
+    preserved = runner._peek_session_state(canonical_key)
+    assert preserved is not None
+    assert preserved.turn.agent is active_agent
+    build_skill.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovered_dynamic_skill_cache_uses_message_platform_in_same_process(
+    tmp_path, monkeypatch
+):
+    """A recovered Telegram turn must ignore a Discord snapshot and use Telegram's."""
+    runner, raw_source, canonical_key, active_agent, adapter = (
+        _busy_topic_command_runner(tmp_path, monkeypatch, busy_mode="steer")
     )
-    forbidden_discovery.assert_not_called()
+    import agent.skill_bundles as skill_bundles_module
+    import agent.skill_commands as skill_commands_module
+    from hermes_constants import hermes_home_key
+
+    hermes_home = tmp_path / ".hermes"
+    home_key = hermes_home_key(hermes_home)
+    telegram_skill_dir = _write_profile_skill(
+        hermes_home,
+        "only-telegram",
+        "TELEGRAM SNAPSHOT SKILL BODY",
+    )
+    monkeypatch.setenv("HERMES_PLATFORM", "discord")
+    monkeypatch.setattr(skill_bundles_module, "_bundle_cache_snapshots", {})
+    monkeypatch.setattr(
+        skill_commands_module,
+        "_skill_command_snapshots",
+        {
+            (home_key, "discord"): {
+                "/only-discord": {"name": "only-discord"},
+            },
+            (home_key, "telegram"): {
+                "/only-telegram": {
+                    "name": "only-telegram",
+                    "skill_dir": str(telegram_skill_dir),
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        skill_commands_module,
+        "_skill_commands",
+        {"/only-discord": {"name": "only-discord"}},
+    )
+    monkeypatch.setattr(
+        skill_commands_module, "_skill_commands_home", home_key
+    )
+    monkeypatch.setattr(
+        skill_commands_module, "_skill_commands_platform", "discord"
+    )
+    monkeypatch.setattr(
+        "agent.skill_utils.get_disabled_skill_names", lambda **_kwargs: set()
+    )
+
+    import gateway.run as gateway_run_module
+
+    with gateway_run_module._profile_runtime_scope(hermes_home):
+        first = await runner._handle_message(
+            MessageEvent(text="/only-discord raw", source=raw_source)
+        )
+        second = await runner._handle_message(
+            MessageEvent(text="/only-telegram run", source=raw_source)
+        )
+
+    assert first is None and second is None
+    assert active_agent.steered[0] == "/only-discord raw"
+    assert "TELEGRAM SNAPSHOT SKILL BODY" in active_agent.steered[1]
+    assert "run" in active_agent.steered[1]
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stripped_topic_dynamic_bundle_expands_without_command_discovery(
+    tmp_path, monkeypatch
+):
+    runner, raw_source, canonical_key, active_agent, adapter = (
+        _busy_topic_command_runner(tmp_path, monkeypatch, busy_mode="steer")
+    )
+    import agent.skill_bundles as skill_bundles_module
+    from hermes_constants import hermes_home_key
+
+    hermes_home = tmp_path / ".hermes"
+    bundle_skill_dir = _write_profile_skill(
+        hermes_home,
+        "bundle-skill",
+        "TELEGRAM SNAPSHOT BUNDLE SKILL BODY",
+    )
+    home_key = hermes_home_key(hermes_home)
+    monkeypatch.setenv("HERMES_PLATFORM", "discord")
+    monkeypatch.setattr(skill_bundles_module, "_bundles_cache", {})
+    monkeypatch.setattr(
+        skill_bundles_module,
+        "_bundle_cache_snapshots",
+        {
+            (home_key, "discord"): {},
+            (home_key, "telegram"): {
+                "/race-bundle": {
+                    "name": "race-bundle",
+                    "slug": "race-bundle",
+                    "command": "/race-bundle",
+                    "description": "Telegram-only bundle",
+                    "skills": [str(bundle_skill_dir)],
+                    "instruction": "",
+                },
+            },
+        },
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        skill_bundles_module,
+        "_bundles_cache_dir",
+        str(skill_bundles_module._bundles_dir()),
+    )
+    plugin_handler_lookup = MagicMock(return_value=None)
+    plugin_commands_lookup = MagicMock(return_value={})
+    known_command_lookup = MagicMock(return_value=False)
+    hook_dispatch = MagicMock(return_value=None)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_command_handler", plugin_handler_lookup
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_commands", plugin_commands_lookup
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.PluginManager.discover_and_load",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.commands.is_gateway_known_command", known_command_lookup
+    )
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook", hook_dispatch
+    )
+
+    import gateway.run as gateway_run_module
+
+    with gateway_run_module._profile_runtime_scope(hermes_home):
+        result = await runner._handle_message(
+            MessageEvent(text="/race-bundle inspect", source=raw_source)
+        )
+
+    assert result is None
+    assert len(active_agent.steered) == 1
+    assert "TELEGRAM SNAPSHOT BUNDLE SKILL BODY" in active_agent.steered[0]
+    assert "inspect" in active_agent.steered[0]
+    assert runner._peek_session_state(canonical_key).turn.agent is active_agent
+    plugin_handler_lookup.assert_not_called()
+    plugin_commands_lookup.assert_not_called()
+    known_command_lookup.assert_not_called()
+    hook_dispatch.assert_not_called()
     adapter.send.assert_not_awaited()
 
 

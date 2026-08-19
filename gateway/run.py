@@ -1962,7 +1962,11 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home, get_hermes_home_override
+from hermes_constants import (
+    get_hermes_home,
+    get_hermes_home_override,
+    hermes_home_key,
+)
 from utils import atomic_json_write, base_url_hostname, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -16564,6 +16568,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         source: SessionSource,
         session_key: str,
+        cache_home_key: str,
         bundle_key: Optional[str],
         skill_key: Optional[str],
     ) -> Optional[str]:
@@ -16572,19 +16577,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Classification happens through cache-only resolvers at the ingress
         boundary.  Content loading is intentionally deferred until after that
         decision and this helper imports no plugin registry or command handler.
+        ``cache_home_key`` carries the same explicit profile identity into the
+        builders, so they never re-select an ambient profile/platform cache.
         ``None`` means expansion succeeded; a string is a user-facing failure.
         """
         user_instruction = event.get_command_args().strip()
         platform = source.platform.value if source.platform else None
 
         if bundle_key is not None:
-            from agent.skill_bundles import build_bundle_invocation_message
+            from agent.skill_bundles import (
+                build_bundle_invocation_message,
+                get_cached_skill_bundles,
+            )
+
+            bundles = get_cached_skill_bundles(cache_home_key, platform)
+            if bundles is None or bundle_key not in bundles:
+                return f"Failed to load skill bundle {bundle_key}."
 
             bundle_result = build_bundle_invocation_message(
                 bundle_key,
                 user_instruction,
                 task_id=session_key,
                 platform=platform,
+                bundles=bundles,
             )
             if not bundle_result:
                 return f"Failed to load skill bundle {bundle_key}."
@@ -16597,12 +16612,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from agent.skill_commands import (
             build_skill_invocation_message,
             build_stacked_skill_invocation_message,
-            get_skill_commands,
+            get_cached_skill_commands,
             split_stacked_skill_commands,
         )
         from agent.skill_utils import get_disabled_skill_names
 
-        skill_commands = get_skill_commands()
+        skill_commands = get_cached_skill_commands(cache_home_key, platform)
+        if skill_commands is None or skill_key not in skill_commands:
+            return f"Failed to load skill {skill_key}."
         skill_name = skill_commands.get(skill_key, {}).get("name", "")
         if platform and skill_name:
             disabled = get_disabled_skill_names(platform=platform)
@@ -16613,7 +16630,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         extra_keys, stacked_instruction = split_stacked_skill_commands(
-            user_instruction
+            user_instruction,
+            commands=skill_commands,
         )
         if extra_keys and platform:
             disabled = get_disabled_skill_names(platform=platform)
@@ -16634,6 +16652,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 [skill_key, *extra_keys],
                 stacked_instruction,
                 task_id=session_key,
+                commands=skill_commands,
             )
             if not stacked_result:
                 return f"Failed to load stacked skills for {skill_key}."
@@ -16644,6 +16663,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             skill_key,
             user_instruction,
             task_id=session_key,
+            commands=skill_commands,
         )
         if not message:
             return f"Failed to load skill {skill_key}."
@@ -17178,6 +17198,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not _is_quick_command:
                     # Proven cache-only resolvers: no scan, config read, plugin
                     # import/registration, or secret refresh.
+                    _scoped_home = get_hermes_home_override()
+                    _expected_home_key = hermes_home_key(
+                        _scoped_home if _scoped_home is not None else _hermes_home
+                    )
+                    _message_platform = (
+                        source.platform.value if source.platform else ""
+                    )
                     from agent.skill_bundles import (
                         resolve_cached_bundle_command_key,
                     )
@@ -17186,11 +17213,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
                     _dynamic_bundle_key = resolve_cached_bundle_command_key(
-                        _inbound_command
+                        _inbound_command,
+                        _expected_home_key,
+                        _message_platform,
                     )
                     if _dynamic_bundle_key is None:
                         _dynamic_skill_key = resolve_cached_skill_command_key(
-                            _inbound_command
+                            _inbound_command,
+                            _expected_home_key,
+                            _message_platform,
                         )
 
             if _dynamic_bundle_key is not None or _dynamic_skill_key is not None:
@@ -17199,6 +17230,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event,
                         source=source,
                         session_key=_authoritative_key,
+                        cache_home_key=_expected_home_key,
                         bundle_key=_dynamic_bundle_key,
                         skill_key=_dynamic_skill_key,
                     )

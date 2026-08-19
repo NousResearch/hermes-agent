@@ -1,6 +1,9 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
+import dis
 import os
+import sys
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -347,6 +350,287 @@ class TestScanSkillCommands:
             with caplog.at_level(_logging.WARNING, logger="agent.skill_commands"):
                 scan_skill_commands()
         assert any("already claimed" in r.message for r in caplog.records)
+
+    def test_public_discovery_returns_mutable_copies_not_frozen_snapshot(
+        self, tmp_path, monkeypatch
+    ):
+        """Keep the historical dict API without exposing authoritative state."""
+        import agent.skill_commands as sc_mod
+        from hermes_constants import hermes_home_key
+
+        monkeypatch.setattr(sc_mod, "_skill_command_snapshots", {})
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        monkeypatch.setattr("agent.skill_utils.get_project_skills_dirs", lambda: [])
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
+        _make_skill(tmp_path, "mutable-public")
+
+        public_scan = sc_mod.scan_skill_commands()
+        public_scan["/injected"] = {"name": "injected"}
+        public_scan["/mutable-public"]["name"] = "mutated"
+
+        home_key = hermes_home_key(sc_mod._resolve_skill_commands_home())
+        platform = sc_mod._resolve_skill_commands_platform()
+        cached = sc_mod.get_cached_skill_commands(home_key, platform)
+        assert cached is not None
+        assert "/injected" not in cached
+        assert cached["/mutable-public"]["name"] == "mutable-public"
+
+        public_get = sc_mod.get_skill_commands()
+        assert isinstance(public_get, dict)
+        assert isinstance(public_get["/mutable-public"], dict)
+        assert public_get["/mutable-public"]["name"] == "mutable-public"
+        public_get.pop("/mutable-public")
+        assert "/mutable-public" in cached
+
+
+class TestResolveCachedSkillCommandKey:
+    def test_rejects_cache_from_another_profile(self, monkeypatch):
+        import agent.skill_commands as sc_mod
+
+        assert sc_mod.resolve_cached_skill_command_key(
+            "only-a", "/profiles/b", "telegram"
+        ) is None
+
+    def test_prepared_identity_lookup_is_filesystem_free(self, monkeypatch):
+        import agent.skill_commands as sc_mod
+        from hermes_constants import hermes_home_key
+
+        home = Path("/profiles") / "telegram" / ".." / "telegram"
+        home_key = hermes_home_key(home)
+        monkeypatch.setattr(
+            sc_mod,
+            "_skill_command_snapshots",
+            {
+                (home_key, "telegram"): {
+                    "/only-a": {"name": "only-a"},
+                }
+            },
+            raising=False,
+        )
+        original_exists = Path.exists
+        original_read_text = Path.read_text
+        monkeypatch.setattr(
+            Path,
+            "exists",
+            lambda _path: (_ for _ in ()).throw(
+                AssertionError("cache-only lookup touched the filesystem")
+            ),
+        )
+        monkeypatch.setattr(
+            Path,
+            "read_text",
+            lambda _path, *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("cache-only lookup read the filesystem")
+            ),
+        )
+        try:
+            assert sc_mod.resolve_cached_skill_command_key(
+                "only-a", home_key, " TELEGRAM "
+            ) == "/only-a"
+        finally:
+            monkeypatch.setattr(Path, "exists", original_exists)
+            monkeypatch.setattr(Path, "read_text", original_read_text)
+
+    def test_scan_and_lookup_share_canonical_home_and_platform_identity(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.skill_commands as sc_mod
+        from hermes_constants import hermes_home_key
+
+        skills_dir = tmp_path / "skills"
+        profile_home = tmp_path / "profile"
+        (profile_home / "nested").mkdir(parents=True)
+        _make_skill(skills_dir, "canonical-skill")
+        equivalent_home = profile_home / "nested" / ".."
+
+        monkeypatch.setattr(sc_mod, "_skill_command_snapshots", {})
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr(
+            sc_mod, "_resolve_skill_commands_home", lambda: str(equivalent_home)
+        )
+        monkeypatch.setattr(
+            sc_mod, "_resolve_skill_commands_platform", lambda: " Telegram "
+        )
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+        monkeypatch.setattr("agent.skill_utils.get_project_skills_dirs", lambda: [])
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
+
+        sc_mod.scan_skill_commands()
+
+        assert sc_mod.resolve_cached_skill_command_key(
+            "canonical-skill", hermes_home_key(profile_home), "telegram"
+        ) == "/canonical-skill"
+
+    def test_interleaved_scans_publish_complete_profile_snapshots(self, tmp_path, monkeypatch):
+        import agent.skill_commands as sc_mod
+
+        first_ready = threading.Event()
+        allow_first = threading.Event()
+        identity = threading.local()
+        skill_a = tmp_path / "a" / "SKILL.md"
+        skill_b = tmp_path / "b" / "SKILL.md"
+        skill_a.parent.mkdir()
+        skill_b.parent.mkdir()
+        skill_a.write_text("skill-a")
+        skill_b.write_text("skill-b")
+
+        def iter_files(_scan_dir, _filename):
+            if identity.name == "a":
+                first_ready.set()
+                assert allow_first.wait(2)
+                return [skill_a]
+            return [skill_b]
+
+        def parse_frontmatter(_content):
+            name = "skill-a" if identity.name == "a" else "skill-b"
+            return {"name": name, "description": name}, "body"
+
+        monkeypatch.setattr(sc_mod, "_skill_command_snapshots", {}, raising=False)
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr(sc_mod, "_skill_commands_home", None)
+        monkeypatch.setattr(sc_mod, "_skill_commands_platform", None)
+        monkeypatch.setattr(sc_mod, "_resolve_skill_commands_home", lambda: "/profiles/" + identity.name)
+        monkeypatch.setattr(sc_mod, "_resolve_skill_commands_platform", lambda: "telegram")
+        monkeypatch.setattr("agent.skill_utils.get_project_skills_dirs", lambda: [])
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
+        monkeypatch.setattr("agent.skill_utils.iter_skill_index_files", iter_files)
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        monkeypatch.setattr("tools.skills_tool._parse_frontmatter", parse_frontmatter)
+        monkeypatch.setattr("tools.skills_tool.skill_matches_platform", lambda _fm: True)
+        monkeypatch.setattr("tools.skills_tool.skill_matches_environment", lambda _fm: True)
+        monkeypatch.setattr("tools.skills_tool._get_disabled_skill_names", lambda: set())
+        monkeypatch.setattr("hermes_cli.commands.resolve_command", lambda _name: None)
+
+        failures = []
+
+        def run(name):
+            identity.name = name
+            try:
+                sc_mod.scan_skill_commands()
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                failures.append(exc)
+
+        thread_a = threading.Thread(target=run, args=("a",))
+        thread_b = threading.Thread(target=run, args=("b",))
+        thread_a.start()
+        assert first_ready.wait(2)
+        thread_b.start()
+        thread_b.join(2)
+        allow_first.set()
+        thread_a.join(2)
+
+        assert not failures
+        assert not thread_a.is_alive() and not thread_b.is_alive()
+        assert set(sc_mod._skill_commands) in ({"/skill-a"}, {"/skill-b"})
+        assert not ({"/skill-a", "/skill-b"} <= set(sc_mod._skill_commands))
+
+    def test_get_returns_its_selected_snapshot_when_compat_alias_changes(
+        self, monkeypatch
+    ):
+        """A concurrent caller must not replace the mapping selected for this call.
+
+        The module-level alias is retained for legacy observability, but it is
+        process-global.  Pause caller A on its final return line, let caller B
+        publish its own profile view, then prove A still returns profile A's
+        local snapshot rather than re-reading B's alias.
+        """
+        import agent.skill_commands as sc_mod
+        from hermes_constants import hermes_home_key
+
+        identity = threading.local()
+        home_a = hermes_home_key("/profiles/a")
+        home_b = hermes_home_key("/profiles/b")
+        commands_a = {"/skill-a": {"name": "skill-a"}}
+        commands_b = {"/skill-b": {"name": "skill-b"}}
+        monkeypatch.setattr(
+            sc_mod,
+            "_skill_command_snapshots",
+            {
+                (home_a, "telegram"): commands_a,
+                (home_b, "telegram"): commands_b,
+            },
+        )
+        monkeypatch.setattr(sc_mod, "_skill_commands", {"/seed": {}})
+        monkeypatch.setattr(
+            sc_mod,
+            "_resolve_skill_commands_home",
+            lambda: f"/profiles/{identity.name}",
+        )
+        monkeypatch.setattr(
+            sc_mod, "_resolve_skill_commands_platform", lambda: "telegram"
+        )
+
+        final_line = max(line for _, line in dis.findlinestarts(sc_mod.get_skill_commands.__code__))
+        a_at_return = threading.Event()
+        release_a = threading.Event()
+        blocked = False
+        failures = []
+        results = {}
+
+        def trace(frame, event, _arg):
+            nonlocal blocked
+            if (
+                not blocked
+                and frame.f_code is sc_mod.get_skill_commands.__code__
+                and event == "line"
+                and frame.f_lineno == final_line
+            ):
+                blocked = True
+                a_at_return.set()
+                release_a.wait(2)
+            return trace
+
+        def run_a():
+            identity.name = "a"
+            sys.settrace(trace)
+            try:
+                results["a"] = sc_mod.get_skill_commands()
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                failures.append(exc)
+            finally:
+                sys.settrace(None)
+
+        thread_a = threading.Thread(target=run_a)
+        thread_a.start()
+        assert a_at_return.wait(2)
+
+        identity.name = "b"
+        results["b"] = sc_mod.get_skill_commands()
+        release_a.set()
+        thread_a.join(2)
+
+        assert not failures
+        assert not thread_a.is_alive()
+        assert set(results["a"]) == {"/skill-a"}
+        assert set(results["b"]) == {"/skill-b"}
+
+    def test_rejects_cache_from_another_platform(self, monkeypatch):
+        import agent.skill_commands as sc_mod
+
+        assert sc_mod.resolve_cached_skill_command_key(
+            "only-a", "/profiles/a", "telegram"
+        ) is None
+
+    def test_telegram_and_discord_use_distinct_cache_identities(self, monkeypatch):
+        import agent.skill_commands as sc_mod
+
+        monkeypatch.setattr(
+            sc_mod,
+            "_skill_command_snapshots",
+            {
+                ("/profiles/a", "telegram"): {
+                    "/only-telegram": {"name": "only-telegram"},
+                }
+            },
+            raising=False,
+        )
+        assert sc_mod.resolve_cached_skill_command_key(
+            "only-telegram", "/profiles/a", " Telegram "
+        ) == "/only-telegram"
+        assert sc_mod.resolve_cached_skill_command_key(
+            "only-telegram", "/profiles/a", "discord"
+        ) is None
 
 
 class TestResolveSkillCommandKey:
@@ -745,3 +1029,44 @@ class TestStackedSkillCommands:
         assert loaded == ["skill-a"]
         assert missing == ["gone"]
         assert "Skills missing (skipped): gone" in msg
+
+    def test_explicit_snapshot_drives_stack_parse_and_build_without_ambient_cache(
+        self, tmp_path
+    ):
+        from agent.skill_commands import (
+            build_stacked_skill_invocation_message,
+            split_stacked_skill_commands,
+        )
+
+        first_dir = _make_skill(tmp_path, "first", body="Explicit first body.")
+        second_dir = _make_skill(tmp_path, "second", body="Explicit second body.")
+        commands = {
+            "/first": {"name": "first", "skill_dir": str(first_dir)},
+            "/second": {"name": "second", "skill_dir": str(second_dir)},
+        }
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands.get_skill_commands",
+                side_effect=AssertionError("stacked path touched ambient cache"),
+            ),
+        ):
+            extra_keys, instruction = split_stacked_skill_commands(
+                "/second run it",
+                commands=commands,
+            )
+            result = build_stacked_skill_invocation_message(
+                ["/first", *extra_keys],
+                instruction,
+                commands=commands,
+            )
+
+        assert extra_keys == ["/second"]
+        assert instruction == "run it"
+        assert result is not None
+        message, loaded, missing = result
+        assert loaded == ["first", "second"]
+        assert missing == []
+        assert "Explicit first body." in message
+        assert "Explicit second body." in message

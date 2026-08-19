@@ -621,6 +621,21 @@ class BuzzAdapter(BasePlatformAdapter):
             if isinstance(entry, str) and (normalized := _normalize_user_ref(entry))
         }
 
+        # Verified local-agent identities may acknowledge explicit tags without
+        # gaining prompt/dispatch authority. This keeps the human allow-list
+        # intact while providing receipt visibility for agent-authored notes.
+        raw_reaction_only = (
+            os.getenv("BUZZ_REACTION_ONLY_USERS")
+            or extra.get("reaction_only_users", [])
+        )
+        if isinstance(raw_reaction_only, str):
+            raw_reaction_only = raw_reaction_only.split(",")
+        self._reaction_only_pubkeys: set = {
+            normalized
+            for entry in raw_reaction_only
+            if isinstance(entry, str) and (normalized := _normalize_user_ref(entry))
+        }
+
         # Secret — resolved lazily (never at import/registration time and
         # never logged).  connect() re-resolves it to fail fast with a clear
         # error when it is missing.
@@ -1423,6 +1438,19 @@ class BuzzAdapter(BasePlatformAdapter):
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
         # BUZZ_ALLOW_ALL_USERS centrally as well; empty list = no filter here).
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
+            explicitly_tagged = any(
+                isinstance(tag, (list, tuple))
+                and len(tag) > 1
+                and tag[0] == "p"
+                and str(tag[1]).lower() == self._self_pubkey
+                for tag in event.get("tags") or []
+            )
+            if (
+                pubkey in self._reaction_only_pubkeys
+                and explicitly_tagged
+                and self._is_mentioned(content)
+            ):
+                await self.send_reaction(channel_id, event_id, "👀")
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
 
@@ -1898,6 +1926,11 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         if isinstance(allowed, (list, tuple)):
             allowed = ",".join(str(a) for a in allowed)
         os.environ["BUZZ_ALLOWED_USERS"] = str(allowed)
+    reaction_only = extra.get("reaction_only_users")
+    if reaction_only is not None and not _skip_env_bridge and not os.getenv("BUZZ_REACTION_ONLY_USERS"):
+        if isinstance(reaction_only, (list, tuple)):
+            reaction_only = ",".join(str(v) for v in reaction_only)
+        os.environ["BUZZ_REACTION_ONLY_USERS"] = str(reaction_only)
     if "allow_all_users" in extra and not _skip_env_bridge and not os.getenv("BUZZ_ALLOW_ALL_USERS"):
         os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
     if "require_mention" in extra and not _skip_env_bridge and not os.getenv("BUZZ_REQUIRE_MENTION"):

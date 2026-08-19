@@ -31,6 +31,7 @@ _standalone_send = _buzz_mod._standalone_send
 SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
 SELF_NPUB = "npub1nl2u0wnd8mezfknc74q7pl9ec58h9nrrakce4tnk434qgaxl4psqe5twr6"
 OTHER_PUBKEY = "a" * 64
+AGENT_PUBKEY = "b" * 64
 CHANNEL = "ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd"
 # Real DM conversation as materialized by a hosted relay: `dms list` returns
 # [] for it (#68871) while `channels list` shows it as name "DM", empty
@@ -43,6 +44,7 @@ _ENV_VARS = (
     "BUZZ_CHANNELS",
     "BUZZ_HOME_CHANNEL",
     "BUZZ_ALLOWED_USERS",
+    "BUZZ_REACTION_ONLY_USERS",
     "BUZZ_ALLOW_ALL_USERS",
     "BUZZ_POLL_INTERVAL",
     "BUZZ_AUTH_TAG",
@@ -757,6 +759,46 @@ class TestMentionGating:
     async def test_allowlist_blocks_unauthorized(self, adapter):
         adapter._allowed_pubkeys = {"b" * 64}
         await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_explicit_agent_tag_reacts_without_dispatch(self, adapter):
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        adapter._reaction_only_pubkeys = {AGENT_PUBKEY}
+        adapter.send_reaction = AsyncMock(return_value=True)
+        event = _event("e1", pubkey=AGENT_PUBKEY, content="@Chip coordinate", created_at=10)
+        event["tags"].append(["p", SELF_PUBKEY])
+
+        await self._poll_with(adapter, event)
+
+        adapter.send_reaction.assert_awaited_once_with(CHANNEL, "e1", "👀")
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_agent_message_without_explicit_recipient_gets_no_reaction(self, adapter):
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        adapter._reaction_only_pubkeys = {AGENT_PUBKEY}
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        await self._poll_with(
+            adapter,
+            _event("e1", pubkey=AGENT_PUBKEY, content="@Chip coordinate", created_at=10),
+        )
+
+        adapter.send_reaction.assert_not_awaited()
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_sender_tag_gets_no_reaction(self, adapter):
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        adapter._reaction_only_pubkeys = {AGENT_PUBKEY}
+        adapter.send_reaction = AsyncMock(return_value=True)
+        event = _event("e1", pubkey="c" * 64, content="@Chip coordinate", created_at=10)
+        event["tags"].append(["p", SELF_PUBKEY])
+
+        await self._poll_with(adapter, event)
+
+        adapter.send_reaction.assert_not_awaited()
         assert adapter._dispatched == []
 
 

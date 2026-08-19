@@ -130,3 +130,23 @@ class TestResolveGatewayModel:
     def test_string_model_config(self):
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": "my-model"}) == "my-model"
+
+    def test_expands_env_var_in_default_key(self, monkeypatch):
+        """${VAR} references in model.default are expanded (#71710)."""
+        from gateway.run import _resolve_gateway_model
+        monkeypatch.setenv("MY_MODEL", "qwen3.6-27b-mtp@q8_k_xl")
+        result = _resolve_gateway_model({"model": {"default": "${MY_MODEL}"}})
+        assert result == "qwen3.6-27b-mtp@q8_k_xl"
+
+    def test_expands_env_var_in_string_model_config(self, monkeypatch):
+        """${VAR} references expanded when model config is a plain string."""
+        from gateway.run import _resolve_gateway_model
+        monkeypatch.setenv("LM_MODEL", "gpt-4.1")
+        result = _resolve_gateway_model({"model": "${LM_MODEL}"})
+        assert result == "gpt-4.1"
+
+    def test_undefined_env_var_kept_verbatim(self):
+        """Undefined env vars are preserved as-is per _expand_env_vars contract."""
+        from gateway.run import _resolve_gateway_model
+        result = _resolve_gateway_model({"model": {"default": "${TOTALLY_UNDEFINED_VAR_XYZ}"}})
+        assert result == "${TOTALLY_UNDEFINED_VAR_XYZ}"

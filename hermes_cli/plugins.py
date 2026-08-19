@@ -4285,7 +4285,17 @@ class PluginManager:
             data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
 
             name = data.get("name", plugin_dir.name)
-            key = f"{prefix}/{plugin_dir.name}" if prefix else name
+            # Path-derived, per the field's own contract (PluginManifest.key
+            # docstring): a flat plugin at plugins/disk-cleanup/ gets key
+            # disk-cleanup, a nested one gets prefix/dir-name. Using the
+            # freeform ``name`` here for the flat case let two unrelated
+            # directories that happened to declare the same ``name:`` collide
+            # on the same key in discovery's winners[] dedup — the
+            # second-scanned directory silently displaced the first and
+            # inherited its plugin_id-scoped config/state namespace. The
+            # directory name is filesystem-unique among siblings scanned at
+            # the same level, so it can't be spoofed by manifest content.
+            key = f"{prefix}/{plugin_dir.name}" if prefix else plugin_dir.name
 
             raw_kind = data.get("kind", "standalone")
             if not isinstance(raw_kind, str):

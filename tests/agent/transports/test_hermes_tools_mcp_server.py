@@ -107,6 +107,11 @@ class TestModuleSurface:
             f"because codex has built-in equivalents: {leaked}"
         )
 
+    def test_exposes_orchestrator_kanban_unlink(self):
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
+        assert "kanban_unlink" in EXPOSED_TOOLS
+
 
 
 

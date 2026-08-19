@@ -430,6 +430,91 @@ def test_link_happy_path(worker_env):
     assert d["ok"] is True
 
 
+def test_unlink_is_orchestrator_only_at_runtime(worker_env):
+    """A stale schema/dispatch path must not let a task worker unlink edges."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        child = kb.create_task(conn, title="child", parents=[worker_env])
+
+    out = json.loads(kt._handle_unlink({
+        "parent_id": worker_env,
+        "child_id": child,
+    }))
+    assert "orchestrator-only" in out["error"]
+
+    with kb.connect() as conn:
+        assert kb.parent_ids(conn, child) == [worker_env]
+
+
+def test_unlink_rejects_missing_unknown_and_duplicate(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+
+    assert json.loads(kt._handle_unlink({"parent_id": parent})).get("error")
+    assert "unknown task" in json.loads(kt._handle_unlink({
+        "parent_id": "t_missing", "child_id": child,
+    }))["error"]
+
+    first = json.loads(kt._handle_unlink({
+        "parent_id": parent, "child_id": child,
+    }))
+    assert first == {"ok": True, "parent_id": parent, "child_id": child}
+
+    duplicate = json.loads(kt._handle_unlink({
+        "parent_id": parent, "child_id": child,
+    }))
+    assert "does not exist" in duplicate["error"]
+
+
+def test_unlink_rejects_unknown_board_without_creating_it(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    assert not kb.board_exists("typo-board")
+    out = json.loads(kt._handle_unlink({
+        "parent_id": "t_parent",
+        "child_id": "t_child",
+        "board": "typo-board",
+    }))
+    assert "does not exist" in out["error"]
+    assert not kb.board_exists("typo-board")
+
+
+def test_unlink_routes_to_one_board_and_recomputes_child(monkeypatch, multi_board_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect(board="alt") as conn:
+        done_parent = kb.create_task(conn, title="done-parent")
+        kb.complete_task(conn, done_parent)
+        blocker = kb.create_task(conn, title="blocker")
+        child = kb.create_task(conn, title="child", parents=[done_parent, blocker])
+        assert kb.get_task(conn, child).status == "todo"
+
+    out = json.loads(kt._handle_unlink({
+        "parent_id": blocker,
+        "child_id": child,
+        "board": "alt",
+    }))
+    assert out["ok"] is True
+
+    with kb.connect(board="alt") as conn:
+        assert kb.parent_ids(conn, child) == [done_parent]
+        assert kb.get_task(conn, child).status == "ready"
+        events = [event for event in kb.list_events(conn, child) if event.kind == "unlinked"]
+        assert len(events) == 1
+        assert events[0].payload == {"parent": blocker, "child": child}
+
+
 def test_unblock_happy_path(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb

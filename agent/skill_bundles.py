@@ -218,6 +218,14 @@ def resolve_bundle_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_bundles() else None
 
 
+def resolve_cached_bundle_command_key(command: str) -> Optional[str]:
+    """Resolve against the existing bundle cache without touching the disk."""
+    if not command:
+        return None
+    cmd_key = f"/{command.replace('_', '-')}"
+    return cmd_key if cmd_key in _bundles_cache else None
+
+
 def reload_bundles() -> Dict[str, Any]:
     """Re-scan the bundles directory and return a diff.
 

@@ -627,6 +627,20 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_commands() else None
 
 
+def resolve_cached_skill_command_key(command: str) -> Optional[str]:
+    """Resolve against the already-built slash-skill cache without discovery.
+
+    Unlike :func:`resolve_skill_command_key`, this function never scans skill
+    directories, reads config, or imports registration helpers.  It is safe for
+    ingress routing boundaries that must classify an already-advertised dynamic
+    command before any discovery-capable operation is allowed to run.
+    """
+    if not command:
+        return None
+    cmd_key = f"/{command.replace('_', '-')}"
+    return cmd_key if cmd_key in _skill_commands else None
+
+
 def build_skill_invocation_message(
     cmd_key: str,
     user_instruction: str = "",

@@ -16526,6 +16526,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         handled = await self._handle_active_session_busy_message(event, session_key)
         if handled:
             return True, None
+        # Bare/direct adapters may not implement the richer busy-handler send
+        # surface. Preserve the established priority-path steer behavior rather
+        # than turning a valid steer into a generic retry response.
+        if self._effective_busy_input_mode(source) == "steer":
+            state = self._peek_session_state(session_key)
+            running_agent = state.turn.agent if state else None
+            steer_text = (event.text or "").strip()
+            if (
+                steer_text
+                and running_agent is not None
+                and running_agent is not _AGENT_PENDING_SENTINEL
+                and hasattr(running_agent, "steer")
+            ):
+                try:
+                    if running_agent.steer(steer_text):
+                        return True, None
+                except Exception:
+                    logger.warning(
+                        "Late canonical steer fallback failed for %s",
+                        session_key,
+                        exc_info=True,
+                    )
         adapter = self._adapter_for_source(source)
         queue_fallback = getattr(adapter, "_queue_busy_message_fallback", None)
         if callable(queue_fallback):
@@ -16535,6 +16557,98 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "⏳ Another turn is already running for this session. "
             "Wait for it to finish, then resend your message."
         )
+
+    def _expand_cached_dynamic_command_for_busy(
+        self,
+        event: MessageEvent,
+        *,
+        source: SessionSource,
+        session_key: str,
+        bundle_key: Optional[str],
+        skill_key: Optional[str],
+    ) -> Optional[str]:
+        """Expand a cache-classified skill/bundle after the busy decision.
+
+        Classification happens through cache-only resolvers at the ingress
+        boundary.  Content loading is intentionally deferred until after that
+        decision and this helper imports no plugin registry or command handler.
+        ``None`` means expansion succeeded; a string is a user-facing failure.
+        """
+        user_instruction = event.get_command_args().strip()
+        platform = source.platform.value if source.platform else None
+
+        if bundle_key is not None:
+            from agent.skill_bundles import build_bundle_invocation_message
+
+            bundle_result = build_bundle_invocation_message(
+                bundle_key,
+                user_instruction,
+                task_id=session_key,
+                platform=platform,
+            )
+            if not bundle_result:
+                return f"Failed to load skill bundle {bundle_key}."
+            event.text = bundle_result[0]
+            return None
+
+        if skill_key is None:
+            return "Failed to resolve dynamic command."
+
+        from agent.skill_commands import (
+            build_skill_invocation_message,
+            build_stacked_skill_invocation_message,
+            get_skill_commands,
+            split_stacked_skill_commands,
+        )
+        from agent.skill_utils import get_disabled_skill_names
+
+        skill_commands = get_skill_commands()
+        skill_name = skill_commands.get(skill_key, {}).get("name", "")
+        if platform and skill_name:
+            disabled = get_disabled_skill_names(platform=platform)
+            if skill_name in disabled:
+                return (
+                    f"The **{skill_name}** skill is disabled for {platform}.\n"
+                    "Enable it with: `hermes skills config`"
+                )
+
+        extra_keys, stacked_instruction = split_stacked_skill_commands(
+            user_instruction
+        )
+        if extra_keys and platform:
+            disabled = get_disabled_skill_names(platform=platform)
+            disabled_extra = [
+                skill_commands.get(key, {}).get("name", "")
+                for key in extra_keys
+                if skill_commands.get(key, {}).get("name", "") in disabled
+            ]
+            if disabled_extra:
+                return (
+                    f"The **{', '.join(disabled_extra)}** skill(s) in this "
+                    f"stacked invocation are disabled for {platform}.\n"
+                    "Enable them with: `hermes skills config`"
+                )
+
+        if extra_keys:
+            stacked_result = build_stacked_skill_invocation_message(
+                [skill_key, *extra_keys],
+                stacked_instruction,
+                task_id=session_key,
+            )
+            if not stacked_result:
+                return f"Failed to load stacked skills for {skill_key}."
+            event.text = stacked_result[0]
+            return None
+
+        message = build_skill_invocation_message(
+            skill_key,
+            user_instruction,
+            task_id=session_key,
+        )
+        if not message:
+            return f"Failed to load skill {skill_key}."
+        event.text = message
+        return None
 
     async def _handle_pause_command(self, event: MessageEvent):
         """`/pause [reason]` engages the global emergency stop; `/pause off`
@@ -16812,65 +16926,87 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
 
-        if (
-            getattr(self, "_startup_restore_in_progress", False)
-            and not is_internal
-            and not getattr(event, "_hermes_startup_restore_replay", False)
-        ):
-            self._queue_startup_restore_event(event)
-            return None
+        # Decide whether this ingress reaches an already-running canonical
+        # session before invoking discovery-capable pre-dispatch hooks. This
+        # probe is deliberately limited to the static CommandDef registry,
+        # topic-key normalization, and in-memory running state. Raw /topic and
+        # root-lobby /new retain their management-lane behavior and therefore
+        # remain on the ordinary idle/plugin path.
+        _probe_command = event.get_command()
+        from hermes_cli.commands import resolve_command as _resolve_probe_command
 
-        # scale-to-zero (Phase 0, 0.B/F13): stamp the gateway-scoped last-inbound
-        # clock for real (user-originated) inbound only. Internal/system events
-        # (background-process completions, startup-restore replays) are NOT
-        # traffic — counting them would keep a genuinely idle gateway awake. This
-        # clock is what the idle predicate (gateway/scale_to_zero.is_idle) reads.
-        if not is_internal:
-            self._scale_to_zero_note_real_inbound()
+        _probe_cmd_def = (
+            _resolve_probe_command(_probe_command) if _probe_command else None
+        )
+        _probe_canonical = (
+            _probe_cmd_def.name if _probe_cmd_def else _probe_command
+        )
+        _probe_management_lane = _probe_canonical == "topic"
+        if _probe_canonical == "new":
+            _probe_management_lane = await asyncio.to_thread(
+                self._is_telegram_topic_root_lobby, source
+            )
+        _probe_source = source
+        if source.platform == Platform.TELEGRAM:
+            _probe_source = await asyncio.to_thread(
+                self._normalize_source_for_session_key,
+                source,
+            )
+        _probe_key = self._session_key_for_source(_probe_source)
+        _preboundary_busy = (
+            not _probe_management_lane and self._is_session_running(_probe_key)
+        )
+        _idle_ingress_preprocessed = not _preboundary_busy
 
-        # Fire pre_gateway_dispatch plugin hook for user-originated messages.
-        # Plugins receive the MessageEvent and may return a dict influencing flow:
-        #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
-        #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
-        #   {"action": "allow"}   /   None          -> normal dispatch
-        # Hook runs BEFORE auth so plugins can handle unauthorized senders
-        # (e.g. customer handover ingest) without triggering the pairing flow.
-        if not is_internal:
-            try:
-                from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
-                    "pre_gateway_dispatch",
-                    event=event,
-                    gateway=self,
-                    # getattr: bare-runner tests build GatewayRunner via
-                    # object.__new__ without __init__ (pitfall #17), and the
-                    # hook must not fail dispatch over a missing attribute.
-                    session_store=getattr(self, "session_store", None),
-                )
-            except Exception as _hook_exc:
-                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
-                _hook_results = []
+        if _idle_ingress_preprocessed:
+            if (
+                getattr(self, "_startup_restore_in_progress", False)
+                and not is_internal
+                and not getattr(event, "_hermes_startup_restore_replay", False)
+            ):
+                self._queue_startup_restore_event(event)
+                return None
 
-            for _result in _hook_results:
-                if not isinstance(_result, dict):
-                    continue
-                _action = _result.get("action")
-                if _action == "skip":
-                    logger.info(
-                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                        _result.get("reason"),
-                        source.platform.value if source.platform else "unknown",
-                        source.chat_id or "unknown",
+            # Preserve the established idle ingress order: activity accounting
+            # and pre_gateway_dispatch run before sender authorization so an
+            # ingress plugin may own an otherwise unauthorized message.
+            if not is_internal:
+                self._scale_to_zero_note_real_inbound()
+                try:
+                    from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+
+                    _hook_results = _invoke_hook(
+                        "pre_gateway_dispatch",
+                        event=event,
+                        gateway=self,
+                        session_store=getattr(self, "session_store", None),
                     )
-                    return None
-                if _action == "rewrite":
-                    _new_text = _result.get("text")
-                    if isinstance(_new_text, str):
-                        event = dataclasses.replace(event, text=_new_text)
-                        source = event.source
-                    break
-                if _action == "allow":
-                    break
+                except Exception as _hook_exc:
+                    logger.warning(
+                        "pre_gateway_dispatch invocation failed: %s", _hook_exc
+                    )
+                    _hook_results = []
+
+                for _result in _hook_results:
+                    if not isinstance(_result, dict):
+                        continue
+                    _action = _result.get("action")
+                    if _action == "skip":
+                        logger.info(
+                            "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                            _result.get("reason"),
+                            source.platform.value if source.platform else "unknown",
+                            source.chat_id or "unknown",
+                        )
+                        return None
+                    if _action == "rewrite":
+                        _new_text = _result.get("text")
+                        if isinstance(_new_text, str):
+                            event = dataclasses.replace(event, text=_new_text)
+                            source = event.source
+                        break
+                    if _action == "allow":
+                        break
 
         if is_internal:
             pass
@@ -16942,39 +17078,206 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
 
-        # Telegram topic-mode DMs can arrive with a stripped/General thread id.
-        # Canonicalize ordinary external messages before the FIRST
-        # session-keyed control lookup below so update/clarify/approval state
-        # and an already-running topic turn are all observed under the same key.
-        # Slash commands deliberately keep their raw inbound source here:
-        # handlers such as /topic need to inspect the lane Telegram actually
-        # supplied. Commands that ultimately become agent turns, plus internal
-        # and strictly routed events, retain the late recovery pass after command
-        # handling and adapter-level routing metadata validation.
-        _source_canonicalized_early = False
+        # ── Side-effect-free active-session boundary ─────────────────────
+        # Everything above is limited to ContextVar isolation and fail-closed
+        # profile/channel/sender authorization. Those operations cannot discover
+        # plugins or refresh secrets. No hook, command discovery, quick alias
+        # expansion, startup queue mutation, or activity-clock write is allowed
+        # above this point.
         _inbound_command = event.get_command()
         _raw_inbound_text = event.text or ""
-        if (
-            not is_internal
-            and not _inbound_command
-            and source.platform == Platform.TELEGRAM
-        ):
-            canonical_source = await asyncio.to_thread(
+        from hermes_cli.commands import resolve_command as _resolve_inbound_command
+
+        _inbound_cmd_def = (
+            _resolve_inbound_command(_inbound_command)
+            if _inbound_command
+            else None
+        )
+        _inbound_canonical = (
+            _inbound_cmd_def.name if _inbound_cmd_def else _inbound_command
+        )
+
+        # These management controls intentionally inspect the raw Telegram lane.
+        # Their access check reads static platform policy only; neither handler
+        # performs plugin discovery. They retain lobby semantics even if topic
+        # recovery would otherwise reveal a running canonical session.
+        if _inbound_canonical in {"new", "topic"}:
+            _denied = self._check_slash_access(source, _inbound_canonical)
+            if _denied is not None:
+                return _denied
+            if _inbound_canonical == "new" and await asyncio.to_thread(
+                self._is_telegram_topic_root_lobby, source
+            ):
+                return self._telegram_topic_root_new_message()
+            if _inbound_canonical == "topic":
+                return await self._handle_topic_command(event)
+
+        _source_canonicalized_early = False
+        _authoritative_source = source
+        if source.platform == Platform.TELEGRAM:
+            _authoritative_source = await asyncio.to_thread(
                 self._normalize_source_for_session_key,
                 source,
             )
-            if canonical_source is not source:
+        _authoritative_key = self._session_key_for_source(_authoritative_source)
+        _recovered_source = _authoritative_source is not source
+
+        if self._is_session_running(_authoritative_key):
+            if _recovered_source:
                 logger.info(
-                    "telegram topic recovery: chat=%s user=%s %r -> %s",
+                    "telegram topic recovery before busy ingress routing: "
+                    "chat=%s user=%s %r -> %s",
                     source.chat_id,
                     source.user_id,
                     source.thread_id,
-                    canonical_source.thread_id,
+                    _authoritative_source.thread_id,
                 )
-                source = canonical_source
-                event.source = canonical_source
+                source = _authoritative_source
+                event.source = _authoritative_source
+
+            if _inbound_cmd_def is not None:
+                # Match correctly-keyed busy ingress: status/context are visible
+                # pre-access; every other built-in uses static slash policy.
+                if _inbound_cmd_def.name not in {"status", "context"}:
+                    _denied = self._check_slash_access(
+                        source, _inbound_cmd_def.name
+                    )
+                    if _denied is not None:
+                        return _denied
+                _busy_handled, _busy_response = (
+                    await self._route_late_canonical_busy_message(
+                        event,
+                        source=source,
+                        session_key=_authoritative_key,
+                        command_def=_inbound_cmd_def,
+                        raw_text=_raw_inbound_text,
+                    )
+                )
+                if _busy_handled:
+                    return _busy_response
+
+            # Preserve the typed identity of every non-built-in. Quick execs,
+            # quick aliases (including aliases to /stop or /new), plugins, and
+            # unknown commands all enter generic busy routing untouched. Only a
+            # recovered, cache-advertised dynamic command may expand first.
+            _dynamic_bundle_key = None
+            _dynamic_skill_key = None
+            if _recovered_source and _inbound_command:
+                if isinstance(self.config, dict):
+                    _quick_commands = self.config.get("quick_commands", {}) or {}
+                else:
+                    _quick_commands = (
+                        getattr(self.config, "quick_commands", {}) or {}
+                    )
+                _is_quick_command = (
+                    isinstance(_quick_commands, dict)
+                    and _inbound_command in _quick_commands
+                )
+                if not _is_quick_command:
+                    # Proven cache-only resolvers: no scan, config read, plugin
+                    # import/registration, or secret refresh.
+                    from agent.skill_bundles import (
+                        resolve_cached_bundle_command_key,
+                    )
+                    from agent.skill_commands import (
+                        resolve_cached_skill_command_key,
+                    )
+
+                    _dynamic_bundle_key = resolve_cached_bundle_command_key(
+                        _inbound_command
+                    )
+                    if _dynamic_bundle_key is None:
+                        _dynamic_skill_key = resolve_cached_skill_command_key(
+                            _inbound_command
+                        )
+
+            if _dynamic_bundle_key is not None or _dynamic_skill_key is not None:
+                try:
+                    _dynamic_error = self._expand_cached_dynamic_command_for_busy(
+                        event,
+                        source=source,
+                        session_key=_authoritative_key,
+                        bundle_key=_dynamic_bundle_key,
+                        skill_key=_dynamic_skill_key,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Recovered busy dynamic command expansion failed",
+                        exc_info=True,
+                    )
+                    _dynamic_error = "Failed to load dynamic command."
+                if _dynamic_error is not None:
+                    return _dynamic_error
+
+            _busy_handled, _busy_response = (
+                await self._route_late_canonical_busy_message(
+                    event,
+                    source=source,
+                    session_key=_authoritative_key,
+                    command_def=None,
+                    raw_text=_raw_inbound_text,
+                )
+            )
+            if _busy_handled:
+                return _busy_response
+
+        if _recovered_source and not _inbound_command:
+            source = _authoritative_source
+            event.source = _authoritative_source
             _source_canonicalized_early = True
 
+        if (
+            getattr(self, "_startup_restore_in_progress", False)
+            and not is_internal
+            and not getattr(event, "_hermes_startup_restore_replay", False)
+            and not _idle_ingress_preprocessed
+        ):
+            self._queue_startup_restore_event(event)
+            return None
+
+        # A busy probe can become idle while authorization awaits; only that
+        # race reaches this fallback. Normal idle ingress already ran this block
+        # in its established pre-auth position above.
+        if not is_internal and not _idle_ingress_preprocessed:
+            self._scale_to_zero_note_real_inbound()
+            try:
+                from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+
+                _hook_results = _invoke_hook(
+                    "pre_gateway_dispatch",
+                    event=event,
+                    gateway=self,
+                    session_store=getattr(self, "session_store", None),
+                )
+            except Exception as _hook_exc:
+                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
+                _hook_results = []
+
+            for _result in _hook_results:
+                if not isinstance(_result, dict):
+                    continue
+                _action = _result.get("action")
+                if _action == "skip":
+                    logger.info(
+                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                        _result.get("reason"),
+                        source.platform.value if source.platform else "unknown",
+                        source.chat_id or "unknown",
+                    )
+                    return None
+                if _action == "rewrite":
+                    _new_text = _result.get("text")
+                    if isinstance(_new_text, str):
+                        event = dataclasses.replace(event, text=_new_text)
+                        source = event.source
+                    break
+                if _action == "allow":
+                    break
+
+        # Hooks may rewrite command identity on the idle path. Recompute the
+        # values consumed by all later control and command dispatch.
+        _inbound_command = event.get_command()
+        _raw_inbound_text = event.text or ""
         _quick_key = self._session_key_for_source(source)
 
         # Global emergency stop (`hermes pause`): give new turns a brief
@@ -17574,120 +17877,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _denied is not None:
                 return _denied
 
-        if canonical == "new":
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                return self._telegram_topic_root_new_message()
-
         if canonical == "topic":
             return await self._handle_topic_command(event)
 
-        # Slash commands retain their raw Telegram lane through /topic (and the
-        # raw-only /new lobby handling above). This is the single post-management
-        # boundary: recover the authoritative source/key and decide busy state
-        # before hooks or any remaining command sink can acknowledge or mutate.
-        # Idle commands keep their established raw-context handlers. A recovered
-        # dynamic skill/bundle is the sole busy exception: it may perform its
-        # pure prompt expansion, with hooks suppressed, before the existing late
-        # router applies canonical queue/steer semantics to the expanded prompt.
         _busy_command_text = event.text or _raw_inbound_text
-        _recovered_canonical_busy = False
-        if (
-            command
-            and source.platform == Platform.TELEGRAM
-            and not _source_canonicalized_early
-        ):
-            _command_canonical_source = await asyncio.to_thread(
-                self._normalize_source_for_session_key,
-                source,
-            )
-            if _command_canonical_source is not source:
-                _command_canonical_key = self._session_key_for_source(
-                    _command_canonical_source
-                )
-                if self._is_session_running(_command_canonical_key):
-                    _recovered_canonical_busy = True
-                    logger.info(
-                        "telegram topic recovery before busy command dispatch: "
-                        "chat=%s user=%s %r -> %s",
-                        source.chat_id,
-                        source.user_id,
-                        source.thread_id,
-                        _command_canonical_source.thread_id,
-                    )
-                    source = _command_canonical_source
-                    event.source = _command_canonical_source
-                    _quick_key = _command_canonical_key
-                    _source_canonicalized_early = True
-
-                    # Quick and plugin handlers have side effects and must see
-                    # the same generic busy behavior as adapter-level canonical
-                    # routing. Dynamic skills/bundles are different: their pure
-                    # expansion is required before queue/steer so the active turn
-                    # receives the loaded prompt, not the slash spelling.
-                    if isinstance(self.config, dict):
-                        _busy_quick_commands = (
-                            self.config.get("quick_commands", {}) or {}
-                        )
-                    else:
-                        _busy_quick_commands = (
-                            getattr(self.config, "quick_commands", {}) or {}
-                        )
-                    _busy_has_quick = (
-                        isinstance(_busy_quick_commands, dict)
-                        and command in _busy_quick_commands
-                    )
-                    _busy_has_plugin = False
-                    if _cmd_def is None and not _busy_has_quick:
-                        try:
-                            from hermes_cli.plugins import get_plugin_command_handler
-
-                            _busy_has_plugin = bool(
-                                get_plugin_command_handler(command.replace("_", "-"))
-                            )
-                        except Exception:
-                            # Discovery failure is not permission to execute a
-                            # possibly side-effectful sink under the raw key.
-                            _busy_has_plugin = False
-
-                    _busy_dynamic_agent_command = False
-                    if (
-                        _cmd_def is None
-                        and not _busy_has_quick
-                        and not _busy_has_plugin
-                    ):
-                        try:
-                            from agent.skill_bundles import resolve_bundle_command_key
-                            from agent.skill_commands import resolve_skill_command_key
-
-                            _busy_dynamic_agent_command = bool(
-                                resolve_bundle_command_key(command) is not None
-                                or resolve_skill_command_key(command) is not None
-                            )
-                        except Exception:
-                            _busy_dynamic_agent_command = False
-
-                    if not _busy_dynamic_agent_command:
-                        _canonical_busy_handled, _canonical_busy_response = (
-                            await self._route_late_canonical_busy_message(
-                                event,
-                                source=source,
-                                session_key=_quick_key,
-                                command_def=_cmd_def,
-                                raw_text=_busy_command_text,
-                            )
-                        )
-                        if _canonical_busy_handled:
-                            return _canonical_busy_response
 
         # pre_command observer hook (#64204): fires for every recognized idle
-        # slash command before core handling, mirroring cli.py. Recovered busy
-        # dynamic commands deliberately skip it: hooks are not pure expansion
-        # and must never run before canonical queue/steer routing.
-        if (
-            command
-            and not _recovered_canonical_busy
-            and is_gateway_known_command(canonical)
-        ):
+        # slash command before core handling, mirroring cli.py.
+        if command and is_gateway_known_command(canonical):
             try:
                 from hermes_cli.plugins import fire_pre_command_hook
                 fire_pre_command_hook(
@@ -17705,13 +17902,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         # Fire the ``command:<canonical>`` decision hook only on the idle path.
-        # A recovered canonical busy session must reach its busy policy before a
-        # hook can deny, handle, rewrite, acknowledge, or perform side effects.
-        if (
-            command
-            and not _recovered_canonical_busy
-            and is_gateway_known_command(canonical)
-        ):
+        if command and is_gateway_known_command(canonical):
             raw_args = event.get_command_args().strip()
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",

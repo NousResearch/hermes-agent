@@ -1,3 +1,5 @@
+import { serviceMutationRequest } from '@hermes/shared'
+
 import type {
   ActionResponse,
   ActionStatusResponse,
@@ -138,7 +140,8 @@ export function restartGateway(): Promise<ActionResponse> {
   return hermesApi<ActionResponse>({
     ...profileScoped(),
     path: '/api/gateway/restart',
-    method: 'POST'
+    method: 'POST',
+    body: serviceMutationRequest('RESTART')
   })
 }
 
@@ -146,7 +149,8 @@ export function updateHermes(): Promise<ActionResponse> {
   return hermesApi<ActionResponse>({
     ...profileScoped(),
     path: '/api/hermes/update',
-    method: 'POST'
+    method: 'POST',
+    body: serviceMutationRequest('UPDATE')
   })
 }
 

@@ -3,6 +3,7 @@ import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRe
 import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
@@ -151,6 +152,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
   const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
+  const [pendingSystemAction, setPendingSystemAction] = useState<null | 'restart' | 'update'>(null)
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>(30)
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
@@ -267,6 +269,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
 
       try {
         const started = kind === 'restart' ? await restartGateway() : await updateHermes()
+
         let nextStatus: ActionStatusResponse | null = null
 
         for (let attempt = 0; attempt < 18; attempt += 1) {
@@ -440,10 +443,10 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                         </div>
                       </div>
                       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
-                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
+                        <Button onClick={() => setPendingSystemAction('restart')} size="xs" variant="text">
                           {cc.restartGateway}
                         </Button>
-                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
+                        <Button onClick={() => setPendingSystemAction('update')} size="xs" variant="textStrong">
                           {cc.updateHermes}
                         </Button>
                       </div>
@@ -509,6 +512,19 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           )}
         </OverlayMain>
       </OverlaySplitLayout>
+      <ConfirmDialog
+        description={`Type ${pendingSystemAction === 'restart' ? 'RESTART' : 'UPDATE'} to continue.`}
+        dismissOnConfirm
+        onClose={() => setPendingSystemAction(null)}
+        onConfirm={() => {
+          if (pendingSystemAction) {
+            return runSystemAction(pendingSystemAction)
+          }
+        }}
+        open={pendingSystemAction !== null}
+        title={pendingSystemAction === 'restart' ? cc.restartGateway : cc.updateHermes}
+        typedConfirmation={pendingSystemAction === 'restart' ? 'RESTART' : 'UPDATE'}
+      />
     </OverlayView>
   )
 }

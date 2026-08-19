@@ -58,6 +58,11 @@ export {
   JsonRpcGatewayError,
   type WebSocketLike
 } from './json-rpc-gateway'
+export {
+  type ServiceMutationConfirmation,
+  type ServiceMutationRequest,
+  serviceMutationRequest
+} from './service-mutation'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,

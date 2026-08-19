@@ -3492,6 +3492,8 @@ def apply_terminal_config_to_env(
     and override their matching env values.  Merged defaults only backfill
     missing env vars; they never replace unrelated exported/.env values.
     """
+    from hermes_constants import explicit_cwd_pin_active
+
     target = os.environ if env is None else env
 
     raw_config = read_raw_config()
@@ -3523,6 +3525,8 @@ def apply_terminal_config_to_env(
 
     for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if cfg_key not in terminal_cfg:
+            continue
+        if cfg_key == "cwd" and explicit_cwd_pin_active(target):
             continue
         value = terminal_cfg[cfg_key]
         if cfg_key == "cwd":

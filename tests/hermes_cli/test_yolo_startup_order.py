@@ -55,3 +55,38 @@ def test_top_level_yolo_flag_sets_env_before_startup(monkeypatch):
     )
 
 
+def test_oneshot_config_isolation_flags_precede_startup(monkeypatch):
+    """One-shot must establish config isolation before any startup imports."""
+    import hermes_cli.main as main_mod
+
+    seen = {}
+
+    def spy_prepare_startup(_args):
+        seen["at_startup"] = (
+            os.environ.get("HERMES_IGNORE_USER_CONFIG"),
+            os.environ.get("HERMES_IGNORE_RULES"),
+        )
+
+    def fake_oneshot(*_args, **_kwargs):
+        seen["at_oneshot"] = (
+            os.environ.get("HERMES_IGNORE_USER_CONFIG"),
+            os.environ.get("HERMES_IGNORE_RULES"),
+        )
+
+    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
+    monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
+    monkeypatch.setattr(main_mod, "_prepare_agent_startup", spy_prepare_startup)
+    monkeypatch.setattr(main_mod, "_run_and_exit_oneshot", fake_oneshot)
+    monkeypatch.setattr(main_mod, "cmd_chat", lambda _args: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "-z", "hello", "--ignore-user-config", "--ignore-rules"],
+    )
+
+    main_mod.main()
+
+    assert seen["at_startup"] == ("1", "1")
+    assert seen["at_oneshot"] == ("1", "1")
+
+

@@ -134,6 +134,36 @@ def _exit_after_oneshot(rc: object) -> None:
 _oneshot_cleanup_done = False
 
 
+def _resolve_in_dir(in_dir: object) -> str:
+    """Validate ``--in`` and return its absolute path without changing cwd."""
+    # Git Bash / MSYS hands the CLI POSIX-style paths (`--in ~` expands to
+    # `/c/Users/x` before Python ever sees it; MSYS2's path conversion is
+    # disabled for native executables). Translate the MSYS/Cygwin/WSL
+    # drive-root spellings to native Windows form first — no-op elsewhere.
+    from tools.environments.local import _msys_to_windows_path
+
+    target_dir = os.path.abspath(
+        os.path.expanduser(_msys_to_windows_path(str(in_dir)))
+    )
+    if not os.path.isdir(target_dir):
+        print(f"Error: --in directory not found: {in_dir}")
+        sys.exit(1)
+    return target_dir
+
+
+def _apply_in_dir(in_dir: object) -> None:
+    """Validate and enter an explicit workspace."""
+    if not in_dir:
+        return
+
+    target_dir = _resolve_in_dir(in_dir)
+    try:
+        os.chdir(target_dir)
+    except OSError as exc:
+        print(f"Error: cannot enter --in directory {in_dir}: {exc}")
+        sys.exit(1)
+
+
 def _cleanup_oneshot_runtime() -> None:
     """Best-effort process-global cleanup before one-shot hard exit.
 
@@ -180,8 +210,10 @@ def _run_and_exit_oneshot(
     provider: object = None,
     toolsets: object = None,
     usage_file: object = None,
+    in_dir: object = None,
 ) -> None:
     try:
+        target_dir = _resolve_in_dir(in_dir) if in_dir else None
         from hermes_cli.oneshot import run_oneshot
 
         rc = run_oneshot(
@@ -190,6 +222,7 @@ def _run_and_exit_oneshot(
             provider=provider,
             toolsets=toolsets,
             usage_file=usage_file,
+            in_dir=target_dir,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -2939,23 +2972,7 @@ def cmd_chat(args):
     # recorded cwd (so the restore step below is skipped).
     in_dir = getattr(args, "in_dir", None)
     if in_dir:
-        # Git Bash / MSYS hands the CLI POSIX-style paths (`--in ~` expands to
-        # `/c/Users/x` before Python ever sees it; MSYS2's path conversion is
-        # disabled for native executables). Translate the MSYS/Cygwin/WSL
-        # drive-root spellings to native Windows form first — no-op elsewhere.
-        from tools.environments.local import _msys_to_windows_path
-
-        _target_dir = os.path.abspath(
-            os.path.expanduser(_msys_to_windows_path(in_dir))
-        )
-        if not os.path.isdir(_target_dir):
-            print(f"Error: --in directory not found: {in_dir}")
-            sys.exit(1)
-        try:
-            os.chdir(_target_dir)
-        except OSError as e:
-            print(f"Error: cannot enter --in directory {in_dir}: {e}")
-            sys.exit(1)
+        _apply_in_dir(in_dir)
         args.no_restore_cwd = True
 
     # --resume latest: keyword for "most recent session" — same resolution
@@ -11717,12 +11734,23 @@ def _prepare_agent_startup(args) -> None:
         )
 
 
+def _apply_config_isolation(args) -> None:
+    """Apply ``--ignore-user-config`` / ``--ignore-rules`` before startup imports.
+
+    One-shot dispatch never reaches ``cmd_chat``, so isolation must be set on
+    every path that can call ``_prepare_agent_startup`` then ``run_oneshot``.
+    """
+    safe_mode = getattr(args, "safe_mode", False)
+    if getattr(args, "ignore_user_config", False) or safe_mode:
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+    if getattr(args, "ignore_rules", False) or safe_mode:
+        os.environ["HERMES_IGNORE_RULES"] = "1"
+
+
 def _apply_safe_mode(args) -> None:
-    if not getattr(args, "safe_mode", False):
-        return
-    os.environ["HERMES_SAFE_MODE"] = "1"
-    os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-    os.environ["HERMES_IGNORE_RULES"] = "1"
+    _apply_config_isolation(args)
+    if getattr(args, "safe_mode", False):
+        os.environ["HERMES_SAFE_MODE"] = "1"
 
 
 def _set_chat_arg_defaults(args) -> None:
@@ -11794,6 +11822,7 @@ def _try_fast_chat_launch() -> bool:
 
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+    _apply_config_isolation(args)
     _prepare_agent_startup(args)
 
     if getattr(args, "oneshot", None):
@@ -11804,6 +11833,7 @@ def _try_fast_chat_launch() -> bool:
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            in_dir=getattr(args, "in_dir", None),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -11853,6 +11883,7 @@ def _try_termux_fast_cli_launch() -> bool:
         return True
 
     if getattr(args, "oneshot", None):
+        _apply_config_isolation(args)
         _prepare_agent_startup(args)
         _confirm_startup_expensive_model_override(args)
         _run_and_exit_oneshot(
@@ -11861,6 +11892,7 @@ def _try_termux_fast_cli_launch() -> bool:
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            in_dir=getattr(args, "in_dir", None),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -13722,6 +13754,10 @@ def main():
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
+    # Config/rule isolation must precede startup imports so it also applies to
+    # one-shot mode, which dispatches before cmd_chat().
+    _apply_config_isolation(args)
+
     # Discover Python plugins and register shell hooks once, before any
     # command that can fire lifecycle hooks.  Both are idempotent; gated
     # so introspection/management commands (hermes hooks list, cron
@@ -13739,6 +13775,7 @@ def main():
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            in_dir=getattr(args, "in_dir", None),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat

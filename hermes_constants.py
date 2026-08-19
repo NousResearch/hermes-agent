@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import sys
+from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -25,6 +26,17 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
 # ``ui-tui/src/app/interfaces.ts`` on the frontend side.
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
+
+# CLI ``--in`` outranks config.yaml ``terminal.cwd``. Lazy config→env bridges
+# (including gateway/run.py at import time) skip cwd while this pin is set.
+HERMES_EXPLICIT_CWD_PIN = "HERMES_EXPLICIT_CWD_PIN"
+HERMES_EXPLICIT_CWD_PIN_VALUE = "1"
+
+
+def explicit_cwd_pin_active(env: Mapping[str, str] | None = None) -> bool:
+    """Return True when an explicit CLI ``--in`` cwd pin is in force."""
+    target = os.environ if env is None else env
+    return target.get(HERMES_EXPLICIT_CWD_PIN) == HERMES_EXPLICIT_CWD_PIN_VALUE
 
 
 def set_hermes_home_override(path: str | Path | None) -> Token:

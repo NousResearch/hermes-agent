@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v1"
+SCANNER_VERSION = "skills-guard-v2"
 
 
 
@@ -567,6 +567,66 @@ INVISIBLE_CHARS = {
     '\u2069',  # pop directional isolate
 }
 
+# Unicode Tags block (U+E0000-U+E007F).
+#
+# Handled as a range rather than as 128 more entries in INVISIBLE_CHARS,
+# because unlike the characters above these carry a payload: U+E0020 through
+# U+E007E map one-to-one onto printable ASCII by subtracting 0xE0000, so an
+# entire instruction can be written in them. They have no glyph, so in most
+# editors, terminals and diff viewers the text is simply not visible, while a
+# model reading the skill tokenizes it normally. That makes it a better hiding
+# place than an HTML comment, which at least appears in a diff.
+TAG_BLOCK_START = 0xE0000
+TAG_BLOCK_END = 0xE007F
+
+# The one legitimate modern use of these characters: an RGI emoji flag tag
+# sequence, which is U+1F3F4 WAVING BLACK FLAG, then the subdivision code in
+# tag letters, then U+E007F CANCEL TAG. That is how 🏴󠁧󠁢󠁳󠁣󠁴󠁿 (Scotland), 🏴󠁧󠁢󠁷󠁬󠁳󠁿 (Wales)
+# and 🏴󠁧󠁢󠁥󠁮󠁧󠁿 (England) are encoded, and a skill about emoji — or any README that
+# uses one — contains them for entirely innocent reasons.
+#
+# Treating those as smuggling is not a cosmetic false positive: a critical
+# finding makes the verdict `dangerous`, and a dangerous verdict on a community
+# skill is an install block that --force does not override. So valid sequences
+# are removed before the check, and only tag characters left over are reported.
+#
+# The exemption is an explicit allowlist, not a shape. Accepting "flag base,
+# then any short run of tag characters, then CANCEL" would hand an attacker the
+# bypass directly: `rm -rf /` is eight characters, so wrapping it in that shape
+# made it disappear. RGI defines exactly three of these sequences, so match
+# those three literally and nothing else.
+_RGI_FLAG_SUBDIVISIONS = ("gbeng", "gbsct", "gbwls")
+
+_EMOJI_FLAG_TAG_SEQ = re.compile(
+    '|'.join(
+        '\U0001F3F4' + ''.join(chr(0xE0000 + ord(c)) for c in code) + '\U000E007F'
+        for code in _RGI_FLAG_SUBDIVISIONS
+    )
+)
+
+
+def _strip_emoji_flag_tags(line: str) -> str:
+    """Remove the three valid emoji flag tag sequences, leaving everything else."""
+    return _EMOJI_FLAG_TAG_SEQ.sub('', line)
+
+
+def _decode_tag_chars(line: str) -> str:
+    """
+    Recover the ASCII hidden in a run of Unicode Tag characters.
+
+    Reporting the decoded instruction rather than a codepoint is the difference
+    between "this file contains invisible characters" and "this file says
+    ignore all previous instructions". The reviewer needs the second one to
+    make a decision.
+    """
+    decoded = []
+    for ch in line:
+        cp = ord(ch)
+        if TAG_BLOCK_START <= cp <= TAG_BLOCK_END:
+            ascii_cp = cp - TAG_BLOCK_START
+            decoded.append(chr(ascii_cp) if 0x20 <= ascii_cp <= 0x7E else '.')
+    return ''.join(decoded)
+
 
 # ---------------------------------------------------------------------------
 # Scanning functions
@@ -633,6 +693,31 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                     description=f"invisible unicode character {char_name} (possible text hiding/injection)",
                 ))
                 break  # one finding per line for invisible chars
+
+    # Unicode Tag characters — invisible, but they carry decodable ASCII.
+    for i, line in enumerate(lines, start=1):
+        # Cheap membership test first. Almost no line in a real skill contains
+        # a tag character, and this keeps the regex off the hot path.
+        if not any(TAG_BLOCK_START <= ord(ch) <= TAG_BLOCK_END for ch in line):
+            continue
+        candidate = _strip_emoji_flag_tags(line)
+        if not any(TAG_BLOCK_START <= ord(ch) <= TAG_BLOCK_END for ch in candidate):
+            continue
+        hidden = _decode_tag_chars(candidate)
+        if len(hidden) > 120:
+            hidden = hidden[:117] + "..."
+        findings.append(Finding(
+            pattern_id="unicode_tag_smuggling",
+            severity="critical",
+            category="injection",
+            file=rel_path,
+            line=i,
+            match=f"hidden text: {hidden!r}" if hidden else "U+E0000-U+E007F",
+            description=(
+                "Unicode Tag characters (U+E0000-U+E007F) encoding hidden text. "
+                "Invisible to a human reviewer, read normally by a model."
+            ),
+        ))
 
     return findings
 

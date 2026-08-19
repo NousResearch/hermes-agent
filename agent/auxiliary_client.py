@@ -4434,7 +4434,7 @@ def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
 
 
 def _is_model_not_found_error(exc: Exception) -> bool:
-    """Detect "the requested model doesn't exist" errors (404 / invalid model).
+    """Detect "the requested model/route cannot serve this request" errors.
 
     This fires when a resolved model name is no longer served by the endpoint
     — most commonly when a long-lived process pinned a Portal-recommended model
@@ -4444,10 +4444,22 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         Model 'gpt-5.4-mini' not found. The requested model does not exist
         in our configuration or OpenRouter catalog.
 
+    It ALSO fires for capability 404s where the route exists but cannot accept
+    the request shape — e.g. a text-only model (or a LiteLLM router proxying
+    only text models) handed an image, which OpenRouter/LiteLLM reject with::
+
+        No endpoints found that support image input
+
+    or ``this model does not support vision`` / ``image input is not supported``.
+    Treating these as model-not-found (not a transient error) lets the auxiliary
+    fallback chain move to a working vision/aux backend instead of surfacing a
+    cryptic 404. See #vision-404.
+
     Distinct from :func:`_is_payment_error` (which also matches some 404s for
     free-tier/credit language) — this one keys on "does not exist / not found /
-    not a valid model" phrasing, and explicitly excludes the billing keywords
-    that the payment path already owns so the two predicates don't overlap.
+    not a valid model / cannot serve image input" phrasing, and explicitly
+    excludes the billing keywords that the payment path already owns so the two
+    predicates don't overlap.
     """
     status = getattr(exc, "status_code", None)
     err_lower = str(exc).lower()
@@ -4470,6 +4482,14 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         "the model `",            # OpenAI-style: "The model `X` does not exist"
         "model_not_found",
         "unknown model",
+        # Capability 404s: route exists but cannot serve the request shape.
+        "no endpoints found",             # OpenRouter/LiteLLM: no vision endpoint
+        "support image input",            # "...that support image input"
+        "does not support image",         # "...does not support image input"
+        "image input is not supported",   # Anthropic-style wording
+        "does not support vision",        # "...does not support vision"
+        "model does not support vision",  # OpenAI-style wording
+        "vision is not supported",        # generic vision-capability gate
     ))
 
 
@@ -9898,6 +9918,7 @@ def _call_llm_impl(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_model_not_found_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
         # Respect explicit provider choice for transient errors (auth, request
@@ -9921,6 +9942,7 @@ def _call_llm_impl(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_model_not_found_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
@@ -9941,6 +9963,16 @@ def _call_llm_impl(
                 reason = "model incompatible with route"
             elif _is_invalid_aux_response_error(first_err):
                 reason = "invalid provider response"
+            elif _is_model_not_found_error(first_err):
+                reason = "model not found"
+                # The configured model/route 404s (e.g. a text-only backend
+                # like a LiteLLM router proxying non-vision models, or a
+                # dropped catalog model). Skip it for the unhealthy TTL so the
+                # fallthrough to a working vision/aux backend doesn't pay a
+                # doomed 404 RTT on every subsequent call.  #vision-404
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime) or resolved_provider
+                )
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -10608,6 +10640,7 @@ async def _async_call_llm_impl(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_model_not_found_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
         # Capacity errors (payment/quota/connection/rate-limit) bypass the
@@ -10623,6 +10656,7 @@ async def _async_call_llm_impl(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
+            or _is_model_not_found_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
         if should_fallback and (is_auto or is_capacity_error):
@@ -10639,6 +10673,16 @@ async def _async_call_llm_impl(
                 reason = "model incompatible with route"
             elif _is_invalid_aux_response_error(first_err):
                 reason = "invalid provider response"
+            elif _is_model_not_found_error(first_err):
+                reason = "model not found"
+                # The configured model/route 404s (e.g. a text-only backend
+                # like a LiteLLM router proxying non-vision models, or a
+                # dropped catalog model). Skip it for the unhealthy TTL so the
+                # fallthrough to a working vision/aux backend doesn't pay a
+                # doomed 404 RTT on every subsequent call.  #vision-404
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime) or resolved_provider
+                )
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

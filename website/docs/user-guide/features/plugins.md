@@ -624,8 +624,8 @@ skill-hub ids into pack install is a documented follow-up seam.
 
 ### Install-time security scanning
 
-Every `hermes plugins install` and `hermes plugins update` runs a static
-security scan over the plugin tree before it is activated (inspired by
+By default, every `hermes plugins install` and `hermes plugins update` runs a
+static security scan over the plugin tree before it is activated (inspired by
 Claude Cowork's skill & plugin security scanning). The scanner reuses the
 same threat-pattern engine as the [Skills Hub guard](/user-guide/features/skills)
 — exfiltration of credential stores, reverse shells, destructive commands,
@@ -651,6 +651,14 @@ Scanning is on by default; disable it in `config.yaml`:
 plugins:
   scan_on_install: false
 ```
+
+For channels that verify artifacts out of band (for example a catalog that
+pins and checks content hashes before delivery), `hermes plugins install`
+accepts `--no-scan` with either an exact `--ref <commit SHA>` or an existing
+immutable pin for the same source. The install remains bound to those verified
+bytes and only the content heuristics are skipped. Dangerous structural
+violations, including path/symlink traversal, still block. `--no-scan` without
+an immutable revision is rejected.
 
 ### Interactive UI
 

@@ -249,6 +249,35 @@ def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
     return findings
 
 
+def _scan_result(plugin_dir: Path, source: str, findings: List[Finding], mode: str) -> ScanResult:
+    verdict = _determine_verdict(findings)
+    from datetime import datetime, timezone
+
+    result = ScanResult(
+        skill_name=plugin_dir.name,
+        source=source or plugin_dir.name,
+        trust_level="community",
+        verdict=verdict,
+        findings=findings,
+        scanned_at=datetime.now(timezone.utc).isoformat(),
+    )
+    if findings:
+        categories = {f.category for f in findings}
+        result.summary = (
+            f"{plugin_dir.name}: {verdict} — {len(findings)} finding(s) "
+            f"in {', '.join(sorted(categories))}"
+        )
+    else:
+        result.summary = f"{plugin_dir.name}: clean scan, no threats detected"
+    result.scan_provenance = {
+        "scanner_version": PLUGIN_SCANNER_VERSION,
+        "verdict": verdict,
+        "source": result.source,
+        "mode": mode,
+    }
+    return result
+
+
 def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
     """Scan a plugin directory for security threats.
 
@@ -278,31 +307,17 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
             raw = scan_file(f, rel_path=rel)
             all_findings.extend(_filter_findings(raw, rel))
 
-    verdict = _determine_verdict(all_findings)
-    from datetime import datetime, timezone
+    return _scan_result(plugin_dir, source, all_findings, "full")
 
-    result = ScanResult(
-        skill_name=plugin_dir.name,
-        source=source or plugin_dir.name,
-        trust_level="community",
-        verdict=verdict,
-        findings=all_findings,
-        scanned_at=datetime.now(timezone.utc).isoformat(),
-    )
-    if all_findings:
-        categories = {f.category for f in all_findings}
-        result.summary = (
-            f"{plugin_dir.name}: {verdict} — {len(all_findings)} finding(s) "
-            f"in {', '.join(sorted(categories))}"
-        )
-    else:
-        result.summary = f"{plugin_dir.name}: clean scan, no threats detected"
-    result.scan_provenance = {
-        "scanner_version": PLUGIN_SCANNER_VERSION,
-        "verdict": verdict,
-        "source": result.source,
-    }
-    return result
+
+def scan_plugin_structure(plugin_dir: Path, source: str = "") -> ScanResult:
+    """Structural-only scan: path/symlink traversal and bundle invariants.
+
+    Content heuristics are skipped; this is the layer a verified-artifact
+    channel (``--no-scan`` with an immutable ``--ref``) still enforces.
+    """
+    findings = _check_plugin_structure(plugin_dir) if plugin_dir.is_dir() else []
+    return _scan_result(plugin_dir, source, findings, "structural")
 
 
 def should_allow_plugin_install(
@@ -336,6 +351,7 @@ def should_allow_plugin_install(
 
 __all__ = [
     "scan_plugin",
+    "scan_plugin_structure",
     "should_allow_plugin_install",
     "format_scan_report",
     "PLUGIN_SCANNER_VERSION",

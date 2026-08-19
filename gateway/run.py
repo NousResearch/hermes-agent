@@ -24925,9 +24925,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if hasattr(source.platform, "value")
                 else str(source.platform)
             )
+            try:
+                platform = Platform(platform_name)
+            except (ValueError, KeyError):
+                platform = None
+            if platform is not None:
+                transport = resolve_delivery_transport(
+                    platform, self.config, self.adapters,
+                )
+                if transport is not None:
+                    return True
+            # Match _inject_watch_notification's native compatibility fallback
+            # for minimal runner stubs and exotic platform strings.
             return any(
-                platform.value == platform_name and adapter is not None
-                for platform, adapter in self.adapters.items()
+                candidate.value == platform_name and adapter is not None
+                for candidate, adapter in self.adapters.items()
             )
 
         # Without a structured source, only an explicit origin_session_id
@@ -25029,6 +25041,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict,
+        *, _durable_claim_id: Optional[str] = None,
     ) -> Optional[bool]:
         """Deliver once per live gateway, or return False for a retry.
 
@@ -25039,12 +25052,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         guarantee is claimed.
         """
         identity = self._completion_delivery_identity(evt)
-        durable_claim_id = ""
+        durable_claim_preestablished = _durable_claim_id is not None
+        durable_claim_id = _durable_claim_id or ""
         durable_delegation_id = ""
         if evt.get("type") == "async_delegation":
             durable_delegation_id = str(evt.get("delegation_id") or "")
             route_available = True
-            if durable_delegation_id:
+            if durable_delegation_id and not durable_claim_preestablished:
                 try:
                     route_available = self._completion_route_available(evt)
                 except Exception:
@@ -25071,7 +25085,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     str(evt.get("session_key") or ""),
                 )
                 return None
-            if durable_delegation_id:
+            if durable_delegation_id and not durable_claim_preestablished:
                 try:
                     from tools.async_delegation import claim_completion_delivery
 
@@ -25460,14 +25474,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         A single-event group rides the existing per-event path unchanged. For
         a multi-event group the primary event is delivered through
-        ``_deliver_completion_notification`` (which owns its durable claim,
-        the lifecycle dedupe, and the target preflight), carrying a
-        consolidated text that also contains every sibling result whose
-        durable row THIS runner successfully claimed up front. Only after
-        adapter acceptance are the sibling claims acknowledged — the durable
-        ledger never acks work that was not delivered, and a sibling claimed
-        by another consumer is excluded from the consolidated text entirely
-        so its content cannot be double-delivered.
+        ``_deliver_completion_notification`` (which owns lifecycle dedupe and
+        target preflight), carrying a consolidated text that also contains
+        every sibling result whose durable row THIS runner successfully
+        claimed. Route ownership and the primary durable claim are established
+        before any sibling claim. Only after adapter acceptance are the claims
+        acknowledged — the durable ledger never acks work that was not
+        delivered, and a sibling claimed by another consumer is excluded from
+        the consolidated text entirely so its content cannot be double-delivered.
 
         Returns ``True`` after adapter acceptance, ``False`` when the caller
         should requeue the group for retry, and ``None`` when nothing in the
@@ -25504,29 +25518,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         primary_evt, primary_text = deliverable[0]
-        blocks = [primary_text]
-        siblings: list[tuple[dict, str]] = []
-        for evt, synth_text in deliverable[1:]:
-            claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
-            if claim_id is None:
-                # Another consumer owns this row's delivery; keep its result
-                # out of our consolidated text so it is never double-injected.
-                continue
-            siblings.append((evt, claim_id))
-            blocks.append(synth_text)
-
-        if not siblings:
-            return await self._deliver_completion_notification(
-                primary_text, primary_evt,
+        route_available = True
+        try:
+            route_available = self._completion_route_available(primary_evt)
+        except Exception:
+            logger.exception(
+                "Coalesced async completion route preflight failed; "
+                "falling back to normal delivery",
             )
+        if not route_available:
+            return None
 
-        consolidated = self._format_coalesced_async_delegations(blocks)
+        primary_claim_id = claim_event_delivery(
+            primary_evt, f"gateway-batch-primary:{id(self)}",
+        )
+        if primary_claim_id is None:
+            return None
+
+        primary_claim_managed = False
+        siblings: list[tuple[dict, str]] = []
         delivered: Optional[bool] = False
         try:
+            blocks = [primary_text]
+            for evt, synth_text in deliverable[1:]:
+                claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
+                if claim_id is None:
+                    # Another consumer owns this row's delivery; keep its result
+                    # out of our consolidated text so it is never double-injected.
+                    continue
+                siblings.append((evt, claim_id))
+                blocks.append(synth_text)
+
+            if not siblings:
+                primary_claim_managed = True
+                return await self._deliver_completion_notification(
+                    primary_text,
+                    primary_evt,
+                    _durable_claim_id=primary_claim_id,
+                )
+
+            consolidated = self._format_coalesced_async_delegations(blocks)
+            primary_claim_managed = True
             delivered = await self._deliver_completion_notification(
-                consolidated, primary_evt,
+                consolidated,
+                primary_evt,
+                _durable_claim_id=primary_claim_id,
             )
         finally:
+            if not primary_claim_managed:
+                try:
+                    release_event_delivery(primary_evt, primary_claim_id)
+                except Exception:
+                    logger.debug(
+                        "Could not release coalesced primary durable claim",
+                        exc_info=True,
+                    )
             if delivered is True:
                 for evt, claim_id in siblings:
                     try:

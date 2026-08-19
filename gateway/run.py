@@ -8179,6 +8179,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         send_metadata["choice_timeout_seconds"] = (
             _STALE_OVERRIDE_PROMPT_TIMEOUT_SECONDS
         )
+        # Per-user sessions must keep the held message and its override mutation
+        # bound to the initiating participant. Shared thread/group sessions keep
+        # the established authorized-participant behavior.
+        source = event.source
+        is_thread = bool(source.thread_id or source.prospective_thread_id)
+        owner_required = (
+            source.chat_type == "dm"
+            or (
+                is_thread
+                and getattr(self.config, "thread_sessions_per_user", False)
+            )
+            or (
+                source.chat_type != "dm"
+                and not is_thread
+                and getattr(self.config, "group_sessions_per_user", True)
+            )
+        )
+        if owner_required:
+            send_metadata["requester_user_id"] = str(
+                source.user_id_alt or source.user_id or ""
+            )
 
         async def _on_choice_selected(_chat_id: str, value: str) -> str:
             pending = getattr(self, "_stale_override_pending", {}).get(session_key)
@@ -16461,6 +16482,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             f"mid-turn. Wait for the current response or `/stop` first."
         )
 
+    async def _route_late_canonical_busy_message(
+        self,
+        event: MessageEvent,
+        *,
+        source: SessionSource,
+        session_key: str,
+        command_def,
+        raw_text: str,
+    ) -> tuple[bool, Any]:
+        """Route a fall-through event that became canonical after command parsing.
+
+        Telegram slash commands retain their raw source until handlers such as
+        ``/topic`` have inspected it. If a command falls through to an agent
+        turn, topic recovery can therefore reveal a busy canonical session only
+        at the end of command dispatch. Reuse the established busy command and
+        generic-message routers here before any claim or pending sentinel write.
+        """
+        if not self._is_session_running(session_key):
+            return False, None
+
+        if command_def is not None:
+            # Fall-through handlers rewrite event.text for the eventual agent
+            # turn. Busy command handlers still need the exact inbound slash
+            # text so /queue and /steer parse their payload normally.
+            rewritten_text = event.text
+            event.text = raw_text
+            try:
+                response = await self._dispatch_busy_slash_command(
+                    event, command_def, session_key, source
+                )
+            finally:
+                event.text = rewritten_text
+            return True, response
+
+        # Skill/bundle commands are rewritten into ordinary agent prompts and
+        # have no CommandDef. Route that rewritten prompt through the existing
+        # generic busy path. A canonical running session must never fall through
+        # to the claim path even if an adapter declines to render an ack.
+        await self._handle_active_session_busy_message(event, session_key)
+        return True, None
+
     async def _handle_pause_command(self, event: MessageEvent):
         """`/pause [reason]` engages the global emergency stop; `/pause off`
         (aliases: resume/stop) lifts it.
@@ -16878,6 +16940,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # handling and adapter-level routing metadata validation.
         _source_canonicalized_early = False
         _inbound_command = event.get_command()
+        _raw_inbound_text = event.text or ""
         if (
             not is_internal
             and not _inbound_command
@@ -17582,6 +17645,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        # Keep the command form produced by alias/hook rewriting for a possible
+        # late-canonical busy dispatch. Fall-through handlers below may replace
+        # event.text with an agent prompt, but /queue and /steer still need to
+        # parse the command payload as it stood after command routing.
+        _busy_command_text = event.text or _raw_inbound_text
+
         if canonical == "pause":
             return await self._handle_pause_command(event)
 
@@ -17912,17 +17981,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             preset = moa_cfg["default_preset"]
             try:
                 event.text = moa_payload
-                _moa_state = self._session_state(_quick_key)
-                event._moa_restore_override = _moa_state.conversation.model_override
-                _moa_state.conversation.model_override = {
+                # Apply the one-turn override only after late Telegram topic
+                # recovery and its canonical busy check. Writing it under the
+                # raw key here can orphan state or mutate the wrong session.
+                _pending_moa_override = {
                     "provider": "moa",
                     "model": preset,
                     "base_url": "moa://local",
                     "api_key": "moa-virtual-provider",
                     "api_mode": "chat_completions",
                 }
-                self._evict_cached_agent(_quick_key)
-                event._moa_disable_after_turn = True
             except Exception:
                 return "Failed to prepare MoA turn."
 
@@ -18189,6 +18257,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source = canonical_source
             event.source = canonical_source
             _quick_key = self._session_key_for_source(canonical_source)
+
+        _late_busy_handled, _late_busy_response = (
+            await self._route_late_canonical_busy_message(
+                event,
+                source=source,
+                session_key=_quick_key,
+                command_def=_cmd_def,
+                raw_text=_busy_command_text,
+            )
+        )
+        if _late_busy_handled:
+            return _late_busy_response
+
+        if "_pending_moa_override" in locals():
+            _moa_state = self._session_state(_quick_key)
+            event._moa_restore_override = _moa_state.conversation.model_override
+            _moa_state.conversation.model_override = _pending_moa_override
+            self._evict_cached_agent(_quick_key)
+            event._moa_disable_after_turn = True
 
         if not is_internal and await asyncio.to_thread(
             self._is_telegram_topic_root_lobby, source

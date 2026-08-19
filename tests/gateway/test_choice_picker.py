@@ -199,7 +199,7 @@ class TestTelegramChoicePickerLayout:
         assert [len(row) for row in markup.inline_keyboard] == expected_row_lengths
 
     @pytest.mark.asyncio
-    async def test_two_same_topic_pickers_are_independently_selectable(
+    async def test_shared_session_pickers_allow_distinct_authorized_actors(
         self, monkeypatch
     ):
         from plugins.platforms.telegram import adapter as telegram_adapter
@@ -276,6 +276,115 @@ class TestTelegramChoicePickerLayout:
 
         picker_two.assert_awaited_once_with("123", "continue")
         assert adapter._choice_picker_state == {}
+
+    @pytest.mark.asyncio
+    async def test_owned_picker_denies_other_authorized_actor_without_side_effects(
+        self, monkeypatch
+    ):
+        from plugins.platforms.telegram import adapter as telegram_adapter
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        class _Markup:
+            def __init__(self, rows):
+                self.inline_keyboard = rows
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _Markup)
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        adapter.platform = Platform.TELEGRAM
+        adapter._bot = object()
+        adapter._reply_to_mode = "off"
+        adapter._choice_picker_state = {}
+        adapter._choice_picker_cleanup_tasks = set()
+        # Both actors pass the chat-level authorization gate. Picker ownership
+        # is the additional per-user-session boundary under test.
+        adapter._is_callback_user_authorized = lambda *_args, **_kwargs: True
+        adapter.format_message = lambda text: text
+        adapter._reply_to_message_id_for_send = lambda *_args, **_kwargs: None
+        adapter._thread_kwargs_for_send = lambda *_args, **_kwargs: {}
+        adapter._link_preview_kwargs = lambda: {}
+        adapter._send_message_with_thread_fallback = AsyncMock(
+            return_value=SimpleNamespace(message_id=42)
+        )
+        mutate_override_and_replay_held_message = AsyncMock(
+            return_value="owner selected"
+        )
+
+        result = await adapter.send_choice_picker(
+            chat_id="123",
+            title="Choose",
+            choices=[{"value": "defaults", "label": "Defaults"}],
+            session_key="session-user-7",
+            on_choice_selected=mutate_override_and_replay_held_message,
+            metadata={"requester_user_id": "7"},
+        )
+        assert result.success is True
+
+        def _query(user_id):
+            return SimpleNamespace(
+                message=SimpleNamespace(
+                    message_id=42,
+                    message_thread_id=None,
+                    chat_id=123,
+                    chat=SimpleNamespace(type="supergroup"),
+                ),
+                from_user=SimpleNamespace(id=user_id, first_name="User"),
+                edit_message_text=AsyncMock(),
+                answer=AsyncMock(),
+            )
+
+        other_actor = _query(8)
+        await adapter._handle_choice_picker_callback(
+            other_actor, "cp:0", "123"
+        )
+
+        other_actor.answer.assert_awaited_once_with(
+            text="⛔ Only the user who opened this picker can use it."
+        )
+        other_actor.edit_message_text.assert_not_awaited()
+        mutate_override_and_replay_held_message.assert_not_awaited()
+        assert ("123", "42") in adapter._choice_picker_state
+
+        owner = _query(7)
+        await adapter._handle_choice_picker_callback(owner, "cp:0", "123")
+
+        mutate_override_and_replay_held_message.assert_awaited_once_with(
+            "123", "defaults"
+        )
+        owner.edit_message_text.assert_awaited_once()
+        assert ("123", "42") not in adapter._choice_picker_state
+
+    @pytest.mark.asyncio
+    async def test_owned_picker_missing_actor_identity_fails_closed(self):
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        callback = AsyncMock(return_value="must not run")
+        adapter._choice_picker_state = {
+            ("123", "42"): {
+                "choices": [{"value": "continue"}],
+                "owner_user_id": "7",
+                "on_choice_selected": callback,
+            }
+        }
+        adapter._is_callback_user_authorized = lambda *_args, **_kwargs: True
+        query = SimpleNamespace(
+            message=SimpleNamespace(
+                message_id=42,
+                message_thread_id=None,
+                chat_id=123,
+                chat=SimpleNamespace(type="supergroup"),
+            ),
+            from_user=SimpleNamespace(id=None, first_name=None),
+            answer=AsyncMock(),
+        )
+
+        await adapter._handle_choice_picker_callback(query, "cp:0", "123")
+
+        query.answer.assert_awaited_once_with(
+            text="⛔ Only the user who opened this picker can use it."
+        )
+        callback.assert_not_awaited()
+        assert ("123", "42") in adapter._choice_picker_state
 
     @pytest.mark.asyncio
     async def test_timed_picker_cleans_up_only_its_own_message_state(self, monkeypatch):

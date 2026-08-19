@@ -249,3 +249,109 @@ async def test_topic_recovered_busy_ingress_preserves_original_active_agent(
     runner._claim_active_session_slot.assert_not_called()
     runner._handle_message_with_agent.assert_not_awaited()
     assert runner._peek_session_state(canonical_key).turn.agent is active_agent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_text", "expected_steer", "expected_queue", "expected_reply"),
+    [
+        (
+            "/steer follow up",
+            ["follow up"],
+            [],
+            "⏩ Steer queued — arrives after the next tool call: 'follow up'",
+        ),
+        ("/queue follow up", [], ["follow up"], "Queued for the next turn."),
+        (
+            "/moa compare these",
+            [],
+            [],
+            "Agent is running — wait or /stop first, then run /moa.",
+        ),
+    ],
+)
+async def test_stripped_topic_fallthrough_command_reenters_canonical_busy_path(
+    tmp_path,
+    monkeypatch,
+    command_text,
+    expected_steer,
+    expected_queue,
+    expected_reply,
+):
+    """Late topic recovery must route commands before claim/state mutation."""
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="e2e-test-token")
+        },
+        sessions_dir=hermes_home / "sessions",
+    )
+    store = SessionStore(config.sessions_dir, config)
+    canonical_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="topic-chat",
+        chat_type="dm",
+        user_id="topic-user",
+        user_name="topic user",
+        thread_id="42",
+    )
+    canonical_entry = store.get_or_create_session(canonical_source)
+    canonical_key = canonical_entry.session_key
+    raw_source = dataclasses.replace(canonical_source, thread_id=None)
+    raw_key = build_session_key(raw_source)
+
+    db = store._db
+    db.enable_telegram_topic_mode(chat_id="topic-chat", user_id="topic-user")
+    db.bind_telegram_topic(
+        chat_id="topic-chat",
+        thread_id="42",
+        user_id="topic-user",
+        session_key=canonical_key,
+        session_id=canonical_entry.session_id,
+    )
+
+    class ActiveAgent:
+        def __init__(self):
+            self.steered = []
+
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+        def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    runner = _runner_with_store(config, store, db)
+    active_agent = ActiveAgent()
+    active_state = runner._session_state(canonical_key)
+    original_override = {"provider": "test", "model": "original"}
+    active_state.conversation.model_override = original_override
+    active_state.turn.agent = active_agent
+    active_state.turn.started_ts = time.time() - 10
+    adapter = SimpleNamespace(_pending_messages={})
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("late canonical command dispatched a second turn")
+    )
+    original_claim = runner._claim_active_session_slot
+    runner._claim_active_session_slot = MagicMock(wraps=original_claim)
+
+    event = MessageEvent(
+        text=command_text,
+        message_id="busy-command",
+        source=raw_source,
+    )
+    result = await runner._handle_message(event)
+
+    assert result == expected_reply
+    assert event.source.thread_id == "42"
+    assert active_agent.steered == expected_steer
+    queued = adapter._pending_messages.get(canonical_key)
+    assert ([queued.text] if queued is not None else []) == expected_queue
+    runner._claim_active_session_slot.assert_not_called()
+    runner._handle_message_with_agent.assert_not_awaited()
+    preserved = runner._peek_session_state(canonical_key)
+    assert preserved.turn.agent is active_agent
+    assert preserved.conversation.model_override is original_override
+    assert runner._peek_session_state(raw_key) is None

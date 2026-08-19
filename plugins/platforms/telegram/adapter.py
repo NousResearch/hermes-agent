@@ -6485,6 +6485,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 "session_key": session_key,
                 "on_choice_selected": on_choice_selected,
             }
+            if metadata is not None and "requester_user_id" in metadata:
+                # Optional ownership seam for callers whose picker controls a
+                # per-user session. Absence preserves established shared-picker
+                # behavior; presence with an empty identity deliberately fails
+                # closed in the callback path.
+                state["owner_user_id"] = str(
+                    metadata.get("requester_user_id") or ""
+                ).strip()
             self._choice_picker_state[state_key] = state
 
             timeout_seconds = (metadata or {}).get("choice_timeout_seconds")
@@ -6536,6 +6544,14 @@ class TelegramAdapter(BasePlatformAdapter):
         ):
             await query.answer(text="⛔ You are not authorized to change this setting.")
             return
+
+        if "owner_user_id" in state:
+            actor_user_id = str(getattr(query.from_user, "id", "") or "").strip()
+            if not actor_user_id or actor_user_id != state["owner_user_id"]:
+                await query.answer(
+                    text="⛔ Only the user who opened this picker can use it."
+                )
+                return
 
         try:
             idx = int(data[3:])

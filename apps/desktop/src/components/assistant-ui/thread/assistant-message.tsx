@@ -60,14 +60,12 @@ interface MessageActionProps {
   onBranchInNewChat?: (messageId: string) => void
 }
 
-export const AssistantMessage: FC<{
+interface AssistantMessageProps {
   onBranchInNewChat?: (messageId: string) => void
   onDismissError?: (messageId: string) => void
-}> = ({ onBranchInNewChat, onDismissError }) => {
-  const messageId = useAuiState(s => s.message.id)
-  const messageRuntime = useMessageRuntime()
-  const { t } = useI18n()
+}
 
+export const AssistantMessage: FC<AssistantMessageProps> = props => {
   // A reply to an inter-agent delivery is part of that exchange, not part of
   // the human conversation — collapse it under a compact notice ("Reply to
   // <sender>", expandable), mirroring the sender-side notice the previous
@@ -102,19 +100,68 @@ export const AssistantMessage: FC<{
     return null
   })
 
-  // PERF: this component must NOT subscribe to the streaming text. Every
-  // selector here returns a value that stays referentially stable across
-  // token flushes (booleans, status strings, '' while running), so the
-  // 30 Hz delta stream only re-renders the markdown part and the tiny
-  // TurnActivityIndicator leaf — not the footer/preview/root subtree.
-  //
-  // `isRunning` is the one status read left at this level, and only because
-  // two things genuinely need it HERE: the inter-agent collapse gate below (a
-  // running reply must stay expanded) and the mount-time `enabled` of
-  // useEnterAnimation. Every other status-derived read moved down into
-  // AssistantStatusSlot / SettledChangedFiles, so a pending flip no longer
-  // descends into the parts subtree or the changed-files card from here.
+  // The collapse gate below needs the LIVE running status, but only an
+  // inter-agent reply can ever be collapsed. Dispatching on that first keeps
+  // the status subscription out of the standard path entirely — the standard
+  // message root now re-renders for content, never for a pending flip.
+  return interAgentSender ? (
+    <InterAgentAssistantMessage {...props} sender={interAgentSender} />
+  ) : (
+    <AssistantMessageBody {...props} />
+  )
+}
+
+/**
+ * An assistant reply that answers an inter-agent delivery. Owns the only
+ * root-level `isRunning` subscription left in this file, and it is confined to
+ * the rare inter-agent case: the reply renders collapsed once it settles, so
+ * the gate genuinely needs live status. Never collapse while streaming — the
+ * user should see progress.
+ */
+const InterAgentAssistantMessage: FC<AssistantMessageProps & { sender: string }> = ({ sender, ...props }) => {
   const isRunning = useAuiState(s => s.message.status?.type === 'running')
+
+  if (isRunning) {
+    return <AssistantMessageBody {...props} />
+  }
+
+  // Render collapsed (Grok-bots parity — the transcript shows the event; the
+  // text is one click away).
+  return (
+    <MessagePrimitive.Root
+      className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden pb-(--conversation-turn-gap)"
+      data-role="assistant"
+      data-slot="aui_assistant-message-root"
+    >
+      <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
+        <span className="flex items-center justify-center gap-1.5">
+          <Codicon className="shrink-0 text-muted-foreground/55" name="arrow-small-right" size="0.8125rem" />
+          <span className="wrap-anywhere">Replied to {sender}</span>
+        </span>
+        <details className="self-center">
+          <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
+            show reply
+          </summary>
+          <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
+            {MESSAGE_PARTS}
+          </div>
+        </details>
+      </div>
+    </MessagePrimitive.Root>
+  )
+}
+
+const AssistantMessageBody: FC<AssistantMessageProps> = ({ onBranchInNewChat, onDismissError }) => {
+  const messageId = useAuiState(s => s.message.id)
+  const messageRuntime = useMessageRuntime()
+  const { t } = useI18n()
+
+  // PERF: this component must NOT subscribe to the streaming text, and no
+  // longer subscribes to the streaming STATUS either. Every selector here
+  // returns a value that stays referentially stable across token flushes
+  // (booleans, '' while running), so the 30 Hz delta stream only re-renders
+  // the markdown part and the tiny status leaves — not the footer, the
+  // preview block, or this root.
   const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content))
   // Sealed mid-turn commentary keeps its text but not the footer, so a
   // tool-heavy turn doesn't grow a copy/refresh bar per paragraph (see
@@ -142,47 +189,26 @@ export const AssistantMessage: FC<{
 
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
 
-  const enterRef = useEnterAnimation(isRunning, `assistant-message:${messageId}`)
+  // useEnterAnimation consults `enabled` ONLY when its callback ref fires,
+  // i.e. at mount: the hook parks the value in a ref and returns a
+  // useCallback([]) identity, and its own contract is "`enabled` is captured
+  // at mount-time only — flipping it later doesn't suddenly play the animation
+  // on existing nodes" (see lib/use-enter-animation.ts). So a live
+  // subscription here would re-render this root on every pending flip to feed
+  // a value the hook already ignores. Capture it once, off the runtime, with
+  // no subscription at all.
+  const [initiallyRunning] = useState(() => messageRuntime.getState().status?.type === 'running')
+  const enterRef = useEnterAnimation(initiallyRunning, `assistant-message:${messageId}`)
 
   // Double-click the reply to heart it (iMessage). Undefined while reactions
   // are off, so the root carries no listener at all.
   const onDoubleClick = useTapbackDoubleClick(messageId, 'assistant')
-
-  // Reply inside an inter-agent exchange: render collapsed (Grok-bots
-  // parity — the transcript shows the event; the text is one click away).
-  // Never collapse while streaming: the user should see progress, and the
-  // status selectors above stay live either way.
-  if (interAgentSender && !isRunning) {
-    return (
-      <MessagePrimitive.Root
-        className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden pb-(--conversation-turn-gap)"
-        data-role="assistant"
-        data-slot="aui_assistant-message-root"
-      >
-        <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
-          <span className="flex items-center justify-center gap-1.5">
-            <Codicon className="shrink-0 text-muted-foreground/55" name="arrow-small-right" size="0.8125rem" />
-            <span className="wrap-anywhere">Replied to {interAgentSender}</span>
-          </span>
-          <details className="self-center">
-            <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
-              show reply
-            </summary>
-            <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
-              {MESSAGE_PARTS}
-            </div>
-          </details>
-        </div>
-      </MessagePrimitive.Root>
-    )
-  }
 
   return (
     <MessagePrimitive.Root
       className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
-      data-streaming={isRunning ? 'true' : undefined}
       onDoubleClick={onDoubleClick}
       ref={enterRef}
     >
@@ -231,6 +257,7 @@ export const AssistantMessage: FC<{
       {/* Last thing in the turn — under the action bar, the way Cursor ends a
           turn on its summary rather than burying it above the controls. */}
       <SettledChangedFiles />
+      <StreamingMarker />
     </MessagePrimitive.Root>
   )
 }
@@ -301,6 +328,48 @@ const SettledChangedFiles: FC = () => {
   })
 
   return <ChangedFilesCard parts={settledParts} />
+}
+
+/**
+ * Carries the streaming flag that used to sit on the message root as
+ * `data-streaming`.
+ *
+ * The flag has no CSS behind it (every `[data-streaming='true']` rule targets
+ * `[data-slot='code-card']`), but it is not dead: it is the settled-row signal
+ * for the short-session hang repro, which counts
+ * `[data-slot='aui_assistant-message-root']:not(:has([data-message-streaming='true']))`
+ * and gates the assistant-response wait on that count growing.
+ *
+ * Deliberately NOT named `data-streaming`: shiki-highlighter.tsx:148 puts that
+ * exact attribute on a deferred `[data-slot='code-card']`, which is a
+ * descendant of this root. Once the repro matches on a descendant rather than
+ * the root's own attribute, a shared name would make any message holding a
+ * still-deferred code card read as "still streaming". A distinct name keeps
+ * the signal about the MESSAGE and immune to how deep it sits.
+ *
+ * On the root it was a per-flip attribute write on the element that owns the
+ * whole message subtree, which is the invalidation this prong exists to remove.
+ * Three properties make this placement cheap and behaviour-neutral:
+ *
+ *  - A ROOT-LEVEL sibling, not a child of the message content. The rules at
+ *    styles.css:1995-2003 match the first/last block *inside*
+ *    `[data-slot='aui_assistant-message-content']`; a node added there would
+ *    steal `:last-child` from the stall indicator and silently change the gap
+ *    between bubbles mid-stream. No rule selects message-root children by
+ *    position, so this slot is inert.
+ *  - PERMANENTLY MOUNTED, toggling only the attribute. Mounting/unmounting per
+ *    flip would be a DOM structure change and dirty its siblings; an attribute
+ *    write on a childless node invalidates exactly one element.
+ *  - `display: none`, so it costs no layout or paint. `querySelectorAll` and
+ *    `:has()` still match it — they read the DOM, not the box tree.
+ *
+ * Tracks plain `isRunning` (not tail-only), exactly like the old root
+ * attribute, so the repro's row accounting is unchanged.
+ */
+const StreamingMarker: FC = () => {
+  const isRunning = useAuiState(s => s.message.status?.type === 'running')
+
+  return <span aria-hidden="true" className="hidden" data-message-streaming={isRunning ? 'true' : undefined} />
 }
 
 const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText, onBranchInNewChat }) => {

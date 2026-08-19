@@ -17122,18 +17122,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _authoritative_key = self._session_key_for_source(_authoritative_source)
         _recovered_source = _authoritative_source is not source
 
-        if self._is_session_running(_authoritative_key):
-            if _recovered_source:
-                logger.info(
-                    "telegram topic recovery before busy ingress routing: "
-                    "chat=%s user=%s %r -> %s",
-                    source.chat_id,
-                    source.user_id,
-                    source.thread_id,
-                    _authoritative_source.thread_id,
-                )
-                source = _authoritative_source
-                event.source = _authoritative_source
+        # Only the recovered Telegram lane needs this early detour. Correctly
+        # keyed ingress must retain the established platform/profile busy path
+        # below (including priority, restart-drain, and per-profile modes).
+        if _recovered_source and self._is_session_running(_authoritative_key):
+            logger.info(
+                "telegram topic recovery before busy ingress routing: "
+                "chat=%s user=%s %r -> %s",
+                source.chat_id,
+                source.user_id,
+                source.thread_id,
+                _authoritative_source.thread_id,
+            )
+            source = _authoritative_source
+            event.source = _authoritative_source
 
             if _inbound_cmd_def is not None:
                 # Match correctly-keyed busy ingress: status/context are visible

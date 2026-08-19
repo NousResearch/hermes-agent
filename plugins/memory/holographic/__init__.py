@@ -127,19 +127,28 @@ class HolographicMemoryProvider(MemoryProvider):
         return True  # SQLite is always available, numpy is optional
 
     def save_config(self, values, hermes_home):
-        """Write config to config.yaml under plugins.hermes-memory-store."""
-        from pathlib import Path
-        config_path = Path(hermes_home) / "config.yaml"
+        """Write config to config.yaml under plugins.hermes-memory-store.
+
+        Routes through hermes_cli.config's load_config()/save_config(), the
+        same atomic (utils.atomic_yaml_write-backed) round-trip every other
+        memory provider's save_config uses (hindsight/mem0/honcho via
+        atomic_json_write for their own files; supermemory likewise;
+        openviking via this same load_config()/save_config() pair) — a bare
+        open(path, "w") + yaml.dump was a truncating, non-atomic write
+        directly against the shared main config.yaml: an interruption
+        mid-write left the file corrupt/zero-length, silently dropping every
+        section (provider credentials included), not just this plugin's.
+        """
         try:
-            import yaml
-            # Write-back round-trip: raw read is correct (merged defaults
-            # must not be persisted back into the user's file).
-            from hermes_cli.config import read_user_config_raw
-            existing = read_user_config_raw(config_path)
-            existing.setdefault("plugins", {})
-            existing["plugins"]["hermes-memory-store"] = values
-            with open(config_path, "w", encoding="utf-8") as f:
-                yaml.dump(existing, f, default_flow_style=False)
+            from hermes_cli.config import load_config, save_config
+
+            config = load_config()
+            plugins_config = config.get("plugins")
+            if not isinstance(plugins_config, dict):
+                plugins_config = {}
+                config["plugins"] = plugins_config
+            plugins_config["hermes-memory-store"] = values
+            save_config(config)
         except Exception:
             pass
 

@@ -65,7 +65,7 @@ DAILY_POST_COUNT = 2
 # tests and future Discord adapters cannot silently route to #content or to the
 # X manager channel. The concrete value is filled in at cron/channel wiring
 # time - the contract only guarantees a stable, dedicated default.
-LI_MANAGER_CHANNEL_ID = "LINKEDIN_MANAGER_CHANNEL_TBD"
+LI_MANAGER_CHANNEL_ID = "1539633360664657920"
 
 # Approval status vocabulary. There is no "published" state reachable from
 # this module - publishing is a separate, human-driven step outside the

@@ -6158,7 +6158,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
 
     host
       .connections()
-      .then(value => setConnections(Array.isArray(value) ? value : []))
+      .then(value => setConnections(Array.isArray(value?.connections) ? value.connections : []))
       .catch(() => setConnections([]))
   }, [open, connections])
 

@@ -162,3 +162,18 @@ test('source contract: group chat turns route through requestForBot on the membe
   // Room records persist remote member descriptors.
   assert.match(pluginSource, /members: Array\.isArray\(room\.members\) \? room\.members : \[\]/)
 })
+
+test('regression: host.connections() registry object is unwrapped before the picker gate', () => {
+  // host.connections() resolves the IPC handler hermes:connections:list, which
+  // returns the registry OBJECT ({version, primary, connections: [...]}) — not
+  // a bare array. The picker gate (Array.isArray(connections) && length > 1)
+  // never fired, so the "Create on" picker stayed hidden on multi-connection
+  // desktops. The plugin must unwrap .connections before storing.
+  assert.match(
+    pluginSource,
+    /setConnections\(Array\.isArray\(value\?\.connections\) \? value\.connections : \[\]\)/
+  )
+  // The built-in Connections UI consumes the registry object, so the IPC
+  // handler contract must NOT change to a bare array.
+  assert.doesNotMatch(pluginSource, /setConnections\(Array\.isArray\(value\) \? value : \[\]\)/)
+})

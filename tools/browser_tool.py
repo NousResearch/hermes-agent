@@ -2445,7 +2445,12 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     # backend surfaces a CDP URL via override or session_info["cdp_url"]).
     # Idempotent; swallows errors. See _ensure_cdp_supervisor for details.
     # Skip for local sidecars — they have no CDP URL.
-    if not force_local:
+    # Skip for user-supplied CDP override sessions too: the supervisor owns
+    # competing about:blank targets on the agent-browser path, causing target
+    # churn (old page targets get reaped after navigation -> "Target not
+    # found"). Cloud providers (Browserbase) still get the supervisor.
+    is_cdp_override = bool(session_info.get("features", {}).get("cdp_override"))
+    if not force_local and not is_cdp_override:
         _ensure_cdp_supervisor(task_id)
 
     return session_info

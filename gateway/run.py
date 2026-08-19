@@ -16454,6 +16454,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
 
+        # Model-alias shortcut: turn /<alias> into /model <alias> before the
+        # pending-update / pending-clarify / slash-confirm / estop intercepts, so
+        # /sonnet and /model sonnet behave identically when the user has a
+        # detached update process waiting for an answer (or a clarifying
+        # question). Done via dataclasses.replace so the original event is
+        # untouched (no hidden alias attribute) and we never re-enter
+        # _handle_message (no duplicate pre_gateway_dispatch / auth /
+        # inbound-activity side effects). Higher-priority command names
+        # (built-in / quick / plugin / skill / bundle / disabled skill)
+        # always win — the helper bails out when the name is occupied.
+        from gateway._model_alias_normalize import (
+            canonicalize_event_for_model_alias,
+        )
+        event = canonicalize_event_for_model_alias(
+            event,
+            config=getattr(self, "config", None),
+            unavailable_skill_fn=_check_unavailable_skill,
+        )
+
         # Global emergency stop (`hermes pause`): give new turns a brief
         # paused notice instead of starting an agent run. Internal events
         # (background-process completions from IN-FLIGHT work) bypass the
@@ -17130,6 +17149,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not new_command:
                         continue
                     new_args = str(hook_result.get("raw_args", "")).strip()
+                    rewritten_event = dataclasses.replace(
+                        event, text=f"/{new_command} {new_args}".strip()
+                    )
+                    from gateway._model_alias_normalize import (
+                        canonicalize_event_for_model_alias,
+                    )
+                    norm_event = canonicalize_event_for_model_alias(
+                        rewritten_event,
+                        config=getattr(self, "config", None),
+                        unavailable_skill_fn=_check_unavailable_skill,
+                    )
+                    if norm_event is not rewritten_event:
+                        event = norm_event
+                        command = "model"
+                        _cmd_def = _resolve_cmd(command)
+                        canonical = "model"
+                        break
                     event.text = f"/{new_command} {new_args}".strip()
                     command = event.get_command()
                     _cmd_def = _resolve_cmd(command) if command else None

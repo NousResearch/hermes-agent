@@ -681,9 +681,11 @@ def test_repair_restores_configured_wal_after_surgery(
     """A repaired file left in delete mode must return to the configured WAL.
 
     Simulates the reported sequence: corruption drops the WAL bit (the file
-    reads back as delete), surgery heals the schema, and the store must end
-    up in the canonical database.journal_mode again — with a WARNING so the
-    operator sees the mode moved."""
+    reads back as delete), surgery heals the schema, and the restore — now
+    resolved through the canonical apply_wal_with_fallback — brings the
+    store back to database.journal_mode. The duplicate-FTS damage makes the
+    pre-surgery probe fail, so no before/after comparison WARNING fires;
+    the canonical path's own logging covers the restore."""
     import logging
 
     db_path = tmp_path / "state.db"
@@ -704,6 +706,64 @@ def test_repair_restores_configured_wal_after_surgery(
         report = repair_state_db_schema(db_path)
 
     assert report["repaired"] is True
+    assert _mode_of(db_path) == "wal"
+
+
+def test_repair_restore_matches_canonical_on_vulnerable_sqlite(
+    tmp_path, monkeypatch
+):
+    """The restore must go through the WAL-reset gate, not around it.
+
+    On a WAL-reset-vulnerable SQLite (the reporter ran 3.50.4), the
+    canonical open path keeps a rebuilt non-WAL file in DELETE — a freshly
+    repaired file IS a new database. The restore used to switch WAL
+    directly and diverged from the front door; going through
+    apply_wal_with_fallback must converge with the canonical behaviour."""
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    monkeypatch.setattr(
+        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: True
+    )
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    _corrupt_duplicate_fts(db_path)
+
+    report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    # Same outcome as the canonical open path on this runtime: DELETE.
+    assert _mode_of(db_path) == "delete"
+
+
+def test_repair_logs_mode_change_when_probe_succeeded(
+    tmp_path, caplog, monkeypatch
+):
+    """When the pre-surgery probe read the file (header intact), the
+    post-restore WARNING names the before/after modes — the #89393 signal,
+    arriving through the repair door instead of the open door."""
+    import logging
+    from unittest.mock import patch
+
+    db_path = tmp_path / "state.db"
+    _configure_journal_mode(monkeypatch, tmp_path, "wal")
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    _corrupt_duplicate_fts(db_path)
+
+    with (
+        patch.object(
+            hermes_state, "_probe_journal_mode_for_repair", return_value="delete"
+        ),
+        caplog.at_level(logging.WARNING, logger="hermes_state"),
+    ):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert report["journal_mode_before"] == "delete"
     assert _mode_of(db_path) == "wal"
     assert any(
         "changed journal_mode" in r.getMessage() for r in caplog.records
@@ -735,9 +795,9 @@ def test_repair_logs_nothing_when_mode_already_matches(
 def test_repair_restore_failure_is_nonfatal_and_logged(
     tmp_path, caplog, monkeypatch
 ):
-    """When the post-surgery WAL switch is refused (locked/unsupported fs),
-    the repair result stands and a WARNING names the modes and the config
-    key — never an exception out of the repair path."""
+    """When the canonical restore path raises (locked/unsupported fs), the
+    repair result stands and a WARNING is logged — never an exception out
+    of the repair path."""
     import logging
     from unittest.mock import patch
 
@@ -749,11 +809,11 @@ def test_repair_restore_failure_is_nonfatal_and_logged(
     conn.close()
     _corrupt_duplicate_fts(db_path)
 
-    def _refused(conn, mode):
+    def _refused(conn, **kwargs):
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch.object(hermes_state, "_set_journal_mode_no_wait", _refused),
+        patch.object(hermes_state, "apply_wal_with_fallback", _refused),
         caplog.at_level(logging.WARNING, logger="hermes_state"),
     ):
         report = repair_state_db_schema(db_path)
@@ -761,7 +821,7 @@ def test_repair_restore_failure_is_nonfatal_and_logged(
     assert report["repaired"] is True
     assert _mode_of(db_path) == "delete"
     assert any(
-        "could not" in r.getMessage() and "restored" in r.getMessage()
+        "journal-mode restore failed" in r.getMessage()
         for r in caplog.records
     )
 

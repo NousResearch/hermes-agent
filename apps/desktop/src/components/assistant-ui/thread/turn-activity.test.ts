@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { activitySignature, toolNarratesWait } from './turn-activity'
 
 const text = (value: string) => ({ text: value, type: 'text' })
+
 const call = (toolName: string, settled: boolean) => ({
   toolName,
   type: 'tool-call',

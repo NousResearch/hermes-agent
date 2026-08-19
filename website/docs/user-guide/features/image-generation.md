@@ -71,6 +71,33 @@ image_gen:
 to the global tool-worker limit, so image providers receive bounded parallel
 requests without allowing an image batch to bypass the agent's concurrency cap.
 
+### OpenRouter: the full Image API catalog
+
+With `image_gen.provider: openrouter`, the model picker lists OpenRouter's
+entire live image catalog — the dedicated
+[Image API](https://openrouter.ai/docs/guides/overview/multimodal/image-generation)
+models (Seedream, FLUX.2, Recraft, Qwen Image, MAI, Krea, Riverflow, Grok
+Imagine, and more — 40+ ids) merged with the chat-completions image models.
+The catalog is fetched live from `GET /images/models` and `GET /models`, so
+new models appear in the picker as soon as OpenRouter serves them; no Hermes
+update needed. Generation routes each model to the surface that serves it
+(dedicated `POST /images/generations` vs chat-completions) automatically.
+Nous Portal proxies the chat-completions protocol only, so its picker offers
+the chat-served models.
+
+Optional per-request knobs for Image API models go under the scoped config
+section (or `OPENROUTER_IMAGE_API_*` env vars):
+
+```yaml
+image_gen:
+  provider: openrouter
+  model: bytedance-seed/seedream-4.5
+  openrouter:
+    resolution: 2K        # model-dependent: 1K / 2K / 4K
+    quality: high         # gpt-image models
+    output_format: png
+```
+
 ### GPT-Image Quality
 
 The `fal-ai/gpt-image-1.5` and `fal-ai/gpt-image-2` request quality is pinned to `medium` (~$0.034–$0.06/image at 1024×1024). We don't expose the `low` / `high` tiers as a user-facing option so that Nous Portal billing stays predictable across all users — the cost spread between tiers is 3–22×. If you want a cheaper option, pick Klein 9B or Z-Image Turbo; if you want higher quality, use Nano Banana Pro or Recraft V4 Pro.
@@ -120,6 +147,7 @@ Two inputs drive the edit:
 | **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
 | **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`) |
 | **OpenAI (Codex auth)** | ✓ | up to 16 | Codex Responses `image_generation` tool with `input_image` content parts |
+| **OpenRouter** (Image API models) | ✓ | up to 14–16 (per model) | `input_references` on `POST /images/generations`; chat-served models use `image_url` content parts (up to 3) |
 
 FAL models with an editing endpoint: `flux-2/klein/9b`, `flux-2-pro`,
 `nano-banana-pro`, `gpt-image-1.5`, `gpt-image-2`, `ideogram/v3`, and

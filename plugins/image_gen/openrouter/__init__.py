@@ -498,18 +498,17 @@ def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
 #: rerouting them would be a silent behaviour change — see the module docstring.
 _CHAT_ONLY_MODELS = frozenset({DEFAULT_MODEL, _FALLBACK_MODEL})
 
-#: Ids we have already hinted about, so the log line appears once per process
-#: rather than on every call.
-_HINTED_MODELS: set = set()
 
 
 def _select_surface(model_id: str, base_url: str, api_key: str, config_key: str) -> str:
     """Return ``"images"`` or ``"chat"`` for *model_id*.
 
-    Deterministic and offline in the default case: the decision comes from
-    :data:`_IMAGE_API_MODELS` and :data:`_CHAT_ONLY_MODELS`, never from the
-    network. The catalog probe runs only for an id in neither table, and only
-    to produce a hint — it does not change the route.
+    Deterministic and offline for curated ids: the decision comes from
+    :data:`_IMAGE_API_MODELS` and :data:`_CHAT_ONLY_MODELS`. An id in neither
+    table is checked against the (cached) live ``/images/models`` catalog —
+    models the dedicated API serves route there, so a model picked from the
+    live picker works even when it postdates the curated snapshot. Offline
+    the probe returns empty and unknown ids stay on chat-completions.
     """
     if not model_id:
         return "chat"
@@ -523,19 +522,11 @@ def _select_surface(model_id: str, base_url: str, api_key: str, config_key: str)
     if model_id in _IMAGE_API_MODELS:
         return "images"
 
-    # Unknown id: keep today's behaviour, but say so once if the dedicated API
-    # could serve it better.
-    if model_id not in _HINTED_MODELS:
-        _HINTED_MODELS.add(model_id)
-        if model_id in _fetch_image_api_catalog(base_url, api_key):
-            logger.info(
-                "model '%s' is available on the OpenRouter Image API, which supports "
-                "exact aspect ratios, resolution/quality/background/seed and up to 16 "
-                "reference images. Staying on chat-completions; set "
-                "image_gen.%s.surface: images (or OPENROUTER_IMAGE_API_SURFACE=images) "
-                "to use it.",
-                model_id, config_key,
-            )
+    # Unknown id: the live catalog decides. Most of the endpoint's image
+    # models exist only on the dedicated API, so a positive probe must route
+    # there — staying on chat would 404/400 a model the live picker offered.
+    if model_id in _fetch_image_api_catalog(base_url, api_key):
+        return "images"
     return "chat"
 
 

@@ -202,6 +202,55 @@ class TestLiveCatalog:
             provider.list_models()
         assert mock_get.call_count == 1
 
+    def test_picker_merges_image_api_and_chat_catalogs(self):
+        """OpenRouter picker = union of /images/models and image-output
+        /models entries, deduped, defaults first."""
+        from plugins.image_gen.openrouter import _build_providers
+
+        orp = {p.name: p for p in _build_providers()}["openrouter"]
+
+        def fake_get(url, **kw):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if url.endswith("/images/models"):
+                resp.json.return_value = {"data": [
+                    {"id": "bytedance-seed/seedream-4.5", "name": "Seedream 4.5",
+                     "architecture": {"input_modalities": ["text", "image"],
+                                      "output_modalities": ["image"]}},
+                    {"id": "openai/gpt-5.4-image-2", "name": "GPT-5.4 Image 2",
+                     "architecture": {"input_modalities": ["text", "image"],
+                                      "output_modalities": ["image"]}},
+                ]}
+            else:
+                resp.json.return_value = {"data": [
+                    {"id": "openai/gpt-5.4-image-2",
+                     "architecture": {"output_modalities": ["image"],
+                                      "input_modalities": ["text", "image"]}},
+                    {"id": "google/gemini-3-pro-image",
+                     "architecture": {"output_modalities": ["image"],
+                                      "input_modalities": ["text", "image"]}},
+                ]}
+            return resp
+
+        with patch(_RUNTIME, return_value=_runtime_ok()), patch("requests.get", side_effect=fake_get):
+            ids = [m["id"] for m in orp.list_models()]
+        assert ids[0] == "openai/gpt-5.4-image-2"          # default first
+        assert "bytedance-seed/seedream-4.5" in ids        # Image-API-only model present
+        assert "google/gemini-3-pro-image" in ids          # chat-catalog model present
+        assert len(ids) == len(set(ids))                   # deduped
+
+    def test_nous_portal_picker_excludes_image_api_catalog(self):
+        """Nous Portal has no /images route; its picker must not offer
+        Image-API-only models it cannot serve."""
+        from plugins.image_gen.openrouter import _build_providers
+
+        nous = {p.name: p for p in _build_providers()}["nous"]
+        with patch(_RUNTIME, side_effect=RuntimeError("no creds")):
+            ids = [m["id"] for m in nous.list_models()]
+        from plugins.image_gen.openrouter import DEFAULT_MODEL, _FALLBACK_MODEL
+
+        assert ids == [DEFAULT_MODEL, _FALLBACK_MODEL]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -412,7 +461,6 @@ class TestImageApiSurface:
         import plugins.image_gen.openrouter as mod
 
         mod._CATALOG_CACHE.clear()
-        mod._HINTED_MODELS.clear()
         monkeypatch.setattr(mod, "_load_image_gen_config", lambda: {})
         for knob in ("QUALITY", "BACKGROUND", "RESOLUTION", "SEED", "N",
                      "ASPECT_RATIO", "TIMEOUT", "SURFACE"):
@@ -420,7 +468,6 @@ class TestImageApiSurface:
         monkeypatch.delenv("OPENROUTER_IMAGE_MODEL", raising=False)
         yield
         mod._CATALOG_CACHE.clear()
-        mod._HINTED_MODELS.clear()
 
     # -- routing ---------------------------------------------------------
 
@@ -450,21 +497,39 @@ class TestImageApiSurface:
             assert _select_surface(DEFAULT_MODEL, "https://x/api/v1", "k", "openrouter") == "chat"
             assert _select_surface(_FALLBACK_MODEL, "https://x/api/v1", "k", "openrouter") == "chat"
 
-    def test_unknown_catalog_model_is_hinted_once_but_not_rerouted(self):
+    def test_unknown_catalog_model_routes_to_image_api(self):
+        """An id past the curated snapshot but in the live catalog is served
+        by the dedicated API — a model picked from the live picker must not
+        fall onto chat-completions and 404."""
+        import plugins.image_gen.openrouter as orp
         from plugins.image_gen.openrouter import _select_surface
 
+        orp._CATALOG_CACHE.clear()
         catalog = MagicMock()
         catalog.raise_for_status = MagicMock()
         catalog.json.return_value = {"data": [{"id": "brandnew/model-9"}]}
         with patch("requests.get", return_value=catalog) as mock_get:
-            assert _select_surface("brandnew/model-9", "https://x/api/v1", "k", "openrouter") == "chat"
-            assert _select_surface("brandnew/model-9", "https://x/api/v1", "k", "openrouter") == "chat"
-        # Hinted once, and the probe never repeats for the same id.
+            assert _select_surface("brandnew/model-9", "https://x/api/v1", "k", "openrouter") == "images"
+            assert _select_surface("brandnew/model-9", "https://x/api/v1", "k", "openrouter") == "images"
+        # Catalog probe is cached — one fetch serves repeat calls.
         assert mock_get.call_count == 1
 
-    def test_failed_probe_costs_nothing(self):
+    def test_unknown_model_not_in_catalog_stays_on_chat(self):
+        import plugins.image_gen.openrouter as orp
         from plugins.image_gen.openrouter import _select_surface
 
+        orp._CATALOG_CACHE.clear()
+        catalog = MagicMock()
+        catalog.raise_for_status = MagicMock()
+        catalog.json.return_value = {"data": [{"id": "something/else"}]}
+        with patch("requests.get", return_value=catalog):
+            assert _select_surface("not-served/model", "https://x/api/v1", "k", "openrouter") == "chat"
+
+    def test_failed_probe_costs_nothing(self):
+        import plugins.image_gen.openrouter as orp
+        from plugins.image_gen.openrouter import _select_surface
+
+        orp._CATALOG_CACHE.clear()
         with patch("requests.get", side_effect=OSError("network down")):
             assert _select_surface("unknown/model", "https://x/api/v1", "k", "openrouter") == "chat"
 

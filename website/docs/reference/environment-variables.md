@@ -317,6 +317,9 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `TELEGRAM_EXCLUSIVE_BOT_MENTIONS` | When enabled, explicit `@...bot` mentions in Telegram groups route only to the mentioned bot usernames before reply or wake-word fallbacks run. Default: `true`. Equivalent to `telegram.exclusive_bot_mentions`. |
 | `TELEGRAM_REPLY_TO_MODE` | Reply-reference behavior: `off`, `first` (default), or `all`. Matches the Discord pattern. |
 | `TELEGRAM_IGNORED_THREADS` | Comma-separated Telegram forum topic/thread IDs where the bot never responds |
+| `TELEGRAM_ALLOWED_TOPICS` | Comma-separated Telegram forum topic/thread IDs the bot handles. When set, messages from any other group/forum topic are silently ignored. DMs are never filtered. Telegram's General topic is normalized to ID `1`. Applied before `TELEGRAM_IGNORED_THREADS`. Equivalent to `telegram.allowed_topics` in `config.yaml`. |
+| `TELEGRAM_FREE_RESPONSE_CHATS` | Comma-separated chat IDs where `require_mention` is bypassed and Hermes responds to every group message. Equivalent to `telegram.free_response_chats`. |
+| `TELEGRAM_FREE_RESPONSE_TOPICS` | Comma-separated `<chat_id>:<thread_id>` pairs where `require_mention` is bypassed for a single forum topic only. Telegram's General topic is normalized to thread ID `1`. Equivalent to `telegram.free_response_topics`. |
 | `TELEGRAM_PROXY` | Proxy URL for Telegram connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |

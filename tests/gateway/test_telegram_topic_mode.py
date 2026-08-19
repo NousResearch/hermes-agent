@@ -4,6 +4,7 @@ Topic mode makes the root Telegram DM a system lobby while user-created
 Telegram topics act as independent Hermes session lanes.
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -465,6 +466,43 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_concurrent_topic_activation_creates_system_topic_exactly_once(tmp_path, monkeypatch):
+    """Regression for the #65216 review: two /topic invocations for the same
+    chat racing concurrently must not both see "not yet enabled" and both
+    invoke the non-idempotent System-topic creator.
+
+    AsyncSessionDB offloads every SessionDB call via `asyncio.to_thread`
+    (see hermes_state.py), so `await` on two concurrent
+    `enable_telegram_topic_mode` calls really does run them on separate
+    OS threads against the same SQLite connection -- this reproduces the
+    real race, not just an interleaving on a single thread.
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=session_db)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic activation must not enter the agent loop")
+    )
+    runner._ensure_telegram_system_topic = AsyncMock()
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    results = await asyncio.gather(
+        runner._handle_message(_make_event("/topic")),
+        runner._handle_message(_make_event("/topic")),
+    )
+
+    assert runner._ensure_telegram_system_topic.call_count == 1, (
+        "Two concurrent /topic activations for the same chat must create "
+        "the System topic exactly once, not once per racing caller."
+    )
+    assert any("enabled" in r for r in results)
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
@@ -758,7 +796,82 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
     assert binding["session_id"] == "sess-27166"
 
 
+
 # ---------------------------------------------------------------------------
-# Test for session-split thread_id recovery (issue #27166)
+# Regression: System topic on auto-threaded first /topic (#65202)
 # ---------------------------------------------------------------------------
 
+
+@pytest.mark.asyncio
+async def test_topic_first_activation_creates_system_topic_when_auto_threaded(
+    tmp_path, monkeypatch
+):
+    """Regression for #65202.
+
+    Telegram auto-creates a topic for the `/topic` message when it is sent
+    from the All Messages view, so the command reaches Hermes with a
+    `thread_id` even on the very first activation. The System topic must
+    still be created in that case.
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=session_db)
+    runner._ensure_telegram_system_topic = AsyncMock()
+    runner._get_telegram_topic_capabilities = AsyncMock(
+        return_value={
+            "checked": True,
+            "has_topics_enabled": True,
+            "allows_users_to_create_topics": True,
+        }
+    )
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic activation must not enter the agent loop")
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    # First /topic arrives already inside an auto-created topic (thread_id set).
+    await runner._handle_message(_make_event("/topic", thread_id="17585"))
+
+    runner._ensure_telegram_system_topic.assert_awaited_once()
+    assert session_db.is_telegram_topic_mode_enabled(
+        chat_id="208214988", user_id="208214988"
+    )
+
+
+@pytest.mark.asyncio
+async def test_topic_repeat_activation_does_not_recreate_system_topic(
+    tmp_path, monkeypatch
+):
+    """A second /topic once mode is enabled must not create another System topic.
+
+    `_ensure_telegram_system_topic` is not idempotent (it always creates a
+    fresh `System` forum topic), so it must only fire on first activation.
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(
+        chat_id="208214988", user_id="208214988"
+    )
+    runner = _make_runner(session_db=session_db)
+    runner._ensure_telegram_system_topic = AsyncMock()
+    runner._get_telegram_topic_capabilities = AsyncMock(
+        return_value={
+            "checked": True,
+            "has_topics_enabled": True,
+            "allows_users_to_create_topics": True,
+        }
+    )
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic status must not enter the agent loop")
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    await runner._handle_message(_make_event("/topic", thread_id="17585"))
+
+    runner._ensure_telegram_system_topic.assert_not_awaited()

@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
+import os from 'node:os'
+
+import { glassSupportedOn, translucencySupportedOn } from '../../shared/src/translucency'
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
+  glassSupported: glassSupportedOn(process.platform, os.release()),
+  translucencySupported: translucencySupportedOn(process.platform),
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),

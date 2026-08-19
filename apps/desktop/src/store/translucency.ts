@@ -7,7 +7,7 @@
  *
  * The renderer owns the value and mirrors it to the main process over IPC.
  * Glass additionally needs page-level work, which lives here: the field
- * surfaces have to get out of the way for the vibrancy material underneath the
+ * surfaces have to get out of the way for the platform material underneath the
  * web contents to read (see the `[data-hermes-glass]` block in styles.css).
  */
 
@@ -16,6 +16,8 @@ import {
   GLASS_MATERIALS,
   GLASS_SCOPES,
   type GlassMaterial,
+  glassMaterialForPicker,
+  glassMaterialsFor,
   type GlassScope,
   glassSurfaceKeep,
   normalizeMaterial,
@@ -29,13 +31,43 @@ import {
 } from '@hermes/shared/translucency'
 import { atom } from 'nanostores'
 
-import { isMacPlatform } from '@/lib/platform'
+import { isMacPlatform, isWindowsPlatform } from '@/lib/platform'
 import { readJson, writeJson } from '@/lib/storage'
 
-export { GLASS_MATERIALS, GLASS_SCOPES, TRANSLUCENCY_MAX, TRANSLUCENCY_MIN, TRANSLUCENCY_STEP }
+export {
+  GLASS_MATERIALS,
+  GLASS_SCOPES,
+  glassMaterialForPicker,
+  glassMaterialsFor,
+  TRANSLUCENCY_MAX,
+  TRANSLUCENCY_MIN,
+  TRANSLUCENCY_STEP
+}
 
-/** Glass rides on the macOS vibrancy material; other platforms only have Clear. */
-export const GLASS_SUPPORTED = isMacPlatform()
+/**
+ * Glass needs a native window material. Electron is authoritative (preload
+ * sets `hermesDesktop.glassSupported` from `os.release()` so Win10 cannot
+ * sneak through). Tests and non-Electron shells fall back to a UA sniff —
+ * Mac or Windows — which is why this file pins `navigator.platform` before
+ * import.
+ */
+export const GLASS_SUPPORTED =
+  typeof window !== 'undefined' && typeof window.hermesDesktop?.glassSupported === 'boolean'
+    ? window.hermesDesktop.glassSupported
+    : isMacPlatform() || isWindowsPlatform()
+
+/**
+ * Whether the setting is worth showing at all. Linux has neither half —
+ * `setOpacity` is a documented no-op and there is no native material — so
+ * Settings hides the row rather than offering a lever that does nothing.
+ */
+export const TRANSLUCENCY_SUPPORTED =
+  typeof window !== 'undefined' && typeof window.hermesDesktop?.translucencySupported === 'boolean'
+    ? window.hermesDesktop.translucencySupported
+    : isMacPlatform() || isWindowsPlatform()
+
+/** Windows collapses the frost ladder — see `glassMaterialsFor`. */
+export const GLASS_IS_WINDOWS = GLASS_SUPPORTED && !isMacPlatform()
 
 const KEY = 'hermes.desktop.translucency.v1'
 
@@ -55,6 +87,10 @@ export const $translucency = atom<TranslucencyState>(initial)
 
 export function setTranslucency(intensity: number): void {
   $translucency.set({ ...$translucency.get(), intensity: clampIntensity(intensity) })
+}
+
+export function setTranslucencyFade(fade: number): void {
+  $translucency.set({ ...$translucency.get(), fade: clampIntensity(fade) })
 }
 
 export function setTranslucencyMode(mode: TranslucencyMode): void {
@@ -300,6 +336,7 @@ if (typeof window !== 'undefined') {
 
     if (
       next.intensity !== current.intensity ||
+      next.fade !== current.fade ||
       next.mode !== current.mode ||
       next.material !== current.material ||
       next.scope !== current.scope

@@ -63,6 +63,7 @@ export {
   type SkinColorToken
 } from './skin'
 export {
+  backgroundMaterialFor,
   clampIntensity,
   DEFAULT_GLASS_MATERIAL,
   DEFAULT_GLASS_SCOPE,
@@ -71,6 +72,9 @@ export {
   glassActive,
   type GlassMaterial,
   type GlassScope,
+  glassMaterialForPicker,
+  glassMaterialsFor,
+  glassSupportedOn,
   glassSurfaceKeep,
   normalizeMaterial,
   normalizeMode,
@@ -83,7 +87,11 @@ export {
   TRANSLUCENCY_STEP,
   type TranslucencyMode,
   type TranslucencyState,
+  translucencySupportedOn,
   vibrancyFor,
+  WINDOWS_BACKGROUND_MATERIALS,
+  WINDOWS_GLASS_MIN_BUILD,
+  type WindowsBackgroundMaterial,
   windowOpacityFor
 } from './translucency'
 export {

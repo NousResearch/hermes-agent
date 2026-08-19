@@ -302,7 +302,9 @@ import {
 import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import {
+  backgroundMaterialFor,
   glassActive,
+  glassSupportedOn,
   normalizeState as normalizeTranslucency,
   vibrancyFor as vibrancyForTranslucency,
   windowBackingOptions,
@@ -397,6 +399,9 @@ const IS_WSL = isWslEnvironment()
 // Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
 // build SDK, so gate Tahoe workarounds on Darwin instead.
 const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
+// Glass: macOS vibrancy, or Windows 11 22H2+ system backdrop. Computed once
+// so the renderer, the persisted default, and every chat window agree.
+const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
 const APP_ROOT = app.getAppPath()
 
 // Device-local preference: block F12 from opening DevTools.
@@ -893,18 +898,19 @@ nativeTheme.themeSource = readPersistedThemeSource()
 // Window translucency (see-through window). One lever, 0–100; 0 = off (the
 // default). Two modes share the lever (see electron/translucency.ts and
 // store/translucency): 'clear' maps it to the native window opacity so the
-// desktop shows through the whole window; 'glass' (macOS) keeps the window
-// opaque and lets the renderer thin its surfaces over the vibrancy material
-// instead — a matte blur with full-contrast text. Persisted so a cold launch
-// applies it at window creation, before the renderer reports its value.
+// desktop shows through the whole window; 'glass' keeps the window opaque
+// and lets the renderer thin its surfaces over a platform material instead
+// — a matte blur with full-contrast text. macOS uses vibrancy; Windows 11
+// uses DWM acrylic/mica/tabbed. Persisted so a cold launch applies it at
+// window creation, before the renderer reports its value.
 // macOS + Windows only; `setOpacity` is a no-op on Linux.
 const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucency.json')
 
 function readPersistedTranslucency() {
   try {
-    return normalizeTranslucency(JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')), IS_MAC)
+    return normalizeTranslucency(JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')), GLASS_SUPPORTED)
   } catch {
-    return normalizeTranslucency(null, IS_MAC)
+    return normalizeTranslucency(null, GLASS_SUPPORTED)
   }
 }
 
@@ -932,17 +938,20 @@ function windowOpacity() {
 // Re-apply translucency to a live window (runtime toggle, no recreation).
 // `setOpacity` is a no-op on Linux, which is fine — it just stays opaque there.
 // The backing swap is the glass half: Chromium composites the page against
-// the window backing BEFORE macOS composites the window, so glass needs the
-// backing dropped for the vibrancy material to reach a transparent page, and
+// the window backing BEFORE the OS composites the window, so glass needs the
+// backing dropped for the platform material to reach a transparent page, and
 // every other state needs the opaque themed backing (anti-flash, and it is
 // what makes clear mode fade to the desktop instead of to black).
 //
 // `changed` says which native properties actually need touching. Dragging the
 // intensity slider emits ~100 updates, and in glass mode NONE of them change
-// anything native — the effect is painted by the renderer and windowOpacityFor
-// returns 1 throughout. Re-issuing setVibrancy on every tick restarts its
-// 150ms animation before macOS can settle the material, which reads as jank
-// and flattens the frost levels into each other.
+// anything native — the tint is painted by the renderer and windowOpacityFor
+// answers off `fade`, not `intensity`, there. Re-issuing setVibrancy on every
+// tick restarts its 150ms animation before macOS can settle the material,
+// which reads as jank and flattens the frost levels into each other. Windows
+// setBackgroundMaterial is instantaneous but still skipped on tint-only ticks.
+// The glass Fade lever is the one glass drag that does reach main, and it
+// costs exactly what a Clear drag costs: one setOpacity.
 //
 // CAUTION (measured, macOS 26 / Electron 40): a runtime
 // setBackgroundColor('#00000000') is silently LOST on a window whose
@@ -964,11 +973,18 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
         win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
       }
 
-      // Glass frost level = the vibrancy material (macOS has no blur-radius
-      // knob). Animate the hop so a deliberate frost switch feels continuous —
-      // which only works if we don't re-issue it on unrelated updates.
-      if (changed.material && IS_MAC && typeof win.setVibrancy === 'function') {
-        win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
+      if (changed.material) {
+        // Glass frost level = the platform material. Animate the macOS hop so
+        // a deliberate frost switch feels continuous — which only works if we
+        // don't re-issue it on unrelated updates. Windows has no equivalent
+        // animation option; setBackgroundMaterial is instantaneous.
+        if (IS_MAC && typeof win.setVibrancy === 'function') {
+          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
+        }
+
+        if (IS_WINDOWS && GLASS_SUPPORTED && typeof win.setBackgroundMaterial === 'function') {
+          win.setBackgroundMaterial(backgroundMaterialFor(translucencyState))
+        }
       }
     }
 
@@ -1001,6 +1017,12 @@ function chatWindowSurfaceOptions() {
     // user's frost choice whenever they click elsewhere. Only observable
     // under glass — everywhere else the page buries the material.
     visualEffectState: IS_MAC ? ('active' as const) : undefined,
+    // Win11 DWM materials only reach the client area on a transparent window
+    // (electron#49443). Chat windows on glass-capable Windows are born
+    // transparent so a live Clear→Glass toggle doesn't need a recreate; the
+    // opaque themed backgroundColor covers it while glass is off.
+    ...(IS_WINDOWS && GLASS_SUPPORTED ? { transparent: true } : {}),
+    backgroundMaterial: IS_WINDOWS && GLASS_SUPPORTED ? backgroundMaterialFor(translucencyState) : undefined,
     opacity: windowOpacity(),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
@@ -14085,11 +14107,12 @@ app.on('before-quit', () => {
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {
-  const next = normalizeTranslucency(payload, IS_MAC)
+  const next = normalizeTranslucency(payload, GLASS_SUPPORTED)
   const previous = translucencyState
 
   if (
     next.intensity === previous.intensity &&
+    next.fade === previous.fade &&
     next.mode === previous.mode &&
     next.material === previous.material &&
     next.scope === previous.scope

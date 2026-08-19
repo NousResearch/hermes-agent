@@ -30,6 +30,7 @@ import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
+import { registerPreviewTourRunner } from './preview-tour-runner'
 
 type PreviewWebview = HTMLElement & {
   canGoBack?: () => boolean
@@ -451,6 +452,25 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         title: webview.getTitle?.() ?? '',
         url: webview.getURL?.() ?? ''
       }
+    })
+  }, [isWebPreview, tabId])
+
+  // Publish the TOUR runner for this tab (the tour tool, surface='preview'):
+  // runs injected driver.js actions inside the guest page so the agent can
+  // give guided walkthroughs of whatever web app is open here.
+  useEffect(() => {
+    if (!isWebPreview || !tabId) {
+      return
+    }
+
+    return registerPreviewTourRunner(tabId, async code => {
+      const webview = webviewRef.current
+
+      if (!webview?.executeJavaScript) {
+        throw new Error('preview webview is not ready')
+      }
+
+      return webview.executeJavaScript(code)
     })
   }, [isWebPreview, tabId])
 

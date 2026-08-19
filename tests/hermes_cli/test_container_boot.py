@@ -128,6 +128,49 @@ def test_running_profile_is_registered_and_autostarted(tmp_path: Path) -> None:
     assert not (svc / "down").exists()
 
 
+@pytest.mark.parametrize(
+    "config_value,env_value,expected",
+    [
+        pytest.param("true", None, "registered", id="config-only-multiplex"),
+        pytest.param("true", "false", "started", id="env-false-overrides-config"),
+    ],
+)
+def test_boot_honors_config_multiplex_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_value: str,
+    env_value: str | None,
+    expected: str,
+) -> None:
+    """Container boot must resolve multiplex_profiles like the gateway does:
+    config.yaml opt-in honored (#85413), env override keeps precedence."""
+    scandir = tmp_path / "run-service"
+    scandir.mkdir()
+    _make_profile(tmp_path, "coder", state="running")
+    (tmp_path / "config.yaml").write_text(
+        f"multiplex_profiles: {config_value}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    if env_value is None:
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    else:
+        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", env_value)
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path,
+        scandir=scandir,
+        dry_run=False,
+    )
+
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="coder",
+        prior_state="running",
+        action=expected,
+    )]
+    assert (scandir / "gateway-coder" / "down").exists() is (expected == "registered")
+
+
 def test_registered_profile_has_finish_script(tmp_path: Path) -> None:
     """The finish script must be written so s6 stops restarting on
     fatal config errors (exit 78 → exit 125).  See #51228."""
@@ -297,7 +340,5 @@ def _write_lifecycle_sentinel(profile_dir: Path, payload: dict) -> None:
     state_dir = profile_dir / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "gateway.lifecycle.json").write_text(json.dumps(payload))
-
-
 
 

@@ -23,8 +23,8 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
-| **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless free tier (rate-limited) · 1 000 searches/mo with key |
-| **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless free tier (rate-limited) · paid with key |
+| **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless free tier · 1 000 searches/mo with key |
+| **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless free tier · paid with key |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
@@ -366,7 +366,7 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `ddgs` package importable | ddgs |
 | *(nothing set at all)* | parallel → exa keyless free tier |
 
-**Keyless free tier:** when *no* credential above is present, Hermes falls back to Parallel's public anonymous endpoint (then Exa's) so web tools work on a fresh install with zero setup. These free tiers are rate-limited by the vendors (Exa's per-IP limit is fairly tight); on throttling, the tool returns an error suggesting the matching API key. Set `web.keyless_fallback: false` to turn this tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
+**Keyless free tier:** when *no* credential above is present, Hermes falls back to Parallel's public anonymous endpoint (then Exa's) so web tools work on a fresh install with zero setup. Both free tiers are rate-limited by the vendors under burst load; in practice sustained normal usage goes through fine. On throttling, the tool returns an error suggesting the matching API key. Set `web.keyless_fallback: false` to turn this tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 

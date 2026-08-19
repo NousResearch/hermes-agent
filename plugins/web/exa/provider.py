@@ -247,8 +247,8 @@ class ExaWebSearchProvider(WebSearchProvider):
             "badge": "free tier · paid with key",
             "tag": (
                 "Semantic + neural web search with content extraction. "
-                "Works keyless on Exa's free tier (per-IP rate limit); "
-                "add a key for reliable, unthrottled service."
+                "Works keyless on Exa's free tier; add a key for "
+                "unthrottled, guaranteed service."
             ),
             "env_vars": [
                 {

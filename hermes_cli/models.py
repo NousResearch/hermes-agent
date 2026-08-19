@@ -3368,7 +3368,16 @@ def _is_google_service_tier_model(model_id: Optional[str]) -> bool:
     if raw.startswith("google/"):
         raw = raw[len("google/"):]
     base = raw.split(":")[0]
-    return base.startswith("gemini-")
+    match = re.match(r"gemini-(\d+)(?:\.(\d+))?", base)
+    if not match:
+        return False
+    # Both tier docs list gemini-2.5 and newer. Gemini's native REST rejects
+    # the entire request on an unexpected body field, so sending service_tier
+    # to 1.5/2.0 would hard-fail every call for a globally-configured tier —
+    # gate on version rather than matching gemini-* broadly.
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return (major, minor) >= (2, 5)
 
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
@@ -3402,6 +3411,12 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     return "opus-4-6" in base or "opus-4.6" in base
 
 
+# Tier values Hermes will send. "priority" is OpenAI Priority Processing /
+# Gemini priority / xAI priority / Anthropic speed=fast; "flex" is the
+# discounted latency-tolerant tier (OpenAI + Gemini only).
+_SUPPORTED_SERVICE_TIERS: frozenset[str] = frozenset({"priority", "flex"})
+
+
 def resolve_fast_mode_overrides(
     model_id: Optional[str], tier: str = "priority"
 ) -> dict[str, Any] | None:
@@ -3433,6 +3448,11 @@ def resolve_fast_mode_overrides(
     from agent.model_metadata import is_grok_46_family
 
     normalized = str(tier or "priority").strip().lower() or "priority"
+    # Only documented values go on the wire. Callers normalize today, but that
+    # invariant is spread across four parsers — a stray "fast"/"scale" here
+    # would become an invalid service_tier the provider 400s on.
+    if normalized not in _SUPPORTED_SERVICE_TIERS:
+        return None
     if _is_anthropic_fast_model(model_id):
         return {"speed": "fast"} if normalized == "priority" else None
     if is_grok_46_family(str(model_id or "")) and normalized != "priority":

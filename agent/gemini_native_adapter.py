@@ -1137,10 +1137,6 @@ class GeminiNativeClient:
         thinking_config = None
         if isinstance(extra_body, dict):
             thinking_config = extra_body.get("thinking_config") or extra_body.get("thinkingConfig")
-            # Custom-provider configs carry the tier in extra_body; the
-            # fast-mode resolver passes it as a top-level kwarg. Accept both,
-            # preferring the explicit kwarg.
-            service_tier = service_tier or extra_body.get("service_tier")
 
         request = build_gemini_request(
             messages=messages or [],

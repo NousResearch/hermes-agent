@@ -427,3 +427,59 @@ class TestConfigDefault(unittest.TestCase):
         agent = DEFAULT_CONFIG.get("agent", {})
         self.assertIn("service_tier", agent)
         self.assertEqual(agent["service_tier"], "")
+
+
+class TestGeminiVersionGate(unittest.TestCase):
+    """Google lists service tiers for gemini-2.5+ only.
+
+    Gemini's native REST rejects the whole request on unexpected body fields,
+    so sending ``service_tier`` to gemini-1.5/2.0 would hard-fail every call
+    for a user who set ``flex`` globally.
+    """
+
+    def test_supported_versions_detected(self):
+        from hermes_cli.models import _is_google_service_tier_model
+
+        for model in [
+            "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+            "gemini-3-flash-preview", "gemini-3.1-pro-preview",
+            "gemini-3.5-flash", "gemini-3.6-flash",
+            "openrouter/google/gemini-3.5-flash",
+        ]:
+            assert _is_google_service_tier_model(model), f"{model} should be eligible"
+
+    def test_pre_2_5_models_excluded(self):
+        from hermes_cli.models import _is_google_service_tier_model
+
+        for model in [
+            "gemini-1.5-pro", "gemini-1.5-flash",
+            "gemini-2.0-flash", "google/gemini-2.0-flash-lite",
+        ]:
+            assert not _is_google_service_tier_model(model), f"{model} predates tiers"
+
+    def test_non_gemini_google_models_excluded(self):
+        from hermes_cli.models import _is_google_service_tier_model
+
+        for model in ["gemma-3-27b", "google/gemma-2-9b", "lyria-2"]:
+            assert not _is_google_service_tier_model(model), f"{model} is not Gemini"
+
+
+class TestTierWhitelist(unittest.TestCase):
+    """Only documented tier values may reach a provider.
+
+    The parsers normalize today, but that invariant lives in four separate
+    places; an unnormalized value must not become `service_tier: fast` on the
+    wire (OpenAI 400s on that).
+    """
+
+    def test_unknown_tier_returns_none(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        for tier in ["fast", "on", "standard", "scale", "bogus"]:
+            assert resolve_fast_mode_overrides("gpt-5.4", tier=tier) is None, tier
+
+    def test_documented_tiers_still_pass(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides("gpt-5.4", tier="priority") == {"service_tier": "priority"}
+        assert resolve_fast_mode_overrides("gpt-5.4", tier="flex") == {"service_tier": "flex"}

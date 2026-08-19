@@ -175,10 +175,10 @@ class CLICommandsMixin:
             /diff [mode] --stat    — summary only (changed files + counts)
             /diff [mode] <path...> — restrict to specific paths
         """
-        import shlex
+        from hermes_cli._subprocess_compat import split_command_line
 
         try:
-            parts = shlex.split(command)[1:]  # preserves quoted paths
+            parts = split_command_line(command)[1:]  # preserves quoted paths
         except ValueError:
             parts = command.split()[1:]
 

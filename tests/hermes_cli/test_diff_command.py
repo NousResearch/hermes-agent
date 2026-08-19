@@ -110,3 +110,41 @@ def test_diff_session_empty_reports_no_changes(tmp_path, monkeypatch):
     assert "No changes" in out
 
 
+# ---------------------------------------------------------------------------
+# Path argument splitting — split_command_line, not raw shlex.split
+# ---------------------------------------------------------------------------
+#
+# #84378's split_command_line fix (#83934/#78293) covered
+# console_engine.py and shell_hooks.py's shlex.split call sites but not
+# this handler's own shlex.split(command)[1:], which silently mangled
+# backslash Windows paths: `/diff C:\Users\me\file.py` became
+# `C:Usersmefile.py`, a pathspec that matches nothing in
+# collect_working_diff() — so /diff reported "No changes." for a file
+# that genuinely had uncommitted changes.
+
+
+def _capture_diff_paths(monkeypatch, tmp_path):
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    captured = {}
+
+    def fake_collect(cwd, mode, paths):
+        captured["paths"] = paths
+        return {"success": True, "stat": "", "diff": "", "empty": True}
+
+    monkeypatch.setattr("tools.working_diff.collect_working_diff", fake_collect)
+    return captured
+
+
+@pytest.mark.windows_only
+def test_diff_windows_backslash_path_reaches_collect_unmangled(tmp_path, monkeypatch):
+    captured = _capture_diff_paths(monkeypatch, tmp_path)
+    _run(_Stub(), r"/diff C:\Users\me\project\file.py")
+    assert captured["paths"] == [r"C:\Users\me\project\file.py"]
+
+
+def test_diff_quoted_path_with_spaces_still_splits(tmp_path, monkeypatch):
+    captured = _capture_diff_paths(monkeypatch, tmp_path)
+    _run(_Stub(), '/diff --stat "path with spaces/file.py"')
+    assert captured["paths"] == ["path with spaces/file.py"]
+
+

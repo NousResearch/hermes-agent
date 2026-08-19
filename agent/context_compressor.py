@@ -1376,6 +1376,27 @@ def _content_text_for_contains(content: Any) -> str:
     return str(content)
 
 
+# Headers of synthetic user-role rows produced when a background
+# ``delegate_task`` (or fan-out batch) completes and its result is injected
+# back into the parent session (see ``tools/process_registry.py``
+# ``format_process_notification``).  Both single and batch variants carry the
+# delegation ID after the em-dash, e.g. ``[ASYNC DELEGATION BATCH COMPLETE — deleg_ab12cd]``.
+# The dash is NOT part of the match so both the em-dash emitted today and any
+# ASCII-hyphen variant survive a re-match.
+_ASYNC_DELEGATION_COMPLETE_MARKERS = (
+    "[ASYNC DELEGATION COMPLETE",
+    "[ASYNC DELEGATION BATCH COMPLETE",
+)
+
+# How many most-recent delegation completion rows the tail anchor preserves
+# verbatim across compaction (bounded so a session that dispatches many
+# subagents can't blow the tail budget).  Overridable per-instance via
+# ``max_tail_delegation_completions`` (getattr-guarded for bare ``__new__``
+# test doubles, mirroring ``min_tail_user_messages``).
+_MAX_TAIL_DELEGATION_COMPLETIONS = 3
+
+
+
 def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
     """Append or prepend plain text to message content safely.
 
@@ -5153,6 +5174,35 @@ This compaction should PRIORITISE preserving all information related to the focu
         return not cls._is_blank_user_turn(message)
 
     @classmethod
+    def _is_delegation_completion_message(cls, message: Any) -> bool:
+        """Return whether *message* is an async delegation result row.
+
+        Background ``delegate_task`` results are injected back into the parent
+        session as synthetic user-role rows whose text opens with
+        ``[ASYNC DELEGATION COMPLETE — <id>]`` (single) or
+        ``[ASYNC DELEGATION BATCH COMPLETE — <id>]`` (fan-out).  The TUI
+        gateway additionally stamps ``display_kind="async_delegation_complete"``,
+        but the API-server wake path does not, so the content header is the
+        authoritative signal.
+
+        Only the user-role requirement is enforced so an assistant reply that
+        merely *quotes* a delegation header (e.g. "the reviewer said...") is
+        never mistaken for a result row.  A ``display_kind`` match is accepted
+        as an OR so rows whose header got normalized/reformatted downstream
+        still count.
+        """
+        if not isinstance(message, dict):
+            return False
+        if message.get("display_kind") == "async_delegation_complete":
+            return True
+        if message.get("role") != "user":
+            return False
+        if cls._has_compressed_summary_metadata(message):
+            return False
+        text = _content_text_for_contains(message.get("content")).strip()
+        return any(text.startswith(marker) for marker in _ASYNC_DELEGATION_COMPLETE_MARKERS)
+
+    @classmethod
     def _blank_echo_indices_after(
         cls, messages: List[Dict[str, Any]], user_idx: int
     ) -> set[int]:
@@ -5792,6 +5842,57 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Safety: never go back into the head region.
         return max(new_cut, head_end + 1)
 
+    def _ensure_last_delegation_completions_in_tail(
+        self,
+        messages: List[Dict[str, Any]],
+        cut_idx: int,
+        head_end: int,
+    ) -> int:
+        """Guarantee recent async delegation results stay in the protected tail.
+
+        A ``delegate_task`` result lands as a synthetic user-role row and the
+        agent then keeps working (fixing issues, committing, answering the
+        user).  By the time the next compaction fires, that result row is no
+        longer the last user message and the token-budget walk can push it
+        into the summarised middle — the summariser rolls it up, the agent's
+        next context no longer contains the verdict, and the agent concludes
+        "the subagent result hasn't landed" and re-does the delegated work.
+
+        Fix: walk backward from the end collecting the most recent
+        ``[ASYNC DELEGATION ... COMPLETE]`` rows (bounded by
+        ``max_tail_delegation_completions``, default 3) and pull ``cut_idx``
+        back to the earliest one found so the whole run lands in the tail
+        verbatim.  A delegation row is a user message, i.e. a clean boundary —
+        ``_align_boundary_backward`` is intentionally NOT called, matching
+        ``_ensure_last_user_message_in_tail`` (#22566 reasoning).  The anchor
+        only walks ``cut_idx`` backward, so chaining after the user/assistant
+        anchors is monotonic — the tail can only grow, never shrink.
+        """
+        max_count = getattr(self, "max_tail_delegation_completions", _MAX_TAIL_DELEGATION_COMPLETIONS)
+        if not isinstance(max_count, int) or isinstance(max_count, bool) or max_count <= 0:
+            max_count = _MAX_TAIL_DELEGATION_COMPLETIONS
+        found: list[int] = []
+        for i in range(len(messages) - 1, head_end - 1, -1):
+            if self._is_delegation_completion_message(messages[i]):
+                found.append(i)
+                if len(found) >= max_count:
+                    break
+        if not found:
+            return cut_idx
+        earliest = min(found)
+        if earliest >= cut_idx:
+            # Already in the tail — nothing to do.
+            return cut_idx
+        if not self.quiet_mode:
+            logger.debug(
+                "Anchoring tail cut to delegation completion(s) at %s "
+                "(was %d) so subagent results survive compaction",
+                found,
+                cut_idx,
+            )
+        # Safety: never go back into the head region.
+        return max(earliest, head_end + 1)
+
     def _ensure_last_user_message_in_tail(
         self,
         messages: List[Dict[str, Any]],
@@ -6067,6 +6168,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Each anchor only walks ``cut_idx`` backward, so chaining them is
         # monotonic — the tail can only grow, never shrink.
         cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+
+        # Ensure recent async delegation result rows stay in the tail so a
+        # background subagent's verdict is never summarised away before the
+        # agent has finished acting on it (the "result hasn't landed"
+        # re-do-the-work failure mode).  Monotonic like the anchors above.
+        cut_idx = self._ensure_last_delegation_completions_in_tail(
+            messages, cut_idx, head_end
+        )
 
         # Extend to the last N actionable user messages when configured
         # (compression.min_tail_user_messages > 1).  This prevents the
@@ -7017,12 +7126,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         # A double role collision can merge the summary into the first tail
         # row. Keep an actionable user event out of that position by retaining
         # the genuinely older assistant/tool bridge when one exists.
-        if compress_end == latest_actionable_idx:
-            bridge_idx = latest_actionable_idx - 1
+        # The same protection extends to async delegation result rows anchored
+        # into the tail by ``_ensure_last_delegation_completions_in_tail``:
+        # merging the summary into the result row would bury the subagent's
+        # verdict under the ``[PRIOR CONTEXT]`` header and recreate the
+        # "the result hasn't landed" re-do-the-work failure mode.
+        _first_tail_actionable = compress_end < len(messages) and (
+            compress_end == latest_actionable_idx
+            or self._is_delegation_completion_message(messages[compress_end])
+        )
+        if _first_tail_actionable:
+            bridge_idx = compress_end - 1
             if bridge_idx >= 0 and messages[bridge_idx].get("role") == "tool":
-                bridge_idx = self._align_boundary_backward(
-                    messages, latest_actionable_idx
-                )
+                bridge_idx = self._align_boundary_backward(messages, compress_end)
             elif bridge_idx < 0 or messages[bridge_idx].get("role") != "assistant":
                 bridge_idx = -1
             if bridge_idx > compress_start:
@@ -7600,6 +7716,21 @@ This compaction should PRIORITISE preserving all information related to the focu
                     # The summary must be part of the first user-visible
                     # message for Anthropic/Bedrock, but the real tail request
                     # still has to appear *after* the summary boundary.
+                    prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
+                    msg["content"] = _append_text_to_content(
+                        old_content,
+                        prefix,
+                        prepend=True,
+                    )
+                elif self._is_delegation_completion_message(msg):
+                    # Delegation carrier fallback (no assistant/tool bridge
+                    # exists to absorb the summary): the carrier row IS a live
+                    # subagent result whose verdict must stay actionable.
+                    # Keep the result text intact AFTER the summary +
+                    # end-marker boundary instead of burying it under the
+                    # PRIOR CONTEXT header — the model is instructed to
+                    # respond to the message after the end marker.  Only
+                    # reachable when the bridge retarget above found nothing.
                     prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
                     msg["content"] = _append_text_to_content(
                         old_content,

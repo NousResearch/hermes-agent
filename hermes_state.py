@@ -8829,6 +8829,73 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do) or 0
 
+    def sweep_orphaned_sessions(
+        self,
+        *,
+        max_idle_seconds: float,
+        sources: Tuple[str, ...] = ("tui", "desktop", "subagent"),
+        exclude_ids: Tuple[str, ...] = (),
+    ) -> List[str]:
+        """Close session rows orphaned by a dead gateway process (#65194).
+
+        The TUI/desktop gateway reaps disconnected websocket sessions with an
+        in-process ``threading.Timer`` grace timer; a gateway restart destroys
+        the timer and leaves the row ``ended_at IS NULL`` forever.  This is
+        the startup-time complement: it closes rows for the given ``sources``
+        whose ``started_at`` AND newest ``messages.timestamp`` are both older
+        than ``max_idle_seconds``, with a distinct
+        ``end_reason='startup_orphan_reap'`` for traceability.
+
+        Both timestamps must be stale on purpose: message recency alone would
+        sweep a freshly created compression/branch child carrying old copied
+        message timestamps, while ``started_at`` alone would sweep a
+        long-lived session that is still actively producing messages.
+        Message-less rows fall back to ``started_at`` via COALESCE.
+
+        Only pass sources owned by the local UI stack (never messaging-gateway
+        platforms like ``telegram`` — ending those triggers the #60609 routing
+        loop).  ``exclude_ids`` spares rows this process still holds in
+        memory (a ``session.resume`` that landed during the startup grace
+        window).  Non-destructive: messages are preserved and the row remains
+        resumable.  First-reason-wins is preserved via ``ended_at IS NULL``.
+
+        The SELECT + UPDATE run in one ``BEGIN IMMEDIATE`` write, so a sibling
+        process cannot sneak a new message or end-reason between the
+        staleness check and the close.  Returns the swept session ids.
+        """
+        srcs = tuple(s for s in sources if s)
+        if max_idle_seconds <= 0 or not srcs:
+            return []
+        cutoff = time.time() - max_idle_seconds
+        placeholders = ",".join("?" for _ in srcs)
+        staleness = (
+            "started_at < ? AND COALESCE((SELECT MAX(m.timestamp) FROM messages m"
+            " WHERE m.session_id = sessions.id), started_at) < ?"
+        )
+
+        def _do(conn):
+            rows = conn.execute(
+                f"SELECT id FROM sessions WHERE ended_at IS NULL"
+                f" AND source IN ({placeholders}) AND {staleness}",
+                (*srcs, cutoff, cutoff),
+            ).fetchall()
+            excluded = {str(x) for x in exclude_ids if x}
+            victims = [str(r["id"]) for r in rows if str(r["id"]) not in excluded]
+            if not victims:
+                return []
+            now = time.time()
+            marks = ",".join("?" for _ in victims)
+            # Re-apply the same staleness predicate under the write lock so a
+            # row that raced to activity between SELECT and UPDATE is spared.
+            conn.execute(
+                f"UPDATE sessions SET ended_at = ?, end_reason = 'startup_orphan_reap'"
+                f" WHERE id IN ({marks}) AND ended_at IS NULL AND {staleness}",
+                (now, *victims, cutoff, cutoff),
+            )
+            return victims
+
+        return self._execute_write(_do) or []
+
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
         # Cost/usage readers (/status, /usage, gateway endpoints) reach the

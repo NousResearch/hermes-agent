@@ -2183,6 +2183,17 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](/user-guide/sessions) and the [Discord guide](/user-guide/messaging/discord).
 
+## Session Maintenance
+
+Session rows live in `~/.hermes/state.db`. Automatic maintenance is configured under `sessions` in `config.yaml`:
+
+```yaml
+sessions:
+  orphan_reaper: true    # Close tui/desktop/subagent rows orphaned by a dead gateway process
+```
+
+**Orphan reaper** (`orphan_reaper`, default `true`): the TUI/desktop gateway normally closes a disconnected session's row after a short in-process grace timer. If the gateway restarts (update, crash, systemd) before the timer fires, the row stays open forever and shows up as phantom "active" work in `/resume` and dashboards. On every gateway boot — both the stdio TUI (`entry.main`) and the desktop/dashboard WebSocket sidecar (`handle_ws`) — rows with source `tui` / `desktop` / `subagent` whose start time **and** newest message are both older than the session TTL (`HERMES_TUI_SESSION_TTL_S`, default 6 hours) are closed with `end_reason: startup_orphan_reap`. Messaging-platform sessions (Telegram, Discord, …) are never touched, live in-memory sessions (a client that already resumed) are excluded, and swept sessions remain resumable.
+
 ## Unauthorized DM Behavior
 
 Control what Hermes does when an unknown user sends a direct message:

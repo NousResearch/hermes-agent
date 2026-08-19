@@ -360,6 +360,15 @@ async def handle_ws(
             # Track this peer for session-less global broadcasts (skin.changed
             # from the background watcher) — write_json can't route those.
             server.register_live_transport(transport)
+        # Same once-per-process startup pass for session rows orphaned by a
+        # previous gateway process (#65194): the desktop app and web dashboard
+        # reach the agent through this WS sidecar, not entry.main(). Idempotent
+        # + config-gated inside, so a stdio TUI that already scheduled is a
+        # no-op.
+        try:
+            server._schedule_startup_orphan_sweep()
+        except Exception:
+            _log.warning("startup orphan sweep scheduling failed", exc_info=True)
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1

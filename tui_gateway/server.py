@@ -1603,6 +1603,116 @@ def _start_idle_reaper() -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
+# ── Startup sweep for orphaned session rows (#65194) ─────────────────────
+# The WS-orphan reaper above is an in-process threading.Timer: a gateway
+# restart (update, crash, systemd) kills it before it fires, leaving the
+# session row `ended_at IS NULL` forever. This is the startup complement
+# every other resource type already has (docker_orphan_reaper, compression
+# orphans). Scheduled once per process from both gateway entry points
+# (stdio `entry.main` and the WS sidecar's `handle_ws`) — desktop/dashboard
+# never run `entry.main()`. state.db is shared by sibling processes on the
+# same profile, so eligibility is conservative. Disable via
+# `sessions.orphan_reaper: false` (default on).
+_ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent")
+_startup_orphan_sweep_ran = False
+_startup_orphan_sweep_lock = threading.Lock()
+
+
+def _session_orphan_reaper_enabled() -> bool:
+    """``sessions.orphan_reaper`` (default on). Fail-open on config errors."""
+    try:
+        sessions_cfg = (_load_cfg() or {}).get("sessions") or {}
+        if isinstance(sessions_cfg, dict) and "orphan_reaper" in sessions_cfg:
+            return is_truthy_value(sessions_cfg.get("orphan_reaper"), default=True)
+        # Fail-open: a missing key (raw yaml, no DEFAULT_CONFIG merge on
+        # this loader) must keep the sweep on.
+        return True
+    except Exception:
+        return True
+
+
+def _live_session_ids() -> list[str]:
+    """Session ids this process currently holds in memory."""
+    ids: set[str] = set()
+    with _sessions_lock:
+        for sid, session in _sessions.items():
+            if sid:
+                ids.add(str(sid))
+            agent = session.get("agent") if isinstance(session, dict) else None
+            for candidate in (
+                getattr(agent, "session_id", None),
+                session.get("session_key") if isinstance(session, dict) else None,
+            ):
+                if candidate:
+                    ids.add(str(candidate))
+    return sorted(ids)
+
+
+def _sweep_orphaned_session_rows() -> list[str]:
+    """End orphaned tui/desktop/subagent rows left by a dead process.
+
+    "Provably orphaned" is inferred conservatively from inactivity — the
+    row must have been created AND last messaged at least the session TTL
+    ago (``HERMES_TUI_SESSION_TTL_S``). A freshly created row that copied
+    an old transcript is protected by its own ``started_at``. Rows this
+    process still holds in memory (e.g. a ``session.resume`` during the
+    startup grace window) are excluded so the sweep never races a
+    mid-reconnect client.
+    """
+    db = _get_db()
+    if db is None:
+        return []
+    ttl = _SESSION_TTL_S
+    if ttl <= 0:
+        return []
+    swept = db.sweep_orphaned_sessions(
+        max_idle_seconds=ttl,
+        sources=_ORPHAN_SWEEP_SOURCES,
+        exclude_ids=tuple(_live_session_ids()),
+    )
+    if swept:
+        logger.info(
+            "Closed %d orphaned session row(s) from a previous gateway "
+            "process (startup_orphan_reap): %s",
+            len(swept),
+            ", ".join(swept),
+        )
+    return swept
+
+
+def _schedule_startup_orphan_sweep() -> None:
+    """Schedule the once-per-process startup orphan sweep (#65194).
+
+    Called from both gateway entry points. Repeat calls are no-ops. The
+    sweep is delayed by the WS-orphan grace window so a client reconnecting
+    right after a restart can ``session.resume`` its row before the sweep
+    reads the DB. ``HERMES_TUI_WS_ORPHAN_REAP_GRACE_S=0`` (park forever)
+    and ``HERMES_TUI_SESSION_TTL_S=0`` both suppress the sweep; so does
+    ``sessions.orphan_reaper: false``.
+    """
+    global _startup_orphan_sweep_ran
+    if _WS_ORPHAN_REAP_GRACE_S <= 0 or _SESSION_TTL_S <= 0:
+        return
+    if not _session_orphan_reaper_enabled():
+        return
+    if _startup_orphan_sweep_ran:
+        return
+    with _startup_orphan_sweep_lock:
+        if _startup_orphan_sweep_ran:
+            return
+        _startup_orphan_sweep_ran = True
+
+    def _run() -> None:
+        try:
+            _sweep_orphaned_session_rows()
+        except Exception:
+            logger.warning("startup orphan session sweep failed", exc_info=True)
+
+    timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _run)
+    timer.daemon = True
+    timer.start()
+
+
 atexit.register(_shutdown_sessions)
 _start_idle_reaper()
 

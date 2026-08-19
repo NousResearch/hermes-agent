@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -553,6 +554,208 @@ assert ad.mark_completion_delivered({delegation_id!r})
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"
+
+
+# ---------------------------------------------------------------------------
+# state.db is shared with hermes_state.py's SessionDB (gateway + cron + CLI
+# sessions all write it). This module's own connect-per-call writes need the
+# same anti-convoy discipline SessionDB already established for that exact
+# contention, rather than a bare single-attempt busy-timeout.
+# ---------------------------------------------------------------------------
+
+def test_connect_only_runs_schema_ddl_once_per_db_path(tmp_path, monkeypatch):
+    """The CREATE TABLE / PRAGMA table_info / ALTER TABLE sequence in
+    _connect() must run once per resolved state.db path, not on every call —
+    it's pure added contention against the file SessionDB also writes, for a
+    schema that never changes at runtime."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ddl_statements = []
+    real_connect = sqlite3.connect
+
+    # sqlite3.Connection is an immutable C type — its methods can't be
+    # monkeypatched directly. A connect() wrapper that supplies a Connection
+    # SUBCLASS (which CAN override execute()) is the standard workaround.
+    class _SpyConnection(sqlite3.Connection):
+        def execute(self, sql, *a, **kw):
+            if sql.strip().upper().startswith(("CREATE TABLE", "ALTER TABLE")):
+                ddl_statements.append(sql)
+            return super().execute(sql, *a, **kw)
+
+    def _spy_connect(*args, **kwargs):
+        kwargs.setdefault("factory", _SpyConnection)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", _spy_connect)
+
+    with ad._DB_LOCK, ad._connect():
+        pass
+    assert ddl_statements  # first call for this path: schema is ensured
+
+    ddl_statements.clear()
+    with ad._DB_LOCK, ad._connect():
+        pass
+    assert ddl_statements == []  # second call for the SAME path: no DDL replay
+
+
+def test_connect_reruns_ddl_for_a_different_db_path(tmp_path, monkeypatch):
+    """A different resolved state.db path (a profile switch, or an isolated
+    test fixture) is a cache miss — the schema-once cache is keyed by path,
+    not a single process-wide flag, so it can't produce 'no such table' for a
+    path it hasn't seen yet."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with ad._DB_LOCK, ad._connect():
+        pass  # prime the cache for this path
+
+    other = tmp_path / "other-profile"
+    monkeypatch.setenv("HERMES_HOME", str(other))
+    with ad._DB_LOCK, ad._connect() as conn:
+        # Would raise "no such table" if the cache incorrectly treated this
+        # unrelated path as already schema-initialized.
+        conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()
+
+
+def test_execute_write_retries_on_database_locked(tmp_path, monkeypatch):
+    """_execute_write must retry (not raise) when BEGIN IMMEDIATE hits
+    SQLITE_BUSY, mirroring SessionDB._execute_write's anti-convoy retry —
+    proven deterministically (no real wall-clock lock contention, so the
+    only variable is the retry logic itself): the fake connection raises
+    "database is locked" on its first two BEGIN IMMEDIATE attempts, then
+    succeeds on the third."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with ad._DB_LOCK, ad._connect():
+        pass  # real schema init, so the fake connection below only needs to
+        # fake BEGIN IMMEDIATE — everything else can hit the real file.
+
+    attempts = {"n": 0}
+    real_connect_fn = ad._connect
+
+    class _FlakyConnection:
+        """Wraps a real connection; the first N BEGIN IMMEDIATE calls raise."""
+
+        def __init__(self, real_conn):
+            self._real = real_conn
+
+        def execute(self, sql, *a, **kw):
+            if sql.strip().upper() == "BEGIN IMMEDIATE":
+                attempts["n"] += 1
+                if attempts["n"] <= 2:
+                    raise sqlite3.OperationalError("database is locked")
+            return self._real.execute(sql, *a, **kw)
+
+        def commit(self):
+            return self._real.commit()
+
+        def rollback(self):
+            return self._real.rollback()
+
+        def close(self):
+            return self._real.close()
+
+        def __enter__(self):
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._real.__exit__(*exc_info)
+
+    def _fake_connect():
+        return _FlakyConnection(real_connect_fn())
+
+    monkeypatch.setattr(ad, "_connect", _fake_connect)
+    monkeypatch.setattr(ad, "_WRITE_RETRY_MIN_S", 0.0)
+    monkeypatch.setattr(ad, "_WRITE_RETRY_MAX_S", 0.001)
+
+    # Would raise sqlite3.OperationalError on the very first attempt without
+    # the retry loop; must instead succeed once the fake stops raising.
+    ad._note_delivery_attempt("deleg_contended")
+    assert attempts["n"] == 3  # 2 simulated failures + 1 success
+
+
+def test_execute_write_retries_when_connect_itself_is_locked(tmp_path, monkeypatch):
+    """_execute_write must also retry when _connect() itself raises
+    SQLITE_BUSY/locked (the PRAGMA / schema-cache-miss DDL it runs contends
+    on the same shared state.db too) -- not just a busy BEGIN IMMEDIATE on an
+    already-open connection. Deterministic: the fake _connect() raises on
+    its first two calls, then delegates to the real one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    real_connect_fn = ad._connect
+    attempts = {"n": 0}
+
+    def _flaky_connect():
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        return real_connect_fn()
+
+    monkeypatch.setattr(ad, "_connect", _flaky_connect)
+    monkeypatch.setattr(ad, "_WRITE_RETRY_MIN_S", 0.0)
+    monkeypatch.setattr(ad, "_WRITE_RETRY_MAX_S", 0.001)
+
+    # Would raise sqlite3.OperationalError straight out of _connect() on the
+    # very first attempt without _connect() being inside the retry-protected
+    # scope; must instead succeed once the fake stops raising.
+    ad._note_delivery_attempt("deleg_connect_contended")
+    assert attempts["n"] == 3  # 2 simulated connect failures + 1 success
+
+
+def test_execute_write_releases_lock_before_jittering(tmp_path, monkeypatch):
+    """The retry jitter sleep must happen with _DB_LOCK released, mirroring
+    hermes_state.py's SessionDB._execute_write -- otherwise a busy retry on
+    one call stalls every other same-process durable-delegation write for
+    the full jitter window instead of just its own attempt."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with ad._DB_LOCK, ad._connect():
+        pass  # real schema init
+
+    attempts = {"n": 0}
+    real_connect_fn = ad._connect
+
+    class _FlakyConnection:
+        def __init__(self, real_conn):
+            self._real = real_conn
+
+        def execute(self, sql, *a, **kw):
+            if sql.strip().upper() == "BEGIN IMMEDIATE":
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    raise sqlite3.OperationalError("database is locked")
+            return self._real.execute(sql, *a, **kw)
+
+        def commit(self):
+            return self._real.commit()
+
+        def rollback(self):
+            return self._real.rollback()
+
+        def close(self):
+            return self._real.close()
+
+        def __enter__(self):
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._real.__exit__(*exc_info)
+
+    def _fake_connect():
+        return _FlakyConnection(real_connect_fn())
+
+    monkeypatch.setattr(ad, "_connect", _fake_connect)
+    monkeypatch.setattr(ad, "_WRITE_RETRY_MIN_S", 0.01)
+    monkeypatch.setattr(ad, "_WRITE_RETRY_MAX_S", 0.01)
+
+    lock_held_during_sleep = {"value": None}
+    real_sleep = ad.time.sleep
+
+    def _spy_sleep(seconds):
+        lock_held_during_sleep["value"] = ad._DB_LOCK.locked()
+        real_sleep(seconds)
+
+    monkeypatch.setattr(ad.time, "sleep", _spy_sleep)
+
+    ad._note_delivery_attempt("deleg_lock_released_during_jitter")
+    assert attempts["n"] == 2  # 1 simulated failure + 1 success
+    assert lock_held_during_sleep["value"] is False
 
 
 # ---------------------------------------------------------------------------

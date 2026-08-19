@@ -427,3 +427,136 @@ class TestTelegramChoicePickerLayout:
         assert ("123", "42") not in adapter._choice_picker_state
 
 
+class TestDiscordChoicePickerOwnership:
+    @staticmethod
+    def _interaction(user_id):
+        return SimpleNamespace(
+            user=(
+                None
+                if user_id is None
+                else SimpleNamespace(id=user_id)
+            ),
+            channel_id=123,
+            data={"values": ["defaults"]},
+            response=SimpleNamespace(
+                send_message=AsyncMock(),
+                edit_message=AsyncMock(),
+                defer=AsyncMock(),
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_owned_picker_denials_are_inert_then_owner_can_resolve(
+        self, monkeypatch
+    ):
+        discord = pytest.importorskip("discord")
+        from plugins.platforms.discord import adapter as discord_adapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        if not isinstance(discord_adapter.ChoicePickerView, type):
+            pytest.skip("e2e collection installed a synthetic discord module")
+        monkeypatch.setattr(discord_adapter, "DISCORD_AVAILABLE", True)
+        sent_views = []
+
+        async def _send(**kwargs):
+            sent_views.append(kwargs["view"])
+            return SimpleNamespace(id=len(sent_views))
+
+        channel = SimpleNamespace(send=_send)
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _channel_id: channel,
+            fetch_channel=AsyncMock(return_value=channel),
+        )
+        adapter._allowed_user_ids = {"7", "8"}
+        adapter._allowed_role_ids = set()
+        callback = AsyncMock(return_value="owner selected")
+
+        result = await adapter.send_choice_picker(
+            chat_id="123",
+            title="Choose",
+            choices=[{"value": "defaults", "label": "Defaults"}],
+            session_key="session-user-7",
+            on_choice_selected=callback,
+            metadata={"requester_user_id": " 7 "},
+        )
+        assert result.success is True
+        view = sent_views[-1]
+        view._check_auth = MagicMock(return_value=True)
+        view.stop = MagicMock()
+
+        other = self._interaction(8)
+        await view._on_select(other)
+        other.response.send_message.assert_awaited_once_with(
+            "⛔ Only the user who opened this picker can use it.",
+            ephemeral=True,
+        )
+        other.response.edit_message.assert_not_awaited()
+        callback.assert_not_awaited()
+        assert view.resolved is False
+
+        missing = self._interaction(None)
+        await view._on_select(missing)
+        missing.response.send_message.assert_awaited_once_with(
+            "⛔ Only the user who opened this picker can use it.",
+            ephemeral=True,
+        )
+        missing.response.edit_message.assert_not_awaited()
+        callback.assert_not_awaited()
+        assert view.resolved is False
+
+        owner = self._interaction(7)
+        await view._on_select(owner)
+        callback.assert_awaited_once_with("123", "defaults")
+        owner.response.edit_message.assert_awaited_once()
+        assert view.resolved is True
+        assert isinstance(owner.response.edit_message.await_args.kwargs["embed"], discord.Embed)
+
+    @pytest.mark.asyncio
+    async def test_metadata_absent_preserves_shared_authorized_actor_behavior(
+        self, monkeypatch
+    ):
+        pytest.importorskip("discord")
+        from plugins.platforms.discord import adapter as discord_adapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        if not isinstance(discord_adapter.ChoicePickerView, type):
+            pytest.skip("e2e collection installed a synthetic discord module")
+        monkeypatch.setattr(discord_adapter, "DISCORD_AVAILABLE", True)
+        sent = {}
+
+        async def _send(**kwargs):
+            sent.update(kwargs)
+            return SimpleNamespace(id=1)
+
+        channel = SimpleNamespace(send=_send)
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _channel_id: channel,
+            fetch_channel=AsyncMock(return_value=channel),
+        )
+        adapter._allowed_user_ids = {"8"}
+        adapter._allowed_role_ids = set()
+        callback = AsyncMock(return_value="shared selection")
+
+        await adapter.send_choice_picker(
+            chat_id="123",
+            title="Choose",
+            choices=[{"value": "defaults", "label": "Defaults"}],
+            session_key="shared-session",
+            on_choice_selected=callback,
+            metadata={},
+        )
+        view = sent["view"]
+        assert view.requester_user_id is None
+        view._check_auth = MagicMock(return_value=True)
+        view.stop = MagicMock()
+        actor = self._interaction(8)
+        await view._on_select(actor)
+
+        callback.assert_awaited_once_with("123", "defaults")
+        actor.response.edit_message.assert_awaited_once()
+
+

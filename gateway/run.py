@@ -2636,6 +2636,9 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
+# Explicit result from the final synchronous claim check. ``None`` remains a
+# valid lease/error fallback value, so it cannot also encode a race winner.
+_ACTIVE_SESSION_ALREADY_RUNNING = object()
 
 # Conversation-scoped per-session state registry (legacy contract).
 # The state itself now lives in ``SessionState.conversation`` (see
@@ -10152,7 +10155,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> tuple[Any, Optional[str]]:
         """Claim a cross-process active-session slot for a new gateway turn."""
         if self._is_session_running(session_key):
-            return None, None
+            return _ACTIVE_SESSION_ALREADY_RUNNING, None
         local_limit_message = self._active_session_limit_message(session_key)
         if local_limit_message is not None:
             return None, local_limit_message
@@ -16517,11 +16520,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True, response
 
         # Skill/bundle commands are rewritten into ordinary agent prompts and
-        # have no CommandDef. Route that rewritten prompt through the existing
-        # generic busy path. A canonical running session must never fall through
-        # to the claim path even if an adapter declines to render an ack.
-        await self._handle_active_session_busy_message(event, session_key)
-        return True, None
+        # have no CommandDef. In queue text mode the generic busy handler
+        # deliberately declines so the adapter can apply its normal debounce;
+        # invoke that same fallback explicitly under the canonical key.
+        handled = await self._handle_active_session_busy_message(event, session_key)
+        if handled:
+            return True, None
+        adapter = self._adapter_for_source(source)
+        queue_fallback = getattr(adapter, "_queue_busy_message_fallback", None)
+        if callable(queue_fallback):
+            await queue_fallback(session_key, event)
+            return True, None
+        return True, (
+            "⏳ Another turn is already running for this session. "
+            "Wait for it to finish, then resend your message."
+        )
 
     async def _handle_pause_command(self, event: MessageEvent):
         """`/pause [reason]` engages the global emergency stop; `/pause off`
@@ -18270,13 +18283,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _late_busy_handled:
             return _late_busy_response
 
-        if "_pending_moa_override" in locals():
-            _moa_state = self._session_state(_quick_key)
-            event._moa_restore_override = _moa_state.conversation.model_override
-            _moa_state.conversation.model_override = _pending_moa_override
-            self._evict_cached_agent(_quick_key)
-            event._moa_disable_after_turn = True
-
         if not is_internal and await asyncio.to_thread(
             self._is_telegram_topic_root_lobby, source
         ):
@@ -18334,6 +18340,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _quick_key,
             )
             return _limit_message
+        if _active_session_lease is _ACTIVE_SESSION_ALREADY_RUNNING:
+            # A canonical turn won the race after the earlier busy check. Route
+            # through the same busy seam; never overwrite its live agent with
+            # this turn's pending sentinel.
+            _race_handled, _race_response = (
+                await self._route_late_canonical_busy_message(
+                    event,
+                    source=source,
+                    session_key=_quick_key,
+                    command_def=_cmd_def,
+                    raw_text=_busy_command_text,
+                )
+            )
+            if _race_handled:
+                return _race_response
+            return (
+                "⏳ Another turn is already running for this session. "
+                "Wait for it to finish, then resend your message."
+            )
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease
@@ -18343,6 +18368,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            # /moa is a one-turn mutation. Install it only after every rejecting
+            # gate and an authoritative claim; all later exits cross this
+            # enclosing finally and restore the original override/cache state.
+            if "_pending_moa_override" in locals():
+                event._moa_restore_override = (
+                    _claim_state.conversation.model_override
+                )
+                _claim_state.conversation.model_override = _pending_moa_override
+                self._evict_cached_agent(_quick_key)
+                event._moa_disable_after_turn = True
             try:
                 _agent_result = await self._handle_message_with_agent(
                     event, source, _quick_key, _run_generation

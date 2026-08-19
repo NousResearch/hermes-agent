@@ -35,7 +35,7 @@ Restart the messaging gateway after changing the configuration.
 | `info_only` | Send a notice, then process the user's message immediately with the current overrides. |
 | `confirm` | Hold the message and show an interactive choice picker. The user can continue, reset the relevant override, or reset both overrides. If the prompt expires, the message is **not** submitted. |
 
-`confirm` requires a platform adapter with the generic interactive choice-picker capability. If the picker cannot be rendered, Hermes fails open and processes the message rather than losing it. Discord, Matrix, and Telegram support the picker. In a shared session, any user authorized for that chat/topic may choose an action. In a per-user Telegram session, only the user whose message is being held may use its picker.
+`confirm` requires a platform adapter with the generic interactive choice-picker capability. If the picker cannot be rendered, Hermes fails open and processes the message rather than losing it. Discord, Matrix, and Telegram support the picker. In a shared session, any user authorized for that chat/topic may choose an action. In a per-user Discord or Telegram session, only the user whose message is being held may use its picker.
 
 ## Detection policies
 

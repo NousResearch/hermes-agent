@@ -307,17 +307,17 @@ def _parse_thread_parent(tags: Any) -> Optional[str]:
 
     A ``reply`` marker names the parent outright.  A marked direct reply to
     the root (``root`` marker with no ``reply`` marker) exposes the root AS
-    its parent.  A single positional ref is the parent under the deprecated
-    scheme.  Ambiguous shapes (conflicting markers, multiple positional
-    refs) return None.
+    its parent.  Under deprecated positional NIP-10, the LAST ref is the
+    immediate parent (and the first is the root).  Conflicting marked refs
+    return None.
     """
     roots, replies, positional = _parse_thread_refs(tags)
     if replies:
         return _one_unambiguous(replies)
     if roots:
         return _one_unambiguous(roots)
-    if len(positional) == 1:
-        return positional[0]
+    if positional:
+        return positional[-1]
     return None
 
 
@@ -579,6 +579,11 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
         self._poll_count = 0
+        # Nostr edit precedence is timestamp-based with one-second resolution.
+        # Serialize edits per target and keep successful edit events in distinct
+        # seconds so a final edit cannot tie with an earlier partial.
+        self._edit_locks: Dict[str, asyncio.Lock] = {}
+        self._last_edit_second: Dict[str, int] = {}
 
     @property
     def name(self) -> str:
@@ -836,36 +841,60 @@ class BuzzAdapter(BasePlatformAdapter):
         given, not the one the CLI reports; returning the CLI's id would make
         every edit after the first address a message that was never sent.
 
-        ``finalize`` is a no-op here.  Buzz edits carry no lifecycle state, the
-        same as Telegram, Slack and Discord.
+        ``finalize`` does not change the Buzz edit event (Buzz edits carry no
+        lifecycle state); it only releases the adapter's per-target timestamp
+        throttle after the final edit succeeds.
         """
         if not message_id:
             return SendResult(success=False, error="Buzz edit needs a message id")
         if not content:
             return SendResult(success=False, error="Empty message")
-        args = ["messages", "edit", "--event", str(message_id), "--content", "-"]
-        code, out, err = await self._run_cli(args, input_text=content)
-        if code != 0:
-            return SendResult(
-                success=False,
-                error=_cli_error_message(err, code),
-                retryable=code == 2,
+        target_id = str(message_id)
+        lock = self._edit_locks.setdefault(target_id, asyncio.Lock())
+        async with lock:
+            last_second = self._last_edit_second.get(target_id)
+            now = time.time()
+            if last_second is not None and int(now) <= last_second:
+                # Leave a small boundary margin: the CLI signs the Nostr event
+                # after this sleep in a separate process.
+                await asyncio.sleep(max(0.0, last_second + 1.01 - now))
+
+            args = ["messages", "edit", "--event", target_id, "--content", "-"]
+            code, out, err = await self._run_cli(args, input_text=content)
+            if code != 0:
+                return SendResult(
+                    success=False,
+                    error=_cli_error_message(err, code),
+                    retryable=code == 2,
+                )
+            try:
+                data = json.loads(out or "{}")
+            except ValueError:
+                data = {}
+            edit_event_id = data.get("event_id")
+            if edit_event_id:
+                # The edit is itself an event on the relay and comes back on our own
+                # subscription; mark it seen so the de-dupe does not treat our own
+                # edit as inbound traffic.
+                self._mark_seen(str(chat_id), str(edit_event_id))
+            accepted = bool(data.get("accepted", True))
+            if accepted:
+                # Capture after the CLI returns.  It may have crossed a second
+                # boundary while signing, so sampling before launch is unsafe.
+                self._last_edit_second[target_id] = int(time.time())
+                # Replies to the streamed message must quote the completed
+                # visible text, not the initial partial sent before edits.
+                self._record_outbound_text(str(chat_id), target_id, content)
+            result = SendResult(
+                success=accepted,
+                message_id=target_id,
+                raw_response=data,
             )
-        try:
-            data = json.loads(out or "{}")
-        except ValueError:
-            data = {}
-        edit_event_id = data.get("event_id")
-        if edit_event_id:
-            # The edit is itself an event on the relay and comes back on our own
-            # subscription; mark it seen so the de-dupe does not treat our own
-            # edit as inbound traffic.
-            self._mark_seen(str(chat_id), str(edit_event_id))
-        return SendResult(
-            success=bool(data.get("accepted", True)),
-            message_id=str(message_id),
-            raw_response=data,
-        )
+
+        if finalize and result.success:
+            self._last_edit_second.pop(target_id, None)
+            self._edit_locks.pop(target_id, None)
+        return result
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a previously sent message.
@@ -883,11 +912,17 @@ class BuzzAdapter(BasePlatformAdapter):
         try:
             data = json.loads(out or "{}")
         except ValueError:
-            return True
-        event_id = data.get("event_id")
-        if event_id:
-            self._mark_seen(str(chat_id), str(event_id))
-        return bool(data.get("accepted", True))
+            success = True
+        else:
+            event_id = data.get("event_id")
+            if event_id:
+                self._mark_seen(str(chat_id), str(event_id))
+            success = bool(data.get("accepted", True))
+        if success:
+            target_id = str(message_id)
+            self._last_edit_second.pop(target_id, None)
+            self._edit_locks.pop(target_id, None)
+        return success
 
     async def send_image(
         self,

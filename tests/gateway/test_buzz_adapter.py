@@ -473,11 +473,14 @@ class TestParseThreadRoot:
         assert _parse_thread_parent([["e", THREAD_ROOT, "", "root"]]) == THREAD_ROOT
         # Deprecated positional single ref is the parent.
         assert _parse_thread_parent([["e", THREAD_PARENT]]) == THREAD_PARENT
-        # Ambiguous shapes fail closed.
+        # Conflicting marked roots are ambiguous and fail closed.
         assert _parse_thread_parent(
             [["e", THREAD_ROOT, "", "root"], ["e", SIBLING_ROOT, "", "root"]]
         ) is None
-        assert _parse_thread_parent([["e", THREAD_ROOT], ["e", THREAD_PARENT]]) is None
+        # Deprecated positional NIP-10: first ref is the root, last is parent.
+        assert _parse_thread_parent(
+            [["e", THREAD_ROOT], ["e", THREAD_PARENT]]
+        ) == THREAD_PARENT
 
     def test_malformed_tag_shapes_are_ignored(self):
         assert parse_thread_root(["e", THREAD_ROOT]) is None  # not a list of tags
@@ -1360,6 +1363,63 @@ class TestBuzzAdapterEdit:
         result = await adapter.edit_message(CHANNEL, "orig1", "text", finalize=True)
         assert result.success is True
         assert len(cli.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_edit_refreshes_reply_context_to_final_text(self):
+        """A user replying after streaming must quote the completed answer."""
+        adapter = _make_adapter()
+        adapter._self_pubkey = SELF_PUBKEY
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        adapter._record_outbound_text(CHANNEL, AGENT_EVENT, "partial")
+        cli = _ScriptedCli()
+        cli.script("messages", "edit", {"accepted": True, "event_id": "edit1"})
+        adapter._run_cli = cli
+
+        result = await adapter.edit_message(
+            CHANNEL, AGENT_EVENT, "complete answer", finalize=True
+        )
+
+        assert result.success is True
+        assert adapter._thread_parent_context(
+            adapter._channel_state[CHANNEL], AGENT_EVENT, "child1"
+        ) == (SELF_PUBKEY, "complete answer")
+
+    @pytest.mark.asyncio
+    async def test_rapid_edits_wait_for_distinct_nostr_seconds(self, monkeypatch):
+        """Edit precedence uses second-resolution Nostr timestamps.
+
+        Successive edits for one target must therefore be signed in distinct
+        seconds, or a client can keep an arbitrary partial instead of final.
+        """
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "edit", {"accepted": True, "event_id": "edit1"})
+        cli.script("messages", "edit", {"accepted": True, "event_id": "edit2"})
+        adapter._run_cli = cli
+
+        now = [100.90]
+        sleeps = []
+        monkeypatch.setattr(_buzz_mod.time, "time", lambda: now[0])
+
+        async def advance_clock(delay):
+            sleeps.append(delay)
+            now[0] += delay
+
+        monkeypatch.setattr(_buzz_mod.asyncio, "sleep", advance_clock)
+
+        first = await adapter.edit_message(CHANNEL, "orig1", "partial")
+        now[0] = 100.95
+        final = await adapter.edit_message(CHANNEL, "orig1", "complete", finalize=True)
+
+        assert first.success is True
+        assert final.success is True
+        assert len(cli.calls) == 2
+        assert sleeps and now[0] >= 101.0
 
     @pytest.mark.asyncio
     async def test_edit_without_a_message_id_never_calls_the_cli(self):

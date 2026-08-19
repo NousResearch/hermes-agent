@@ -113,11 +113,11 @@ display:
 ```
 
 Editable streaming requires a `buzz` CLI build where
-`buzz messages edit --content -` reads the replacement body from stdin. The
-companion `varunarya002/buzz` branch `hermes-thread-streaming` includes that
-fix and preserves existing attachments during edits. Older CLI builds may
-replace the message with a literal `-`; leave `streaming: false` when using
-one of those builds.
+`buzz messages edit --content -` reads the replacement body from stdin and
+edits preserve attachments by default. `buzz messages edit --help` should list
+both `--file` and `--no-media`; builds without those options predate this
+contract and may replace the message with a literal `-`. Leave
+`streaming: false` when using an older build.
 
 Buzz edits are append-only Nostr edit events. Buzz Desktop renders the newest
 edit in place. A client that does not apply Buzz edit events may display the

@@ -85,3 +85,34 @@ async def test_aggressive_dry_run_shows_preview_plus_note():
     runner.session_store.rewrite_transcript.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_preview_with_here_boundary_skips_display_kind_marker():
+    """A display_kind timeline row (model_switch, async_delegation_complete,
+    etc.) landing among the last keep_last real exchanges must not consume
+    one of the kept slots in the /compress here --preview report — the
+    preview's own history projection must carry display_kind through to
+    split_history_for_partial_compress, same as the real (non-preview) run.
+    """
+    history = [
+        {"role": "user", "content": "u0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {
+            "role": "user",
+            "content": "[System: model switched]",
+            "display_kind": "model_switch",
+        },
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    runner = _make_runner(history)
+    result = await runner._handle_compress_command(
+        _make_event("/compress --preview here 2")
+    )
+    # Correct boundary (marker skipped): the last 2 REAL exchanges are
+    # u1/a1/marker/u2/a2 (5 messages), leaving u0/a0 (2 messages) as head.
+    # Without the fix, the marker itself consumes one of the 2 kept "user"
+    # slots and the boundary lands one exchange later: head=4, tail=3.
+    assert "2 of 7" in result, result
+    assert "(5 message(s))" in result, result

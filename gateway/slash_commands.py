@@ -4219,7 +4219,11 @@ class GatewaySlashCommandsMixin:
             # Report what WOULD be compressed — no agent, no writes.
             from agent.model_metadata import estimate_request_tokens_rough
             _pv_msgs = [
-                {"role": m.get("role"), "content": m.get("content")}
+                {
+                    "role": m.get("role"),
+                    "content": m.get("content"),
+                    "display_kind": m.get("display_kind"),
+                }
                 for m in history
                 if m.get("role") in {"user", "assistant"} and m.get("content")
             ]

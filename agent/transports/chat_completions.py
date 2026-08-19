@@ -13,6 +13,15 @@ import json
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
+from agent.reasoning_effort import (
+    KIMI_K3_EFFORTS,
+    KIMI_K3_OVERRIDES,
+    OPENAI_COMPAT_WIRE_EFFORTS,
+    TOKENHUB_EFFORTS,
+    clamp_effort,
+    kimi_supported_efforts,
+    requested_effort,
+)
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -90,17 +99,19 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     (the /reasoning command documents none..xhigh|max|ultra). OpenAI-
     compatible wires — OpenRouter chief among them — accept exactly
     max|xhigh|high|medium|low|minimal|none and reject the extension with
-    HTTP 400, so an ``ultra`` configured for an Anthropic default leaks
-    untranslated when a per-job/per-turn override pins a non-Anthropic
-    model on this transport and the whole call fails (#89503). Map the
-    extension to its wire cap for every model on this path; the Anthropic
-    adapter keeps its own richer mapping.
+    HTTP 400 (#89503). Clamp against the declared wire vocabulary via the
+    shared policy in ``agent.reasoning_effort``; provider profiles with
+    narrower sets clamp again downstream.
     """
     if not isinstance(reasoning_config, dict):
         return reasoning_config
-    if str(reasoning_config.get("effort") or "").strip().lower() == "ultra":
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    if not effort:
+        return reasoning_config
+    clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+    if clamped != effort:
         normalized = dict(reasoning_config)
-        normalized["effort"] = "max"
+        normalized["effort"] = clamped
         return normalized
     return reasoning_config
 
@@ -567,36 +578,22 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _kimi_thinking_off:
-                # K3 accepts low/high/max only (default high) — "medium" and
-                # Hermes' upper-ladder levels 400 or silently degrade. Mirror
-                # the kimi-coding plugin's _K3_EFFORT_MAP; older Kimi models
-                # keep the low/medium/high vocabulary with the stronger
-                # Hermes levels capped at high instead of being dropped
-                # (dropping them inverted the ladder: ultra sent the
-                # "medium" default, weaker than an explicit high).
-                _e = ""
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                if "k3" in (model or "").lower():
-                    _kimi_effort = {
-                        "minimal": "low",
-                        "low": "low",
-                        "medium": "high",
-                        "high": "high",
-                        "xhigh": "max",
-                        "max": "max",
-                        "ultra": "max",
-                    }.get(_e, "high")
+                # Kimi vocabularies are declared in agent.reasoning_effort:
+                # K3 = low/high/max (with the vendor-documented medium→high,
+                # xhigh→max rounding), K2-era = low/medium/high. Default when
+                # no effort was requested: K3's server default is high,
+                # K2-era's is medium.
+                _supported = kimi_supported_efforts(model)
+                _overrides = (
+                    KIMI_K3_OVERRIDES if _supported is KIMI_K3_EFFORTS else None
+                )
+                _e = requested_effort(reasoning_config)
+                if _e is None:
+                    _kimi_effort = (
+                        "high" if _supported is KIMI_K3_EFFORTS else "medium"
+                    )
                 else:
-                    _kimi_effort = {
-                        "minimal": "low",
-                        "low": "low",
-                        "medium": "medium",
-                        "high": "high",
-                        "xhigh": "high",
-                        "max": "high",
-                        "ultra": "high",
-                    }.get(_e, "medium")
+                    _kimi_effort = clamp_effort(_e, _supported, _overrides)
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
@@ -607,22 +604,13 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _tokenhub_thinking_off:
-                # TokenHub accepts low/medium/high. Map Hermes' full ladder
-                # onto that set instead of dropping unknown levels to the
-                # "high" default — dropping inverted the ladder for
-                # "minimal" (asked for the least, got the most).
-                _tokenhub_effort = "high"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                    _tokenhub_effort = {
-                        "minimal": "low",
-                        "low": "low",
-                        "medium": "medium",
-                        "high": "high",
-                        "xhigh": "high",
-                        "max": "high",
-                        "ultra": "high",
-                    }.get(_e, "high")
+                # TokenHub accepts low/medium/high (declared in
+                # agent.reasoning_effort); default high when no effort was
+                # requested.
+                _e = requested_effort(reasoning_config)
+                _tokenhub_effort = (
+                    "high" if _e is None else clamp_effort(_e, TOKENHUB_EFFORTS)
+                )
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
         # LM Studio: top-level reasoning_effort. Only emit when the model

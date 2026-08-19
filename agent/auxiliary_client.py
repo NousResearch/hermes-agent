@@ -1551,15 +1551,15 @@ class _CodexCompletionsAdapter:
                     # Codex backend, which rejects e.g. {"effort": null}
                     # with a 400.
                     effort = reasoning_cfg.get("effort") or "medium"
-                    # Codex backend rejects "minimal"; clamp to "low" to
-                    # match the main-agent Codex transport behavior. "ultra"
-                    # is Hermes-internal ladder vocabulary with no wire
-                    # equivalent anywhere on this API; cap it at "max"
-                    # (same class as #89503).
-                    if effort == "minimal":
-                        effort = "low"
-                    elif effort == "ultra":
-                        effort = "max"
+                    # Same declared vocabulary + shared clamp as the main
+                    # Codex transport (agent.reasoning_effort): the backend
+                    # rejects "minimal" and the internal "ultra" level.
+                    from agent.reasoning_effort import (
+                        CODEX_RESPONSES_EFFORTS,
+                        clamp_effort,
+                    )
+
+                    effort = clamp_effort(effort, CODEX_RESPONSES_EFFORTS)
                     resp_kwargs["reasoning"] = {
                         "effort": effort,
                         "summary": "auto",

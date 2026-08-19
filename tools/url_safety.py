@@ -160,6 +160,26 @@ def has_sensitive_query_params(url: str) -> bool:
     """Return True when ``url`` carries likely credential-bearing query params."""
     return sensitive_query_param_name(url) is not None
 
+
+def has_url_userinfo(url: str) -> bool:
+    """Return True when an HTTP(S) URL embeds credentials in its authority.
+
+    URL userinfo (``user:password@host`` or ``token@host``) is sent verbatim
+    to third-party extract/browser providers when they receive the full URL.
+    Treat any userinfo as credential-bearing rather than trying to recognize
+    particular password or token formats.
+    """
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() in {"http", "https"}
+        and parsed.username is not None
+    )
+
 # Hostnames that should always be blocked regardless of IP resolution
 # or any config toggle.  These are cloud metadata endpoints that an
 # attacker could use to steal instance credentials.

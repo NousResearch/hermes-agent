@@ -94,6 +94,66 @@ class TestWebExtractSecretExfil:
     """Verify web_extract_tool blocks URLs containing secrets."""
 
     @pytest.mark.asyncio
+    async def test_blocks_url_userinfo_before_extract_provider(self, monkeypatch):
+        """Third-party readers must never receive Basic-auth or token userinfo."""
+        from agent.web_search_provider import WebSearchProvider
+        from agent import web_search_registry
+        from tools import web_tools
+
+        received_urls = []
+
+        class RecordingExtractProvider(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "recording-extract"
+
+            def is_available(self) -> bool:
+                return True
+
+            def supports_search(self) -> bool:
+                return False
+
+            def supports_extract(self) -> bool:
+                return True
+
+            def extract(self, urls, **_kwargs):
+                received_urls.extend(urls)
+                return []
+
+        web_search_registry._reset_for_tests()
+        web_search_registry.register_provider(RecordingExtractProvider())
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(
+            web_tools, "_get_extract_backend", lambda: "recording-extract"
+        )
+
+        try:
+            result = await web_tools.web_extract_tool(
+                urls=["https://alice:DEMO_PASSWORD_123@example.com/private"],
+            )
+        finally:
+            web_search_registry._reset_for_tests()
+
+        parsed = json.loads(result)
+        assert parsed["success"] is False
+        assert "embedded userinfo credentials" in parsed["error"]
+        assert "DEMO_PASSWORD_123" not in result
+        assert received_urls == []
+
+    @pytest.mark.asyncio
+    async def test_blocks_bare_token_url_userinfo(self):
+        from tools.web_tools import web_extract_tool
+
+        result = await web_extract_tool(
+            urls=["https://opaque-bearer-value@example.com/private"],
+        )
+
+        parsed = json.loads(result)
+        assert parsed["success"] is False
+        assert "embedded userinfo credentials" in parsed["error"]
+        assert "opaque-bearer-value" not in result
+
+    @pytest.mark.asyncio
     async def test_blocks_api_key_in_url(self):
         from tools.web_tools import web_extract_tool
         result = await web_extract_tool(

@@ -8,6 +8,7 @@ import httpx
 from tools.url_safety import (
     is_safe_url,
     async_is_safe_url,
+    has_url_userinfo,
     is_always_blocked_url,
     normalize_url_for_request,
     redirect_target_from_response,
@@ -57,6 +58,33 @@ class TestNormalizeUrlForRequest:
             normalize_url_for_request("https://example.com/r?next=https:// evil.example")
             == "https://example.com/r?next=https://%20evil.example"
         )
+
+
+class TestHasUrlUserinfo:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://alice:password@example.com/private",
+            "https://opaque-token@example.com/private",
+            "https://alice:p%40ssword@example.com/private",
+            "http://user:@example.com/",
+        ],
+    )
+    def test_detects_http_userinfo(self, url):
+        assert has_url_userinfo(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/path?email=user@example.com",
+            "https://example.com/user@example.com",
+            "mailto:user@example.com",
+            "not a url",
+            "",
+        ],
+    )
+    def test_ignores_at_signs_outside_http_authority(self, url):
+        assert has_url_userinfo(url) is False
 
 
 class TestIsSafeUrl:

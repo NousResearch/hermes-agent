@@ -835,6 +835,8 @@ export const zh: Translations = {
       checking: '检查中…',
       seeWhatsNew: '查看新增内容',
       updateNow: '立即更新',
+      updateThisApp: '更新此应用',
+      updateBackend: '更新后端',
       releaseNotes: '发行说明',
       onLatest: '你已是最新版本。',
       installing: '正在安装更新。',

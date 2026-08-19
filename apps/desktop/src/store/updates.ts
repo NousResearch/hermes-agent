@@ -251,14 +251,18 @@ export function openUpdatesWindow(): void {
 }
 
 /**
- * Start applying the available update for the active target right away. Opens
- * the updates overlay first so the user sees apply progress (the overlay
- * renders ApplyingView once `applying` flips true), then kicks off the install.
- * Used by the "Update now" affordance on the About panel, which would otherwise
- * only be able to open the changelog overlay.
+ * Start applying a SPECIFIC update target, regardless of connection mode. Opens
+ * the updates overlay first so the user sees apply progress (the overlay renders
+ * ApplyingView once `applying` flips true), then kicks off that target's install.
+ *
+ * This is the explicit entry point behind the About panel's split
+ * "Update this app" / "Update backend" buttons. It exists because the
+ * mode-driven startActiveUpdate() below can only ever reach ONE target in remote
+ * mode (the backend), leaving a remote user with no in-app way to update the
+ * local Electron shell — the exact "silently stuck on an old GUI" gap this
+ * split closes.
  */
-export function startActiveUpdate(): void {
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+export function startUpdateFor(target: UpdateTarget): void {
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)
   void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
@@ -281,6 +285,16 @@ export function requestActiveUpdate(): void {
   }
 
   openUpdateOverlayFor(target)
+}
+
+/**
+ * Start applying the available update for the mode-default target right away:
+ * backend in remote mode, client locally. Kept for callers that just want "the"
+ * update (e.g. the backend-skew toast). The About panel no longer routes through
+ * this — it calls startUpdateFor() per button so both targets stay reachable.
+ */
+export function startActiveUpdate(): void {
+  startUpdateFor(isRemoteMode() ? 'backend' : 'client')
 }
 
 /** Re-read the running app's version from the Electron main process and

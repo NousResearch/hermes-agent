@@ -627,6 +627,8 @@ export const en: Translations = {
       checking: 'Checking…',
       seeWhatsNew: "See what's new",
       updateNow: 'Update now',
+      updateThisApp: 'Update this app',
+      updateBackend: 'Update backend',
       releaseNotes: 'Release notes',
       onLatest: "You're on the latest version.",
       installing: 'An update is currently installing.',

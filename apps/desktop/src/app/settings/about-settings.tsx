@@ -7,7 +7,10 @@ import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $connection } from '@/store/session'
 import {
+  $backendUpdateApply,
+  $backendUpdateStatus,
   $desktopVersion,
   $updateApply,
   $updateChecking,
@@ -15,7 +18,7 @@ import {
   checkUpdates,
   openUpdatesWindow,
   refreshDesktopVersion,
-  startActiveUpdate
+  startUpdateFor
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
@@ -53,6 +56,9 @@ export function AboutSettings() {
   const status = useStore($updateStatus)
   const apply = useStore($updateApply)
   const checking = useStore($updateChecking)
+  const connection = useStore($connection)
+  const backendStatus = useStore($backendUpdateStatus)
+  const backendApply = useStore($backendUpdateApply)
   const [justChecked, setJustChecked] = useState(false)
 
   // The version atom is loaded once at app boot, which makes About show a
@@ -69,6 +75,17 @@ export function AboutSettings() {
   const updateAvailable = behind > 0 || Boolean(status?.updateAvailable)
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
+
+  // In remote mode the client (this Electron shell) and the backend update
+  // independently, so the About panel offers a button per target. The backend
+  // side reads its own status/apply atoms; `updateAvailable` covers backends
+  // that can't count commits (behind === 0 but an update exists).
+  const remote = connection?.mode === 'remote'
+  const backendBehind = backendStatus?.behind ?? 0
+  const backendUpdateAvailable = Boolean(backendStatus?.updateAvailable) || backendBehind > 0
+  const backendSupported = backendStatus?.supported !== false
+  const backendApplying = backendApply.applying || backendApply.stage === 'restart'
+  const clientUpdatable = updateAvailable && supported && !applying
 
   const handleCheck = async () => {
     setJustChecked(false)
@@ -171,15 +188,35 @@ export function AboutSettings() {
               {checking ? a.checking : a.checkNow}
             </Button>
 
-            {updateAvailable && supported && !applying && (
+            {remote ? (
               <>
-                <Button onClick={() => startActiveUpdate()} size="sm">
-                  {a.updateNow}
-                </Button>
-                <Button onClick={() => openUpdatesWindow()} size="sm" variant="textStrong">
-                  {a.seeWhatsNew}
-                </Button>
+                {clientUpdatable && (
+                  <Button onClick={() => startUpdateFor('client')} size="sm">
+                    {a.updateThisApp}
+                  </Button>
+                )}
+                {backendUpdateAvailable && backendSupported && !backendApplying && (
+                  <Button onClick={() => startUpdateFor('backend')} size="sm">
+                    {a.updateBackend}
+                  </Button>
+                )}
+                {(clientUpdatable || backendUpdateAvailable) && (
+                  <Button onClick={() => openUpdatesWindow()} size="sm" variant="textStrong">
+                    {a.seeWhatsNew}
+                  </Button>
+                )}
               </>
+            ) : (
+              clientUpdatable && (
+                <>
+                  <Button onClick={() => startUpdateFor('client')} size="sm">
+                    {a.updateNow}
+                  </Button>
+                  <Button onClick={() => openUpdatesWindow()} size="sm" variant="textStrong">
+                    {a.seeWhatsNew}
+                  </Button>
+                </>
+              )
             )}
 
             <Button asChild className="ml-auto" size="sm" variant="text">

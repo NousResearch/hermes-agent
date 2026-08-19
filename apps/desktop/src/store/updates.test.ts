@@ -53,6 +53,7 @@ const {
   $updateOverlayOpen,
   $updateOverlayTarget,
   requestActiveUpdate,
+  startUpdateFor,
   resetUpdateApplyState,
   startUpdatePoller,
   stopUpdatePoller,
@@ -888,6 +889,64 @@ describe('applyBackendUpdate recovery', () => {
     expect(result.ok).toBe(false)
     expect($backendUpdateApply.get().stage).toBe('error')
   }, 10000)
+})
+
+describe('startUpdateFor', () => {
+  const applyMock = vi.fn()
+
+  const setRemote = (on: boolean) =>
+    setConnection({
+      baseUrl: 'http://box:9119',
+      isFullscreen: false,
+      mode: on ? 'remote' : 'local',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://box:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+  beforeEach(() => {
+    storage.clear()
+    applyMock.mockReset()
+    applyMock.mockResolvedValue({ ok: true, handedOff: true })
+    updateHermesSpy.mockReset()
+    updateHermesSpy.mockResolvedValue({ ok: false, message: 'n/a', update_command: 'hermes update' })
+    resetUpdateApplyState()
+    $updateOverlayOpen.set(false)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it("routes 'client' to the local self-update even in remote mode (the stuck-GUI fix)", async () => {
+    setRemote(true)
+
+    startUpdateFor('client')
+    await vi.waitFor(() => expect(applyMock).toHaveBeenCalled())
+
+    // The client target must NOT fall through to the backend RPC — that silent
+    // reroute is exactly what left a remote app stranded on an old GUI.
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+    expect($updateOverlayTarget.get()).toBe('client')
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it("routes 'backend' to the backend update RPC", async () => {
+    setRemote(true)
+
+    startUpdateFor('backend')
+    await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled())
+
+    expect(applyMock).not.toHaveBeenCalled()
+    expect($updateOverlayTarget.get()).toBe('backend')
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
 })
 
 describe('startUpdatePoller', () => {

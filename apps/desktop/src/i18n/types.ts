@@ -520,6 +520,8 @@ export interface Translations {
       checking: string
       seeWhatsNew: string
       updateNow: string
+      updateThisApp: string
+      updateBackend: string
       releaseNotes: string
       onLatest: string
       installing: string

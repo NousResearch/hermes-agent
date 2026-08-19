@@ -79,18 +79,43 @@ def test_env_var_wins_over_the_marker(hermes_home, monkeypatch):
 
 @pytest.mark.parametrize("managed_value", ["nixos", "home-manager"])
 def test_managed_install_names_its_system_and_offers_an_update(
-    hermes_home, monkeypatch, managed_value
+    hermes_home, monkeypatch, tmp_path, managed_value
 ):
     """The message names the system, so the user knows what owns the install."""
     monkeypatch.setenv("HERMES_MANAGED", managed_value)
 
+    # This test uses an install tree of its own. The real checkout can carry
+    # a stamp from the install shape of the contributor. A stamp answers
+    # first, and detection never reaches the managed state under test.
+    install_tree = tmp_path / "install"
+    install_tree.mkdir()
+
     assert managed_value in config_mod.format_managed_message("set model")
     assert "set model" in config_mod.format_managed_message("set model")
     assert config_mod.get_managed_update_command()
-    assert config_mod.detect_install_method(config_mod.get_project_root()) == managed_value
+    assert config_mod.detect_install_method(install_tree) == managed_value
     # `hermes update` cannot run on a managed install, so the advice must not
     # name it.
     assert config_mod.recommended_update_command() != "hermes update"
+
+
+@pytest.mark.parametrize("managed_value", ["nixos", "home-manager"])
+def test_a_stamp_can_name_every_managed_system(
+    hermes_home, monkeypatch, tmp_path, managed_value
+):
+    """A stamp must give back every value that detection can return.
+
+    Detection reads the stamp against an allowlist. A managed system that is
+    absent from that allowlist gives "unknown". The update guidance then
+    names a command that the managed guard refuses.
+    """
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    install_tree = tmp_path / "install"
+    install_tree.mkdir()
+
+    config_mod.stamp_install_method(managed_value, project_root=install_tree)
+
+    assert config_mod.detect_install_method(install_tree) == managed_value
 
 
 def test_unmanaged_install_offers_no_update_command(hermes_home, monkeypatch):

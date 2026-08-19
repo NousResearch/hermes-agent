@@ -1863,9 +1863,15 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     placeholder so the outgoing request stops re-shipping the same multi-MB
     base-64 image blobs on every turn.
 
-    If no user message carries images, the list is returned unchanged.
-    If the only user message with images is the very first one (nothing
-    earlier to strip), the list is returned unchanged.
+    Tool results carry their own images (``vision_analyze`` and friends) and
+    are aged out on their own timeline: every image-bearing tool message
+    except the newest one is stripped, wherever it sits. Without that, a
+    session whose images arrive from tools rather than attachments has no
+    anchor to be "before" and keeps every blob forever (#89938).
+
+    If no message carries images at all, the list is returned unchanged. So
+    is a list whose only image-bearing user message is the very first one and
+    which has no tool-result images (nothing to strip in either rule).
 
     Shallow copies of touched messages only; input is never mutated.
     Port of Kilo-Org/kilocode#9434 (adapted for the OpenAI-style message
@@ -1889,15 +1895,48 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
             anchor = i
             break
 
-    if anchor <= 0:
-        # No image-bearing user message, or it's the very first message —
-        # nothing before it to strip.
+    # Newest tool message carrying an image. Tool-result images
+    # (``vision_analyze``, screenshot-returning tools) accumulate on their own
+    # timeline and the user anchor never protects the stale ones: a session
+    # whose only image-bearing user message is the FIRST one leaves
+    # ``anchor <= 0`` and strips nothing at all, so twenty tool results keep
+    # multi-MB of base64 in every request body until the provider answers 413
+    # -- and the 413 handler's recovery compaction lands right back here and
+    # frees nothing, which is the wedge in #89938. Keep the newest tool image,
+    # since that is the one the model is reasoning about, and drop every older
+    # one wherever it sits.
+    tool_anchor = -1
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        if _content_has_images(msg.get("content")):
+            tool_anchor = i
+            break
+
+    if anchor <= 0 and tool_anchor < 0:
+        # No image-bearing user message (or it is the very first, with nothing
+        # earlier to strip), and no tool-result images to age out either.
         return messages
+
+    def _is_stale(index: int, message: Dict[str, Any]) -> bool:
+        # Rule 1 (unchanged): everything before the newest image-bearing user
+        # message. Checked first so a tool result that is the newest of its
+        # kind but still sits before that anchor keeps today's behaviour.
+        if 0 < anchor and index < anchor:
+            return True
+        # Rule 2: a tool result whose image has been superseded by a newer
+        # one. Applies inside the protected tail as well -- the tail exists to
+        # preserve conversational continuity, not to pin bytes the model has
+        # already moved past.
+        return message.get("role") == "tool" and index != tool_anchor
 
     changed = False
     result: List[Dict[str, Any]] = []
     for i, msg in enumerate(messages):
-        if i >= anchor or not isinstance(msg, dict):
+        if not isinstance(msg, dict) or not _is_stale(i, msg):
             result.append(msg)
             continue
         content = msg.get("content")

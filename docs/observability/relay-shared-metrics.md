@@ -62,6 +62,30 @@ from the selected file only. If the selected file cannot be loaded, Hermes
 reports the error and does not invoke Relay initialization or fall back to
 ambient discovery.
 
+## Session-Span Segmentation for Continuous Sessions
+
+Relay exports a span when its scope closes. A continuous gateway session can
+remain open for days, so its session span remains open even though each turn
+span is exported normally. Optional segmentation rotates only the session
+scope at a turn boundary:
+
+```yaml
+gateway:
+  telemetry:
+    session_segments:
+      on_compaction: false  # rotate after context compaction
+      max_turns: 0          # 0 = unlimited; N = turns per segment
+```
+
+| Key | Default | Behavior |
+|---|---:|---|
+| `on_compaction` | `false` | Rotate after compaction completes, at the next turn boundary. |
+| `max_turns` | `0` | Rotate after every N completed turns; `0` disables the cap. |
+
+Both defaults preserve one session scope for the full session. Rotated spans
+retain the same `session_id` and add `hermes.session.segment` plus
+`hermes.session.segment_reason` (`compaction` or `max_turns`).
+
 ## Process-Wide Plugin Policy and Profile Isolation
 
 Relay plugin configuration is a process-level deployment choice, not a Hermes

@@ -147,6 +147,10 @@ class _RelayPluginConfigurationState(Enum):
     FAILED = auto()
 
 
+class _RelayPluginConfigurationLoadError(RuntimeError):
+    """An explicitly selected Relay plugin configuration could not be loaded."""
+
+
 @dataclass
 class RelaySession:
     """One isolated Relay scope stack owned by a Hermes session."""
@@ -1979,7 +1983,7 @@ def _load_nemo_relay() -> Any:
 def _configured_plugin_inputs(
     relay: Any,
 ) -> tuple[dict[str, Any], list[Any]] | None:
-    """Load environment-selected plugin inputs, or leave plugins disabled."""
+    """Load selected plugin inputs, or return ``None`` when none were selected."""
     configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
     if not configured:
         legacy_vars = configured_legacy_relay_env_vars(os.environ)
@@ -2010,14 +2014,11 @@ def _configured_plugin_inputs(
         plugin_config = dict(config)
         plugin_config.pop("plugins", None)
         return plugin_config, dynamic_plugins
-    except Exception:
-        logger.warning(
-            "Hermes Relay plugin configuration could not be loaded from %s; "
-            "continuing without Relay plugins",
-            config_path,
-            exc_info=True,
-        )
-        return None
+    except Exception as exc:
+        raise _RelayPluginConfigurationLoadError(
+            "Hermes Relay plugin configuration could not be loaded from "
+            f"{config_path}; continuing without Relay plugins"
+        ) from exc
 
 
 def _flush_relay_subscribers(relay: Any) -> None:

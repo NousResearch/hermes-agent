@@ -188,6 +188,10 @@ def test_unset_config_disables_plugin_initialization(monkeypatch):
 
     try:
         assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.DISABLED
+        )
         host.ensure_session({"session_id": "session"})
         assert relay.events[0][0:2] == ("scope.push", relay_runtime.SESSION_SCOPE)
         assert not any(event[0].startswith("plugin.") for event in relay.events)
@@ -213,6 +217,14 @@ def test_first_profile_plugin_decision_applies_to_later_profile(
     try:
         assert not host_a.managed_execution_enabled()
         assert not host_b.managed_execution_enabled()
+        assert (
+            host_a._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.DISABLED
+        )
+        assert (
+            host_b._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.DISABLED
+        )
         assert not any(event[0].startswith("plugin.") for event in relay.events)
     finally:
         host_a.shutdown()
@@ -246,6 +258,10 @@ def test_foreign_active_plugin_configuration_is_left_unchanged(
 
     try:
         assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FOREIGN
+        )
         assert relay.active_report is foreign_report
         assert relay.events == []
         assert "already active outside Hermes native ownership" in caplog.text
@@ -265,6 +281,10 @@ def test_unreadable_foreign_plugin_state_fails_safe(
 
     try:
         assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FAILED
+        )
         assert relay.events == []
         assert "refusing to replace it" in caplog.text
     finally:
@@ -277,6 +297,7 @@ def test_legacy_exporter_env_without_plugins_toml_warns_and_stays_disabled(
 ):
     monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
     monkeypatch.setenv("HERMES_NEMO_RELAY_ATOF_ENABLED", "1")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S", "30")
     relay = _FakeRelay()
 
     with caplog.at_level("WARNING"):
@@ -284,9 +305,14 @@ def test_legacy_exporter_env_without_plugins_toml_warns_and_stays_disabled(
 
     try:
         assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.DISABLED
+        )
         assert relay.events == []
         assert "no HERMES_NEMO_RELAY_PLUGINS_TOML was provided" in caplog.text
         assert "HERMES_NEMO_RELAY_ATOF_ENABLED" in caplog.text
+        assert "HERMES_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S" in caplog.text
     finally:
         host.shutdown()
 
@@ -299,6 +325,10 @@ def test_initialization_failure_is_fail_open(explicit_static_config, caplog):
 
     try:
         assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FAILED
+        )
         assert "Hermes Relay plugin initialization failed" in caplog.text
     finally:
         host.shutdown()
@@ -308,18 +338,37 @@ def test_later_host_shares_initialization_failure(explicit_static_config):
     relay = _FakeRelay(initialize_error=RuntimeError("transient failure"))
     failed_host = relay_runtime.RelayRuntime(relay=relay, profile_key="failed")
     assert not failed_host.managed_execution_enabled()
+    assert (
+        failed_host._plugin_configuration_state
+        is relay_runtime._RelayPluginConfigurationState.FAILED
+    )
 
     relay.initialize_error = None
     later_host = relay_runtime.RelayRuntime(relay=relay, profile_key="later")
     try:
         assert not later_host.managed_execution_enabled()
+        assert (
+            later_host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FAILED
+        )
         assert relay.events == [("plugin.initialize", {})]
     finally:
         failed_host.shutdown()
         later_host.shutdown()
 
+    retry_host = relay_runtime.RelayRuntime(relay=relay, profile_key="retry")
+    try:
+        assert retry_host.managed_execution_enabled()
+        assert (
+            retry_host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.ACTIVE
+        )
+        assert relay.events.count(("plugin.initialize", {})) == 2
+    finally:
+        retry_host.shutdown()
 
-def test_missing_explicit_config_does_not_fall_back_to_discovery(
+
+def test_missing_explicit_config_is_failed_for_all_current_hosts(
     tmp_path,
     monkeypatch,
     caplog,
@@ -332,13 +381,22 @@ def test_missing_explicit_config_does_not_fall_back_to_discovery(
     relay = _FakeRelay()
 
     with caplog.at_level("WARNING"):
-        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+        first_host = relay_runtime.RelayRuntime(relay=relay, profile_key="first")
+        missing_config.parent.mkdir()
+        missing_config.write_text("", encoding="utf-8")
+        later_host = relay_runtime.RelayRuntime(relay=relay, profile_key="later")
     try:
-        assert not host.managed_execution_enabled()
+        for host in (first_host, later_host):
+            assert not host.managed_execution_enabled()
+            assert (
+                host._plugin_configuration_state
+                is relay_runtime._RelayPluginConfigurationState.FAILED
+            )
         assert relay.events == []
         assert "continuing without Relay plugins" in caplog.text
     finally:
-        host.shutdown()
+        first_host.shutdown()
+        later_host.shutdown()
 
 
 def test_malformed_explicit_config_does_not_fall_back_to_discovery(
@@ -355,6 +413,10 @@ def test_malformed_explicit_config_does_not_fall_back_to_discovery(
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
         assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FAILED
+        )
         assert relay.events == []
         assert "continuing without Relay plugins" in caplog.text
     finally:
@@ -380,6 +442,10 @@ def test_present_plugins_section_is_validated_even_when_falsey(
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
         assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FAILED
+        )
         assert relay.events == []
         assert "'plugins' must be a table" in caplog.text
         assert "continuing without Relay plugins" in caplog.text
@@ -595,6 +661,10 @@ manifest = "relay-plugin.toml"
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
         assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FAILED
+        )
         assert [event[0] for event in relay.events] == [
             "plugin.load_dynamic_specs",
             "plugin.initialize_dynamic",
@@ -868,6 +938,10 @@ manifest_ref = "relay-plugin.toml"
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
         assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FAILED
+        )
         assert relay.events == []
         assert "Hermes [[dynamic_plugins]] records are unsupported" in caplog.text
         assert "use Relay [[plugins.dynamic]] records" in caplog.text

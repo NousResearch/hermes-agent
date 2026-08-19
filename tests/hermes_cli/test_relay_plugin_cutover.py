@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from hermes_cli.config import migrate_config
@@ -62,12 +63,59 @@ def test_doctor_reports_legacy_exporter_env_without_new_config(monkeypatch):
     findings = dict(
         collect_relay_plugin_cutover_findings(
             {},
-            {"HERMES_NEMO_RELAY_ATIF_ENABLED": "true"},
+            {
+                "HERMES_NEMO_RELAY_ATIF_ENABLED": "true",
+                "HERMES_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S": "30",
+            },
         )
     )
 
     assert "now ignored" in findings["HERMES_NEMO_RELAY_ATIF_ENABLED"]
     assert RELAY_PLUGINS_CONFIG_ENV in findings["HERMES_NEMO_RELAY_ATIF_ENABLED"]
+    assert "now ignored" in findings["HERMES_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S"]
+    assert (
+        RELAY_PLUGINS_CONFIG_ENV
+        in findings["HERMES_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S"]
+    )
+
+
+@pytest.mark.parametrize("name", ["nemo_relay", "observability/nemo_relay"])
+def test_enable_rejects_removed_relay_plugin_without_discovery(name, capsys):
+    with (
+        patch("hermes_cli.plugins_cmd._resolve_plugin_key_and_source") as resolve,
+        patch("hermes_cli.plugins_cmd._save_enabled_set") as save_enabled,
+    ):
+        from hermes_cli.plugins_cmd import cmd_enable
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_enable(name, allow_tool_override=False)
+
+    assert exc_info.value.code == 1
+    resolve.assert_not_called()
+    save_enabled.assert_not_called()
+    output = capsys.readouterr().out
+    assert name in output
+    assert RELAY_PLUGINS_CONFIG_ENV in output
+
+
+def test_enable_rejects_alias_resolving_to_removed_relay_plugin(capsys):
+    with (
+        patch(
+            "hermes_cli.plugins_cmd._resolve_plugin_key_and_source",
+            return_value=("observability/nemo_relay", "user"),
+        ),
+        patch("hermes_cli.plugins_cmd._save_enabled_set") as save_enabled,
+    ):
+        from hermes_cli.plugins_cmd import cmd_enable
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_enable("relay-copy", allow_tool_override=False)
+
+    assert exc_info.value.code == 1
+    save_enabled.assert_not_called()
+    output = capsys.readouterr().out
+    assert "observability/nemo_relay" in output
+    assert RELAY_PLUGINS_CONFIG_ENV in output
 
 
 def test_doctor_does_not_warn_for_legacy_env_after_new_config_is_selected(

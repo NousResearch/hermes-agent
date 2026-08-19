@@ -318,7 +318,7 @@ nested agent work or security lifecycle events.
 The bundled Langfuse plugin demonstrates direct hook-based observability for
 turns, provider requests, and tool calls.
 
-The native NeMo Relay SDK integration maps Hermes session, turn, LLM, tool,
-and mark lifecycles to Relay. Explicit Relay plugin configuration can add ATOF
-or ATIF exporters and execution middleware; see
+The native NeMo Relay SDK integration maps Hermes session, turn, LLM, and tool
+lifecycles to Relay. Explicit Relay plugin configuration can add ATOF or ATIF
+exporters and execution middleware; see
 [Relay shared metrics](relay-shared-metrics.md).

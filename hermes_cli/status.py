@@ -547,7 +547,13 @@ def show_status(args):
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.gateway import get_gateway_runtime_snapshot, _format_gateway_pids
+        from hermes_cli.gateway import (
+            get_gateway_runtime_snapshot,
+            _format_gateway_pids,
+            get_launchd_plist_path,
+            _probe_launchd_service_running,
+            get_launchd_label,
+        )
 
         snapshot = get_gateway_runtime_snapshot()
         is_running = snapshot.running
@@ -562,6 +568,25 @@ def show_status(args):
             print("  Note:         Android may stop background jobs when Termux is suspended")
         elif snapshot.service_installed and not snapshot.service_running:
             print("  Service:      installed but stopped")
+            # macOS-specific: plist exists but launchd has unloaded the service.
+            # Common after Aqua session restarts, OS upgrades, or `launchctl
+            # bootout` from another agent. Without this warning, users only
+            # notice when their Telegram bot stops responding (no polling).
+            # See #55441, #28632, and the family around #42675.
+            if sys.platform == "darwin":
+                plist = get_launchd_plist_path()
+                if plist.exists() and not _probe_launchd_service_running():
+                    print(f"  {color('⚠', Colors.YELLOW)} launchd:      plist found but service is not loaded into launchd")
+                    # Route the repair through the CLI: `launchd_start()`
+                    # (hermes_cli/gateway.py:4293) already handles
+                    # domain resolution (`_launchd_domain()` chooses
+                    # gui/<uid> in Aqua, user/<uid> in Background/SSH),
+                    # plist regeneration, stale-already-loaded EIO retry,
+                    # and domain-unsupported fallbacks. Raw
+                    # `launchctl bootstrap gui/<uid>` misleads
+                    # Background/SSH users (issue surfaced by hermes-sweeper
+                    # review on PR #73370).
+                    print(f"  Repair:       hermes gateway start")
     except Exception:
         if _is_termux():
             print(f"  Status:       {color('unknown', Colors.DIM)}")

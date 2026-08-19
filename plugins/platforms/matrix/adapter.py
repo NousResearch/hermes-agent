@@ -3790,14 +3790,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # federated Matrix user could invite the bot into arbitrary rooms,
         # exposing its presence and metadata. Mirrors the allow-list gate
         # used on the message/reaction paths.
-        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
-            "true",
-            "1",
-            "yes",
-        }
-        if not allow_all and not (
-            self._allowed_user_ids and inviter in self._allowed_user_ids
-        ):
+        if not self._is_authorized_inviter(inviter):
             logger.warning(
                 "Matrix: rejecting invite to %s from unauthorized user %s",
                 room_id,
@@ -3819,6 +3812,22 @@ class MatrixAdapter(BasePlatformAdapter):
             is_direct=is_direct and bool(inviter),
             inviter=inviter,
         )
+
+    def _is_authorized_inviter(self, inviter: str) -> bool:
+        """Whether an invite from this user may be auto-joined.
+
+        Fails closed: an unknown (empty) inviter or an empty allowlist
+        rejects the invite, unless GATEWAY_ALLOW_ALL_USERS opts out of
+        gating entirely.
+        """
+        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        if allow_all:
+            return True
+        return bool(self._allowed_user_ids and inviter in self._allowed_user_ids)
 
     async def _join_room_by_id(self, room_id: str) -> bool:
         """Join a room by ID and refresh local caches on success."""
@@ -3887,11 +3896,83 @@ class MatrixAdapter(BasePlatformAdapter):
         invites = rooms.get("invite", {})
         if not isinstance(invites, dict):
             return
-        for room_id in invites:
+        for room_id, invited_room in invites.items():
             if room_id in self._joined_rooms:
                 continue
-            logger.info("Matrix: reconciling pending invite for %s", room_id)
-            self._schedule_invite_join(str(room_id))
+            # A pending invite reconciled here (e.g. after a gateway
+            # restart) never fires _on_invite, so the DM signal must be
+            # read from the stripped invite state instead. Without it, a
+            # direct invite joined via reconciliation is never recorded in
+            # m.direct and gets misclassified as a group.
+            is_direct, inviter = self._extract_invite_dm_signal(invited_room)
+            # The inviter allowlist gate from _on_invite applies here too.
+            # Without it, an invite from an arbitrary federated user that
+            # arrives while the gateway is down would be auto-joined on
+            # restart, bypassing the gate. An inviter missing from the
+            # stripped invite state fails closed, like an empty sender in
+            # _on_invite.
+            if not self._is_authorized_inviter(inviter):
+                logger.warning(
+                    "Matrix: rejecting invite to %s from unauthorized user %s",
+                    room_id,
+                    inviter,
+                )
+                continue
+            if is_direct and not inviter:
+                logger.warning(
+                    "Matrix: joining direct invite to %s without recording it "
+                    "in m.direct because the invite state has no inviter",
+                    room_id,
+                )
+            logger.info(
+                "Matrix: reconciling pending invite for %s (is_direct=%s)",
+                room_id,
+                is_direct,
+            )
+            self._schedule_invite_join(
+                str(room_id),
+                is_direct=is_direct and bool(inviter),
+                inviter=inviter,
+            )
+
+    def _extract_invite_dm_signal(self, invited_room: Any) -> tuple[bool, str]:
+        """Read the is_direct flag and inviter from a room's invite_state.
+
+        The stripped ``m.room.member`` event for our own user carries the
+        ``is_direct`` flag from the original invite; its sender is the
+        inviter. Returns ``(False, "")`` when the signal is absent.
+        """
+        if not self._user_id:
+            return False, ""
+
+        if not isinstance(invited_room, dict):
+            return False, ""
+
+        invite_state = invited_room.get("invite_state", {})
+        if not isinstance(invite_state, dict):
+            return False, ""
+
+        events = invite_state.get("events", [])
+        if not isinstance(events, list):
+            return False, ""
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "m.room.member":
+                continue
+            if self._user_id and event.get("state_key") != self._user_id:
+                continue
+
+            content = event.get("content", {})
+            if not isinstance(content, dict):
+                continue
+            if content.get("membership") != "invite":
+                continue
+
+            return bool(content.get("is_direct")), str(event.get("sender", ""))
+
+        return False, ""
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)

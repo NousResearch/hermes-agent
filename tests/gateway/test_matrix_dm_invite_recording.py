@@ -102,6 +102,109 @@ class TestOnInviteRecordsDM:
 
 
 # ---------------------------------------------------------------------------
+# _schedule_pending_invite_joins DM recording
+# ---------------------------------------------------------------------------
+
+
+def _member_invite_event(
+    state_key="@hermes:example.org",
+    sender="@alice:example.org",
+    is_direct=True,
+    membership="invite",
+):
+    """Create a stripped m.room.member event as found in invite_state."""
+    return {
+        "type": "m.room.member",
+        "state_key": state_key,
+        "sender": sender,
+        "content": {"membership": membership, "is_direct": is_direct},
+    }
+
+
+def _invite_sync_data(room_id="!dm_room:example.org", invite_state=None):
+    """Create a sync payload with one pending invite room."""
+    room = {} if invite_state is None else {"invite_state": invite_state}
+    return {"rooms": {"invite": {room_id: room}}, "next_batch": "s1"}
+
+
+class TestPendingInviteReconciliationRecordsDM:
+    """_schedule_pending_invite_joins threads the DM signal from invite_state.
+
+    After a gateway restart a direct invite is reconciled from sync's
+    ``rooms.invite`` rather than a live invite event. The stripped
+    ``m.room.member`` event in ``invite_state`` still carries ``is_direct``
+    and the inviter; without threading them through, the room is never
+    recorded in ``m.direct`` and is misclassified as a group (surfaced by
+    the triage of #62493).
+    """
+
+    @staticmethod
+    async def _drain_invite_tasks(adapter):
+        """Await any tasks _schedule_invite_join spawned."""
+        for task in list(adapter._invite_join_tasks.values()):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_reconciled_direct_invite_records_dm(self):
+        adapter = _make_adapter()
+        adapter._join_room_by_id = AsyncMock(return_value=True)
+        adapter._record_dm_room = AsyncMock()
+
+        sync_data = _invite_sync_data(
+            invite_state={"events": [_member_invite_event(is_direct=True)]}
+        )
+        adapter._schedule_pending_invite_joins(sync_data)
+        await self._drain_invite_tasks(adapter)
+
+        adapter._join_room_by_id.assert_awaited_once_with("!dm_room:example.org")
+        adapter._record_dm_room.assert_awaited_once_with(
+            "!dm_room:example.org", "@alice:example.org"
+        )
+
+    @pytest.mark.asyncio
+    async def test_reconciled_direct_invite_ends_up_classified_as_dm(self):
+        """End to end: the reconciled room lands in _dm_rooms as a DM."""
+        adapter = _make_adapter()
+        adapter._join_room_by_id = AsyncMock(return_value=True)
+        adapter._client = MagicMock()
+        adapter._client.get_account_data = AsyncMock(
+            side_effect=Exception("M_NOT_FOUND")
+        )
+        adapter._client.set_account_data = AsyncMock()
+
+        sync_data = _invite_sync_data(
+            invite_state={"events": [_member_invite_event(is_direct=True)]}
+        )
+        adapter._schedule_pending_invite_joins(sync_data)
+        await self._drain_invite_tasks(adapter)
+
+        adapter._client.set_account_data.assert_awaited_once_with(
+            "m.direct", {"@alice:example.org": ["!dm_room:example.org"]}
+        )
+        assert adapter._dm_rooms.get("!dm_room:example.org") is True
+
+    @pytest.mark.asyncio
+    async def test_reconciled_non_direct_invite_does_not_record(self):
+        """A pending invite without the is_direct flag joins (the inviter
+        is allow-listed) but records nothing in m.direct. Invites whose
+        inviter cannot be read from the stripped state at all are covered
+        by test_matrix_pending_invite_auth.py: they are rejected outright
+        by the inviter allowlist gate, so no join happens either."""
+        adapter = _make_adapter()
+        adapter._join_room_by_id = AsyncMock(return_value=True)
+        adapter._record_dm_room = AsyncMock()
+
+        sync_data = _invite_sync_data(
+            invite_state={"events": [_member_invite_event(is_direct=False)]}
+        )
+        adapter._schedule_pending_invite_joins(sync_data)
+        await self._drain_invite_tasks(adapter)
+
+        adapter._join_room_by_id.assert_awaited_once_with("!dm_room:example.org")
+        adapter._record_dm_room.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # _record_dm_room
 # ---------------------------------------------------------------------------
 

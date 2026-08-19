@@ -464,9 +464,10 @@ export const host = {
       throw new Error('This Desktop build has no connection registry. Update Hermes Desktop.')
     }
 
-    const registry = await bridge.list()
+    const registryPayload = await bridge.list()
+    const rows = Array.isArray(registryPayload?.connections) ? registryPayload.connections : []
 
-    return Array.isArray(registry) ? registry : Array.isArray(registry?.connections) ? registry.connections : []
+    return rows.map(connection => ({ ...connection, primary: connection.id === registryPayload.primary }))
   },
 
   /** The union agent roster across every registered connection: one row per
@@ -498,6 +499,22 @@ export const host = {
   ensureAgent: async (connectionId: null | string, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default'),
 
+  /** Open a stored session that belongs to an agent on ANY registered source.
+   *  The connection id + profile are the durable route; the store handles
+   *  dialing / source activation, then the regular session-open path owns
+   *  navigation + hydration. */
+  openAgentSession: async (
+    connectionId: null | string,
+    profile: string,
+    storedSessionId: string,
+    options: Omit<PluginOpenSessionOptions, 'profile'> = {}
+  ): Promise<void> => {
+    await ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default')
+
+    return host.openSession(storedSessionId, { ...options, profile })
+  },
+
+  /** Open a stored session — optionally pre-activating its profile first. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
     const profile = (options.profile ?? '').trim()

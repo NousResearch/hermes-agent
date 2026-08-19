@@ -275,11 +275,27 @@ class TestProviderRouting:
 
 
 class TestResolutionOrder:
-    def test_registry_falls_back_to_keyless_parallel(self, fresh_registry, monkeypatch):
+    def test_registry_falls_back_to_keyless(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
         provider = registry.get_active_search_provider()
         assert provider is not None
-        assert provider.name == "parallel"  # _KEYLESS_PREFERENCE order
+        # 50/50 split: either keyless vendor is valid; it must match the
+        # process-stable preference order.
+        assert provider.name == registry._keyless_preference()[0]
+        assert provider.name in ("exa", "parallel")
+
+    def test_keyless_split_is_process_stable_and_covers_both(self, fresh_registry, monkeypatch):
+        monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
+        # Stable within a process: repeated resolution never flip-flops.
+        first = registry.get_active_search_provider().name
+        assert all(
+            registry.get_active_search_provider().name == first for _ in range(5)
+        )
+        # Both split outcomes route correctly (simulate the two parities).
+        monkeypatch.setattr(keyless_mcp, "_SESSION_ID", "0" * 32)  # even
+        assert registry._keyless_preference() == ("exa", "parallel")
+        monkeypatch.setattr(keyless_mcp, "_SESSION_ID", "1" * 32)  # odd
+        assert registry._keyless_preference() == ("parallel", "exa")
 
     def test_registry_keyless_disabled_returns_none(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
@@ -298,14 +314,15 @@ class TestResolutionOrder:
         assert provider is not None and provider.name == "exa"
 
     def test_get_backend_keyless_last(self, monkeypatch):
-        # No creds at all -> keyless parallel.
+        # No creds at all -> a keyless vendor per the process-stable split.
         monkeypatch.setattr(
             web_tools, "_registered_web_provider",
             lambda name: {"parallel": ParallelWebSearchProvider(),
                           "exa": ExaWebSearchProvider()}.get(name),
         )
         monkeypatch.setattr(web_tools, "_list_registered_web_providers", list)
-        assert web_tools._get_backend() == "parallel"
+        from agent.web_search_registry import _keyless_preference
+        assert web_tools._get_backend() == _keyless_preference()[0]
 
     def test_get_backend_key_beats_keyless(self, monkeypatch):
         monkeypatch.setattr(

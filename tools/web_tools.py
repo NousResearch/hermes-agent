@@ -276,10 +276,10 @@ def _get_backend() -> str:
     # plugins yet (subprocess agent runs, delegate children, scripts).
     try:
         _ensure_web_plugins_loaded()
-        from agent.web_search_registry import _KEYLESS_PREFERENCE, _keyless_tier_enabled
+        from agent.web_search_registry import _keyless_preference, _keyless_tier_enabled
 
         if _keyless_tier_enabled():
-            for name in _KEYLESS_PREFERENCE:
+            for name in _keyless_preference():
                 provider = _registered_web_provider(name)
                 if provider is None:
                     continue

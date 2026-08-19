@@ -32,7 +32,7 @@ Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecr
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
 :::info Works out of the box — keyless free tier
-A fresh install with **no web credentials at all** still gets working `web_search` and `web_extract`: Hermes falls back to Parallel's and Exa's public anonymous endpoints (rate-limited free tiers, Parallel first). No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For reliable, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
+A fresh install with **no web credentials at all** still gets working `web_search` and `web_extract`: Hermes falls back to Exa's and Parallel's public anonymous endpoints (rate-limited free tiers), splitting unpinned installs 50/50 between the two vendors — the pick is random per process and stable within it. No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For reliable, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
 :::
 
 **Choosing free vs paid explicitly:** in `hermes tools`, Exa and Parallel each appear as two rows — **Free (keyless)** and **Paid (API key)**. Picking Free pins the anonymous endpoint (even if you later add a key); picking Paid pins the keyed SDK path (a missing key then errors instead of silently downgrading to the free tier). The selection is stored as `web.provider_tier.<name>: free|paid`; leave it unset for auto (key present → paid, otherwise free).
@@ -366,9 +366,9 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `SEARXNG_URL` | searxng |
 | `BRAVE_SEARCH_API_KEY` | brave-free |
 | `ddgs` package importable | ddgs |
-| *(nothing set at all)* | parallel → exa keyless free tier |
+| *(nothing set at all)* | exa / parallel keyless free tier (50/50 split) |
 
-**Keyless free tier:** when *no* credential above is present, Hermes falls back to Parallel's public anonymous endpoint (then Exa's) so web tools work on a fresh install with zero setup. Both free tiers are rate-limited by the vendors under burst load; in practice sustained normal usage goes through fine. On throttling, the tool returns an error suggesting the matching API key. Set `web.keyless_fallback: false` to turn this tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
+**Keyless free tier:** when *no* credential above is present, Hermes falls back to Exa's and Parallel's public anonymous endpoints so web tools work on a fresh install with zero setup — unpinned installs split 50/50 between the two vendors (random per process, stable within it); pick one explicitly in `hermes tools` to pin it. Both free tiers are rate-limited by the vendors under burst load; in practice sustained normal usage goes through fine. On throttling, the tool returns an error suggesting the matching API key. Set `web.keyless_fallback: false` to turn this tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 

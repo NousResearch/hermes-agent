@@ -152,7 +152,8 @@
     "unist-util-visit-parents": "6.0.2",
     "use-stick-to-bottom": "1.1.6",
     "vfile": "6.0.3",
-    "web-haptics": "0.0.6"
+    "web-haptics": "0.0.6",
+    "x11": "^3.1.1"
   },
   "optionalDependencies": {
     "get-windows": "9.3.0"

@@ -181,6 +181,7 @@ import { cursorPointInWindow } from './hud-cursor'
 import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
+import { createX11CursorReader, type X11CursorReader } from './hud-cursor-x11'
 import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
@@ -11234,6 +11235,14 @@ function startHudCursorFeed(win: BrowserWindow) {
     return
   }
 
+  // XQueryPointer is the only cursor source that survives click-through on X11:
+  // `screen.getCursorScreenPoint()` is a Chromium-side cache updated by motion
+  // events, and those stop arriving the instant the window ignores the mouse —
+  // the cached point freezes, the feed computes the same point forever, and the
+  // renderer never learns the pointer came back. Ask the X server instead;
+  // fall back to Electron's API if the X connection is unavailable.
+  const x11Reader = createX11CursorReader()
+
   let last: string | null = null
 
   const timer = setInterval(() => {
@@ -11241,7 +11250,15 @@ function startHudCursorFeed(win: BrowserWindow) {
       return
     }
 
-    const point = cursorPointInWindow(screen.getCursorScreenPoint(), win.getBounds(), win.webContents.getZoomFactor())
+    const x11Point = x11Reader.read()
+    // X11 reports physical pixels; bounds and the renderer speak DIP. On the
+    // HUD's own display scale is what reconciles them (1 on most desktops).
+    const scale = screen.getDisplayMatching(win.getBounds()).scaleFactor || 1
+    const cursor =
+      x11Point !== null
+        ? { x: x11Point.x / scale, y: x11Point.y / scale }
+        : screen.getCursorScreenPoint()
+    const point = cursorPointInWindow(cursor, win.getBounds(), win.webContents.getZoomFactor())
 
     // Off-window is a real answer (it is what hands the mouse back), so it is
     // sent — once. Only an unchanged answer is dropped, to keep an idle cursor
@@ -11256,7 +11273,10 @@ function startHudCursorFeed(win: BrowserWindow) {
     win.webContents.send('hermes:hud:cursor', point)
   }, HUD_CURSOR_POLL_MS)
 
-  win.on('closed', () => clearInterval(timer))
+  win.on('closed', () => {
+    clearInterval(timer)
+    x11Reader.close()
+  })
 }
 
 function hudBounds() {

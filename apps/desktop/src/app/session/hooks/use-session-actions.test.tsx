@@ -3549,4 +3549,47 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['tg-dual'])
     expect($sessions.get()).toEqual([])
   })
+
+  it('fails closed when a listed profile-less messaging DELETE cannot resolve an owner', async () => {
+    const row = storedSession({ id: 'tg-unresolved', source: 'telegram', title: 'QQ/TG' })
+    setMessagingSessions([row])
+    $pinnedSessionIds.set(['tg-unresolved'])
+    $sessionSeenCounts.set({
+      winefox: { 'tg-unresolved': 3 },
+      default: { 'desk-keep': 1 }
+    })
+    $unreadFinishedMarkers.set({
+      winefox: ['tg-unresolved'],
+      default: ['desk-keep']
+    })
+    mockGetSession.mockRejectedValue(new Error('404: Session not found'))
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession('tg-unresolved')
+    })
+
+    expect(mockDeleteSession).not.toHaveBeenCalled()
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['tg-unresolved'])
+    expect($sessions.get()).toEqual([])
+    expect($pinnedSessionIds.get()).toEqual(['tg-unresolved'])
+    expect($sessionSeenCounts.get().winefox?.['tg-unresolved']).toBe(3)
+    expect($unreadFinishedMarkers.get().winefox).toEqual(['tg-unresolved'])
+    expect($removedSessionIds.get().has('tg-unresolved')).toBe(false)
+    expect($sessionMutationsInFlight.get().has('tg-unresolved')).toBe(false)
+  })
+
+  it('fails closed when a listed profile-less messaging archive cannot resolve an owner', async () => {
+    setMessagingSessions([storedSession({ id: 'tg-arch-unresolved', source: 'telegram' })])
+    mockGetSession.mockRejectedValue(new Error('404: Session not found'))
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.archiveSession('tg-arch-unresolved')
+    })
+
+    expect(mockSetSessionArchived).not.toHaveBeenCalled()
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['tg-arch-unresolved'])
+    expect($sessions.get()).toEqual([])
+  })
 })

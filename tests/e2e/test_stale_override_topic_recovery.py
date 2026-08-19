@@ -359,6 +359,119 @@ async def test_stripped_topic_fallthrough_command_reenters_canonical_busy_path(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_text", "blocked_call"),
+    [
+        ("/learn https://example.com/source", "learn"),
+        ("/init include the deployment notes", "init"),
+        ("/blueprint daily-digest", "blueprint"),
+        (
+            "/blueprint daily-digest topic=AI time=08:00 recurrence=weekdays",
+            "blueprint",
+        ),
+    ],
+)
+async def test_stripped_topic_side_effectful_command_is_rejected_before_handler_or_ack(
+    tmp_path, monkeypatch, command_text, blocked_call
+):
+    """Canonical busy policy must precede command acks and mutations."""
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="e2e-test-token")
+        },
+        sessions_dir=hermes_home / "sessions",
+    )
+    store = SessionStore(config.sessions_dir, config)
+    canonical_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="topic-chat",
+        chat_type="dm",
+        user_id="topic-user",
+        thread_id="42",
+    )
+    canonical_entry = store.get_or_create_session(canonical_source)
+    canonical_key = canonical_entry.session_key
+    raw_source = dataclasses.replace(canonical_source, thread_id=None)
+    raw_key = build_session_key(raw_source)
+    db = store._db
+    db.enable_telegram_topic_mode(chat_id="topic-chat", user_id="topic-user")
+    db.bind_telegram_topic(
+        chat_id="topic-chat",
+        thread_id="42",
+        user_id="topic-user",
+        session_key=canonical_key,
+        session_id=canonical_entry.session_id,
+    )
+
+    class ActiveAgent:
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+    runner = _runner_with_store(config, store, db)
+    active_agent = ActiveAgent()
+    active_state = runner._session_state(canonical_key)
+    original_override = {"provider": "test", "model": "original"}
+    active_state.conversation.model_override = original_override
+    active_state.turn.agent = active_agent
+    active_state.turn.started_ts = time.time() - 10
+
+    adapter = SimpleNamespace(send=AsyncMock(), _pending_messages={})
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("busy command dispatched a second turn")
+    )
+    runner._claim_active_session_slot = MagicMock(
+        side_effect=AssertionError("busy command reached session claim")
+    )
+    runner._handle_blueprint_command = AsyncMock(
+        side_effect=AssertionError("busy /blueprint reached its handler")
+    )
+    learn_builder = MagicMock(
+        side_effect=AssertionError("busy /learn built a persistent skill prompt")
+    )
+    init_builder = MagicMock(
+        side_effect=AssertionError("busy /init scanned or built a project prompt")
+    )
+    cron_registration = MagicMock(
+        side_effect=AssertionError("busy /blueprint registered a cron job")
+    )
+    monkeypatch.setattr("agent.learn_prompt.build_learn_prompt", learn_builder)
+    monkeypatch.setattr(
+        "hermes_cli.init_command.build_init_prompt_for_cwd", init_builder
+    )
+    monkeypatch.setattr(
+        "cron.scheduler.create_job_with_scheduler_registration", cron_registration
+    )
+
+    event = MessageEvent(text=command_text, source=raw_source)
+    result = await runner._handle_message(event)
+    canonical_command = command_text.split(maxsplit=1)[0].lstrip("/")
+
+    assert result == (
+        f"⏳ Agent is running — `/{canonical_command}` can't run mid-turn. "
+        "Wait for the current response or `/stop` first."
+    )
+    assert event.source.thread_id == "42"
+    adapter.send.assert_not_awaited()
+    runner._handle_message_with_agent.assert_not_awaited()
+    runner._claim_active_session_slot.assert_not_called()
+    cron_registration.assert_not_called()
+    if blocked_call == "learn":
+        learn_builder.assert_not_called()
+    elif blocked_call == "init":
+        init_builder.assert_not_called()
+    else:
+        runner._handle_blueprint_command.assert_not_awaited()
+    preserved = runner._peek_session_state(canonical_key)
+    assert preserved.turn.agent is active_agent
+    assert preserved.conversation.model_override is original_override
+    assert runner._peek_session_state(raw_key) is None
+    assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("busy_mode", ["queue", "steer"])
 async def test_stripped_topic_dynamic_skill_preserves_busy_mode(
     tmp_path, monkeypatch, busy_mode

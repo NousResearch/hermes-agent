@@ -138,6 +138,12 @@ def test_save_moa_turn_managed_setgid_parent_group_mode(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes-home"
     hermes_home.mkdir()
     os.chmod(hermes_home, 0o2770)
+    # Managed mode requires these to already exist (normally created by
+    # the NixOS activation script); without them ensure_hermes_home()
+    # raises RuntimeError, which _traces_enabled_and_dir() swallows, and
+    # save_moa_turn silently no-ops before ever writing the trace.
+    for subdir in ("cron", "sessions", "logs", "memories"):
+        (hermes_home / subdir).mkdir()
     (hermes_home / "config.yaml").write_text(
         "moa:\n  save_traces: true\n", encoding="utf-8"
     )

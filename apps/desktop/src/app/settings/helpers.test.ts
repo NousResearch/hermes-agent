@@ -9,6 +9,7 @@ import {
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
+  prettyName,
   providerGroup,
   sectionFieldEntries,
   setNested,
@@ -17,6 +18,10 @@ import {
 } from './helpers'
 
 describe('settings helpers', () => {
+  it('preserves canonical product capitalization', () => {
+    expect(prettyName('openviking')).toBe('OpenViking')
+  })
+
   it('surfaces repository discovery config in Workspace with user-facing copy', () => {
     const workspace = SECTIONS.find(section => section.id === 'workspace')
 

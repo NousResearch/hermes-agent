@@ -305,17 +305,19 @@ hermes memory setup    # select "openviking"
 hermes config set memory.provider openviking
 ```
 
-`hermes memory setup` can reuse or copy connection values from
-`~/.openviking/ovcli.conf`. Manual setup uses the active profile's `.env` file;
-for the default profile that is `~/.hermes/.env`, and for named profiles use
-`~/.hermes/profiles/<profile>/.env`.
+`hermes memory setup` and Hermes Desktop can link an existing OpenViking CLI
+profile or create a named `~/.openviking/ovcli.conf.<name>` profile. Hermes
+stores only the profile link; connection secrets remain in the OpenViking
+profile. Manual environment overrides use the active Hermes profile's `.env`
+file. For the default profile that is `~/.hermes/.env`, and for named profiles
+use `~/.hermes/profiles/<profile>/.env`.
 
 ```text
-OPENVIKING_ENDPOINT=http://127.0.0.1:1933
+OPENVIKING_URL=http://127.0.0.1:1933
 # OPENVIKING_API_KEY=...
 # OPENVIKING_ACCOUNT=default
 # OPENVIKING_USER=default
-# OPENVIKING_AGENT=hermes
+# OPENVIKING_ACTOR_PEER_ID=hermes
 ```
 
 OpenViking server settings live in `ov.conf` (`--config`,
@@ -329,7 +331,9 @@ live in `ovcli.conf` (`OPENVIKING_CLI_CONFIG_FILE` or
 - `viking://` URI scheme for hierarchical knowledge browsing
 
 `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
-`OPENVIKING_AGENT` is Hermes' peer ID in OpenViking for peer-scoped memories.
+`OPENVIKING_ACTOR_PEER_ID` is Hermes' agent ID in OpenViking for peer-scoped
+memories. `OPENVIKING_ENDPOINT` and `OPENVIKING_AGENT` remain runtime fallbacks
+for existing installations.
 
 ---
 

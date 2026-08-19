@@ -4316,9 +4316,27 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
-    "OPENVIKING_ENDPOINT": {
+    "OPENVIKING_URL": {
         "description": "OpenViking server URL (default: http://127.0.0.1:1933)",
-        "prompt": "OpenViking endpoint",
+        "prompt": "OpenViking URL",
+        "category": "tool",
+        "advanced": True,
+    },
+    "OPENVIKING_ACCOUNT": {
+        "description": "OpenViking tenant account for local/trusted mode (default: default)",
+        "prompt": "OpenViking account",
+        "category": "tool",
+        "advanced": True,
+    },
+    "OPENVIKING_USER": {
+        "description": "OpenViking tenant user for local/trusted mode (default: default)",
+        "prompt": "OpenViking user",
+        "category": "tool",
+        "advanced": True,
+    },
+    "OPENVIKING_ACTOR_PEER_ID": {
+        "description": "Hermes agent ID used for peer-scoped OpenViking memories (default: hermes)",
+        "prompt": "OpenViking agent ID",
         "category": "tool",
         "advanced": True,
     },

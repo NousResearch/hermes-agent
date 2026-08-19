@@ -20,9 +20,11 @@ so the numbers and URLs come from retrieval, never from memory — the model onl
 ever emits small integers it was handed.
 
 For high-stakes work the same ledger doubles as a fact-checking chain: verbatim
-quotes are attached to each source (rejected unless they literally appear in
-the fetched page text), claims from model knowledge are flagged `[unverified]`,
-and `verify --evidence` fails any draft whose cited sources carry no evidence.
+quotes are attached to each URL source (rejected unless they literally appear
+in the fetched page text), deterministic tool facts carry `[tool:<name>]`,
+user/skill rules carry `[policy]`, and model knowledge is flagged
+`[unverified]`. `verify --evidence` requires quotes only for numeric URL
+citations.
 
 This skill covers answers in chat, written documents (markdown, PDF, docx,
 slides), and research reports. It does not cover academic BibTeX pipelines —
@@ -46,7 +48,10 @@ Mention a URL only if the user would plausibly want the link.
 
 ## Prerequisites
 
-None beyond the standard toolset. `scripts/sources.py` is stdlib-only Python 3.
+None beyond the standard toolset. `scripts/sources.py` is stdlib-only and requires
+Python 3.10+ because it imports current Hermes modules that use PEP 604 type syntax.
+On macOS, check `python3 --version`; if Apple’s Python 3.9 is first on PATH, invoke
+all examples as `python3.11 "$S" ...` (or another installed 3.10+ interpreter).
 Retrieval comes from whatever is configured: `web_search`, `web_extract`,
 `browser_navigate`, or `terminal` (curl, CLIs).
 
@@ -106,7 +111,10 @@ Ice floats because it is less dense than liquid water.[1][2]
 - No space before the bracket; each id in its own brackets.
 - Max 3 ids per sentence. Cite per sentence, not one dump at the end.
 - Only ids the ledger returned. Never invent an id or a URL.
-- Claims from your own knowledge get no citation.
+- Deterministic facts read from a tool use `[tool:<name>]`; user- or
+  skill-supplied rules use `[policy]`. These declare non-URL provenance and do
+  not create a Sources entry.
+- Claims from your own knowledge get no numeric citation.
 - Conflicting sources: present both readings, each with its own id.
 - Quote exact figures, dates, and names as the source states them; flag gaps
   explicitly ("no source found for X") instead of smoothing them over.
@@ -147,18 +155,30 @@ Copy-paste from the fetched text; never retype. Quote the sentence as the
 reader sees it — the matcher sees through the extractor's markup for you, so
 you don't have to reproduce link syntax or escaped asterisks in your quote.
 
-② **Flag model-knowledge claims with `[unverified]`.** A load-bearing claim
-you could not source gets an explicit marker instead of a citation:
+② **Declare non-URL provenance exactly.** Use one of these markers at the
+end of the sentence:
+
+- `[tool:<name>]` for a deterministic fact returned by a named tool. `<name>`
+  must be a non-empty safe token matching `[A-Za-z0-9][A-Za-z0-9_.-]*`, for
+  example `[tool:TradingView]` or
+  `[tool:mcp__tradingview__data_get_ohlcv]`. Bare `[tool]`, `[tool:]`, and
+  names containing spaces do not count.
+- `[policy]` for a rule supplied by the user or an active skill/playbook.
+- `[unverified]` for a load-bearing model-knowledge claim that could not be
+  sourced.
 
 ```
+The live close came from the chart.[tool:TradingView]
+The playbook requires confirmation before entry.[policy]
 The refactor likely predates the 2.0 release.[unverified]
 ```
 
-`verify --min-coverage` counts `[unverified]` sentences as covered — the goal
-is declared provenance for every claim, not a citation on every sentence.
-If a key claim can be checked, check it; `[unverified]` is for what genuinely
-cannot be, and a fact-check deliverable dominated by `[unverified]` markers
-should say so in its summary.
+All three markers count toward `verify --min-coverage`, but `[tool:<name>]` and
+`[policy]` are provenance declarations, not numeric URL citations and not
+synonyms for `[unverified]`. They do not add Sources entries or satisfy a claim
+that actually came from the web. If a key model-knowledge claim can be checked,
+check it; `[unverified]` is for what genuinely cannot be, and a fact-check
+deliverable dominated by `[unverified]` markers should say so in its summary.
 
 ③ **Cross-check disputed facts against a second independent source.** When two
 sources disagree, cite both readings with their own ids and quotes, and say
@@ -184,9 +204,13 @@ to stdout instead. Both emit the heading `## Sources` (`--style plain` emits
 `sentences with declared provenance / prose sentences`. A prose sentence is a
 non-empty line fragment of 4+ words after the Sources block, headings (`#`),
 table rows (`|`), and fenced code are dropped; blockquote markers are stripped.
-Provenance is declared by either a `[n]` citation or an `[unverified]` marker,
-so a sentence carrying both counts once. Run `verify` without a threshold first
-and read the `info: stats:` line to see the counts before picking a number.
+Provenance is declared by a numeric `[n]` URL citation, a valid
+`[tool:<name>]` marker, `[policy]`, or `[unverified]`. A sentence carrying more
+than one kind counts once in the coverage numerator, while stats report the
+cited, tool-verified, policy, and unverified category counts separately. The
+`--evidence` quote gate remains limited to numeric `[n]` URL citations. Run
+`verify` without a threshold first and read the `info: stats:` line before
+picking a number.
 
 ## Pitfalls
 
@@ -226,7 +250,7 @@ python "$S" verify report.md --strict --min-coverage 0.5
 ```
 
 Green means: every `[n]` in the draft exists in the ledger, the Sources block
-lists exactly the cited ids with the ledger's URLs, and the cited share of
-source-bearing sentences meets the threshold. Read the warnings even when the
+lists exactly the cited ids with the ledger's URLs, and the declared-provenance
+share of prose sentences meets the threshold. Read the warnings even when the
 exit code is 0 — uncited registered sources usually mean a claim lost its
 attribution during editing.

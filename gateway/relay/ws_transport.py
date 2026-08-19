@@ -775,6 +775,16 @@ class WebSocketRelayTransport:
             return {"success": False, "error": "relay transport closed"}
         if self._ws is None:
             return {"success": False, "error": "relay transport not connected"}
+        if self._supervisor is not None and not self._supervisor.done():
+            # The reconnect supervisor is mid-redial (backing off after an
+            # unexpected close). `self._ws` still points at the DEAD socket
+            # until _dial_and_start() replaces it, so the check above does not
+            # cover this window — a send here would register a future no
+            # reader can resolve and block the caller for _outbound_timeout_s
+            # (Coatue incident 2026-08-18). Fail fast with the dict shape
+            # callers expect; a live supervisor's dial success ends the task,
+            # so `not done()` is exactly the redial window.
+            return {"success": False, "error": "relay transport reconnecting"}
         request_id = uuid.uuid4().hex
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Dict[str, Any]] = loop.create_future()

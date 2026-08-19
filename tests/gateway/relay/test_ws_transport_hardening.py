@@ -81,3 +81,26 @@ async def test_read_loop_exit_fails_pending_futures_promptly():
     assert result == {"success": False, "error": "relay transport connection lost"}
     assert t._pending == {}
     await t._reader
+
+
+@pytest.mark.asyncio
+async def test_send_during_redial_window_fails_fast():
+    """While the reconnect supervisor is backing off, _ws still points at the
+    dead socket — a send must return an error dict immediately (no
+    RuntimeError, no 30s timeout on an unresolvable future)."""
+    t = WebSocketRelayTransport("ws://unused", "discord", "bot1", outbound_timeout_s=30.0)
+    t._ws = _DroppingWS()  # stale/dead socket left over from before the drop
+    t._supervisor = asyncio.create_task(asyncio.sleep(60))  # mid-redial backoff
+    try:
+        result = await asyncio.wait_for(
+            t.send_outbound({"op": "send_message", "text": "hi"}), timeout=1.0
+        )
+        assert result["success"] is False
+        assert "reconnect" in result["error"]
+        assert t._pending == {}
+    finally:
+        t._supervisor.cancel()
+        try:
+            await t._supervisor
+        except asyncio.CancelledError:
+            pass

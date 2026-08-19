@@ -140,3 +140,90 @@ async def test_active_session_bypass_uses_profile_namespaced_key_under_multiplex
     assert adapter._pending_messages == {}
 
 
+@pytest.mark.asyncio
+async def test_gateway_clarify_reply_resumes_typing_before_returning_empty_ack():
+    """A clarify answer must re-enable the active run's typing indicator.
+
+    Clarify pauses typing while waiting so Slack's Assistant API does not
+    disable the compose box. The typed answer is intercepted by the gateway
+    and returns an empty acknowledgment instead of starting a second run; that
+    interception path must therefore resume the original run's indicator.
+    """
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    adapter = _ClarifyBypassAdapter()
+    adapter.pause_typing_for_chat("12345")
+    event = _event("the missing details")
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._startup_restore_in_progress = False
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._is_user_authorized = lambda source: True
+    runner._session_key_for_source = lambda source: "clarify-session"
+    runner._adapter_for_source = lambda source: adapter
+    runner._update_prompt_pending = {}
+
+    cm.register("clarify-2", "clarify-session", "What is missing?", None)
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        result = await runner._handle_message(event)
+
+    assert result == ""
+    assert "12345" not in adapter._typing_paused
+
+
+@pytest.mark.asyncio
+async def test_gateway_clarify_document_reply_reaches_waiting_agent_with_file_context(
+    tmp_path, monkeypatch
+):
+    """A PDF attached as an open-ended clarify answer must not collapse to its ID.
+
+    Slack existing-file shares can carry a short ``F…`` text body plus a cached
+    document path. The clarify intercept resolves the waiting tool directly and
+    bypasses the normal inbound preprocessing path, so it must preserve the same
+    document context note the agent would receive on an ordinary turn.
+    """
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    pdf_path = tmp_path / "doc_abc_SIE_Regions_Offline_Reference.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7 fake")
+
+    adapter = _ClarifyBypassAdapter()
+    event = _event("F0BKY3BG6F4")
+    event.message_type = MessageType.DOCUMENT
+    event.media_urls = [str(pdf_path)]
+    event.media_types = ["application/pdf"]
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._startup_restore_in_progress = False
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._is_user_authorized = lambda source: True
+    runner._session_key_for_source = lambda source: "clarify-document-session"
+    runner._adapter_for_source = lambda source: adapter
+    runner._update_prompt_pending = {}
+
+    cm.register(
+        "clarify-document",
+        "clarify-document-session",
+        "Please attach the PDF",
+        None,
+    )
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        result = await runner._handle_message(event)
+
+    assert result == ""
+    with cm._lock:
+        entry = cm._entries.get("clarify-document")
+    assert entry is not None
+    assert entry.event.is_set()
+    assert entry.response is not None
+    assert "F0BKY3BG6F4" in entry.response
+    assert "[The user sent a document:" in entry.response
+    assert "SIE_Regions_Offline_Reference.pdf" in entry.response
+    assert str(pdf_path) in entry.response

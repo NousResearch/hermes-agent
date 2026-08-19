@@ -194,6 +194,39 @@ def _native_aspect(aspect: str) -> str:
     return "square"
 
 
+def _variation_seed(draft: dict) -> int:
+    """Deterministic per-post seed for the extended style-menu variation.
+
+    Same post content → same seed → same style/blend (article-coherent).
+    Different posts → different seed → deliberate cross-article variation.
+    """
+    import hashlib
+    identity = str(draft.get("id") or draft.get("title") or draft.get("prompt") or "post")
+    return int(hashlib.sha256(f"midlib-var:{identity}".encode()).hexdigest()[:8], 16)
+
+
+def _resolve_extended_variation(draft: dict) -> Optional[dict]:
+    """Return {style_slug, blend_slugs} from the extended menu, or None when the
+    draft pins an explicit user style (existing styles stay unchanged).
+
+    A user-pinned style (``draft["style"]``) wins and disables the extended
+    menu. The editorial decision engine's auto-selected studio
+    (``draft["_editorial"]["studio"]``) is NOT user-pinned: the extended menu
+    applies additively on top of it (base style + neutral registry traits),
+    which is the intended additive model for blog/X/LinkedIn auto-routed jobs.
+    """
+    if draft.get("style"):
+        # User-pinned explicit style — extended menu never overrides it.
+        return None
+    try:
+        from style_registry import pick_variation
+        seed = _variation_seed(draft)
+        return pick_variation(seed)
+    except Exception as exc:  # noqa: BLE001 — registry is never a blocker
+        print(f"[draft_media] extended variation unavailable: {exc}")
+        return None
+
+
 def _generate_native_codex(draft: dict, output_dir=None) -> Optional[str]:
     """Generate one image via the explicit native Codex seam (approval-only).
 
@@ -211,7 +244,21 @@ def _generate_native_codex(draft: dict, output_dir=None) -> Optional[str]:
     staging_root = Path(output_dir or OUTPUT_ROOT) / "image_staging"
     job_id = f"social-{uuid.uuid4().hex[:12]}"
 
-    request = prepare_image_request(prompt=prompt, style=studio, backend="codex")
+    # Extended style menu: optional deterministic blend when the draft has no
+    # explicit studio. Explicit styles keep working unchanged.
+    variation = _resolve_extended_variation(draft)
+    blend_slugs = (variation or {}).get("blend_slugs") or []
+    registry_style = None
+    if variation and not blend_slugs:
+        registry_style = variation.get("style_slug")
+    request = prepare_image_request(
+        prompt=prompt,
+        style=studio,
+        backend="codex",
+        blend=blend_slugs,
+        registry_style=registry_style,
+        registry_seed=_variation_seed(draft) if (blend_slugs or registry_style) else None,
+    )
     staged = stage_and_plan_image_job(request, staging_root=staging_root, job_id=job_id)
     completed = execute_staged_image_job(
         request,

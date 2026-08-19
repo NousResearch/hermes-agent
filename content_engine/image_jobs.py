@@ -56,6 +56,7 @@ class PreparedImageRequest:
     # style/layout resolution.
     registry_traits: str | None = None
     registry_slugs: tuple[str, ...] = ()
+    registry_seed: int | None = None
 
 
 def _style_key(value: str) -> str:
@@ -176,6 +177,8 @@ def prepare_image_request(
     backend: str = "codex",
     references: Iterable[str] = (),
     blend: Iterable[str] = (),
+    registry_seed: int | None = None,
+    registry_style: str | None = None,
 ) -> PreparedImageRequest:
     """Validate a request without selecting or invoking a generator.
 
@@ -199,11 +202,30 @@ def prepare_image_request(
 
     blend_slugs = tuple(str(slug).strip() for slug in blend if str(slug).strip())
     registry_traits: str | None = None
-    if blend_slugs:
+    resolved_seed: int | None = registry_seed
+    # A single registry style (no blend) also contributes a neutral trait
+    # fragment. blend (if present) wins; otherwise the single style is used.
+    active_slugs: tuple[str, ...] = blend_slugs
+    if not active_slugs and registry_style:
+        active_slugs = (str(registry_style).strip(),)
+    if active_slugs:
         from style_registry import RegistryError, resolve_fragment
 
         try:
-            registry_traits = resolve_fragment(style_slug=None, blend_slugs=list(blend_slugs))
+            # Seed may be passed explicitly (caller-derived, cross-post
+            # variation) or default to the blend engine's built-in seed.
+            if len(active_slugs) >= 2:
+                registry_traits = resolve_fragment(
+                    style_slug=None,
+                    blend_slugs=list(active_slugs),
+                    seed=resolved_seed,
+                )
+            else:
+                registry_traits = resolve_fragment(
+                    style_slug=active_slugs[0],
+                    blend_slugs=None,
+                    seed=resolved_seed,
+                )
         except RegistryError as exc:
             raise ImageRequestError(f"invalid blend: {exc}") from exc
 
@@ -213,5 +235,6 @@ def prepare_image_request(
         backend=clean_backend,
         references=_normalise_references(references),
         registry_traits=registry_traits,
-        registry_slugs=blend_slugs,
+        registry_slugs=active_slugs,
+        registry_seed=resolved_seed,
     )

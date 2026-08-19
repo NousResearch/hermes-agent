@@ -562,6 +562,13 @@ def compose_prompt(image_concept: str, brief: dict, *, assigned_layout: str | No
         parts.append(f"Recurring visual motif to include: {brief['motif']}.")
     if brief.get("art_direction"):
         parts.append(f"Shared art direction: {brief['art_direction']}")
+    # Extended style menu (blog path): additive neutral trait fragment from
+    # the ~9,000-style registry, merged into every composed prompt so the
+    # whole post shares one deterministic blend (coherent within, varied
+    # across posts). Never a protected name, never SREF.
+    extended = brief.get("extended_traits") or {}
+    if extended.get("fragment"):
+        parts.append(f"Additional neutral style traits: {extended['fragment']}.")
     parts.extend([
         f"Compiled image concept: {image_concept}",
         CREATIVE_DIRECTION_RULES,

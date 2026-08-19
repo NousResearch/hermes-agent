@@ -155,3 +155,41 @@ __all__ = [
     "assert_neutral",
     "resolve_fragment",
 ]
+
+
+# ── Deterministic variation selector ────────────────────────────────────────
+# Extended style menu for existing callers (blog / X / LinkedIn / workflows).
+# The selector keeps a post visually coherent (one style + optional blend per
+# job) while varying deliberately across posts. Selection is seeded and
+# deterministic: the same (context, seed) always picks the same style, so
+# tests and re-runs are reproducible.
+
+_KNOWN_EXAMPLE_SLUGS = (
+    "steampunk", "synthwave", "linocut-print", "risograph", "editorial",
+    "high-contrast", "technical-diagram", "monochrome-documentary",
+    "surreal-painterly", "minimalist-geometric", "fresco", "woodblock-print",
+    "pompeian-fresco", "birds-eye-view", "wireframe", "retro-futurist",
+    "dark-cyberpunk-hud", "saga-noir", "chromatic-institute", "ink-ember-studio",
+)
+
+def pick_variation(seed: int, *, registry=None) -> dict:
+    """Deterministically pick a style slug (+ optional blend pair) from the
+    extended menu for a given seed. Never returns protected names or SREF."""
+    if registry is None:
+        registry = get_registry()
+    styles = registry.get("styles") or {}
+    available = [s for s in _KNOWN_EXAMPLE_SLUGS if s in styles]
+    if not available:
+        available = sorted(styles.keys())
+    import hashlib
+    digest = hashlib.sha256(f"{seed}:midlib-var".encode()).hexdigest()
+    idx = int(digest[:8], 16) % len(available)
+    slug = available[idx]
+    # Deterministic companion blend (50% of picks, always different slug).
+    digest2 = hashlib.sha256(f"{seed}:midlib-blend".encode()).hexdigest()
+    if int(digest2[:8], 16) % 2 == 0 and len(available) > 1:
+        idx2 = (idx + 1 + (int(digest2[8:16], 16) % (len(available) - 1))) % len(available)
+        blend_slug = available[idx2]
+        if blend_slug != slug:
+            return {"style_slug": slug, "blend_slugs": [slug, blend_slug]}
+    return {"style_slug": slug, "blend_slugs": None}

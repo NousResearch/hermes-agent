@@ -90,6 +90,9 @@ class ImageBackendRouter:
                 "backend": request.backend,
                 "prompt": request.prompt,
                 "style_id": request.style_id,
+                "registry_traits": request.registry_traits,
+                "registry_slugs": list(request.registry_slugs),
+                "registry_seed": request.registry_seed,
                 "reference_sha256": [reference.sha256 for reference in staged],
                 "references": [
                     {

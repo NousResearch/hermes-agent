@@ -247,6 +247,39 @@ def _extract_section_text(body_lines: list[str], heading: str) -> str:
 MAX_SECTION_IMAGES = 2
 
 
+def _resolve_extended_traits_for_brief(brief: dict) -> Optional[dict]:
+    """Deterministic additive trait blend for a blog post (extended menu).
+
+    Derived from the brief's selection_seed so the whole post is coherent
+    (one style + one blend) while varying across posts. Never overrides the
+    brief's style/layout; purely additive. Returns the injected dict (with
+    ``fragment``) or None when unavailable. When the LLM brief already pinned
+    an explicit extended blend, it is preserved (returned unchanged).
+    """
+    if brief.get("extended_traits"):
+        return brief["extended_traits"]
+    try:
+        from style_registry import pick_variation, resolve_fragment
+        seed = brief.get("selection_seed") or 0
+        variation = pick_variation(seed)
+        frag = resolve_fragment(
+            style_slug=variation["style_slug"],
+            blend_slugs=variation["blend_slugs"],
+            seed=seed,
+        )
+        if not frag:
+            return None
+        return {
+            "style_slug": variation["style_slug"],
+            "blend_slugs": variation["blend_slugs"],
+            "blend_seed": seed,
+            "fragment": frag,
+        }
+    except Exception as exc:  # noqa: BLE001 — extended menu is additive, never a blocker
+        print(f"[blog_illustrator] extended traits unavailable: {exc}")
+        return None
+
+
 def illustrate(
     draft: dict,
     out_dir: Optional[Path] = None,
@@ -298,6 +331,15 @@ def illustrate(
           f"palette={brief.get('palette','')[:60]!r} motif={brief.get('motif','')[:60]!r}")
     concept_plan = brief.get("concept_plan") if isinstance(brief.get("concept_plan"), dict) else {}
     _record_selection(brief["style"], concept_plan.get("fingerprint"))
+
+    # Extended style menu (blog path): deterministic additive trait blend for
+    # this post, derived from the same selection_seed as the brief so the
+    # whole post is coherent (one style + one blend) while varying across
+    # posts. Never overrides the brief's style/layout; purely additive. When
+    # the LLM brief already pinned an explicit blend, keep it.
+    extended = _resolve_extended_traits_for_brief(brief)
+    if extended:
+        brief["extended_traits"] = extended
 
     # P11 contract seam: select only reviewed core references, write the plan
     # and planned provenance before the unchanged legacy generator is reached.

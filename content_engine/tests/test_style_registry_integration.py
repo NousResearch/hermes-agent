@@ -140,15 +140,20 @@ def test_prepare_image_request_unknown_blend_fails_fast():
         )
 
 
-def test_prepare_image_request_single_blend_rejected():
-    from image_jobs import ImageRequestError, prepare_image_request
+def test_prepare_image_request_single_slug_style_trait():
+    from image_jobs import prepare_image_request
 
-    with pytest.raises(ImageRequestError):
-        prepare_image_request(
-            prompt="a sunset",
-            style="mythic-tech-codex",
-            blend=["steampunk"],
-        )
+    # A single registry slug is now a valid single-style additive trait
+    # (not a blend). This supports the extended menu for auto-routed jobs
+    # where the variation picks one style with no blend partner.
+    prepared = prepare_image_request(
+        prompt="a sunset",
+        style="mythic-tech-codex",
+        blend=["steampunk"],
+    )
+    assert prepared.registry_slugs == ("steampunk",)
+    assert prepared.registry_traits
+    assert "sref" not in (prepared.registry_traits or "").lower()
 
 
 # ---------------------------------------------------------------------------

@@ -524,6 +524,21 @@ def compile_mention_patterns(
     return compiled
 
 
+def parse_chat_id_set(raw) -> 'set[str]':
+    """Parse a chat/channel-id list value (list, or comma-separated string) into a set.
+
+    The canonical per-chat gating value shape shared by every adapter's
+    allowlist keys (``allowed_chats``, ``free_response_channels``, …): a YAML
+    list, or a comma-separated string, of chat/channel IDs. ``None`` and
+    blank entries yield the empty set.
+    """
+    if raw is None:
+        return set()
+    if isinstance(raw, (list, tuple, set)):
+        return {str(part).strip() for part in raw if str(part).strip()}
+    return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
 # Shared core for the fence-aware markdown chunkers that previously lived as
 # near-duplicates in gateway/stream_consumer.py, gateway/platforms/yuanbao.py

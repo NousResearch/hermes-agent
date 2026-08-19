@@ -38,6 +38,7 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from gateway.platforms.helpers import parse_chat_id_set
 from agent.secret_scope import get_secret as _scoped_get_secret
 
 
@@ -144,6 +145,20 @@ class WhatsAppBehaviorMixin:
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _whatsapp_native_mention_only_chats(self) -> set[str]:
+        """Return group chat IDs where ONLY a native @mention counts.
+
+        In these groups ``mention_patterns`` wake words do NOT satisfy
+        mention gating — the bot is addressed exclusively via a real
+        WhatsApp @mention (mentionedIds) or a reply to the bot. Mirrors
+        Slack's ``native_mention_only_channels``. Empty set means wake
+        words count everywhere.
+        """
+        raw = self.config.extra.get("native_mention_only_chats")
+        if raw is None:
+            raw = _get_wsecret("WHATSAPP_NATIVE_MENTION_ONLY_CHATS", default="")
+        return parse_chat_id_set(raw)
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
@@ -419,7 +434,10 @@ class WhatsAppBehaviorMixin:
             return True
         if self._message_mentions_bot(data):
             return True
-        return self._message_matches_mention_patterns(data)
+        return (
+            chat_id not in self._whatsapp_native_mention_only_chats()
+            and self._message_matches_mention_patterns(data)
+        )
 
     # ------------------------------------------------------------------ formatting
     def format_message(self, content: str) -> str:

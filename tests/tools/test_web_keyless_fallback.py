@@ -219,6 +219,44 @@ class TestProviderRouting:
         assert ParallelWebSearchProvider().is_keyless_available() is True
         assert ExaWebSearchProvider().is_keyless_available() is True
 
+    def test_tier_free_forces_keyless_even_with_key(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.web_search_provider.get_provider_env",
+            lambda name: "sk-real" if name == "PARALLEL_API_KEY" else "",
+        )
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda name: "free")
+        provider = ParallelWebSearchProvider()
+        with patch.object(
+            keyless_mcp, "parallel_search_keyless",
+            return_value={"success": True, "data": {"web": []}},
+        ) as keyless:
+            out = provider.search("q")
+        keyless.assert_called_once()
+        assert out["success"] is True
+
+    def test_tier_paid_forces_keyed_without_key(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda name: "paid")
+        provider = ParallelWebSearchProvider()
+        with patch.object(keyless_mcp, "parallel_search_keyless") as keyless:
+            out = provider.search("q")
+        keyless.assert_not_called()
+        assert out["success"] is False
+        assert "PARALLEL_API_KEY" in out["error"]
+
+    def test_tier_paid_disables_keyless_availability(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda name: "paid")
+        assert ParallelWebSearchProvider().is_keyless_available() is False
+        assert ExaWebSearchProvider().is_keyless_available() is False
+
+    def test_provider_tier_reads_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"web": {"provider_tier": {"exa": "FREE", "parallel": "bogus"}}},
+        )
+        assert keyless_mcp.provider_tier("exa") == "free"
+        assert keyless_mcp.provider_tier("parallel") == "auto"  # invalid → auto
+        assert keyless_mcp.provider_tier("tavily") == "auto"    # unset → auto
+
     @pytest.mark.asyncio
     async def test_parallel_keyless_extract(self):
         provider = ParallelWebSearchProvider()
@@ -298,3 +336,64 @@ class TestResolutionOrder:
         monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         assert web_tools.check_web_api_key() is False
+
+
+# ---------------------------------------------------------------------------
+# hermes tools picker: tier variant rows
+# ---------------------------------------------------------------------------
+
+
+class TestPickerTierRows:
+    def test_variant_schemas_flatten_to_tier_rows(self, fresh_registry, monkeypatch):
+        from hermes_cli import tools_config
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda: None
+        )
+        rows = tools_config._plugin_web_search_providers()
+        by_backend_tier = {
+            (r["web_backend"], r.get("web_tier")): r["name"] for r in rows
+        }
+        assert ("parallel", "free") in by_backend_tier
+        assert ("parallel", "paid") in by_backend_tier
+        assert ("exa", "free") in by_backend_tier
+        assert ("exa", "paid") in by_backend_tier
+        # Free rows must not prompt for a key; paid rows must.
+        for r in rows:
+            if r.get("web_tier") == "free":
+                assert r["env_vars"] == []
+            if r.get("web_tier") == "paid":
+                assert r["env_vars"], r
+
+    def test_selection_persists_tier(self):
+        from hermes_cli.tools_config import _write_provider_config
+
+        config: dict = {}
+        _write_provider_config(
+            {"web_backend": "exa", "web_tier": "free", "env_vars": []},
+            config,
+            managed_feature=None,
+        )
+        assert config["web"]["backend"] == "exa"
+        assert config["web"]["provider_tier"]["exa"] == "free"
+        # Re-selecting a tier-agnostic row clears the stale tier.
+        _write_provider_config(
+            {"web_backend": "exa", "env_vars": []}, config, managed_feature=None
+        )
+        assert "exa" not in config["web"]["provider_tier"]
+
+    def test_tier_match_highlights_correct_row(self):
+        from hermes_cli.tools_config import _web_tier_matches
+
+        free_row = {"web_backend": "parallel", "web_tier": "free"}
+        paid_row = {"web_backend": "parallel", "web_tier": "paid"}
+        cfg_free = {"web": {"backend": "parallel", "provider_tier": {"parallel": "free"}}}
+        cfg_paid = {"web": {"backend": "parallel", "provider_tier": {"parallel": "paid"}}}
+        assert _web_tier_matches(free_row, cfg_free) is True
+        assert _web_tier_matches(paid_row, cfg_free) is False
+        assert _web_tier_matches(paid_row, cfg_paid) is True
+        assert _web_tier_matches(free_row, cfg_paid) is False
+        # Auto (unset tier, no key in the hermetic env): free row highlights.
+        cfg_auto = {"web": {"backend": "parallel"}}
+        assert _web_tier_matches(free_row, cfg_auto) is True
+        assert _web_tier_matches(paid_row, cfg_auto) is False

@@ -168,10 +168,14 @@ class ParallelWebSearchProvider(WebSearchProvider):
         return bool(get_provider_env("PARALLEL_API_KEY"))
 
     def is_keyless_available(self) -> bool:
-        """Parallel serves anonymous free-tier calls via its public MCP endpoint."""
-        from plugins.web.keyless_mcp import keyless_enabled
+        """Parallel serves anonymous free-tier calls via its public MCP endpoint.
 
-        return keyless_enabled()
+        False when the user forced ``web.provider_tier.parallel: paid`` —
+        an explicit paid selection must never silently resolve keyless.
+        """
+        from plugins.web.keyless_mcp import keyless_enabled, provider_tier
+
+        return keyless_enabled() and provider_tier("parallel") != "paid"
 
     def supports_search(self) -> bool:
         return True
@@ -194,18 +198,14 @@ class ParallelWebSearchProvider(WebSearchProvider):
 
             from agent.web_search_provider import get_provider_env
 
-            if not get_provider_env("PARALLEL_API_KEY"):
-                # Keyless free tier — public MCP endpoint, no SDK needed.
-                from plugins.web.keyless_mcp import (
-                    keyless_enabled,
-                    parallel_search_keyless,
-                )
+            from plugins.web.keyless_mcp import parallel_search_keyless, use_keyless
 
-                if keyless_enabled():
-                    logger.info(
-                        "Parallel keyless search: '%s' (limit=%d)", query, limit
-                    )
-                    return parallel_search_keyless(query, limit)
+            if use_keyless("parallel", get_provider_env("PARALLEL_API_KEY")):
+                # Keyless free tier — public MCP endpoint, no SDK needed.
+                logger.info(
+                    "Parallel keyless search: '%s' (limit=%d)", query, limit
+                )
+                return parallel_search_keyless(query, limit)
 
             mode = _resolve_search_mode()
             logger.info(
@@ -262,20 +262,16 @@ class ParallelWebSearchProvider(WebSearchProvider):
 
             from agent.web_search_provider import get_provider_env
 
-            if not get_provider_env("PARALLEL_API_KEY"):
+            from plugins.web.keyless_mcp import parallel_extract_keyless, use_keyless
+
+            if use_keyless("parallel", get_provider_env("PARALLEL_API_KEY")):
                 # Keyless free tier — blocking HTTP, so hop off the loop.
-                from plugins.web.keyless_mcp import (
-                    keyless_enabled,
-                    parallel_extract_keyless,
+                import asyncio
+
+                logger.info("Parallel keyless extract: %d URL(s)", len(urls))
+                return await asyncio.to_thread(
+                    parallel_extract_keyless, list(urls)
                 )
-
-                if keyless_enabled():
-                    import asyncio
-
-                    logger.info("Parallel keyless extract: %d URL(s)", len(urls))
-                    return await asyncio.to_thread(
-                        parallel_extract_keyless, list(urls)
-                    )
 
             logger.info("Parallel extract: %d URL(s)", len(urls))
             response = await _get_async_client().beta.extract(
@@ -328,18 +324,30 @@ class ParallelWebSearchProvider(WebSearchProvider):
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
-            "name": "Parallel",
-            "badge": "free tier · paid with key",
+            "name": "Parallel · Free (keyless)",
+            "badge": "free · no key",
             "tag": (
-                "Objective-tuned search + parallel page extraction. "
-                "Works keyless on Parallel's free tier; add a key for "
-                "reliable, unthrottled service."
+                "Objective-tuned search + page extraction on Parallel's "
+                "anonymous free tier. Rate-limited under burst load."
             ),
-            "env_vars": [
+            "env_vars": [],
+            "web_tier": "free",
+            "variants": [
                 {
-                    "key": "PARALLEL_API_KEY",
-                    "prompt": "Parallel API key (optional — free tier works without one)",
-                    "url": "https://parallel.ai",
+                    "name": "Parallel · Paid (API key)",
+                    "badge": "paid",
+                    "tag": (
+                        "Objective-tuned search + parallel page extraction "
+                        "via the Parallel SDK. Unthrottled, guaranteed service."
+                    ),
+                    "env_vars": [
+                        {
+                            "key": "PARALLEL_API_KEY",
+                            "prompt": "Parallel API key",
+                            "url": "https://parallel.ai",
+                        },
+                    ],
+                    "web_tier": "paid",
                 },
             ],
         }

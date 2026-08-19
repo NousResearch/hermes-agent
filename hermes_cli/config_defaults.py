@@ -473,6 +473,13 @@ DEFAULT_CONFIG = {
         # anonymous MCP endpoints (rate-limited free tiers). Never pre-empts
         # a configured or keyed backend. Set false to disable entirely.
         "keyless_fallback": True,
+        # Per-provider tier selection for providers with both a keyless free
+        # endpoint and a keyed paid SDK path (exa, parallel). Set by the
+        # `hermes tools` picker's "Free (keyless)" / "Paid (API key)" rows.
+        #   free  — always use the anonymous free endpoint (even with a key)
+        #   paid  — always use the keyed SDK path (missing key = error)
+        #   unset — auto: keyed when the API key is present, else keyless
+        "provider_tier": {},
     },
 
     "browser": {

@@ -62,6 +62,49 @@ def keyless_enabled() -> bool:
         return True
 
 
+def provider_tier(name: str) -> str:
+    """Return the user-selected tier for *name*: ``free``, ``paid``, or ``auto``.
+
+    Reads ``web.provider_tier.<name>`` from config.yaml (set by the
+    ``hermes tools`` picker's Free/Paid rows). ``free`` forces the keyless
+    public endpoint even when the vendor API key is present; ``paid``
+    forces the keyed SDK path (missing key surfaces the standard
+    "X_API_KEY not set" error instead of silently downgrading to the free
+    tier). Anything else — including unset — is ``auto``: key present →
+    keyed, otherwise keyless when the tier is enabled.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        web_cfg = load_config().get("web") or {}
+        tiers = web_cfg.get("provider_tier") or {}
+        value = str(tiers.get(name, "") or "").lower().strip()
+        return value if value in ("free", "paid") else "auto"
+    except Exception as exc:  # noqa: BLE001 — config layer optional
+        logger.debug("provider_tier(%r) config read failed: %s", name, exc)
+        return "auto"
+
+
+def use_keyless(name: str, api_key: str) -> bool:
+    """Decide whether provider *name* should route via the keyless endpoint.
+
+    Single chokepoint shared by the Exa/Parallel search + extract paths so
+    tier semantics can't drift between capabilities:
+
+    - tier ``free``  → keyless, even when *api_key* is set
+    - tier ``paid``  → keyed, even when *api_key* is missing (the keyed
+      path then raises its usual missing-key error)
+    - tier ``auto``  → keyed when *api_key* is set; otherwise keyless when
+      ``web.keyless_fallback`` is enabled
+    """
+    tier = provider_tier(name)
+    if tier == "free":
+        return True
+    if tier == "paid":
+        return False
+    return not api_key and keyless_enabled()
+
+
 def _parse_mcp_body(body: str) -> str:
     """Extract the first text content item from an MCP tools/call response.
 

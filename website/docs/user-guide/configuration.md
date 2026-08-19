@@ -2202,6 +2202,13 @@ web:
   # and no API keys present, web tools fall back to Parallel's / Exa's
   # public anonymous endpoints (rate-limited). Set false to disable.
   keyless_fallback: true
+
+  # Pin Exa/Parallel to a tier (set by the hermes tools Free/Paid rows).
+  # free = always the anonymous endpoint; paid = always the keyed SDK path;
+  # unset = auto (key present -> paid, otherwise free).
+  provider_tier:
+    parallel: free
+    exa: paid
 ```
 
 | Backend | Env Var | Search | Extract |

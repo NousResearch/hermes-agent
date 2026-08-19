@@ -35,6 +35,8 @@ Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecr
 A fresh install with **no web credentials at all** still gets working `web_search` and `web_extract`: Hermes falls back to Parallel's and Exa's public anonymous endpoints (rate-limited free tiers, Parallel first). No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For reliable, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
 :::
 
+**Choosing free vs paid explicitly:** in `hermes tools`, Exa and Parallel each appear as two rows — **Free (keyless)** and **Paid (API key)**. Picking Free pins the anonymous endpoint (even if you later add a key); picking Paid pins the keyed SDK path (a missing key then errors instead of silently downgrading to the free tier). The selection is stored as `web.provider_tier.<name>: free|paid`; leave it unset for auto (key present → paid, otherwise free).
+
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.
 :::

@@ -4580,13 +4580,38 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
 def _dashboard_spawn_executable() -> str:
     """Interpreter for detached dashboard actions.
 
-    Returns ``sys.executable`` on every platform.  On Windows the spawn
-    below carries ``windows_detach_flags()`` (CREATE_NO_WINDOW), so the
-    console python owns a single hidden console that its own subprocess
+    Prefers the install's own venv interpreter over ``sys.executable`` when
+    they differ. Under an SSH remote backend the web server is launched by
+    running the **uv base interpreter** with the venv's site-packages
+    injected into ``sys.path`` at startup (``-c "sys.path[:0]=[...];
+    runpy.run_module('hermes_cli.main', ...)"``) — so ``sys.executable`` is
+    the dependency-less base python and a detached action spawned from it
+    dies on the first third-party import (``ModuleNotFoundError: yaml``),
+    because the injected path is a startup artifact of the parent and is
+    not inherited (#90026). The venv launcher resolves the same dependency
+    set on its own.
+
+    Falls back to ``sys.executable`` when no venv interpreter exists next
+    to the install (in-process dev runs, exotic layouts). On Windows the
+    spawn below carries ``windows_detach_flags()`` (CREATE_NO_WINDOW), so
+    the console python owns a single hidden console that its own subprocess
     spawns inherit — the action stays invisible without resorting to
     console-less pythonw.exe, which would make every console-subsystem
     descendant flash its own conhost (#54220/#56747).
     """
+    exe = Path(sys.executable)
+    try:
+        for rel in ("venv/bin/python", "venv/Scripts/python.exe"):
+            candidate = PROJECT_ROOT / rel
+            if candidate.is_file():
+                resolved = candidate.resolve()
+                # Same interpreter → keep sys.executable (preserves the
+                # docstring's console-ownership behavior verbatim).
+                if resolved == exe.resolve():
+                    return sys.executable
+                return str(resolved)
+    except OSError:
+        pass
     return sys.executable
 
 

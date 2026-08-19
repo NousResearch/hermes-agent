@@ -145,6 +145,7 @@ import {
 import type { SidebarNavItem } from '../../types'
 import { startNewSessionDrag } from '../new-session-drag'
 
+import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { SidebarLoadMoreRow } from './load-more-row'
@@ -1778,25 +1779,23 @@ export function ChatSidebar({
                     ) : (
                       <>
                         {!showAllProfiles ? (
-                          <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
-                            <Button
-                              aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                              className={HEADER_ACTION_BTN}
-                              onClick={event => {
-                                event.stopPropagation()
-
-                                if (agentsGrouped) {
-                                  openProjectCreate()
-                                } else {
-                                  onNewSessionInWorkspace(null)
-                                }
-                              }}
-                              size="icon-xs"
-                              variant="ghost"
-                            >
-                              <Codicon name="add" size="0.75rem" />
-                            </Button>
-                          </Tip>
+                          // The flat-list header "+" is a drag source too — the
+                          // same gesture as the nav's "New session" row: drag
+                          // it onto a chat zone's tab strip / edge / center to
+                          // create the session exactly there. Project-overview
+                          // mode stays click-only: its "+" opens the project
+                          // dialog, not a session.
+                          <SidebarSectionAddButton
+                            ariaLabel={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                            onNewSessionSplit={agentsGrouped ? undefined : onNewSessionSplit}
+                            onPlainClick={() => {
+                              if (agentsGrouped) {
+                                openProjectCreate()
+                              } else {
+                                onNewSessionInWorkspace(null)
+                              }
+                            }}
+                          />
                         ) : null}
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />

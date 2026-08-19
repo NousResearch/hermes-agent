@@ -11,11 +11,32 @@ import {
   type SidebarSessionGroup,
   SidebarWorkspaceGroup
 } from './projects'
-import { SidebarSessionsSection } from './sessions-section'
+import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
+import type { VirtualSessionListProps } from './virtual-session-list'
 
 const startNewSessionDrag = vi.hoisted(() => vi.fn())
 
 vi.mock('../new-session-drag', () => ({ startNewSessionDrag }))
+
+// Capture what the virtualized list receives so the divider wiring can be
+// asserted on the long-list path too (jsdom can't measure a real viewport).
+const virtualPropsHistory = vi.hoisted(() => [] as VirtualSessionListProps[])
+
+vi.mock('./virtual-session-list', () => ({
+  VirtualSessionList: (props: VirtualSessionListProps) => {
+    virtualPropsHistory.push(props)
+
+    return <div data-testid="virtual-session-list" />
+  }
+}))
+
+// Flat-list tests only care about dividers: keep session rows inert so they
+// can't collide on accessible names or pull in row-level store dependencies.
+vi.mock('./session-row', () => ({
+  SidebarSessionRow: ({ session }: { session: SessionInfo }) => (
+    <div data-testid={`session-row-${session.id}`}>{session.id}</div>
+  )
+}))
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -23,7 +44,18 @@ vi.mock('@/i18n', () => ({
       common: { cancel: 'Cancel' },
       desktop: {},
       sidebar: {
-        dateDivider: { earlier: 'Earlier', lastWeek: 'Last week', today: 'Today', yesterday: 'Yesterday' },
+        dateDivider: {
+          earlier: 'Earlier',
+          earlierThisMonth: 'Earlier this month',
+          lastMonth: 'Last month',
+          lastWeek: 'Last week',
+          older: 'Older',
+          thisMonth: 'This month',
+          thisWeek: 'This week',
+          today: 'Today',
+          yesterday: 'Yesterday'
+        },
+        nav: { 'new-session': 'New session' },
         newSessionIn: (label: string) => `New session in ${label}`,
         noSessions: 'No sessions yet',
         projects: {
@@ -278,5 +310,116 @@ describe('project-associated new-session drag sources', () => {
     expect(screen.queryByRole('button', { name: 'New session in Review board' })).toBeNull()
     expect(startNewSessionDrag).not.toHaveBeenCalled()
     expect(onNewSessionSplit).not.toHaveBeenCalled()
+  })
+})
+
+describe('flat-list date-divider new-session drag source', () => {
+  // Five fresh sessions, then a genuine 3-day pause: `groupEntriesByRecency`
+  // cuts the run right there, so the flat list renders exactly one divider
+  // below the head.
+  const datedSessions = (): SessionInfo[] => {
+    const now = Math.floor(Date.now() / 1000)
+
+    return [
+      ...Array.from({ length: 5 }, (_, i) => ({ id: `fresh-${i}` })),
+      ...Array.from({ length: 2 }, (_, i) => ({ id: `older-${i}` }))
+    ].map((row, i) => ({
+      handoff_platform: null,
+      handoff_state: null,
+      id: row.id,
+      last_active: i < 5 ? now - i * 60 : now - 3 * 24 * 60 * 60,
+      profile: 'default',
+      started_at: i < 5 ? now - i * 60 : now - 3 * 24 * 60 * 60
+    })) as unknown as SessionInfo[]
+  }
+
+  it('drags from a date divider "+" without a cwd (flat recents)', () => {
+    const onNewSessionSplit = vi.fn()
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        grouping="date"
+        onNewSessionSplit={onNewSessionSplit}
+        sessions={datedSessions()}
+      />
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'New session' }), { button: 0 })
+    commitLatestDrag()
+
+    expect(onNewSessionSplit).toHaveBeenCalledWith('right', {
+      anchor: 'workspace',
+      before: 'session-tile:next'
+    })
+  })
+
+  it('wires the same divider action into the virtualized long list', () => {
+    virtualPropsHistory.length = 0
+    const onNewSessionSplit = vi.fn()
+
+    const longList = Array.from({ length: VIRTUALIZE_THRESHOLD + 5 }, (_, i) => ({
+      handoff_platform: null,
+      handoff_state: null,
+      id: `session-${i}`,
+      last_active: Math.floor(Date.now() / 1000) - i * 60,
+      profile: 'default',
+      started_at: Math.floor(Date.now() / 1000) - i * 60
+    })) as unknown as SessionInfo[]
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        grouping="date"
+        onNewSessionSplit={onNewSessionSplit}
+        sessions={longList}
+      />
+    )
+
+    const lastProps = virtualPropsHistory.at(-1)
+
+    expect(lastProps?.dividerAction).toBeTruthy()
+
+    // jsdom can't measure a virtual viewport, so mount the divider action the
+    // virtualizer would render and assert its drag wiring directly.
+    render(<>{lastProps!.dividerAction}</>)
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'New session' }), { button: 0 })
+    commitLatestDrag()
+
+    expect(onNewSessionSplit).toHaveBeenCalledWith('right', {
+      anchor: 'workspace',
+      before: 'session-tile:next'
+    })
+  })
+
+  it('renders no divider "+" when the section lacks a plain-create handler', () => {
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        grouping="date"
+        onNewSessionInWorkspace={undefined}
+        onNewSessionSplit={vi.fn()}
+        sessions={datedSessions()}
+      />
+    )
+
+    expect(screen.queryByRole('button', { name: 'New session' })).toBeNull()
+  })
+
+  it('keeps the divider "+" click-only without a split handler', () => {
+    const onNewSessionInWorkspace = vi.fn()
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        grouping="date"
+        onNewSessionInWorkspace={onNewSessionInWorkspace}
+        sessions={datedSessions()}
+      />
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'New session' }), { button: 0 })
+
+    expect(startNewSessionDrag).not.toHaveBeenCalled()
   })
 })

@@ -151,18 +151,23 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   const isBatch = batch.length > 0
 
   // ── Batch (A-compact) state: status list + one expanded active question.
-  // `active` walks the QUESTION list (any order); `sel` is reused as the
-  // cursor within the active question's choice rows.
+  // `active` walks the QUESTION list (Tab/Shift-Tab cycle it, any order);
+  // `sel` is reused as the cursor within the active question's choice rows.
   const answers = req.answers ?? {}
   const firstUnanswered = batch.findIndex(q => answers[q.qid] === undefined)
   const [active, setActive] = useState(Math.max(0, firstUnanswered))
-  // Walking the status list vs. answering the expanded question.
-  const [browsing, setBrowsing] = useState(false)
+
+  const moveActive = (delta: number) => {
+    setActive(a => (a + delta + batch.length) % batch.length)
+    setSel(0)
+    setCustom('')
+    setTyping(false)
+  }
 
   // After a lock the overlay is re-patched with the new answers map — jump
   // the cursor to the next unanswered question (stay put when editing).
   useEffect(() => {
-    if (!isBatch || browsing) {
+    if (!isBatch) {
       return
     }
 
@@ -212,12 +217,6 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         return
       }
 
-      if (isBatch && browsing) {
-        setBrowsing(false)
-
-        return
-      }
-
       onCancel()
 
       return
@@ -228,31 +227,10 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
     }
 
     if (isBatch) {
-      // Tab toggles between walking the question list and answering the
-      // expanded question — the "any order" affordance.
+      // Tab / Shift-Tab cycle the active question (with wrap) — the
+      // selected question is always the expanded one, like the CLI panel.
       if (key.tab) {
-        setBrowsing(b => !b)
-        setSel(0)
-
-        return
-      }
-
-      if (browsing) {
-        if (key.upArrow && active > 0) {
-          setActive(a => a - 1)
-          setSel(0)
-          setCustom('')
-        }
-
-        if (key.downArrow && active < batch.length - 1) {
-          setActive(a => a + 1)
-          setSel(0)
-          setCustom('')
-        }
-
-        if (key.return) {
-          setBrowsing(false)
-        }
+        moveActive(key.shift ? -1 : 1)
 
         return
       }
@@ -321,9 +299,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   if (isBatch) {
     const hint = typing
       ? `Enter ${remainingCount === 1 ? 'confirm and continue' : 'lock answer'} · Esc back`
-      : browsing
-        ? '↑/↓ pick a question · Enter/Tab answer it · Esc cancel all'
-        : `↑/↓ select · Enter ${remainingCount === 1 ? 'confirm and continue' : 'lock answer'} · Tab switch question · Esc/Ctrl+C cancel`
+      : `↑/↓ select · Enter ${remainingCount === 1 ? 'confirm and continue' : 'lock answer'} · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel`
 
     return (
       <Box flexDirection="column">
@@ -333,21 +309,26 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
           const answer = answers[q.qid]
           const isActive = i === active
           const marker = answer !== undefined ? '✓' : isActive ? '▸' : '·'
-          const summary = answer !== undefined ? ` → ${answer || '(skipped)'}` : ''
 
           return (
             <Box flexDirection="column" key={q.qid}>
               <Text>
-                <Text
-                  color={answer !== undefined ? t.color.muted : isActive ? t.color.text : t.color.muted}
-                  {...chipRowProps(t, browsing && isActive)}
-                >
+                <Text bold={isActive} color={isActive ? t.color.text : t.color.muted}>
                   {marker} {q.question}
-                  {summary}
                 </Text>
               </Text>
 
-              {isActive && !browsing ? (
+              {answer !== undefined ? (
+                // The locked answer on its own line, in the ok color, so the
+                // current answers stay readable while Tab walks the list.
+                <Box paddingLeft={2}>
+                  <Text color={answer ? t.color.ok : t.color.muted} italic={!answer}>
+                    {answer || '(skipped)'}
+                  </Text>
+                </Box>
+              ) : null}
+
+              {isActive ? (
                 typing || activeChoices.length === 0 ? (
                   <Box paddingLeft={2}>
                     <Text color={t.color.label}>{'> '}</Text>

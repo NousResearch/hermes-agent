@@ -42,6 +42,12 @@ DEFAULT_CONFIG = {
         # behavior everywhere.
         "terminal_continue": True,
     },
+    # Global message timestamp opt-in. ``None`` preserves compatibility with
+    # legacy gateway.message_timestamps.enabled when the top-level setting is
+    # not explicitly chosen by the user.
+    "message_timestamps": {
+        "enabled": None,
+    },
     "agent": {
         "max_turns": 500,
         # Inactivity timeout for gateway agent execution (seconds).

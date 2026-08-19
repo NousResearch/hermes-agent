@@ -13,6 +13,8 @@ import {
 import { $connection, $sessions } from '@/store/session'
 import { $sessionStates, type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
 
+import { deferred } from '../../test/deferred'
+
 const requestGateway = vi.fn()
 
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
@@ -43,16 +45,6 @@ const HOST_PATH = 'C:\\Users\\alice\\Pictures\\photo.png'
 const STAGED_PATH = '/root/.hermes/attachments/photo.png'
 const THUMBNAIL = 'data:image/png;base64,dGh1bWJuYWls'
 const FULL_SOURCE = 'data:image/png;base64,b3JpZ2luYWw='
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(res => {
-    resolve = res
-  })
-
-  return { promise, resolve }
-}
 
 function makeAttachment(occurrenceId = createComposerAttachmentOccurrenceId()): ComposerAttachment {
   return {

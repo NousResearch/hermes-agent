@@ -6,6 +6,8 @@ import { _resetLegacyDiscardForTests } from '@/store/session'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
+import { makeSessionInfo } from '../../../test/session-info'
+
 import { useDesktopIntegrations } from './use-desktop-integrations'
 
 // Mutable HUD-window flag so the restore tests can flip the window kind the
@@ -36,24 +38,7 @@ vi.mock('@/store/windows', async importOriginal => {
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
 
-const session = (over: Partial<SessionInfo> = {}): SessionInfo => ({
-  archived: false,
-  cwd: null,
-  ended_at: null,
-  id: 'live',
-  input_tokens: 0,
-  is_active: false,
-  last_active: 0,
-  message_count: 0,
-  model: null,
-  output_tokens: 0,
-  preview: null,
-  source: null,
-  started_at: 0,
-  title: null,
-  tool_call_count: 0,
-  ...over
-})
+const session = (over: Partial<SessionInfo> = {}): SessionInfo => makeSessionInfo({ id: 'live', ...over })
 
 describe('useDesktopIntegrations', () => {
   let navigate: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>

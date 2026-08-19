@@ -18,6 +18,8 @@ import {
   setSessionsLoading
 } from '@/store/session'
 
+import { deferred } from '../../../test/deferred'
+
 import { useSessionListActions } from './use-session-list-actions'
 
 // Sidebar refresh hygiene: a content-identical refresh (turn complete,
@@ -68,15 +70,6 @@ interface Deferred<T> {
 }
 
 /** Create a promise whose completion order the stale-response tests control. */
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),

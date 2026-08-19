@@ -1898,7 +1898,10 @@ def _seed_cron_channel_session(
             )
         return bool(ok)
     except Exception as e:
-        logger.debug(
+        # WARNING, not debug: a silent seed failure IS the "agent has no idea
+        # about its own brief" bug (Alice 2026-08-19) — it must be visible in
+        # production logs.
+        logger.warning(
             "Job '%s': seeding in_channel session failed for %s:%s: %s",
             job.get("id", "?"), platform_name, chat_id, e,
         )
@@ -3117,6 +3120,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             mirror_text, is_dm=is_dm_target,
                             user_id=origin_user_id,
                             chat_name=origin.get("chat_name"),
+                        )
+                        if not inchannel_seeded:
+                            logger.warning(
+                                "Job '%s': in_channel seed did NOT land on %s:%s "
+                                "— a plain reply will not see this brief",
+                                job["id"], platform_name, chat_id,
+                            )
+                    elif in_channel_surface and not origin_target:
+                        logger.warning(
+                            "Job '%s': in_channel delivery to %s:%s is not the "
+                            "origin conversation (origin=%s:%s thread=%s) — seed "
+                            "skipped, brief not continuable here",
+                            job["id"], platform_name, chat_id,
+                            origin.get("platform"), origin.get("chat_id"),
+                            origin.get("thread_id"),
                         )
                     _maybe_mirror_cron_delivery(
                         job, platform_name, chat_id, mirror_text,

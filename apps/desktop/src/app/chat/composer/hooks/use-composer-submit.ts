@@ -3,7 +3,6 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { translateNow } from '@/i18n'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
@@ -11,7 +10,6 @@ import { clearSessionDraft, type ComposerAttachment, freezeComposerTransportPayl
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
-import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
 import { notify } from '@/store/notifications'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
@@ -347,9 +345,7 @@ export function useComposerSubmit({
         enqueueQueuedPrompt(activeQueueSessionKey, {
           text: frozen.displayText,
           attachments: [],
-          ...(hasTerminalTransport
-            ? { displayText: frozen.displayText, frozenTransport: frozen.transportText }
-            : {})
+          ...(hasTerminalTransport ? { displayText: frozen.displayText, frozenTransport: frozen.transportText } : {})
         })
       } else {
         loadIntoComposer(frozen.displayText, [])

@@ -9,7 +9,8 @@ import {
   enqueueQueuedPrompt,
   getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
-  parkQueuedPrompts
+  parkQueuedPrompts,
+  resetFrozenQueuedTransportsForTests
 } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
@@ -76,6 +77,7 @@ describe('useBackgroundQueueDrain', () => {
     // #46732) — stale persisted entries from an earlier test would be adopted
     // into the atom and drained here as if they were fresh queue state.
     window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
+    resetFrozenQueuedTransportsForTests()
     // Production drain waits for the sidebar list. Tests that assert drain
     // behavior are post-load unless they opt into the loading gate.
     setSessionsLoading(false)
@@ -87,6 +89,7 @@ describe('useBackgroundQueueDrain', () => {
     vi.useRealTimers()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    resetFrozenQueuedTransportsForTests()
     $sessions.set([])
     setSessionsLoading(true)
     clearNotifications()
@@ -119,9 +122,10 @@ describe('useBackgroundQueueDrain', () => {
     const submitText = vi.fn(async () => true)
 
     enqueueQueuedPrompt('stored-session-a', {
-      text: '```terminal\nselection A\n```\n\nlook at',
+      text: 'look at @terminal:`zsh:23-58`',
       displayText: 'look at @terminal:`zsh:23-58`',
-      attachments: []
+      attachments: [],
+      frozenTransport: '```terminal\nselection A\n```\n\nlook at'
     })
     clearAllSessionStates()
 

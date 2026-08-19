@@ -707,6 +707,11 @@ function terminalLabelsFromDraft(draft: string) {
   return labels
 }
 
+/** True when the draft still carries `@terminal:` chips (not already-frozen transport). */
+export function draftHasTerminalChips(draft: string): boolean {
+  return terminalLabelsFromDraft(draft).length > 0
+}
+
 export function setComposerTerminalSelection(label: string, text: string) {
   const nextLabel = label.trim()
   const nextText = text.trim()

@@ -433,4 +433,14 @@ describe('freezeComposerTransportPayload', () => {
     expect(frozen.displayText).toBe('compare @terminal:`bash:3-9` with @terminal:`zsh:10-12`')
     expect(frozen.missingLabels).toEqual([])
   })
+
+  it('idle submit and steer still freeze at the transport boundary', () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
+    const frozen = freezeComposerTransportPayload('look at @terminal:`zsh:23-58`')
+
+    expect(frozen.transportText).toContain('selected terminal lines')
+    expect(frozen.displayText).toBe('look at @terminal:`zsh:23-58`')
+    expect(freezeComposerTransportPayload(frozen.transportText).transportText).toBe(frozen.transportText)
+  })
 })

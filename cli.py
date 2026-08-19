@@ -19924,21 +19924,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass
                 # The app enables focus reporting + mouse tracking; record that
-<<<<<<< HEAD
-<<<<<<< HEAD
                 # so _run_cleanup resets them on exit (#36823). When multiline
                 # shortcuts are on, also ask supported terminals (e.g. iTerm2)
                 # to report modified keys distinctly (kitty protocol +
                 # modifyOtherKeys); the cleanup reset pops both modes.
-=======
-                # so _run_cleanup resets them on exit (#36823).
->>>>>>> 4d28f8d5f (fix(security): create conversation snapshots privately)
-=======
-                # so _run_cleanup resets them on exit (#36823). When multiline
-                # shortcuts are on, also ask supported terminals (e.g. iTerm2)
-                # to distinguish Shift+Enter from Enter; the same cleanup reset
-                # pops kitty keyboard mode and resets modifyOtherKeys.
->>>>>>> 24bb0b1b1 (fix(security): preserve current save formats with private writes)
                 _mark_tui_input_modes_active()
                 if _multiline_shortcuts_enabled:
                     _enable_extended_enter_keys(app.output)

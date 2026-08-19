@@ -2385,7 +2385,9 @@ class TestCronContinuableSurfaceInChannel:
 
     def _slack_adapter(self, supports_inchannel=True, with_store=True):
         adapter = AsyncMock()
-        adapter.send.return_value = MagicMock(success=True)
+        adapter.send.return_value = MagicMock(
+            success=True, message_id="msg_1", raw_response=None,
+        )
         # Capability flag read via getattr in the scheduler.
         adapter.supports_inchannel_continuable = supports_inchannel
         # A live session store so the in_channel seed can CREATE the flat row
@@ -2465,6 +2467,50 @@ class TestCronContinuableSurfaceInChannel:
         # user_id must ride along even without the mirror opt-in — the flat
         # session key includes it on per-user-isolated chats.
         assert seed_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
+
+    def test_seed_mirrors_into_exact_created_session_on_populated_chat(self):
+        """REGRESSION (live, Alice 2026-08-19 19:17): 'in_channel seed did NOT
+        land'. The seed created the flat session row, then mirror_to_session
+        re-discovered the target via origin heuristics — and on a populated
+        chat (flat session + N per-message thread sessions sharing chat_id,
+        mixed user_ids) find_session_by_origin's multi-candidate bail-out
+        returned None, silently dropping the brief. The seed must mirror into
+        the EXACT session row it just created, no rediscovery."""
+        from cron.scheduler import _seed_cron_channel_session
+
+        store = MagicMock()
+        created = MagicMock()
+        created.session_id = "sess-flat-exact"
+        store.get_or_create_session.return_value = created
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            ok = _seed_cron_channel_session(
+                {"id": "j1", "name": "Brief"}, adapter, "slack", "D0BJTDCSR7C",
+                "Daily brief", is_dm=True, user_id="U_HUMAN", chat_name=None,
+            )
+        assert ok is True
+        # The mirror received the exact created session id — origin-scan
+        # heuristics (and their populated-chat bail-out) are out of the path.
+        assert mirror_mock.call_args.kwargs.get("session_id") == "sess-flat-exact"
+
+    def test_in_channel_also_seeds_thread_surface_of_delivered_brief(self):
+        """REGRESSION (live, Alice 2026-08-19 19:19): the user replied IN THE
+        BRIEF'S THREAD (Slack's natural affordance on a flat message). That
+        reply keys to (chat, thread=<brief ts>) — a session in_channel mode
+        never seeded, so the agent had no idea about its own brief. The flat
+        delivery's message_id must anchor a companion thread-surface seed."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        with patch("cron.scheduler._seed_cron_channel_session", return_value=True), \
+             patch("cron.scheduler._seed_cron_thread_session") as thread_seed_mock:
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False,
+            )
+        thread_seed_mock.assert_called_once()
+        # Anchored on the delivered message id (the router's SendResult).
+        assert thread_seed_mock.call_args.args[4] == "msg_1"
 
 
 class TestMultiTargetDeliveryContinuesOnFailure:

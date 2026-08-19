@@ -1752,6 +1752,7 @@ def _seed_cron_thread_session(
         from gateway.config import Platform
         from gateway.session import SessionSource
 
+        seeded_session_id: Optional[str] = None
         session_store = getattr(adapter, "_session_store", None)
         if session_store is not None:
             try:
@@ -1780,7 +1781,11 @@ def _seed_cron_thread_session(
                 )
                 # Ensure the thread-keyed session row exists so the mirror has
                 # a target and the user's later reply joins the same session.
-                session_store.get_or_create_session(dest_source)
+                # Capture the exact id — the mirror writes into THIS row, not
+                # an origin-heuristic rediscovery (which bails on populated
+                # chats; same class as the flat-seed live failure 2026-08-19).
+                _entry = session_store.get_or_create_session(dest_source)
+                seeded_session_id = getattr(_entry, "session_id", None)
 
         from gateway.mirror import mirror_to_session
 
@@ -1789,7 +1794,7 @@ def _seed_cron_thread_session(
         # in-thread reply produces assistant→user→... off a phantom assistant
         # message. Pass the seed user_id so the mirror resolves the exact
         # thread-keyed session row we just created.
-        mirror_to_session(
+        ok = mirror_to_session(
             platform_name,
             str(chat_id),
             f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
@@ -1797,13 +1802,23 @@ def _seed_cron_thread_session(
             thread_id=str(thread_id),
             user_id="system:cron",
             role="user",
+            session_id=seeded_session_id,
         )
-        logger.info(
-            "Job '%s': opened continuable thread %s on %s:%s and seeded the brief",
-            job.get("id", "?"), thread_id, platform_name, chat_id,
-        )
+        if ok:
+            logger.info(
+                "Job '%s': opened continuable thread %s on %s:%s and seeded the brief",
+                job.get("id", "?"), thread_id, platform_name, chat_id,
+            )
+        else:
+            logger.warning(
+                "Job '%s': thread seed did NOT land on %s:%s thread=%s — an "
+                "in-thread reply will not see this brief",
+                job.get("id", "?"), platform_name, chat_id, thread_id,
+            )
     except Exception as e:
-        logger.debug(
+        # WARNING, not debug: a silent seed failure IS the continuation-
+        # amnesia bug (Alice 2026-08-19) — it must be visible in production.
+        logger.warning(
             "Job '%s': seeding cron thread session failed for %s:%s:%s: %s",
             job.get("id", "?"), platform_name, chat_id, thread_id, e,
         )
@@ -1862,6 +1877,7 @@ def _seed_cron_channel_session(
 
         chat_type = "dm" if is_dm else "group"
         session_store = getattr(adapter, "_session_store", None)
+        seeded_session_id: Optional[str] = None
         if session_store is not None:
             try:
                 platform_enum = Platform(platform_name.lower())
@@ -1877,8 +1893,13 @@ def _seed_cron_channel_session(
                     thread_id=None,  # flat — the whole-channel/DM session
                 )
                 # Create the flat session row so the mirror has a target and the
-                # user's later plain reply joins the SAME session.
-                session_store.get_or_create_session(dest_source)
+                # user's later plain reply joins the SAME session. Capture the
+                # exact session id: the mirror must write into THIS row, not
+                # re-discover it via origin heuristics (which bail out on
+                # populated chats where the flat session coexists with
+                # per-message thread sessions — live failure, Alice 2026-08-19).
+                _entry = session_store.get_or_create_session(dest_source)
+                seeded_session_id = getattr(_entry, "session_id", None)
 
         from gateway.mirror import mirror_to_session
 
@@ -1889,6 +1910,7 @@ def _seed_cron_channel_session(
             source_label="cron",
             thread_id=None,
             user_id=str(user_id) if user_id else None,
+            session_id=seeded_session_id,
             role="user",
         )
         if ok:
@@ -2912,6 +2934,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 timed_out = False
+                delivered_message_id = None
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
@@ -3009,9 +3032,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             if isinstance(send_result, dict):
                                 send_success = bool(send_result.get("success", False))
                                 send_raw_response = send_result.get("raw_response")
+                                delivered_message_id = send_result.get("message_id")
                             else:
                                 send_success = _confirm_adapter_delivery(send_result)
                                 send_raw_response = getattr(send_result, "raw_response", None)
+                                delivered_message_id = getattr(send_result, "message_id", None)
 
                             if not send_success:
                                 if isinstance(send_result, dict):
@@ -3126,6 +3151,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 "Job '%s': in_channel seed did NOT land on %s:%s "
                                 "— a plain reply will not see this brief",
                                 job["id"], platform_name, chat_id,
+                            )
+                        # Companion THREAD-surface seed (live gap, Alice
+                        # 2026-08-19): a flat brief is still a Slack message
+                        # the user can reply to IN ITS THREAD — the natural
+                        # mobile/desktop affordance — and that reply keys to
+                        # (chat, thread=<brief ts>), a session the flat seed
+                        # never touches. Seed it too so BOTH reply surfaces
+                        # continue the job. Uses the delivered message id as
+                        # the thread anchor; best-effort like every seed.
+                        if delivered_message_id:
+                            _seed_cron_thread_session(
+                                job, runtime_adapter, platform_name, chat_id,
+                                str(delivered_message_id), mirror_text,
+                                chat_name=origin.get("chat_name"),
                             )
                     elif in_channel_surface and not origin_target:
                         logger.warning(

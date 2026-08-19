@@ -35,6 +35,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from tools.environments.ssh_destination import build_ssh_probe_command
 from utils import base_url_host_matches
 
 
@@ -450,6 +451,26 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     """Emit a check_fail and append the corresponding fix instruction."""
     check_fail(text, detail)
     issues.append(fix)
+
+
+def _doctor_ssh_probe_command(
+    ssh_host: str,
+    ssh_user: str | None = None,
+    ssh_port: str | None = None,
+    ssh_key: str | None = None,
+) -> list[str]:
+    """Build argv for the doctor SSH connectivity probe.
+
+    Raises ValueError when host/user would be parsed as OpenSSH options.
+    Always inserts ``--`` before the destination (defense in depth).
+    """
+    return build_ssh_probe_command(
+        ssh_host,
+        ssh_user,
+        port=ssh_port or None,
+        key=ssh_key,
+        connect_timeout=5,
+    )
 
 
 # Deprecated / legacy config keys still read for back-compat. Doctor surfaces
@@ -2025,27 +2046,31 @@ def run_doctor(args):
             ssh_user = os.getenv("TERMINAL_SSH_USER")
             ssh_port = os.getenv("TERMINAL_SSH_PORT")
             ssh_key = os.getenv("TERMINAL_SSH_KEY")
-            target = f"{ssh_user}@{ssh_host}" if ssh_user else ssh_host
-            cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
-            if ssh_port:
-                cmd += ["-p", ssh_port]
-            if ssh_key:
-                cmd += ["-i", os.path.expanduser(ssh_key)]
-            cmd += [target, "echo ok"]
-            # Try to connect
             try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True, encoding='utf-8', errors='replace',
-                    timeout=15
+                cmd = _doctor_ssh_probe_command(ssh_host, ssh_user, ssh_port, ssh_key)
+            except ValueError as exc:
+                _fail_and_issue(
+                    "invalid SSH destination",
+                    f"({exc})",
+                    "Set TERMINAL_SSH_HOST / TERMINAL_SSH_USER to a real hostname/user "
+                    "(values must not start with '-')",
+                    issues,
                 )
-            except subprocess.TimeoutExpired:
-                result = None
-            if result is not None and result.returncode == 0:
-                check_ok(f"SSH connection to {ssh_host}")
             else:
-                _fail_and_issue(f"SSH connection to {ssh_host}", "", f"Check SSH configuration for {ssh_host}", issues)
+                # Try to connect
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True, encoding='utf-8', errors='replace',
+                        timeout=15
+                    )
+                except subprocess.TimeoutExpired:
+                    result = None
+                if result is not None and result.returncode == 0:
+                    check_ok(f"SSH connection to {ssh_host}")
+                else:
+                    _fail_and_issue(f"SSH connection to {ssh_host}", "", f"Check SSH configuration for {ssh_host}", issues)
         else:
             _fail_and_issue(
                 "TERMINAL_SSH_HOST not set",

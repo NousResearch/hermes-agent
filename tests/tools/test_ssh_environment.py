@@ -74,7 +74,7 @@ class TestBuildSSHCommand:
 
     def test_user_host_suffix(self):
         env = SSHEnvironment(host="h", user="u")
-        assert env._build_ssh_command()[-1] == "u@h"
+        assert env._build_ssh_command()[-2:] == ["--", "u@h"]
 
 
 class TestControlSocketPath:

@@ -1471,3 +1471,25 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+class TestDoctorSshProbeArgv:
+    """CWE-88: leading-dash SSH destinations must not become OpenSSH options."""
+
+    def test_probe_command_inserts_double_dash_before_destination(self):
+        cmd = doctor_mod._doctor_ssh_probe_command(
+            "example.com", "alice", "2222", "~/.ssh/id_ed25519"
+        )
+        assert cmd[0] == "ssh"
+        dash = cmd.index("--")
+        assert cmd[dash + 1] == "alice@example.com"
+        assert cmd[dash + 2] == "echo ok"
+        assert "-p" in cmd and "2222" in cmd
+
+    def test_probe_command_rejects_leading_dash_host(self):
+        with pytest.raises(ValueError, match="must not start with"):
+            doctor_mod._doctor_ssh_probe_command("-oProxyCommand=evil")
+
+    def test_probe_command_rejects_leading_dash_user(self):
+        with pytest.raises(ValueError, match="must not start with"):
+            doctor_mod._doctor_ssh_probe_command("example.com", "-oProxyCommand=evil")

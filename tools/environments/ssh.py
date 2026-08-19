@@ -27,6 +27,7 @@ from tools.environments.file_sync import (
     quoted_rm_command,
     unique_parent_dirs,
 )
+from tools.environments.ssh_destination import format_ssh_destination
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,9 @@ class SSHEnvironment(BaseEnvironment):
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = ""):
         super().__init__(cwd=cwd, timeout=timeout)
+        # Reject leading-dash host/user before any ssh/scp subprocess
+        # (OpenSSH option smuggling / CWE-88).
+        self._destination = format_ssh_destination(host, user)
         self.host = host
         self.user = user
         self.port = port
@@ -105,7 +109,7 @@ class SSHEnvironment(BaseEnvironment):
             cmd.extend(["-i", self.key_path])
         if extra_args:
             cmd.extend(extra_args)
-        cmd.append(f"{self.user}@{self.host}")
+        cmd.extend(["--", self._destination])
         return cmd
 
     def _establish_connection(self):
@@ -200,7 +204,7 @@ class SSHEnvironment(BaseEnvironment):
             scp_cmd.extend(["-P", str(self.port)])
         if self.key_path:
             scp_cmd.extend(["-i", self.key_path])
-        scp_cmd.extend([host_path, f"{self.user}@{self.host}:{remote_path}"])
+        scp_cmd.extend(["--", host_path, f"{self._destination}:{remote_path}"])
         result = subprocess.run(
             scp_cmd,
             capture_output=True,
@@ -420,7 +424,7 @@ class SSHEnvironment(BaseEnvironment):
         if self.control_socket.exists():
             try:
                 cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",
-                       "-O", "exit", f"{self.user}@{self.host}"]
+                       "-O", "exit", "--", self._destination]
                 subprocess.run(
                     cmd,
                     capture_output=True,

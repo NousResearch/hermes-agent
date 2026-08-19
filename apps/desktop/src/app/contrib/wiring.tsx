@@ -325,21 +325,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('hermes:open-keybinds', onOpenKeybinds)
   }, [navigate])
 
-  // Dev-only: install the credit-notice demo trigger (Ctrl+Shift+C / ⌘K palette
-  // / window.__creditsDemo). Dynamic import inside the DEV guard so the module
-  // is dropped from production builds.
+  // Dev-only: install the demo triggers (credit notices on Ctrl+Shift+C, the
+  // tour UI on Ctrl+Shift+X — each also a ⌘K entry and a window hook). Dynamic
+  // imports inside the DEV guard so the modules are dropped from production
+  // builds.
   useEffect(() => {
     if (!import.meta.env.DEV) {
       return
     }
 
-    let dispose: (() => void) | undefined
+    const disposers: (() => void)[] = []
 
-    void import('./dev/credits-notice-demo').then(m => {
-      dispose = m.installCreditsNoticeDemo()
-    })
+    void import('./dev/credits-notice-demo').then(m => disposers.push(m.installCreditsNoticeDemo()))
+    void import('./dev/tour-demo').then(m => disposers.push(m.installTourDemo()))
 
-    return () => dispose?.()
+    return () => disposers.forEach(dispose => dispose())
   }, [])
 
   // Post-turn rehydrate from stored history (same behavior as DesktopController,

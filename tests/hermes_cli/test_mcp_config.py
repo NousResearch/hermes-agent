@@ -243,6 +243,219 @@ class TestMcpAdd:
             "DEBUG": "true",
         }
 
+    def test_add_warns_when_env_lands_in_args(self, capsys, monkeypatch):
+        """Warn when a trailing ``--env KEY=VALUE`` was swallowed by ``--args``.
+
+        ``--args`` uses ``nargs=REMAINDER`` (so child flags like ``-y`` pass
+        through), which greedily consumes every following token — including a
+        ``--env KEY=VALUE`` typed *after* ``--args``.  The value never reaches
+        the server's ``env:`` block (a silent credential footgun, issue #68944).
+        Since ``--args`` is documented as "must be the last option", surface a
+        warning instead of misfiling the value silently.
+        """
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        # Reporter's argv: `--env GITHUB_PAT=xxx` typed after `--args`, so
+        # REMAINDER captured it into args and env stayed empty.
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=["-y", "@mcp/github", "--env", "GITHUB_PAT=xxx"],
+            env=None,
+        ))
+        out = capsys.readouterr().out
+        assert "--env" in out and "--args" in out
+        assert "environment variable" in out
+
+    def test_add_warns_even_when_a_correct_env_precedes_args(
+        self, capsys, monkeypatch
+    ):
+        """A correct ``--env`` before ``--args`` must not mask a trailing one.
+
+        ``--env A=1 --args -y pkg --env B=2`` parses to ``env=['A=1']`` with
+        ``B=2`` still stranded in the child argv — the same silent loss, just
+        with one variable working.  Gating the warning on "no env parsed"
+        would re-create the reported bug here, so it is deliberately ungated.
+        """
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=["-y", "@mcp/github", "--env", "STRANDED=xxx"],
+            env=["WORKING=yes"],
+        ))
+        out = capsys.readouterr().out
+        assert "environment variable" in out
+
+        # The correctly-placed variable is still persisted as-is.
+        from hermes_cli.config import load_config
+
+        srv = load_config()["mcp_servers"]["github"]
+        assert srv["env"] == {"WORKING": "yes"}
+
+    def test_add_no_warning_when_env_legitimately_in_args(
+        self, capsys, monkeypatch
+    ):
+        """A container runtime's own ``--env`` mid-args must not trip the warning.
+
+        ``docker run ... --env FOO=bar <image>`` legitimately carries ``--env``
+        inside the passthrough argv, followed by the image name — not trailing.
+        The footgun heuristic keys on a *trailing* ``--env KEY=VALUE`` with no
+        real env parsed, so this must stay quiet.
+        """
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        docker_argv = ["run", "-i", "--rm", "--env", "FOO=bar", "some/image"]
+        cmd_mcp_add(_make_args(
+            name="dockermcp",
+            mcp_command="docker",
+            args=list(docker_argv),
+            env=None,
+        ))
+        out = capsys.readouterr().out
+        assert "environment variable" not in out
+
+        # Pins the core design decision: the guard never rewrites argv, so
+        # docker's own --env stays in args and no env: block is invented.
+        from hermes_cli.config import load_config
+
+        srv = load_config()["mcp_servers"]["dockermcp"]
+        assert srv["args"] == docker_argv
+        assert "env" not in srv
+
+    def test_real_parser_swallows_env_into_args_and_handler_warns(
+        self, capsys, monkeypatch
+    ):
+        """End-to-end: real argv → real parser → handler warns.
+
+        Every other test here hands ``cmd_mcp_add`` a hand-built Namespace,
+        which *assumes* rather than demonstrates the parser behavior the whole
+        fix rests on.  This one drives the actual parser built by
+        ``build_mcp_parser`` with the argv from the issue report, so the
+        regression is pinned at the layer where it originates:
+
+        * if ``--args`` ever stops using ``nargs=REMAINDER``, ``--env`` would
+          populate ``args.env`` and the first two assertions fail;
+        * if the guard is dropped, the last one fails.
+
+        A Namespace-only test cannot catch the first case.
+        """
+        import argparse as _argparse
+
+        from hermes_cli.subcommands.mcp import build_mcp_parser
+
+        parser = _argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="command")
+        build_mcp_parser(subparsers, cmd_mcp=lambda _args: None)
+
+        parsed = parser.parse_args([
+            "mcp", "add", "github",
+            "--command", "npx",
+            "--args", "-y", "@mcp/github", "--env", "GITHUB_PAT=xxx",
+        ])
+
+        # The bug itself: REMAINDER ate the --env pair, env stayed empty.
+        assert parsed.args == ["-y", "@mcp/github", "--env", "GITHUB_PAT=xxx"]
+        # Note the real parser gives `[]` here, not the `None` the hand-built
+        # Namespaces above use — `--env` is declared `nargs="*", default=[]`.
+        # `cmd_mcp_add` treats both as empty, but the discrepancy is exactly
+        # the kind of drift a Namespace-only suite cannot see.
+        assert parsed.env == []
+
+        fake_tools = [FakeTool("search", "Search repos")]
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [
+                (t.name, t.description) for t in fake_tools
+            ],
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(parsed)
+        out = capsys.readouterr().out
+        assert "--env" in out and "--args" in out
+        assert "Hermes environment variable" in out
+
+    def test_legitimate_trailing_child_env_warns_but_is_not_rewritten(
+        self, capsys, monkeypatch
+    ):
+        """A child command that legitimately *ends* in ``--env K=V`` still warns.
+
+        This is the known false positive, pinned deliberately rather than
+        papered over: a wrapper whose last tokens are an env pair is
+        shape-identical to the footgun, and no heuristic over argv alone can
+        separate them — only the user knows the intent.
+
+        What makes the false positive harmless is the two properties asserted
+        below: the message is phrased conditionally ("if the command takes its
+        own --env, this is fine"), and **argv is passed through unchanged**
+        with no ``env:`` block invented.  A future change that turns this
+        warning into an extraction — the approach taken by the sibling PRs on
+        #68944 — would break this test, which is the point.
+        """
+        fake_tools = [FakeTool("search", "Search repos")]
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [
+                (t.name, t.description) for t in fake_tools
+            ],
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        child_argv = ["run", "--rm", "some/image", "--env", "CHILD_ONLY=1"]
+        cmd_mcp_add(_make_args(
+            name="wrapper",
+            mcp_command="docker",
+            args=list(child_argv),
+            env=None,
+        ))
+
+        out = capsys.readouterr().out
+        # Warned (unavoidable) — but conditionally, not as an accusation.
+        assert "Hermes environment variable" in out
+        assert "If the command takes its own --env, this is fine" in out
+
+        # And, crucially, nothing was touched.
+        from hermes_cli.config import load_config
+
+        srv = load_config()["mcp_servers"]["wrapper"]
+        assert srv["args"] == child_argv
+        assert "env" not in srv
 
     def test_add_preset_fills_transport(self, tmp_path, capsys, monkeypatch):
         """A preset fills in command/args when no explicit transport given."""

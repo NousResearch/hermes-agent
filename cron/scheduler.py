@@ -6155,12 +6155,30 @@ def _strip_verification_leak(text: str) -> str:
         re.MULTILINE,
     )
     _URL_RE = re.compile(r'https?://\S+', re.MULTILINE)
+    # 2026-08-16 incident (nous-archive-digest): deepseek-v4-flash emitted
+    # verification narration that slipped past _VERIF_BULLET_RE because the
+    # evidence lines used bold-markdown / different phrasing than the
+    # line-start prefixes (`- **`run_tests.sh`** — exit 0 ...`,
+    # `- Size: 20K bytes`, `- Content verified: ...`). A bullet only counts
+    # as legitimate summary if it ALSO contains none of the evidence
+    # vocabulary — otherwise a wall of verification evidence can masquerade
+    # as a "summary" and get delivered.
+    _VERIF_CONTENT_RE = re.compile(
+        r'(?:run_tests|test suite|exit \d+|well-formed|parsed cleanly|'
+        r'html\.parser|html validity|lint|cron-output|verified|verification|'
+        r'director(?:y|ies)|file exists|path:|size:|no test files|no new issues|'
+        r'pre-existing|unrelated|no issues needed|repair|deliverable is|'
+        r'media path|dark-mode|media_delivery|safe root)'
+        r'|\b(?:bytes?|kb|mb)\b',
+        re.IGNORECASE,
+    )
 
     has_summary = bool(_SUMMARY_LINE_RE.search(stripped) or _URL_RE.search(stripped))
     if not has_summary:
         # Check for non-verification bullet lines
         for line in stripped.split("\n"):
-            if _BULLET_RE.match(line) and not _VERIF_BULLET_RE.match(line):
+            if _BULLET_RE.match(line) and not _VERIF_BULLET_RE.match(line) \
+                    and not _VERIF_CONTENT_RE.search(line):
                 has_summary = True
                 break
     if has_summary:

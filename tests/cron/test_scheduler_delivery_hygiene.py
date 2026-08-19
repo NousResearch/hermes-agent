@@ -1,7 +1,9 @@
 """Regression tests for cron scheduler delivery hygiene.
 
 Covers two KENSEI CUSTOM fixes in cron/scheduler.py:
-1. _strip_verification_leak (already present) — not re-tested here.
+1. _strip_verification_leak (already present) — re-tested for the
+   2026-08-16 nous-archive-digest leak class (bold-markdown evidence
+   bullets masquerading as summary).
 2. NEW: raw HTML block stripping from chat delivery body (keeps MEDIA tag).
 """
 import re
@@ -80,3 +82,48 @@ def test_rejects_artifact_template_without_execution_id(tmp_path):
     artifact, prompt = S._prepare_delivery_artifact(job, "run-current")
     assert artifact is None
     assert prompt is None
+
+
+# ---------- 2026-08-16 nous-archive-digest verification-leak regression ----------
+
+_NARRATION_LEAK_CASE = (
+    "**`bash /home/kensei/.hermes/scripts/run_tests.sh` → exit 0, output: `No test files to run`.**\n"
+    "Concrete verification for this artifact, in addition to the clean test-runner exit:\n"
+    "- **File exists on disk** — `ls -la` → `11381 bytes`, `17 Aug 16:30`.\n"
+    "- **cron-output-lint.py** → exit 0 for this job; no issues for this digest.\n"
+    "No repairs needed. The deliverable is verified: valid HTML, exists on disk."
+)
+
+
+def test_strip_suppresses_bold_markdown_verification_narration():
+    """Bold-markdown evidence bullets (the 08-2026 leak class) must suppress,
+    not be mistaken for a summary because they start with a bullet."""
+    out = S._strip_verification_leak(_NARRATION_LEAK_CASE)
+    assert out.strip() in ("", "[SILENT]"), (
+        "verification narration must be suppressed, got: %r" % out[:200]
+    )
+
+
+def test_strip_keeps_legit_summary_with_media_tag():
+    resp = (
+        "📡 Nous Discord Digest — 18/08/2026\n"
+        "1299 new messages · hermes-agent: 1264 · developers: 22\n"
+        "Top picks:\n1. Would you trust your Hermes agent to chose an organization to donate to — new thread\n"
+        "MEDIA:/home/kensei/.hermes/runbooks/nous-archive/nous-digest-20260818-0428.html"
+    )
+    out = S._strip_verification_leak(resp)
+    assert "MEDIA:" in out
+    assert "Top picks" in out
+    assert "run_tests" not in out
+
+
+def test_strip_keeps_plain_summary_without_media():
+    """Plain-text summary bullets that are NOT verification evidence survive."""
+    resp = (
+        "Remote job tracker:\n"
+        "- 8 new roles matched today\n"
+        "- 2 applications submitted https://example.com/job/1\n"
+    )
+    out = S._strip_verification_leak(resp)
+    assert "Remote job tracker" in out
+    assert "2 applications submitted" in out

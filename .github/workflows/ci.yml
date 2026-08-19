@@ -1,3 +1,4 @@
+# cache-buster: force workflow re-parse (reverted in next commit)
 name: CI
 
 # Orchestrator workflow. Runs ``detect-changes`` once, then conditionally

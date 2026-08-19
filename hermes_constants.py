@@ -1610,6 +1610,22 @@ def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
     return Path(venv_dir) / ("Scripts" if windows else "bin")
 
 
+def project_venv_dir(project_root) -> Path | None:
+    """The project's venv directory, ``venv`` or ``.venv``, when one exists.
+
+    ``uv venv`` defaults to ``.venv`` while our installers create ``venv``, so
+    both layouts are in the wild. Call sites that only knew about ``venv``
+    silently no-oped on a ``.venv`` install — that is how the Windows
+    shim-lock preflight skipped itself entirely (#79542). ``venv`` wins when
+    both exist, matching what the installers write.
+    """
+    for name in ("venv", ".venv"):
+        candidate = Path(project_root) / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
     """Path to the Python interpreter inside *venv_dir* (may not exist)."""
     if windows is None:

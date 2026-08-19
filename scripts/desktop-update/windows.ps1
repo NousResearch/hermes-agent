@@ -703,13 +703,13 @@ try {
     # the next. Step 2's preflight cannot catch it, because the shim genuinely
     # IS unlocked at that moment.
     #
-    # When the rename loses that race, _schedule_replace_on_reboot is the last
-    # resort -- and it writes to HKLM\...\PendingFileRenameOperations, which
-    # requires elevation. A Desktop-driven update runs non-elevated, so it
-    # returns ERROR_ACCESS_DENIED and `uv pip install -e .` exits 2. The ZIP
-    # fallback repeats the identical sequence, so the desktop build stage is
-    # never reached and apps/desktop/release is left missing -- an install whose
-    # Start Menu shortcut points at a Hermes.exe that no longer exists.
+    # When the rename loses that race there is no recovery: `uv pip install -e .`
+    # exits 2 and the ZIP fallback repeats the identical sequence, so the desktop
+    # build stage is never reached and apps/desktop/release is left missing -- an
+    # install whose Start Menu shortcut points at a Hermes.exe that no longer
+    # exists. (A reboot-deferred rename was the old last resort here; it needed
+    # elevation a Desktop-driven update does not have, and freed nothing for the
+    # install already in flight.)
     #
     # Running the same code as `python.exe -m hermes_cli.main update` puts the
     # inherited handles on python.exe, which uv never has to replace.

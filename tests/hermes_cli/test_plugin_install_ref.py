@@ -192,7 +192,9 @@ def test_force_reinstall_does_not_drift_pin_without_explicit_new_ref(
     monkeypatch.setenv("HERMES_HOME", str(home))
     _install_plugin_core(repo.as_uri(), force=False, ref=old_sha)
 
-    target, _manifest, _name = _install_plugin_core(repo.as_uri(), force=True)
+    target, _manifest, _name = _install_plugin_core(
+        repo.as_uri(), force=True, no_scan=True
+    )
     assert _git(target, "rev-parse", "HEAD") == old_sha
     assert _metadata(home)["demo"]["pinned"] is True
 

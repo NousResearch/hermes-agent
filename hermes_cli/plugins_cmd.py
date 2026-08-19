@@ -158,6 +158,32 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     return result
 
 
+def _enforce_structural_safety(plugin_dir: Path, identifier: str):
+    """Structural invariants that even a verified-artifact install never skips.
+
+    Used by ``--no-scan``: the content heuristics are trusted away, but
+    dangerous path/symlink traversal and bundle-shape violations still block,
+    because they change which files Hermes later resolves and loads.
+    """
+    from tools.plugin_guard import format_scan_report, scan_plugin_structure
+
+    result = scan_plugin_structure(plugin_dir, source=identifier)
+    if result.verdict == "dangerous":
+        raise PluginScanBlocked(
+            "Security scan blocked plugin install: structural violation "
+            f"({len(result.findings)} finding(s)). Structural checks are not "
+            f"skipped by --no-scan.\n\n{format_scan_report(result)}",
+            scan_result=result,
+        )
+    if result.findings:
+        logger.info(
+            "structural findings accepted for verified install of %s: %s",
+            identifier,
+            result.summary,
+        )
+    return result
+
+
 # Highest ``manifest_version`` this installer understands; breaking schema changes bump it.
 _SUPPORTED_MANIFEST_VERSION = 1
 
@@ -603,6 +629,7 @@ def _install_plugin_core(
     force: bool,
     ref: Optional[str] = None,
     scan_decision_cb=None,
+    no_scan: bool = False,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
@@ -621,6 +648,13 @@ def _install_plugin_core(
         pins = [e for e in old_metadata.values() if e.get("source") == source and e.get("pinned") is True]
         if len(pins) == 1 and isinstance(pins[0].get("revision"), str):
             requested_revision = _normalize_exact_revision(pins[0]["revision"])
+    # Skipping the scan is only meaningful when the install is bound to the
+    # exact bytes the trusted channel verified — never to a mutable branch.
+    if no_scan and requested_revision is None:
+        raise PluginOperationError(
+            "--no-scan requires an immutable revision; pass --ref <40-character "
+            "commit SHA> or reinstall the same pinned source."
+        )
 
     with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp:
         tmp_clone = Path(tmp) / "plugin"
@@ -634,8 +668,21 @@ def _install_plugin_core(
         except ValueError as e:
             raise PluginOperationError(str(e)) from e
         _check_manifest_version(manifest, plugin_name)
-        # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
-        _scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb)
+        # Scan before moving into place; dangerous structural findings always block.
+        if no_scan:
+            logger.info(
+                "skipping install-time content scan for %s (--no-scan, ref=%s)",
+                identifier,
+                requested_revision,
+            )
+            _enforce_structural_safety(tmp_target, identifier)
+        else:
+            _scan_plugin_tree(
+                tmp_target,
+                identifier,
+                force=force,
+                scan_decision_cb=scan_decision_cb,
+            )
 
         if target.exists() and not force:
             raise PluginOperationError(
@@ -704,6 +751,7 @@ def cmd_install(
     force: bool = False,
     enable: Optional[bool] = None,
     ref: Optional[str] = None,
+    no_scan: bool = False,
 ) -> None:
     """Install a plugin from a Git URL, owner/repo shorthand, or index name.
 
@@ -737,7 +785,8 @@ def cmd_install(
 
     try:
         target, installed_manifest, installed_name = _install_plugin_core(
-            identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision)
+            identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision,
+            no_scan=no_scan)
     except PluginOperationError as e:
         _fail(console, f"[red]{'Blocked' if isinstance(e, PluginScanBlocked) else 'Error'}:[/red] {e}")
     if not _looks_like_plugin_dir(target):
@@ -2039,7 +2088,8 @@ _PLUGIN_ACTIONS = {
         args.identifier,
         force=getattr(args, "force", False),
         enable=_tri_state_flag(args, "enable", "no_enable"),
-        ref=getattr(args, "ref", None)),
+        ref=getattr(args, "ref", None),
+        no_scan=getattr(args, "no_scan", False)),
     "search": lambda args: cmd_search(
         getattr(args, "term", "") or "",
         json_output=getattr(args, "json", False),

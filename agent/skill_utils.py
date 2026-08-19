@@ -526,20 +526,53 @@ def get_external_skills_dirs() -> List[Path]:
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
 
-    Cached in-process, keyed on ``config.yaml`` mtime — the function is
-    called once per skill during banner / tool-registry scans, and YAML
-    parsing a non-trivial config dominates ``hermes`` cold-start time
-    when the cache is absent.
+    Cached in-process, keyed on the profile AND managed config.yaml
+    signatures — the function is called once per skill during banner /
+    tool-registry scans, and YAML parsing a non-trivial config dominates
+    ``hermes`` cold-start time when the cache is absent.
     """
     config_path = get_config_path()
-    if not config_path.exists():
+
+    # Managed Scope must be honored here too (#90040): the managed config's
+    # ``skills.external_dirs`` replaces the profile's list, exactly as the
+    # effective-config contract promises, so an administrator can publish
+    # one shared skill directory without duplicating the key into every
+    # profile. The managed signature also keys the cache below — editing
+    # /etc/hermes/config.yaml mid-run must invalidate discovery.
+    managed_cfg: Dict[str, Any] = {}
+    managed_sig: Tuple[int, int] = (0, 0)
+    try:
+        from hermes_cli import managed_scope
+
+        _managed_dir = managed_scope.get_managed_dir()
+        if _managed_dir is not None:
+            _managed_path = _managed_dir / "config.yaml"
+            if _managed_path.exists():
+                _mstat = _managed_path.stat()
+                managed_sig = (_mstat.st_mtime_ns, _mstat.st_size)
+                managed_cfg = managed_scope.load_managed_config() or {}
+    except Exception:
+        managed_cfg = {}
+
+    if not config_path.exists() and not managed_cfg:
         return []
 
-    # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
-    # the full YAML parse, so the fast path is nearly free.
+    # Cache key: (profile path, mtime_ns, managed mtime, managed size).
+    # stat() is ~2us vs ~85ms for the full YAML parse, so the fast path
+    # is nearly free. A missing profile config still participates via a
+    # zero signature so managed-only discovery caches too.
     try:
-        stat = config_path.stat()
-        cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
+        stat = (
+            config_path.stat()
+            if config_path.exists()
+            else None
+        )
+        cache_key: Tuple[str, int, int, int] = (
+            str(config_path),
+            stat.st_mtime_ns if stat is not None else 0,
+            managed_sig[0],
+            managed_sig[1],
+        )
     except OSError:
         cache_key = None  # type: ignore[assignment]
 
@@ -550,6 +583,11 @@ def get_external_skills_dirs() -> List[Path]:
             return list(cached)
 
     parsed = _load_raw_config()
+    managed_skills = managed_cfg.get("skills")
+    if isinstance(managed_skills, dict) and "external_dirs" in managed_skills:
+        # Managed Scope replaces the profile's list (same overlay semantics
+        # as apply_managed_overlay for list-valued leaves).
+        parsed = {**parsed, "skills": managed_skills}
     if not parsed:
         return []
 

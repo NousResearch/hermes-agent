@@ -110,3 +110,88 @@ def test_cache_key_is_per_config_path(tmp_path, monkeypatch):
     # And switching back still works — both entries coexist in the cache.
     monkeypatch.setenv("HERMES_HOME", str(home_a))
     assert get_external_skills_dirs() == [ext_a.resolve()]
+
+
+# ---------------------------------------------------------------------------
+# Managed Scope (#90040): skills.external_dirs declared in the managed config
+# replaces the profile's list and must be discovered, with the managed file's
+# signature keying the cache.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def managed_scope_home(tmp_path, monkeypatch):
+    """Isolated profile home + managed dir with a shared skill directory."""
+    home = tmp_path / "home"
+    home.mkdir()
+    shared = tmp_path / "shared"
+    (shared / "demo").mkdir(parents=True)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(
+        "skills:\n"
+        f"  external_dirs:\n"
+        f"    - {shared}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _external_dirs_cache_clear()
+    yield home, shared, managed
+    _external_dirs_cache_clear()
+
+
+def test_managed_only_external_dirs_discovered(managed_scope_home):
+    """A managed-only skills.external_dirs is discovered even when the
+    profile config declares no dirs."""
+    _home, shared, _managed = managed_scope_home
+    assert get_external_skills_dirs() == [shared.resolve()]
+
+
+def test_managed_only_works_without_profile_config_file(managed_scope_home):
+    """The profile home has NO config.yaml; managed scope alone drives it."""
+    _home, shared, _managed = managed_scope_home
+    from agent.skill_utils import get_config_path
+
+    assert not get_config_path().exists()
+    assert get_external_skills_dirs() == [shared.resolve()]
+
+
+def test_managed_list_replaces_profile_list(managed_scope_home):
+    """Managed Scope semantics: the managed list replaces the profile's
+    list (same overlay rule as apply_managed_overlay for list leaves)."""
+    home, shared, _managed = managed_scope_home
+    profile_only = home / "profile_only"
+    profile_only.mkdir()
+    (home / "config.yaml").write_text(
+        "skills:\n"
+        f"  external_dirs:\n"
+        f"    - {profile_only}\n",
+        encoding="utf-8",
+    )
+    dirs = get_external_skills_dirs()
+    assert dirs == [shared.resolve()]
+    assert profile_only.resolve() not in dirs
+
+
+def test_managed_edit_invalidates_cache(managed_scope_home):
+    """Editing the managed config.yaml invalidates the discovery cache."""
+    _home, shared, managed = managed_scope_home
+    assert get_external_skills_dirs() == [shared.resolve()]
+
+    other = managed.parent / "other_shared"
+    other.mkdir()
+    cfg = managed / "config.yaml"
+    cfg.write_text(
+        "skills:\n"
+        f"  external_dirs:\n"
+        f"    - {other}\n",
+        encoding="utf-8",
+    )
+    stat = cfg.stat()
+    future = stat.st_atime + 10
+    os.utime(cfg, (future, future))
+
+    assert get_external_skills_dirs() == [other.resolve()]

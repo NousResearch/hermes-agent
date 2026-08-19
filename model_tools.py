@@ -39,6 +39,7 @@ from tools.registry import (
     tool_error,
 )
 from toolsets import resolve_toolset, validate_toolset
+from tools.tool_usage import record_call
 
 logger = logging.getLogger(__name__)
 
@@ -1583,6 +1584,14 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        # Tool usage recording (opt-in, gated by tools.analytics config key).
+        record_call(
+            function_name,
+            result=result,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+
         return result
 
     except Exception as e:
@@ -1608,6 +1617,13 @@ def handle_function_call(
             error_type=type(e).__name__,
             error_message=str(e),
             middleware_trace=list(_tool_middleware_trace),
+        )
+        record_call(
+            function_name,
+            success=False,
+            result=f"[TOOL_ERROR] {error_msg}",
+            session_id=session_id,
+            turn_id=turn_id,
         )
         return result
 

@@ -55,6 +55,7 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_import_cookies",
     # replaces other tools when browser.backend is "browser-use"
     "browser_exec",
     # Text-to-speech
@@ -209,7 +210,9 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "browser_exec", "web_search"
+            "browser_dialog",
+            "browser_import_cookies",
+            "browser_exec", "web_search"
         ],
         "includes": []
     },
@@ -450,6 +453,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_import_cookies",
             "browser_exec",
             "todo", "memory",
             "session_search",
@@ -480,6 +484,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "browser_import_cookies",
             "browser_exec",
             # Planning & memory
             "todo", "memory",

@@ -1359,11 +1359,49 @@ def _install_uv_posix(env: dict[str, str]) -> None:
             pass
 
 
+def _resolve_windows_powershell_host() -> str:
+    """Return an absolute Windows PowerShell host path for managed-uv bootstrap.
+
+    A bare ``powershell`` argv lets CreateProcess search the process current
+    directory (and PATHEXT) before PATH, so an attacker-writable cwd can plant
+    ``powershell.exe`` / ``.cmd`` / ``.bat`` and run arbitrary code under
+    ``-ExecutionPolicy Bypass``. Prefer the well-known System32 host only —
+    never fall back to an unresolved bare name. This closes cwd/PATHEXT host
+    planting; like other Windows process launches, it trusts the inherited
+    OS environment to provide the genuine ``SystemRoot`` / ``WINDIR``.
+    """
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if not system_root:
+        raise FileNotFoundError(
+            "Windows PowerShell host unresolved: SystemRoot/WINDIR is unset"
+        )
+    root = Path(system_root)
+    if not root.is_absolute():
+        raise FileNotFoundError(
+            f"Windows PowerShell system root must be absolute: {system_root}"
+        )
+    candidate = (
+        root
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    if not candidate.is_absolute():
+        raise FileNotFoundError(
+            f"Windows PowerShell host path must be absolute: {candidate}"
+        )
+    if candidate.is_file():
+        return str(candidate)
+    raise FileNotFoundError(f"Windows PowerShell host not found at {candidate}")
+
+
 def _install_uv_windows(env: dict[str, str]) -> None:
-    """Invoke the PowerShell installer."""
+    """Invoke the PowerShell installer via a trusted absolute host path."""
     cmd = "irm https://astral.sh/uv/install.ps1 | iex"
+    host = _resolve_windows_powershell_host()
     subprocess.run(
-        ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd],
+        [host, "-ExecutionPolicy", "Bypass", "-c", cmd],
         env=env,
         check=True,
         capture_output=True,

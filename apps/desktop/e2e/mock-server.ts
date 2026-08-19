@@ -519,12 +519,21 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           }
 
           if (includesBatchClarifyTrigger(parsed.messages)) {
-            if (stream) {
-              streamScriptedTurn(res, model, BATCH_CLARIFY_TURN)
-            } else {
-              nonStreamingScriptedTurn(res, model, BATCH_CLARIFY_TURN)
+            // Only the FIRST completion of the conversation scripts the batch
+            // clarify. The trigger text stays in message history, so once the
+            // answered tool result is present the turn falls through to the
+            // canned reply — otherwise the mock loops the quiz forever.
+            const hasToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
+
+            if (!hasToolResult) {
+              if (stream) {
+                streamScriptedTurn(res, model, BATCH_CLARIFY_TURN)
+              } else {
+                nonStreamingScriptedTurn(res, model, BATCH_CLARIFY_TURN)
+              }
+              return
             }
-            return
           }
 
           if (includesBlockingClarifyTrigger(parsed.messages)) {

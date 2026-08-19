@@ -20530,9 +20530,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _stts_adapter is not None
                 and bool(getattr(_stts_adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation))
             )
+            # Only check the current turn's messages for TTS dedup — scanning
+            # the full history would permanently suppress _send_voice_reply once
+            # any prior turn called the TTS tool.
+            _hist_offset = agent_result.get("history_offset", 0) or 0
+            _this_turn_msgs = agent_messages[_hist_offset:] if _hist_offset < len(agent_messages) else agent_messages
             if (
                 not _streaming_tts_done
-                and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent)
+                and self._should_send_voice_reply(event, response, _this_turn_msgs, already_sent=_already_sent)
             ):
                 await self._send_voice_reply(event, response)
 

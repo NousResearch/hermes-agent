@@ -1052,7 +1052,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     # Auto-disconnect from voice channel after this many seconds of inactivity.
     # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
-    VOICE_TIMEOUT = 300
+    VOICE_TIMEOUT = 3600
     # Minimum seconds to wait for a single voice playback. The effective limit
     # scales with the probed clip duration so long readbacks are not cut off at
     # a hard two-minute ceiling.
@@ -4226,7 +4226,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception:
                     duration_secs = max(1.0, len(file_data) / 2000.0)
 
-                waveform_bytes = bytes([128] * 256)
+                # Generate a realistic-looking waveform from the file data.
+                # Discord renders voice messages based on this — flat waveforms
+                # (all 128s) are treated as silence and the voice UI won't show.
+                _waveform = bytearray(256)
+                _step = max(1, len(file_data) // 512)  # sample every N bytes
+                for _i in range(256):
+                    _byte_val = file_data[min(_i * _step, len(file_data) - 1)]
+                    # Map byte value (0-255) to waveform amplitude, centered at 128
+                    _waveform[_i] = 128 + ((_byte_val - 128) // 3)
+                waveform_bytes = bytes(_waveform)
                 waveform_b64 = base64.b64encode(waveform_bytes).decode()
 
                 import json as _json
@@ -4260,7 +4269,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=str(msg_data["id"]))
             except Exception as voice_err:
-                logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
+                logger.warning("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
                 try:
                     msg = await channel.send(file=file, reference=reference)
@@ -4942,7 +4951,18 @@ class DiscordAdapter(BasePlatformAdapter):
             if not result.get("success"):
                 return
             transcript = result.get("transcript", "").strip()
-            if not transcript or is_whisper_hallucination(transcript):
+            duration = result.get("duration", 0.0)
+            if not transcript:
+                logger.info(
+                    "Voice input from user %d: empty transcript (%.1fs audio), skipping",
+                    user_id, duration,
+                )
+                return
+            if is_whisper_hallucination(transcript):
+                logger.info(
+                    "Voice input from user %d: filtered as hallucination (%.1fs audio): %r",
+                    user_id, duration, transcript[:60],
+                )
                 return
 
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])

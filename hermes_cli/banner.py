@@ -96,7 +96,7 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 # Skills scanning
 # =========================================================================
 
-_available_skills_cache: Optional[tuple] = None  # (result,) once computed
+_available_skills_cache: Dict[str, Dict[str, List[str]]] = {}  # hermes_home -> result
 
 
 def get_available_skills() -> Dict[str, List[str]]:
@@ -106,13 +106,19 @@ def get_available_skills() -> Dict[str, List[str]]:
     handles platform gating (``platforms:`` frontmatter) and respects the
     user's ``skills.disabled`` config list.
 
-    Cached per-process: this feeds only the startup banner, whose snapshot
-    is taken once anyway, and the underlying skills-tree walk costs ~100ms.
-    ``prefetch_banner_data()`` uses the cache to pay that walk off-thread.
+    Cached per-process, keyed by the active ``get_hermes_home()``: this feeds
+    only the startup banner, whose snapshot is taken once anyway, and the
+    underlying skills-tree walk costs ~100ms. ``prefetch_banner_data()`` uses
+    the cache to pay that walk off-thread. Keying by hermes_home matters in a
+    multiplex/remote-backend gateway process, where a single process serves
+    multiple profiles under ``set_hermes_home_override()`` — without the key,
+    the first profile to call this wins the cache for every later profile's
+    ``session.info``/``skills.manage`` calls too.
     """
-    global _available_skills_cache
-    if _available_skills_cache is not None:
-        return _available_skills_cache[0]
+    cache_key = str(get_hermes_home())
+    cached = _available_skills_cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         from tools.skills_tool import _find_all_skills
         all_skills = _find_all_skills()  # already filtered
@@ -123,7 +129,7 @@ def get_available_skills() -> Dict[str, List[str]]:
     for skill in all_skills:
         category = skill.get("category") or "general"
         skills_by_category.setdefault(category, []).append(skill["name"])
-    _available_skills_cache = (skills_by_category,)
+    _available_skills_cache[cache_key] = skills_by_category
     return skills_by_category
 
 

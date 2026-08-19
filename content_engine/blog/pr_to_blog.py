@@ -506,16 +506,9 @@ def run(dry_run: bool = False, specific_pr: Optional[int] = None,
 
             slug = blog_result["slug"]
 
-            # Social distribution (only if published, not dry run)
-            if blog_result.get("approved") and not dry_run:
-                pr_url = pr.get("url", f"https://github.com/{repo}/pull/{pr_number}")
-                print("  Posting to X...")
-                tweet_url = post_to_x(blog_result["title"], slug, pr_url)
-                if tweet_url:
-                    print(f"  X post: {tweet_url}")
-
-                print("  Drafting LinkedIn post...")
-                draft_linkedin_post(blog_result["title"], slug, pr, repo)
+            # Distribution is deliberately owned by the dedicated X and LinkedIn
+            # managers. The blog pipeline only produces the blog artifact and must
+            # never post to X or create personal LinkedIn drafts as a side effect.
 
             # Mark as processed
             if not dry_run:

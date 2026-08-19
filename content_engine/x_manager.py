@@ -42,9 +42,9 @@ LANES = (LANE_TRANSFORM, LANE_QUOTE_SCAN, LANE_ARTICLE)
 # Required argument-pack fields. Every artifact must carry all four, non-empty.
 REQUIRED_PACK_FIELDS = ("claim", "evidence", "mechanism", "position")
 
-# Quote-tweet scan must emit between 3 and 5 substantive drafts.
+# Quote-tweet scan must emit between 3 and 10 substantive drafts.
 QUOTE_SCAN_MIN = 3
-QUOTE_SCAN_MAX = 5
+QUOTE_SCAN_MAX = 10
 
 # Dedicated approval channel. It is deliberately injectable at formatting time
 # so tests and future Discord adapters cannot silently route to #content.

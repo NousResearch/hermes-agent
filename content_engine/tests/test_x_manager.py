@@ -94,10 +94,10 @@ def _candidate(tweet_id="1", author="alice", text="a tweet", quote_draft=None, *
     return candidate
 
 
-def test_quote_scan_returns_3_to_5():
-    cands = [_candidate(tweet_id=str(i), text=f"tweet {i}") for i in range(6)]
+def test_quote_scan_returns_3_to_10():
+    cands = [_candidate(tweet_id=str(i), text=f"tweet {i}") for i in range(12)]
     arts = xm.scan_quote_tweet_candidates(cands)
-    assert xm.QUOTE_SCAN_MIN <= len(arts) <= xm.QUOTE_SCAN_MAX
+    assert len(arts) == 10 == xm.QUOTE_SCAN_MAX
 
 
 def test_quote_scan_drops_incomplete_packs():

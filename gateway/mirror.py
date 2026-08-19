@@ -72,8 +72,9 @@ def mirror_to_session(
                 user_id=user_id,
             )
         if not session_id:
-            logger.debug(
-                "Mirror: no session found for %s:%s:%s:%s",
+            logger.warning(
+                "Mirror: no session found for %s:%s thread=%s user=%s "
+                "(explicit_id=none, origin-scan bailed)",
                 platform,
                 chat_id,
                 thread_id,
@@ -95,12 +96,17 @@ def mirror_to_session(
         return True
 
     except Exception as e:
-        logger.debug(
-            "Mirror failed for %s:%s:%s:%s: %s",
+        # WARNING with the exception: a silent mirror drop IS the cron
+        # continuation-amnesia bug (Alice 2026-08-19 — the seed's own
+        # deterministic session_id was in hand and the append STILL failed
+        # invisibly at debug level).
+        logger.warning(
+            "Mirror failed for %s:%s thread=%s user=%s session=%s: %s",
             platform,
             chat_id,
             thread_id,
             user_id,
+            session_id,
             e,
         )
         return False

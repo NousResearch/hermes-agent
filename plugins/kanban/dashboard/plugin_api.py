@@ -2079,6 +2079,7 @@ def _configured_home_channels() -> list[dict]:
             "chat_id": hc.chat_id,
             "thread_id": hc.thread_id or "",
             "name": hc.name or "Home",
+            "chat_type": hc.chat_type or "",
         })
     # Stable order for deterministic UI — platform name alphabetical.
     result.sort(key=lambda r: r["platform"])
@@ -2164,6 +2165,7 @@ def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(Non
             task_id=task_id,
             platform=platform,
             chat_id=home["chat_id"],
+            chat_type=home["chat_type"] or None,
             thread_id=home["thread_id"] or None,
             notifier_profile=_active_profile_name(),
         )

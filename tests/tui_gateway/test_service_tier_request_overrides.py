@@ -14,6 +14,7 @@ just the config resolution.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -88,3 +89,43 @@ def test_anthropic_flex_sends_nothing():
     kwargs = _build("flex", model="claude-opus-4-6")
 
     assert not kwargs.get("request_overrides")
+
+
+def _mirror(agent, arg: str):
+    """Run the typed-slash `/fast <arg>` mirror against a live agent."""
+    session = {"agent": agent}
+    with patch.object(server, "_emit"), patch.object(server, "_session_info", return_value={}):
+        server._mirror_slash_side_effects("sid-1", session, f"/fast {arg}")
+    return agent
+
+
+def test_typed_fast_off_clears_stale_tier_overrides():
+    """`/fast off` must stop sending the tier, not just relabel the session.
+
+    A session built with a configured tier now carries request_overrides. If
+    the typed-slash mirror only clears `service_tier`, the tier keeps going
+    out on the wire while session info reports normal.
+    """
+    agent = SimpleNamespace(
+        model="gpt-5.4",
+        service_tier="flex",
+        request_overrides={"service_tier": "flex"},
+    )
+
+    _mirror(agent, "off")
+
+    assert agent.service_tier is None
+    assert not agent.request_overrides
+
+
+def test_typed_fast_on_sends_priority():
+    agent = SimpleNamespace(
+        model="gpt-5.4",
+        service_tier=None,
+        request_overrides={},
+    )
+
+    _mirror(agent, "on")
+
+    assert agent.service_tier == "priority"
+    assert agent.request_overrides == {"service_tier": "priority"}

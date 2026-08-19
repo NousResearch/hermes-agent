@@ -146,6 +146,15 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Execution-discipline guidance: injects a system prompt block covering
+        # tool persistence, mandatory tool use for arithmetic/system facts,
+        # external-write read-back, count reconciliation, literal preservation
+        # of identifiers, and verification-gated completion.  Chosen once at
+        # session start keyed on model name (prompt stays byte-stable).
+        # Values: "auto" (default — applies to gpt/codex/grok/deepseek/kimi/
+        # qwen/glm/minimax/mimo/mistral models), true/false (force on/off for
+        # all models), or a list of model-name substrings to match.
+        "execution_guidance": "auto",
         # Intent-ack continuation: when the model opens a turn by narrating an
         # action it will take ("I'll go check the logs...") but emits no tool
         # call, intercept the turn-end, inject a "continue now, execute the

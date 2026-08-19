@@ -1629,13 +1629,11 @@ agent:
 
 ### What it injects
 
-When enabled, three layers of guidance may be added to the system prompt:
+When enabled, two layers of guidance may be added to the system prompt:
 
 1. **General tool-use enforcement** (all matched models) — instructs the model to make tool calls immediately instead of describing intentions, keep working until the task is complete, and never end a turn with a promise of future action.
 
-2. **OpenAI execution discipline** (GPT, Codex, and Grok models) — additional guidance addressing GPT-specific failure modes: abandoning work on partial results, skipping prerequisite lookups, hallucinating instead of using tools, and declaring "done" without verification.
-
-3. **Google operational guidance** (Gemini and Gemma models only) — conciseness, absolute paths, parallel tool calls, and verify-before-edit patterns.
+2. **Google operational guidance** (Gemini and Gemma models only) — conciseness, absolute paths, parallel tool calls, and verify-before-edit patterns.
 
 These are transparent to the user and only affect the system prompt. Models that already use tools reliably (like Claude) don't need this guidance, which is why `"auto"` excludes them.
 
@@ -1647,6 +1645,33 @@ If you're using a model not in the default auto list and notice it frequently de
 agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
+
+## Execution-Discipline Guidance
+
+Separately from tool-use enforcement, Hermes injects an **execution-discipline** block for model families that share a set of agentic failure modes observed in eval traces: doing arithmetic in prose instead of code, skipping read-back verification after external writes, "repairing" malformed identifiers, claiming completeness despite count mismatches, and declaring "done" without verifying every acceptance criterion.
+
+```yaml
+agent:
+  execution_guidance: "auto"   # "auto" | true | false | ["model-substring", ...]
+```
+
+| Value | Behavior |
+|-------|----------|
+| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `grok`, `deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `mimo`, `mistral`. |
+| `true` | Always enabled, regardless of model. |
+| `false` | Always disabled, regardless of model. |
+| `["deepseek", "my-custom-model"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |
+
+The injected block covers:
+
+- **Tool persistence** — keep calling tools until the task is complete *and* verified; retry empty, partial, or suspiciously narrow lookup results with a broader or different query before concluding.
+- **Mandatory tool use** — arithmetic, hashes, dates, system state, and file facts always come from a tool, never from mental computation.
+- **External-write read-back** — after any state-changing write to an external system, read back the exact target before claiming success (internal file edits a tool already confirmed are not re-verified).
+- **Count reconciliation** — declared totals (`total`, `reply_count`, `has_more`) are hard assertions; on mismatch, re-fetch or parse programmatically.
+- **Literal preservation** — never normalize or "repair" identifiers that fail a stated format; a successful lookup does not validate a malformed source token.
+- **Verification-gated completion** — "done" means every named acceptance criterion is verified, never a plausible subset.
+
+The gate is independent of `tool_use_enforcement` — either can be on without the other. The guidance is chosen once at session start keyed on the model name, so the system prompt stays byte-stable (and prompt-cache-friendly) for the life of the conversation. Gemini/Gemma are excluded from the auto list because they receive the more specific Google operational guidance; Claude is excluded because it doesn't exhibit these failure modes — opt any model in with `true` or a substring list.
 
 ## Tool-Loop Guardrails
 

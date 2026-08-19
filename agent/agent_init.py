@@ -1896,6 +1896,12 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Execution-discipline guidance gate: "auto" (default — matches
+    # EXECUTION_GUIDANCE_MODELS), true (always), false (never), or list of
+    # model-name substrings.  Independent of tool_use_enforcement — see
+    # agent/system_prompt.py for the injection gate.
+    agent._execution_guidance = _agent_section.get("execution_guidance", "auto")
+
     # Empty-response retry guard config (NS-503): additive
     # ``agent.empty_response_guard`` subsection. Resolution is tolerant —
     # a malformed section falls back to the schema defaults (guard on,

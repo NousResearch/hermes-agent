@@ -112,44 +112,62 @@ describe('host.connections', () => {
   const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
   const originalDesktop = desktopWindow.hermesDesktop
 
+  const connection = (id: string, label: string) => ({
+    id,
+    kind: 'remote' as const,
+    label,
+    tokenPreview: null,
+    tokenSet: true,
+    url: `https://${id}.example`
+  })
+
+  const stubBridge = (list: () => Promise<unknown>) => {
+    desktopWindow.hermesDesktop = {
+      ...originalDesktop,
+      connections: { list }
+    } as unknown as Window['hermesDesktop']
+  }
+
   afterEach(() => {
     desktopWindow.hermesDesktop = originalDesktop
   })
 
-  const stubList = (value: unknown) => {
-    desktopWindow.hermesDesktop = {
-      ...originalDesktop,
-      connections: {
-        ...originalDesktop?.connections,
-        list: async () => value
-      }
-    } as Window['hermesDesktop']
-  }
-
-  it('returns connection rows from the desktop registry envelope (#89823)', async () => {
-    stubList({
-      connections: [
-        { id: 'local', kind: 'local', label: 'This device' },
-        { id: 'remote', kind: 'remote', label: 'Remote gateway' }
-      ],
+  it('returns the registry rows, not the envelope that carries them (#89823)', async () => {
+    stubBridge(async () => ({
+      connections: [connection('local', 'This Mac'), connection('homelab', 'Homelab')],
       primary: 'local',
       secureTokenStorage: true,
       version: 2
-    })
+    }))
 
     const connections = await host.connections()
 
     expect(Array.isArray(connections)).toBe(true)
-    expect(connections.map(connection => connection.id)).toEqual(['local', 'remote'])
+    expect(connections.map(entry => entry.id)).toEqual(['local', 'homelab'])
+    expect(connections[1]).toMatchObject({ kind: 'remote', label: 'Homelab', url: 'https://homelab.example' })
   })
 
-  it('falls back to an empty list when the registry has no connection rows', async () => {
-    stubList({ primary: '', secureTokenStorage: true, version: 1 })
+  it('folds the envelope-level primary id down onto the row that owns it', async () => {
+    stubBridge(async () => ({
+      connections: [connection('local', 'This Mac'), connection('homelab', 'Homelab')],
+      primary: 'homelab',
+      secureTokenStorage: true,
+      version: 2
+    }))
+
+    expect((await host.connections()).map(entry => [entry.id, entry.primary])).toEqual([
+      ['local', false],
+      ['homelab', true]
+    ])
+  })
+
+  it('reads as a single-source desktop when the payload carries no rows', async () => {
+    stubBridge(async () => ({ primary: '', secureTokenStorage: true, version: 1 }))
 
     await expect(host.connections()).resolves.toEqual([])
   })
 
-  it('rejects on desktop builds without the connection registry', async () => {
+  it('still rejects on a Desktop build without the connection registry', async () => {
     desktopWindow.hermesDesktop = undefined
 
     await expect(host.connections()).rejects.toThrow('This Desktop build has no connection registry')

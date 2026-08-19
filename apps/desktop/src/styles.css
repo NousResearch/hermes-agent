@@ -2579,19 +2579,32 @@ button[data-slot='aui_msg-reactions'] svg {
    scroll or a stray click while you're aiming at the app behind it. Focus the
    composer and it becomes a real scrollable surface. This also means hover
    alone can't reveal the band anymore — hover is not engagement. */
-/* The band's sheet, behind the transcript: a tint wearing the same gradient
-   mask as the text, so the whole surface ramps out together and the band has no
-   top edge at all.
- 
-   No desktop blur under it, and that is a limit rather than an omission. CSS
-   backdrop-filter reaches nothing here — a transparent window's backdrop root
-   is the document, and the desktop was never in it (verified on the real
-   window, not assumed). macOS vibrancy does see the desktop, but WindowServer
-   composites it below the web contents after this process has finished drawing,
-   so no mask, clip or stacking order can shape it; left on under a fading tint
-   it stays a flat slab and the top of the band goes pale exactly where it
-   should be disappearing. The way through is NSVisualEffectView.maskImage
-   behind a small native addon, which is its own change. */
+/* The band's sheet, behind the transcript: a tint the whole surface ramps out
+   with, so the band has no top edge at all.
+
+   CSS backdrop-filter reaches nothing here — a transparent window's backdrop
+   root is the document, and the desktop was never in it (verified on the real
+   window, not assumed). The blur is a native platform material instead, and
+   because it is composited below the web contents after this process has
+   finished drawing, no mask, clip or stacking order can shape it: it is the
+   whole window rectangle or nothing. That is why it is switched on only while
+   the band covers the window (useHudGlass) and why the sheet must be a flat
+   panel — under a fading GRADIENT the frost stayed a slab and the top of the
+   band went pale exactly where it should have been disappearing. Shaping it
+   would need NSVisualEffectView.maskImage behind a native addon.
+
+   Under Glass the sheet wears the SAME paint the docked thread does:
+   `--ui-bg-chrome` kept at `--translucency-glass-keep`, the one number
+   store/translucency publishes from the Tint slider (see the
+   `[data-hermes-glass]` block). One painter, one token, one lever — the band
+   reads as the app's thread surface rather than as a HUD-only lookalike that
+   drifts the first time either side is touched.
+
+   With Glass off there is no material behind the window, so the sheet keeps
+   its own card tint. Heavier than the text in front of it, deliberately: with
+   no blur to separate the band from what it lies over, the sheet is the only
+   thing keeping half-opacity text off someone else's UI. Fade the words, keep
+   the paper. */
 [data-hud-shell] [data-hud-glass] {
   position: absolute;
   right: var(--hud-band-inset);
@@ -2600,10 +2613,6 @@ button[data-slot='aui_msg-reactions'] svg {
   z-index: 0;
   pointer-events: none;
   border-radius: 0.75rem 0.75rem 0 0;
-  /* Heavier than the text in front of it, deliberately: with no blur to
-     separate the band from what it lies over, the sheet is the only thing
-     keeping half-opacity text off someone else's UI. Fade the words, keep the
-     paper. */
   background: color-mix(in srgb, var(--dt-card) 80%, transparent);
   /* Slides down behind the bar as it fades. A TRANSFORM, not height: it is
      composited, so it stays smooth where animating height re-lays-out the panel
@@ -2635,6 +2644,43 @@ button[data-slot='aui_msg-reactions'] svg {
   translate: none;
   opacity: 1;
   transition-duration: var(--hud-reveal);
+}
+
+/* ── Under Glass ─────────────────────────────────────────────────────────────
+   The band becomes the app's thread surface: the docked window's field mix,
+   over the platform material.
+
+   Keyed to `data-hermes-glass-on` — "the user's Glass setting is live" — and
+   NOT to `data-hermes-glass`, which additionally means "this window's field
+   surfaces may be rewritten" and is false here by design: the HUD is a
+   transparent window that owns its own backgrounds (isChatWindow). Two flags,
+   because the HUD wants the setting without the rewrite. */
+:root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
+  background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
+}
+
+/* The band spans the window edge to edge under glass. The 8px side inset keeps
+   the sheet clear of the bar's corner controls when it is an opaque panel —
+   but the frost is the WINDOW, so an inset sheet leaves a hairline of bare
+   untinted material down both sides. Nothing to hold off the material's edge:
+   the window's own rounded corners are where the band ends. */
+:root[data-hermes-glass-on] [data-hud-shell] {
+  --hud-band-inset: 0px;
+}
+
+:root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
+  border-radius: 0.75rem 0.75rem 0 0;
+}
+
+/* Engaged, the field steps up the same way the docked thread's does — but
+   never below the resting tint, so a high lever cannot make focusing the
+   composer paint MORE transparent than glancing at it. */
+:root[data-hermes-glass-on] [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+  background: color-mix(
+    in srgb,
+    var(--ui-bg-chrome) min(100%, calc(var(--translucency-glass-keep, 100%) + 12%)),
+    transparent
+  );
 }
 
 /* Engaged means the caret is in the composer, not merely that the window holds

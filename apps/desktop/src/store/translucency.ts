@@ -262,22 +262,36 @@ const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void
   }
 
   const root = document.documentElement
-  const glassOn = mode === 'glass' && intensity > 0 && GLASS_SUPPORTED && isChatWindow()
+  // Is the user's Glass setting live at all — the same answer in every window.
+  const glassLive = mode === 'glass' && intensity > 0 && GLASS_SUPPORTED
+  // ...and may THIS window's field surfaces be rewritten for it. Only real
+  // chat windows: the HUD, pet overlay, quick entry and wake indicator are
+  // transparent windows that own their backgrounds, and the surface rewrite
+  // would fight them. The HUD still wants the first answer, because its band
+  // paints the app's field mix from `--translucency-glass-keep` and its native
+  // frost is gated on the setting being on (see the `[data-hud-glass]` rules
+  // and hudFrostFor) — which is why these are two flags and not one.
+  const glassOn = glassLive && isChatWindow()
   // Clear mode fades the whole window uniformly, so overlay text and the
   // covered transcript blend; styles.css strengthens the overlay scrim while
   // this attribute is present. Native opacity applies in every window kind, so
   // no chat-window gate.
   const clearOn = mode === 'clear' && intensity > 0
 
+  root.toggleAttribute('data-hermes-glass-on', glassLive)
   root.toggleAttribute('data-hermes-glass', glassOn)
   root.toggleAttribute('data-hermes-clear', clearOn)
 
-  if (glassOn) {
-    root.setAttribute('data-hermes-glass-scope', scope)
+  if (glassLive) {
     root.style.setProperty('--translucency-glass-keep', `${glassSurfaceKeep(intensity)}%`)
   } else {
-    root.removeAttribute('data-hermes-glass-scope')
     root.style.removeProperty('--translucency-glass-keep')
+  }
+
+  if (glassOn) {
+    root.setAttribute('data-hermes-glass-scope', scope)
+  } else {
+    root.removeAttribute('data-hermes-glass-scope')
   }
 
   if (glassOn && scope === 'sidebar') {

@@ -1281,6 +1281,40 @@ def register(ctx):
 
 This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
 
+### React to Telegram updates
+
+Plugins that need Telegram update types the built-in handlers do not cover (reactions, edited messages, chat-member changes, custom commands) register a wiring **factory** with the Telegram adapter. The adapter invokes it with the live `python-telegram-bot` `Application` every time it builds one, before the core handlers are added:
+
+```python
+def register(ctx):
+    def _wire(application, adapter):
+        from telegram.ext import CallbackQueryHandler
+
+        async def _on_button(update, context):
+            # update.callback_query.data starts with "myplugin:"
+            ...
+
+        application.add_handler(
+            CallbackQueryHandler(_on_button, pattern=r"^myplugin:")
+        )
+
+    ctx.register_telegram_handler(_wire)
+```
+
+**Signature:** `ctx.register_telegram_handler(factory) -> PluginRegistration`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `factory` | sync callable | Receives `(application, adapter)`; wires its own handlers onto the application. Returns a registration handle whose `dispose()` dequeues the factory |
+
+**Runtime behavior:**
+
+- The factory must be a plain synchronous function. It runs from synchronous wiring code, so `async def` factories are rejected at registration time; the callbacks you register may of course be async (the normal PTB pattern).
+- Factories run before the core handlers, so PTB's first-match-per-group rule gives your scoped handlers precedence for their own updates. Always scope callback handlers with `pattern=` (or register in a non-zero group): an unscoped handler in group 0 would swallow the core button flows (approvals, model picker), and the adapter logs a warning when it detects one.
+- The adapter rebuilds its `Application` on transient init failures and re-invokes factories on each rebuild, so keep a factory idempotent: limit its side effects to wiring the application it is given.
+- `adapter` is read-only from the factory's perspective; reach the bot handle via `application.bot`, not `adapter.bot`.
+- Each factory is isolated: if yours raises, the error is logged and the remaining factories (and the connect) proceed.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::

@@ -4205,9 +4205,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Single source of truth for handler registration. Both initial connect
         and the transient-initialization rebuild path call this method, keeping
-        the ``gateway_platform_event`` observer (group 99) in lockstep with the
-        core handlers.
+        plugin factories, the ``gateway_platform_event`` observer (group 99),
+        and the core handlers in lockstep. Plugin factories run first so their
+        scoped handlers take PTB's first-match precedence over the core set.
         """
+        self._wire_plugin_handlers(app)
         app.add_handler(TelegramMessageHandler(
             filters.TEXT & ~filters.COMMAND,
             self._handle_text_message
@@ -4229,6 +4231,91 @@ class TelegramAdapter(BasePlatformAdapter):
         # gateway_platform_event observer (see _on_platform_update); group 99 so
         # it observes alongside, never displaces, the core handlers.
         app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
+
+    def _wire_plugin_handlers(self, app) -> None:
+        """Invoke plugin-registered Telegram handler factories.
+
+        Plugins call ``ctx.register_telegram_handler(factory)`` at register()
+        time; the manager queues the factories and this method invokes each
+        with ``(application, adapter)``. Called as the first step of
+        :meth:`_register_handlers`, so plugin handlers are registered BEFORE
+        the core handlers. PTB dispatches only the first matching handler per
+        group, so plugin handlers registered first take precedence for the
+        updates they scope to (e.g. a ``CallbackQueryHandler`` with a
+        ``pattern=`` prefix) while everything else falls through to the core
+        handlers. Factories may be re-invoked when the Application is
+        rebuilt after transient init failures, so they must stay
+        idempotent; async factories are rejected at registration time.
+
+        Each factory is isolated so a misbehaving plugin can't prevent
+        Telegram from connecting. Factories that add group-0 handlers are
+        flagged: group 0 is shared with the core handlers and an unscoped
+        handler there can silently shadow the core button/text flows.
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            factories = get_plugin_manager().get_telegram_handler_factories()
+        except Exception as tg_load_exc:
+            logger.warning(
+                "[%s] Could not load plugin Telegram handler factories: %s",
+                self.name, tg_load_exc,
+            )
+            return
+        for factory, plugin_name in factories:
+            try:
+                group0_before = self._group_zero_handlers(app)
+                wired = factory(app, self)
+                if inspect.iscoroutine(wired):
+                    # A sync-callable factory that returns a coroutine
+                    # (e.g. a lambda delegating to an async def) did no
+                    # wiring; close the coroutine so it can't linger as a
+                    # never-awaited RuntimeWarning.
+                    wired.close()
+                    logger.error(
+                        "[%s] Plugin '%s' Telegram handler factory returned "
+                        "a coroutine; wiring is synchronous and the "
+                        "coroutine was discarded. Register a sync factory.",
+                        self.name, plugin_name,
+                    )
+                    continue
+                added_group0 = self._new_group_zero_handlers(app, group0_before)
+                if added_group0:
+                    logger.warning(
+                        "[%s] Plugin '%s' added %d group-0 handler(s) that "
+                        "may shadow the core handlers: PTB dispatches only "
+                        "the first match per group. Scope callback handlers "
+                        "with pattern= or register in a non-zero group.",
+                        self.name, plugin_name, len(added_group0),
+                    )
+                logger.info(
+                    "[%s] Wired Telegram handlers from plugin '%s'",
+                    self.name, plugin_name,
+                )
+            except Exception as tg_factory_exc:
+                logger.error(
+                    "[%s] Plugin '%s' Telegram handler factory raised: %s",
+                    self.name, plugin_name, tg_factory_exc, exc_info=True,
+                )
+
+    @staticmethod
+    def _group_zero_handlers(app) -> Optional[list]:
+        """Snapshot the live group-0 handler list, or None when the app's
+        handler map cannot be inspected (mock apps in tests)."""
+        try:
+            return list(app.handlers.get(0, []))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _new_group_zero_handlers(app, before) -> list:
+        """Return handlers added to group 0 since the ``before`` snapshot."""
+        if before is None:
+            return []
+        try:
+            current = app.handlers.get(0, [])
+        except Exception:
+            return []
+        return [h for h in current if not any(h is b for b in before)]
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
@@ -4471,8 +4558,10 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
-            
+
             # Register handlers via the single registration site (#64176).
+            # Plugin factories, core handlers, and the observer are wired
+            # there in precedence order.
             self._register_handlers(self._app)
             
             # Start polling — retry initialize() for transient TLS resets.
@@ -4587,8 +4676,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         old_app = self._app
                         self._app = builder.build()
                         self._bot = self._app.bot
-                        # Keep core and observer handlers in lockstep after a
-                        # transient-init rebuild (#64176).
+                        # Keep plugin, core, and observer handlers in lockstep
+                        # after a transient-init rebuild (#64176).
                         self._register_handlers(self._app)
                         # Best-effort discard the old app's resources
                         try:

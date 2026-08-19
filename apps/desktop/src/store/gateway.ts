@@ -667,27 +667,13 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
   }
 }
 
-// The agent-scoped analogue of prepareGatewayForProfile, and the same
-// publication seam: dial the agent's socket without publishing anything, and
-// hand back the synchronous activation thunk. A null connection id falls
-// through to the profile seam, so both doors into an activation share one
-// atomicity contract instead of drifting apart; an explicit `local` id is a
-// registry identity (`registryBackendScopeKey` keeps its own scope for it) and
-// stays on the registry route.
-//
-// The thunk reports whether it actually published, preserving the `activated`
-// contract callers rely on: a source edit/remove can dispose this entry while
-// its dial is in flight, and a caller must be able to tell "switched" from
-// "the target stopped existing" rather than assume the former.
-export async function prepareGatewayForAgent(connectionId: null | string, profile: string): Promise<() => boolean> {
+export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
-  // Genuinely-local scope: the profile door owns this route, so hand back ITS
-  // thunk unchanged. Wrapping it to return an unconditional `true` would have
-  // reported a rejected activation as a successful one and let the agent
-  // caller publish companion state for a switch that never happened.
   if (scope === normKey(profile)) {
-    return prepareGatewayForProfile(profile)
+    await ensureGatewayForProfile(profile)
+
+    return true
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -716,54 +702,42 @@ export async function prepareGatewayForAgent(connectionId: null | string, profil
     }
   }
 
-  // Bind the entry this dial settled on; see prepareGatewayForProfile.
-  const prepared = entry
+  // A source edit/remove may dispose this entry while its dial is still in
+  // flight. Only the still-registered, still-owned activation may publish.
+  const activated =
+    entry.wantOpen &&
+    g.secondaries.get(scope) === entry &&
+    Boolean(entry.connection) &&
+    applyActive(scope, activationEpoch)
 
-  return () => {
-    // A source edit/remove may dispose this entry while its dial is still in
-    // flight. Only the still-registered, still-owned activation may publish.
-    const activated =
-      prepared.wantOpen &&
-      g.secondaries.get(scope) === prepared &&
-      Boolean(prepared.connection) &&
-      applyActive(scope, activationEpoch)
-
-    if (activated && prepared.connection) {
-      publishActiveConnection(prepared.connection)
-    }
-
-    return activated
+  if (activated && entry.connection) {
+    publishActiveConnection(entry.connection)
   }
+
+  return activated
 }
 
-export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
-  return (await prepareGatewayForAgent(connectionId, profile))()
-}
-
-// Open `profile`'s socket if needed and hand back a synchronous activation
-// thunk — the publication seam for atomic profile switches. The caller invokes
-// the thunk in the same synchronous frame as its own atom writes (profile
-// pointer, connection descriptor), so no subscriber can observe the active
-// gateway pointing at one backend while companion state still describes
-// another. Nothing is published until the thunk runs.
-export async function prepareGatewayForProfile(profile: string): Promise<() => boolean> {
+// Make `profile` the active gateway, lazily opening its socket if needed. The
+// primary is a no-op fast path. Background sockets are never closed here.
+export async function ensureGatewayForProfile(profile: string): Promise<void> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
-    return () => applyActive(key, activationEpoch)
+    applyActive(key, activationEpoch)
+
+    return
   }
 
   // Global-remote share (routing case 3): one remote host serves every
   // profile through the PRIMARY socket, scoped per request. Activate the
   // primary instead of dialing a doomed duplicate socket at the same
-  // descriptor - $activeGatewayProfile still moves to `key`, so request
-  // scoping and profile-aware surfaces behave identically. Checked BEFORE
-  // createSecondary so a shared-remote profile never mints a secondary
-  // entry, and returned as a thunk like every other path here so this
-  // switch publishes as atomically as a dedicated-socket one.
+  // descriptor — $activeGatewayProfile still moves to `key`, so request
+  // scoping and profile-aware surfaces behave identically.
   if (await sharedPrimaryRoute(key)) {
-    return () => applyActive(g.primaryProfile, activationEpoch)
+    applyActive(g.primaryProfile, activationEpoch)
+
+    return
   }
 
   let entry = g.secondaries.get(key)
@@ -786,34 +760,9 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => b
     }
   }
 
-  // Bind the entry the await settled on. `g.secondaries.get(key)` can be a
-  // DIFFERENT object by the time the thunk runs (a teardown + redial between
-  // prepare and publish), and publishing that one's descriptor would be the
-  // very mismatch this seam exists to prevent, so the identity re-check below
-  // compares against this exact entry.
-  const prepared = entry
-
-  // Reports whether the ACTIVATION was accepted, which is a different question
-  // from whether a descriptor was published: an accepted activation with no
-  // cached connection still moved the gateway, so the caller must still move
-  // its companion state. Only a rejected activation (disposed entry, or an
-  // epoch superseded by a newer switch while this one was dialing) must leave
-  // every companion store alone.
-  return () => {
-    const activated = prepared.wantOpen && g.secondaries.get(key) === prepared && applyActive(key, activationEpoch)
-
-    if (activated && prepared.connection) {
-      publishActiveConnection(prepared.connection)
-    }
-
-    return activated
+  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
+    publishActiveConnection(entry.connection)
   }
-}
-
-// Make `profile` the active gateway, lazily opening its socket if needed. The
-// primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
-  ;(await prepareGatewayForProfile(profile))()
 }
 
 // Reconnect the active gateway after a transient request failure. Primary

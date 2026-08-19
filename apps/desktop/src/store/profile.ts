@@ -1,6 +1,5 @@
-import { atom, batch, computed } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
-import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
@@ -13,7 +12,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, openGatewayForProfile, prepareGatewayForAgent, prepareGatewayForProfile } from '@/store/gateway'
+import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -270,24 +269,30 @@ export function prewarmProfileBackend(name: string): void {
 
 let gatewaySwitch: Promise<void> | null = null
 
-// The target profile's connection descriptor (mode / baseUrl / …), fetched
-// BEFORE activation so the switch can publish it in the same synchronous frame
-// as the gateway and profile pointer. $connection seeds from the PRIMARY
+// Keep the renderer's $connection (mode / baseUrl / profile) in lockstep with
+// the profile the live gateway is now on. $connection seeds from the PRIMARY
 // (window) backend at boot and otherwise only refreshes on a sleep/wake
-// reconnect — so activating a *background* profile without this left
-// $connection describing the primary, with the wrong `mode` for everything
-// that branches on local-vs-remote (#46651: path-based `image.attach` against
-// a remote gateway, /api/fs/* and /api/media on the wrong machine).
-//
-// Null means "no desktop bridge" (plain browser) — there is no descriptor to
-// sync then. A bridge REJECTION propagates: the caller aborts the whole switch
-// rather than activating a backend whose descriptor (and thus mode) is
-// unknown, which previously left $gateway on the new backend while
-// $connection kept describing the old one for the rest of the session.
-async function resolveConnectionForProfile(profile: string) {
+// reconnect — so activating a *background* profile left $connection describing
+// the primary, with the wrong `mode` for everything that branches on
+// local-vs-remote. Headline symptom: with a local primary and a remote pool
+// profile active, image attachments went out via the path-based `image.attach`
+// instead of `image.attach_bytes`, handing the remote gateway a client-only
+// path it can't resolve ("image not found: C:\…"), while the /api/fs/* file
+// browser and /api/media fetches targeted the wrong machine (#46651).
+// Best-effort: a failed descriptor fetch leaves the prior connection intact for
+// boot/reconnect to resync.
+async function syncConnectionToActiveProfile(profile: string): Promise<void> {
   const getConnection = window.hermesDesktop?.getConnection
 
-  return getConnection ? getConnection(profile) : null
+  if (!getConnection) {
+    return
+  }
+
+  try {
+    setConnection(await getConnection(profile))
+  } catch {
+    // Leave the prior connection in place; boot/reconnect resyncs it later.
+  }
 }
 
 // Make `profile`'s backend the active gateway, lazily opening its socket if it
@@ -326,46 +331,14 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    // Resolve the target's connection descriptor and open (or reuse) its
-    // socket BEFORE anything is published — without closing the profile you
-    // came from. The gateway used to be activated (and the profile atom set)
-    // while the descriptor fetch was still in flight, so during that window
-    // $gateway already targeted the new backend while $connection still
-    // described the previous one — and any request or plugin mode-listener
-    // firing then announced the WRONG mode to the new backend.
-    const [connection, activate] = await Promise.all([
-      resolveConnectionForProfile(target),
-      prepareGatewayForProfile(target)
-    ])
-
-    // ONE publication. batch() defers Nanostores' notifications to the end of
-    // the callback, so the active gateway, $activeGatewayProfile and
-    // $connection become visible together. Without it these are sequential
-    // .set() calls that each drain their listeners synchronously, and a
-    // $gateway listener runs while the other two still name the old backend.
-    batch(() => {
-      // A rejected activation publishes NOTHING, exactly like the agent path.
-      // applyActive() returns false when its captured epoch was superseded --
-      // a newer switch (or a teardown) landed while this one was awaiting its
-      // route or socket. Publishing the companions anyway would leave the
-      // CURRENT gateway paired with the stale profile pointer and descriptor,
-      // and batch() cannot rescue that: it would make the mismatched tuple
-      // atomically observable rather than prevent it.
-      if (!activate()) {
-        return
-      }
-
-      $activeGatewayProfile.set(target)
-
-      if (connection) {
-        setConnection(connection)
-      }
-    })
-  })().catch(() => {
-    // Descriptor lookup failed: the switch fails as a unit. Nothing was
-    // published, so every atom still consistently describes the previous
-    // profile; the user can retry the switch.
-  })
+    // ensureGatewayForProfile opens (or reuses) the target's socket and points
+    // the active gateway at it — without closing the profile you came from.
+    await ensureGatewayForProfile(target)
+    $activeGatewayProfile.set(target)
+    // The active backend just changed; resync $connection so remote-aware
+    // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
+    await syncConnectionToActiveProfile(target)
+  })()
 
   try {
     await gatewaySwitch
@@ -377,30 +350,25 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
 // Registry-aware sibling of syncConnectionToActiveProfile: a connection-scoped
 // agent's descriptor comes from getConnectionFor (its SOURCE connection), not
-// getConnection (the local pool).
-// Resolve only — publication is the caller's, so the descriptor can be in hand
-// BEFORE the activation frame rather than an await after it.
-//
-// Null means "no desktop bridge" (plain browser) and nothing else, matching
-// resolveConnectionForProfile. A bridge REJECTION propagates so the caller
-// aborts the whole switch. Collapsing the two into null instead let a failed
-// lookup publish the new gateway and profile while $connection kept describing
-// the OLD backend, and unlike the pending-descriptor race that state did not
-// close on its own: it survived until some later reconnect or switch happened
-// to repair it, which is the same invariant this path exists to establish.
-async function resolveConnectionForActiveAgent(
-  connectionId: string,
-  profile: string
-): Promise<null | HermesConnection> {
+// getConnection (the local pool). Same best-effort contract.
+async function syncConnectionToActiveAgent(connectionId: string, profile: string): Promise<void> {
   const getConnectionFor = window.hermesDesktop?.getConnectionFor
 
-  return getConnectionFor ? getConnectionFor({ connectionId, profile }) : null
+  if (!getConnectionFor) {
+    return
+  }
+
+  try {
+    setConnection(await getConnectionFor({ connectionId, profile }))
+  } catch {
+    // Leave the prior connection in place; boot/reconnect resyncs it later.
+  }
 }
 
 // Activate a connection-scoped agent's gateway — the (connectionId, profile)
 // analogue of ensureGatewayProfile, and the door the SDK's ensureAgent goes
-// through. Three invariants the raw store call (ensureGatewayForAgent) does
-// not provide on its own:
+// through. Two invariants the raw store call (ensureGatewayForAgent) does not
+// provide on its own:
 //  - Every activation moves $activeGatewayProfile and resyncs $connection,
 //    exactly like the profile path — otherwise activating an ALREADY-OPEN
 //    registry agent left both describing the previous backend, routing
@@ -409,10 +377,6 @@ async function resolveConnectionForActiveAgent(
 //  - Activations share the gatewaySwitch mutex with profile switches, so a
 //    rapid agent↔profile (or agent↔agent) interleave can't finish out of
 //    order and leave the EARLIER setActive() as the last write.
-//  - The gateway, the profile pointer and the connection descriptor publish in
-//    ONE synchronous frame, via the same prepare/publish seam the profile path
-//    uses, so no subscriber sees the new backend paired with the old
-//    descriptor.
 // Only a null connectionId falls through to the legacy profile path. Explicit
 // `local` is a registry identity and must use the genuinely-local route.
 export async function ensureGatewayAgent(connectionId: null | string, profile: string): Promise<void> {
@@ -430,40 +394,16 @@ export async function ensureGatewayAgent(connectionId: null | string, profile: s
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    // Dial the agent's socket and resolve its descriptor without publishing
-    // either, exactly like the profile path above. Activating first and then
-    // awaiting the descriptor left $gateway on the new backend while
-    // $connection still described the old one, so anything requesting during
-    // that window announced the WRONG mode to the new backend.
-    const [descriptor, activate] = await Promise.all([
-      resolveConnectionForActiveAgent(connection, target),
-      prepareGatewayForAgent(connection, target)
-    ])
+    const activated = await ensureGatewayForAgent(connection, target)
 
-    // ONE publication. batch() defers Nanostores' notifications to the end of
-    // the callback, so a $gateway listener cannot run while the profile
-    // pointer and the connection descriptor still name the previous backend.
-    // Without it these are three sequential .set() calls, each draining its
-    // listeners synchronously, and the first listener observes exactly the
-    // mismatch this seam exists to prevent.
-    batch(() => {
-      // A disposed target (source edited/removed mid-dial) publishes nothing
-      // at all, rather than moving the profile pointer to a backend that no
-      // longer has a socket.
-      if (!activate()) {
-        return
-      }
+    if (!activated) {
+      return
+    }
 
-      $activeGatewayProfile.set(target)
-
-      // Remote-aware paths (image.attach_bytes vs image.attach, /api/fs/*,
-      // /api/media) follow $connection. Null here is only the no-bridge case,
-      // so keeping the previous descriptor is correct; a failed lookup
-      // rejected above and never reached this frame.
-      if (descriptor) {
-        setConnection(descriptor)
-      }
-    })
+    $activeGatewayProfile.set(target)
+    // The active backend just changed; resync $connection so remote-aware
+    // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
+    await syncConnectionToActiveAgent(connection, target)
   })()
 
   try {

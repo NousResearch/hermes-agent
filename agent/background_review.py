@@ -22,6 +22,10 @@ import copy
 import json
 import logging
 import os
+import re
+import shutil
+import tempfile
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1273,6 +1277,30 @@ def _run_review_in_thread(
                 except Exception:
                     pass
 
+        # ── Skill precipitation verification ──
+        # After the review fork wrote skills, verify each one by executing it
+        # in a separate sandboxed fork.  Best-effort: failures are reported
+        # but never roll back the write.
+        try:
+            verify_results = _verify_precipitated_skills(
+                agent, review_messages, messages_snapshot
+            )
+            if verify_results:
+                vsummary = " · ".join(verify_results)
+                agent._safe_print(
+                    f"  🔍 Skill verification: {vsummary}"
+                )
+                _bg_cb2 = agent.background_review_callback
+                if _bg_cb2:
+                    try:
+                        _bg_cb2(
+                            f"🔍 Skill verification: {vsummary}"
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning("Skill verification failed: %s", e)
+
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if review_usage:
@@ -1310,6 +1338,624 @@ def _run_review_in_thread(
             _set_approval_callback(None)
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Skill-precipitation verification — after the review fork creates or patches a
+# skill, fork a separate verification agent that ACTUALLY EXECUTES the skill
+# inside a disposable sandbox directory and reports whether it works.  The
+# sandbox cwd is pinned and every executed terminal command is post-hoc scanned
+# for escapes, so real execution never mutates the user's actual environment.
+# Best-effort: failures are reported but never roll back the write.
+# ---------------------------------------------------------------------------
+
+_VERIFY_ACTIONS = {"create", "patch", "edit"}
+
+# Max tool iterations for the verification fork.  When repair is enabled the
+# agent may need several rounds to set up a sandbox fixture, execute the skill,
+# then diagnose→patch→re-execute up to _VERIFY_MAX_FIX_ATTEMPTS times.
+_VERIFY_MAX_ITERATIONS = 32
+
+# Ceiling for a pure read-only verification run (repair disabled).
+_VERIFY_READONLY_MAX_ITERATIONS = 12
+
+# Max diagnose→patch→re-execute cycles against a failing skill before the
+# verification agent gives up and reports FAILED.
+_VERIFY_MAX_FIX_ATTEMPTS = 3
+
+# Real-execution verification prompt.  The verification agent is forked into a
+# disposable sandbox directory ({scratch}) and told to ACTUALLY RUN the skill's
+# steps against a minimal environment it sets up inside that sandbox — not just
+# eyeball the SKILL.md.  The sandbox cwd is pinned so every command the agent
+# runs defaults to scratch, and a post-hoc scan flags any command that appears
+# to have escaped it.  Skills that need real credentials/network/system deps
+# reply UNABLE instead of failing the skill itself.
+#
+# When the skill FAILS to execute, the agent is allowed to REPAIR it: it may
+# call skill_manage with a write action against the REAL skill file — the one
+# deliberate outside-sandbox write — then re-execute inside the sandbox.  A
+# post-hoc scan (_analyze_skill_manage_activity) verifies the agent only ever
+# touched the skill it was asked to verify.
+_VERIFY_PROMPT = (
+    'A skill named "{skill_name}" was just {action_label} by the background '
+    "self-improvement review. Your job is to verify that it actually WORKS by "
+    "executing it — and, if it does not work, to repair it until it does.\n\n"
+    "SANDBOX (do not violate this):\n"
+    "  - Your working directory is the disposable sandbox: {scratch}\n"
+    "  - You MUST NOT touch anything outside it: no ~, no /etc, no other "
+    "project directories, no real git repos, no global git config.\n"
+    "  - Never run git config --global/--system. If the skill says to set a "
+    "git identity, use inline flags: `git -c user.name=X -c user.email=Y ...` "
+    "or repo-level `git config user.name ...` inside the sandbox repo.\n\n"
+    "STEPS:\n"
+    '1. Load the skill: skill_view(name="{skill_name}")\n'
+    "2. Read it carefully. Identify the smallest realistic task the skill is "
+    "designed to handle.\n"
+    "3. Inside the sandbox, set up a minimal disposable environment for that "
+    "task. If the skill is git-related, initialize a fresh repo first: `git "
+    "init`, add a test file, commit — then apply the skill to THAT repo.\n"
+    "4. Actually execute the skill's steps (run the commands it prescribes) "
+    "inside the sandbox.\n"
+    "5. Judge the result.\n\n"
+    "REPAIR (only if a step fails — this is the reason you're here):\n"
+    "  - Diagnose the root cause of the failure.\n"
+    "  - Fix the SKILL ITSELF by calling skill_manage with a write action "
+    '(action="patch", "edit", or "write_file") on the REAL skill named '
+    "'{skill_name}'. That skill file is the ONE thing you may modify outside "
+    "the sandbox — nothing else.\n"
+    "  - Never call skill_manage on any skill other than '{skill_name}'.\n"
+    "  - After patching, re-execute the skill inside the sandbox to confirm "
+    "the fix.\n"
+    "  - You may repeat diagnose→patch→re-execute up to {max_fix_attempts} "
+    "times total.\n"
+    "  - If it still fails after that, reply FAILED with the final reason.\n\n"
+    "Reply with EXACTLY one of:\n"
+    "  VERIFIED: <one line: what you did and what the skill produced>\n"
+    "  FAILED: <specific reason: which step broke, what was missing, "
+    "contradictory, or unclear>\n"
+    "  UNABLE: <specific reason: the skill requires credentials/network/"
+    "system dependencies unavailable in this sandbox>\n\n"
+    "Examples:\n"
+    "  VERIFIED: created a git repo in the sandbox and the skill's 5-step "
+    "workflow completed, producing a clean commit history\n"
+    "  VERIFIED: step 2 referenced a missing script; patched it via "
+    "skill_manage, re-ran the workflow, and it completed\n"
+    "  FAILED: step 2 references scripts/setup.sh which does not exist in the "
+    "skill directory\n"
+    "  UNABLE: the skill requires the AWS_ACCESS_KEY_ID credential which is "
+    "not available in this sandbox\n\n"
+    "Outside the sandbox you may modify exactly ONE thing: the '{skill_name}' "
+    "skill file itself, via skill_manage. Everything else stays inside the "
+    "sandbox."
+)
+
+
+def _extract_precipitated_skill_names(
+    review_messages: List[Dict],
+    prior_snapshot: List[Dict],
+) -> List[Tuple[str, str]]:
+    """Extract ``(skill_name, action)`` for skills created/patched in this review.
+
+    Walks the review agent's messages looking for ``skill_manage`` tool calls
+    whose action is ``create``, ``patch``, or ``edit``.  Only returns skills
+    whose tool results indicate success.  Tool results already present in
+    *prior_snapshot* are skipped so stale inherited results are not treated as
+    fresh precipitations.  Deduplicates on skill name — last action wins.
+    """
+    # Build exclusion set from prior_snapshot (same pattern as
+    # summarize_background_review_actions).
+    existing_tool_call_ids: set = set()
+    for prior in prior_snapshot or []:
+        if not isinstance(prior, dict) or prior.get("role") != "tool":
+            continue
+        tcid = prior.get("tool_call_id")
+        if tcid:
+            existing_tool_call_ids.add(tcid)
+
+    # Collect skill_manage calls with a write action.
+    skill_calls: Dict[str, Tuple[str, str]] = {}  # tcid -> (name, action)
+    for msg in review_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls", []) or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {}) or {}
+            if fn.get("name") != "skill_manage":
+                continue
+            tcid = tc.get("id")
+            if not tcid:
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            action = args.get("action", "")
+            name = args.get("name", "")
+            if action in _VERIFY_ACTIONS and name:
+                skill_calls[tcid] = (name, action)
+
+    # Cross-reference with successful tool results.
+    precipitated: Dict[str, str] = {}  # skill_name -> action
+    for msg in review_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        tcid = msg.get("tool_call_id")
+        if not tcid or tcid in existing_tool_call_ids:
+            continue
+        if tcid not in skill_calls:
+            continue
+        try:
+            data = json.loads(msg.get("content", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, dict) or not data.get("success"):
+            continue
+        name, action = skill_calls[tcid]
+        precipitated[name] = action  # last write wins per skill
+
+    return [(name, action) for name, action in precipitated.items()]
+
+
+def _path_escapes_sandbox(path: str, scratch: str) -> bool:
+    """Return True if *path* (as the agent would write/`cd` to it) leaves the sandbox."""
+    raw = str(path or "").strip().strip("'\"")
+    if not raw:
+        return False
+    # `~` / `~user` always point at the real home — outside the sandbox.
+    if raw.startswith("~"):
+        return True
+
+    scratch_resolved = os.path.realpath(scratch)
+    candidate = raw if os.path.isabs(raw) else os.path.join(scratch_resolved, raw)
+    resolved = os.path.realpath(candidate)
+    return not (
+        resolved == scratch_resolved
+        or resolved.startswith(scratch_resolved + os.sep)
+    )
+
+
+def _command_escapes_sandbox(command: str, scratch: str) -> Optional[str]:
+    """Return a reason string if *command* appears to operate outside the sandbox.
+
+    Post-hoc safety net, not a hardened sandbox: combined with the pinned
+    sandbox cwd, the base dangerous-command guard (auto-denied in this fork),
+    and the prompt's sandbox contract, this catches the common escape patterns
+    a skill might encode — `cd` out, writes/deletes to absolute paths outside
+    scratch, system-dir targets, and global git config writes.
+    """
+    cmd = (command or "").strip()
+    if not cmd:
+        return None
+
+    # `cd <path>` where the path leaves the sandbox (absolute outside scratch,
+    # `~`, or `..`).
+    for m in re.finditer(r"(?<!\w)cd\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))", cmd):
+        target = next((g for g in m.groups() if g), "")
+        if target and _path_escapes_sandbox(target, scratch):
+            return f"cd escapes sandbox: {target}"
+
+    # Global git config writes mutate the real user state.
+    if "git config --global" in cmd or "git config --system" in cmd:
+        return "global/system git config write"
+
+    # Write/delete/move/copy operations targeting absolute paths outside scratch.
+    op_re = re.compile(
+        r"(?:^|[\s;|&])(?:rm\s+-rf?|rmdir|touch|mv|cp|ln\s+-s|tee|install)\s+"
+        r"([^\s;&|]+)"
+    )
+    for m in op_re.finditer(cmd):
+        target = m.group(1).strip("'\";")
+        if target and _path_escapes_sandbox(target, scratch):
+            return f"file op outside sandbox: {target}"
+
+    # Shell redirection `>` / `>>` to a path outside scratch.
+    for m in re.finditer(r">>?\s*([^\s;&|]+)", cmd):
+        target = m.group(1).strip("'\";")
+        if target and _path_escapes_sandbox(target, scratch):
+            return f"redirect outside sandbox: {target}"
+
+    # Direct writes into system directories.
+    for m in re.finditer(
+        r"(?:rm\s+-rf?|mv|cp|touch|>>?|install)\s+([^\s;&|]+)", cmd
+    ):
+        target = m.group(1).strip("'\";")
+        if re.match(r"^/(etc|usr|var|bin|sbin|opt|root|dev|proc|sys)(/|$)", target):
+            return f"system-dir operation: {target}"
+
+    return None
+
+
+def _scan_executed_commands_for_escape(
+    session_messages: List[Dict],
+    scratch: str,
+) -> List[str]:
+    """Return the terminal commands from *session_messages* that escaped the sandbox."""
+    escaped: List[str] = []
+    for msg in session_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        try:
+            data = json.loads(msg.get("content", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        cmd = data.get("command", "")
+        if not isinstance(cmd, str) or not cmd:
+            continue
+        reason = _command_escapes_sandbox(cmd, scratch)
+        if reason:
+            escaped.append(f"{cmd}  [{reason}]")
+    return escaped
+
+
+def _analyze_skill_manage_activity(
+    session_messages: List[Dict],
+    expected_name: str,
+) -> Tuple[List[str], bool]:
+    """Post-hoc scan of the verification fork's ``skill_manage`` usage.
+
+    When repair is enabled the verification agent may write to exactly ONE
+    thing outside the sandbox: the skill file it was asked to verify (via
+    ``skill_manage``).  This analyzes that usage and returns:
+
+        ``(violations, repaired)``
+
+    * ``violations`` — every ``skill_manage`` write that targeted a skill other
+      than *expected_name*, or that was refused/failed.  Any violation is a
+      state-modification breach and must downgrade the verification result.
+    * ``repaired`` — True if at least one write to *expected_name* succeeded
+      (i.e. the agent changed the skill before it verified).  Drives the
+      ``repaired`` status in the report.
+    """
+    write_actions = {"create", "patch", "edit", "write_file", "remove_file"}
+    skill_calls: Dict[str, Dict] = {}  # tcid -> {"name", "action"}
+    for msg in session_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls", []) or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {}) or {}
+            if fn.get("name") != "skill_manage":
+                continue
+            tcid = tc.get("id")
+            if not tcid:
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            action = args.get("action", "")
+            name = args.get("name", "")
+            if action in write_actions and name:
+                skill_calls[tcid] = {"name": name, "action": action}
+
+    results: Dict[str, bool] = {}
+    for msg in session_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        tcid = msg.get("tool_call_id")
+        if tcid not in skill_calls:
+            continue
+        try:
+            data = json.loads(msg.get("content", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        results[tcid] = bool(isinstance(data, dict) and data.get("success"))
+
+    violations: List[str] = []
+    repaired = False
+    for tcid, call in skill_calls.items():
+        ok = results.get(tcid, False)
+        if call["name"] != expected_name:
+            violations.append(
+                f"skill_manage({call['action']}) on unrelated skill "
+                f"'{call['name']}'"
+            )
+        elif not ok:
+            violations.append(
+                f"skill_manage({call['action']}) on '{call['name']}' failed"
+            )
+        elif ok and call["action"] in {
+            "create", "patch", "edit", "write_file", "remove_file",
+        }:
+            repaired = True
+    return violations, repaired
+
+
+def _run_skill_verification(
+    agent: Any,
+    skill_name: str,
+    action: str,
+    allow_repair: bool = True,
+) -> Tuple[str, str]:
+    """Fork a sandboxed verification agent that ACTUALLY EXECUTES the skill.
+
+    Creates an ``AIAgent`` fork whose working directory is pinned to a fresh
+    disposable scratch directory (``tempfile.mkdtemp``).  The fork has
+    read access to skills plus terminal/file tools, runs the skill's steps
+    against a minimal environment it sets up inside the scratch dir, then
+    reports VERIFIED / FAILED / UNABLE.  Any terminal command that appears to
+    escape the sandbox is caught by a post-hoc scan and downgrades the result.
+
+    When *allow_repair* is True, the fork may additionally repair a failing
+    skill in place: it calls ``skill_manage`` with a write action against the
+    real skill file (the one sanctioned outside-sandbox write), then re-executes
+    inside the sandbox, repeating up to ``_VERIFY_MAX_FIX_ATTEMPTS`` times.  A
+    post-hoc scan (``_analyze_skill_manage_activity``) verifies the fork only
+    ever wrote to *skill_name*; a breach downgrades the result to failed.
+
+    Uses the **parent** agent's runtime (same model) — never the review fork's
+    possibly-routed aux model.
+
+    Returns:
+        ``(status, detail)`` where ``status`` is ``"verified"``,
+        ``"repaired"`` (was failing, fixed by the fork), ``"failed"``, or
+        ``"unable"``.
+    """
+    from run_agent import AIAgent
+    from model_tools import get_tool_definitions
+    from hermes_cli.plugins import (
+        set_thread_tool_whitelist,
+        clear_thread_tool_whitelist,
+    )
+    from tools.terminal_tool import set_approval_callback as _set_approval_callback
+    from tools.delegate_tool import _subagent_auto_deny
+
+    scratch: Optional[str] = None
+    verify_agent = None
+    try:
+        scratch = tempfile.mkdtemp(prefix="hermes-skill-verify-")
+
+        # Always use the parent's main model — never the review fork's
+        # possibly-routed aux model.
+        verify_agent = AIAgent(
+            model=agent.model,
+            max_iterations=(
+                _VERIFY_MAX_ITERATIONS
+                if allow_repair
+                else _VERIFY_READONLY_MAX_ITERATIONS
+            ),
+            quiet_mode=True,
+            platform=agent.platform,
+            provider=agent.provider,
+            api_mode=getattr(agent, "api_mode", None),
+            base_url=getattr(agent, "base_url", None),
+            api_key=getattr(agent, "api_key", None),
+            credential_pool=getattr(agent, "_credential_pool", None),
+            request_overrides=dict(getattr(agent, "request_overrides", {}) or {}),
+            parent_session_id=agent.session_id,
+            skip_memory=True,
+        )
+        verify_agent._persist_disabled = True
+        verify_agent._session_db = None
+        verify_agent._session_json_enabled = False
+        verify_agent._end_session_on_close = False
+        verify_agent.compression_enabled = False
+        verify_agent.suppress_status_output = True
+        # Deliberately do NOT share the parent's cached system prompt — the
+        # verification agent has a different toolset (skills + terminal +
+        # file), so the cache key would mismatch.  A cold start here is cheap
+        # relative to the actual execution.
+
+        # Tool whitelist: skills (skill_view/skill_manage) + terminal + file so
+        # the fork can genuinely run the skill's steps inside the sandbox — and,
+        # when repair is enabled, patch the skill itself.  With repair disabled
+        # the write tool is excluded so the fork can only ever report.
+        verify_whitelist = {
+            t["function"]["name"]
+            for t in get_tool_definitions(
+                enabled_toolsets=["skills", "terminal", "file"],
+                quiet_mode=True,
+            )
+        }
+        if not allow_repair:
+            verify_whitelist = {n for n in verify_whitelist if n != "skill_manage"}
+        set_thread_tool_whitelist(
+            verify_whitelist,
+            deny_msg_fmt=(
+                "Skill verification denied non-whitelisted tool: "
+                "{tool_name}. Only skill_view/skills_list/terminal/file are "
+                "allowed."
+            ),
+        )
+        # Auto-deny dangerous commands (rm -rf /, git push --force, ...) so the
+        # verification fork can never run them.  Same pattern as the review
+        # fork's _bg_review_auto_deny; reuse the delegation default.
+        _set_approval_callback(_subagent_auto_deny)
+        try:
+            # Pin the sandbox as the fork's working directory so every terminal
+            # command defaults to scratch (resolve_agent_cwd reads _SESSION_CWD
+            # first).  Restore the parent's cwd via the ContextVar token so the
+            # review thread's own cwd is untouched.
+            from agent.runtime_cwd import set_session_cwd, _SESSION_CWD
+
+            cwd_token = set_session_cwd(str(scratch))
+            try:
+                action_label = {
+                    "create": "created",
+                    "patch": "patched",
+                    "edit": "edited",
+                }.get(action, action)
+                prompt = _VERIFY_PROMPT.format(
+                    skill_name=skill_name,
+                    action_label=action_label,
+                    scratch=scratch,
+                    max_fix_attempts=_VERIFY_MAX_FIX_ATTEMPTS,
+                )
+                if not allow_repair:
+                    prompt += (
+                        "\n\nNOTE: skill_manage is NOT available to you in this "
+                        "run. You may only execute and report — never attempt "
+                        "to modify the skill."
+                    )
+                verify_agent.run_conversation(user_message=prompt)
+            finally:
+                _SESSION_CWD.reset(cwd_token)
+        finally:
+            clear_thread_tool_whitelist()
+            _set_approval_callback(None)
+
+        # Post-hoc safety nets.  A state-modification breach — a terminal
+        # command that escaped the sandbox, or a skill_manage write to a skill
+        # other than the one being verified — downgrades the result no matter
+        # what the agent reported.
+        escapes = _scan_executed_commands_for_escape(
+            getattr(verify_agent, "_session_messages", []), scratch
+        )
+        violations, repaired = _analyze_skill_manage_activity(
+            getattr(verify_agent, "_session_messages", []), skill_name
+        )
+
+        # Parse the verification agent's final text response.
+        final_text = ""
+        for msg in getattr(verify_agent, "_session_messages", []):
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    final_text = content
+                elif isinstance(content, list):
+                    final_text = " ".join(
+                        b.get("text", "") for b in content if isinstance(b, dict)
+                    )
+
+        final_text = final_text.strip()
+        if final_text.upper().startswith("VERIFIED:"):
+            detail = (
+                final_text.split(":", 1)[1].strip()
+                if ":" in final_text
+                else "skill ran successfully"
+            )
+        elif final_text.upper().startswith("FAILED:"):
+            detail = (
+                final_text.split(":", 1)[1].strip()
+                if ":" in final_text
+                else "unknown issue"
+            )
+        elif final_text.upper().startswith("UNABLE:"):
+            detail = (
+                final_text.split(":", 1)[1].strip()
+                if ":" in final_text
+                else "requires environment unavailable in sandbox"
+            )
+        else:
+            preview = final_text[:120].replace("\n", " ")
+            detail = f"unexpected response format: {preview}"
+
+        if violations:
+            return "failed", f"skill_manage violations: {'; '.join(violations)}"
+        if escapes:
+            return "failed", f"escaped the sandbox: {'; '.join(escapes)}"
+        if final_text.upper().startswith("UNABLE:"):
+            return "unable", detail
+        if final_text.upper().startswith("VERIFIED:"):
+            if repaired:
+                return "repaired", detail
+            return "verified", detail
+        return "failed", detail
+
+    except Exception as exc:
+        logger.warning(
+            "Skill verification fork failed for '%s': %s", skill_name, exc
+        )
+        return "failed", f"verification error: {exc}"
+    finally:
+        if verify_agent is not None:
+            try:
+                verify_agent.close()
+            except Exception:
+                pass
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _bg_review_aux_bool(key: str, default: bool) -> bool:
+    """Read a boolean knob under ``auxiliary.background_review.<key>``.
+
+    Falls back to *default* when the config file is unreadable.  String values
+    like ``"false"``/``"off"``/``"0"``/``"no"`` are parsed as False.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+    except Exception:
+        return default
+    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    task = (
+        aux.get("background_review", {})
+        if isinstance(aux.get("background_review"), dict)
+        else {}
+    )
+    raw = task.get(key, default)
+    if isinstance(raw, str):
+        return raw.strip().lower() not in {"0", "false", "off", "no"}
+    return bool(raw)
+
+
+def _skill_verification_enabled(agent: Any) -> bool:
+    """Whether post-precipitation skill verification is enabled.
+
+    Config: ``auxiliary.background_review.verify_skills`` (default ``true``).
+    Real-execution verification costs more than the read-only alternative, so
+    this is an explicit off-switch.
+    """
+    return _bg_review_aux_bool("verify_skills", True)
+
+
+def _skill_repair_enabled(agent: Any) -> bool:
+    """Whether the verification agent may repair a failing skill in place.
+
+    Config: ``auxiliary.background_review.repair_skills`` (default ``true``).
+    Repair is the one deliberate write the validator makes outside the sandbox:
+    it patches the skill file itself (via ``skill_manage``) and re-runs it until
+    it passes.  Set this to false to go back to report-only verification.
+    """
+    return _bg_review_aux_bool("repair_skills", True)
+
+
+def _verify_precipitated_skills(
+    agent: Any,
+    review_messages: List[Dict],
+    prior_snapshot: List[Dict],
+) -> List[str]:
+    """Verify all skills created/patched in this background review pass.
+
+    When ``auxiliary.background_review.repair_skills`` is enabled, a failing
+    skill is repaired in place (patched via ``skill_manage`` by the validator
+    and re-executed) before it is reported as a failure.
+
+    Returns a list of human-readable verification result strings, e.g.:
+    ``"✅ my-skill: ran its 5-step workflow inside the sandbox"``,
+    ``"🔧 bad-skill: repaired — step 2's missing script was added and the "
+    "workflow now completes"``,
+    ``"❌ bad-skill: step 2 references a missing script"``, or
+    ``"⚠️ cred-skill: requires AWS_ACCESS_KEY_ID unavailable in sandbox"``.
+    """
+    if not _skill_verification_enabled(agent):
+        return []
+
+    precipitated = _extract_precipitated_skill_names(review_messages, prior_snapshot)
+    if not precipitated:
+        return []
+
+    repair = _skill_repair_enabled(agent)
+    results: List[str] = []
+    for skill_name, action in precipitated:
+        status, detail = _run_skill_verification(
+            agent, skill_name, action, allow_repair=repair
+        )
+        if status == "verified":
+            results.append(f"✅ {skill_name}: {detail}")
+        elif status == "repaired":
+            results.append(f"🔧 {skill_name}: repaired — {detail}")
+        elif status == "unable":
+            results.append(f"⚠️ {skill_name}: {detail}")
+        else:
+            results.append(f"❌ {skill_name}: {detail}")
+    return results
 
 
 def spawn_background_review_thread(
@@ -1373,4 +2019,13 @@ __all__ = [
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",
+    "_extract_precipitated_skill_names",
+    "_run_skill_verification",
+    "_verify_precipitated_skills",
+    "_command_escapes_sandbox",
+    "_scan_executed_commands_for_escape",
+    "_analyze_skill_manage_activity",
+    "_skill_verification_enabled",
+    "_skill_repair_enabled",
+    "_VERIFY_MAX_FIX_ATTEMPTS",
 ]

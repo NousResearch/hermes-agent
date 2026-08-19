@@ -769,6 +769,12 @@ prompt_caching:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
 #
+#   # Background-review skill precipitation verification
+#   background_review:
+#     verify_skills: true   # verify newly precipitated skills by REAL execution
+#                           # inside a disposable sandbox (default: true)
+#     repair_skills: true   # allow the verifier to patch a failing skill in
+#                           # place and re-execute it, up to 3 rounds (default: true)
 #   # Auto-generated short session titles after the first exchange.
 #   # Each active Discord/Telegram channel can spawn a background title
 #   # call.  Cap concurrency to keep retries during provider incidents

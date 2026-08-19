@@ -21,8 +21,9 @@
  */
 
 export { collectTourTargets, type TourTarget } from './collect-targets'
-export type { TourAction, TourResult, TourStep } from './engine'
+export type { TourAction, TourHost, TourResult, TourStep } from './engine'
 export {
+  isTourActive,
   listTourTargets,
   nextTourStep,
   previousTourStep,

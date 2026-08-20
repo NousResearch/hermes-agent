@@ -549,6 +549,7 @@ export default function SkillsDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const controlsBarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -660,7 +661,15 @@ export default function SkillsDashboard() {
 
   const handleCategoryClick = useCallback((cat: string) => {
     setCategoryFilter(cat);
-    gridRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const main = gridRef.current;
+    if (main) {
+      const navbar = document.querySelector<HTMLElement>(".navbar");
+      const navbarH = navbar?.offsetHeight ?? 60;
+      const controlsH = controlsBarRef.current?.offsetHeight ?? 0;
+      const target =
+        main.getBoundingClientRect().top + window.scrollY - navbarH - controlsH - 16;
+      window.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+    }
     setSidebarOpen(false);
   }, []);
 
@@ -739,7 +748,7 @@ export default function SkillsDashboard() {
           </div>
         </header>
 
-        <div className={styles.controlsBar}>
+        <div className={styles.controlsBar} ref={controlsBarRef}>
           <div className={styles.searchWrap}>
             <svg className={styles.searchIcon} viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
               <path

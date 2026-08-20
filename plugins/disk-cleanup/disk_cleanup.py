@@ -148,6 +148,7 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
     "hermes-agent", "backups", "profiles", ".worktrees",
+    "scripts", "kanban", "workspace", "worktrees",
     # User-authored project trees — never sweep empty directories
     # inside these (#75403).
     "patches", "projects", "skins", "themes", "contributors",
@@ -564,6 +565,27 @@ _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
 
+def _is_git_worktree_path(path: Path) -> bool:
+    """Return whether *path* is inside a Git checkout or linked worktree."""
+    resolved = path.resolve()
+    hermes_home = get_hermes_home()
+    try:
+        resolved.relative_to(hermes_home)
+        scope_root = hermes_home
+    except ValueError:
+        parts = resolved.parts
+        if len(parts) < 3 or parts[1] != "tmp" or not parts[2].startswith("hermes-"):
+            return False
+        scope_root = Path(*parts[:3])
+
+    current = resolved if resolved.is_dir() else resolved.parent
+    while current != scope_root.parent:
+        if (current / ".git").exists():
+            return True
+        current = current.parent
+    return False
+
+
 def guess_category(path: Path) -> Optional[str]:
     """Return a category label for *path*, or None if we shouldn't track it.
 
@@ -581,6 +603,7 @@ def guess_category(path: Path) -> Optional[str]:
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
             "auth.json", "hermes-agent",
+            "scripts", "kanban", "workspace", "worktrees",
             # User-authored and project trees — never auto-delete files
             # inside these just because they happen to be named test_* or
             # tmp_* (#75403, also #32164, #37721).
@@ -602,6 +625,9 @@ def guess_category(path: Path) -> Optional[str]:
     except ValueError:
         # Path isn't under HERMES_HOME (e.g. /tmp/hermes-*) — fall through.
         pass
+
+    if _is_git_worktree_path(path):
+        return None
 
     name = path.name
     if name.startswith(_TEST_PATTERNS):

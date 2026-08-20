@@ -83,7 +83,8 @@ def apply_llm_request_middleware(
     Middleware may return ``{"request": {...}}`` to replace the effective
     provider kwargs before Hermes sends them.
     """
-    if not _has_middleware(LLM_REQUEST_MIDDLEWARE):
+    callbacks = _get_middleware_callbacks(LLM_REQUEST_MIDDLEWARE)
+    if not callbacks:
         return RequestMiddlewareResult(
             payload=request,
             original_payload=request,
@@ -91,29 +92,13 @@ def apply_llm_request_middleware(
             trace=[],
         )
 
-    original_request = _safe_copy(request)
-    current_request = _safe_copy(original_request)
-    trace: List[Dict[str, Any]] = []
-
-    for result in _invoke_middleware(
+    return _run_request_chain(
         LLM_REQUEST_MIDDLEWARE,
-        request=current_request,
-        original_request=original_request,
+        callbacks,
+        request,
+        payload_key="request",
+        original_key="original_request",
         **context,
-    ):
-        if not isinstance(result, dict):
-            continue
-        next_request = result.get("request")
-        if not isinstance(next_request, dict):
-            continue
-        current_request = _safe_copy(next_request)
-        trace.append(_trace_entry(result))
-
-    return RequestMiddlewareResult(
-        payload=current_request,
-        original_payload=original_request,
-        changed=bool(trace),
-        trace=trace,
     )
 
 
@@ -145,7 +130,8 @@ def apply_tool_request_middleware(
             current_args = _safe_copy(relay_args)
             trace.append({"source": "nemo_relay"})
 
-    if not _has_middleware(TOOL_REQUEST_MIDDLEWARE):
+    callbacks = _get_middleware_callbacks(TOOL_REQUEST_MIDDLEWARE)
+    if not callbacks:
         return RequestMiddlewareResult(
             payload=args if not trace else current_args,
             original_payload=args,
@@ -153,26 +139,16 @@ def apply_tool_request_middleware(
             trace=trace,
         )
 
-    for result in _invoke_middleware(
+    return _run_request_chain(
         TOOL_REQUEST_MIDDLEWARE,
-        tool_name=tool_name,
-        args=current_args,
-        original_args=original_args,
-        **context,
-    ):
-        if not isinstance(result, dict):
-            continue
-        next_args = result.get("args")
-        if not isinstance(next_args, dict):
-            continue
-        current_args = _safe_copy(next_args)
-        trace.append(_trace_entry(result))
-
-    return RequestMiddlewareResult(
-        payload=current_args,
+        callbacks,
+        current_args,
+        payload_key="args",
+        original_key="original_args",
         original_payload=original_args,
-        changed=bool(trace),
-        trace=trace,
+        initial_trace=trace,
+        tool_name=tool_name,
+        **context,
     )
 
 
@@ -233,22 +209,61 @@ def run_api_execution_middleware(
     return run_llm_execution_middleware(request, next_call, **context)
 
 
-def _invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
-    from hermes_cli.plugins import invoke_middleware
-
-    return invoke_middleware(kind, **middleware_payload(**kwargs))
-
-
-def _has_middleware(kind: str) -> bool:
-    from hermes_cli.plugins import has_middleware
-
-    return has_middleware(kind)
-
-
 def _get_middleware_callbacks(kind: str) -> List[Callable]:
     from hermes_cli.plugins import get_plugin_manager
 
     return list(get_plugin_manager()._middleware.get(kind, []))
+
+
+def _run_request_chain(
+    kind: str,
+    callbacks: List[Callable],
+    payload: Dict[str, Any],
+    *,
+    payload_key: str,
+    original_key: str,
+    original_payload: Optional[Dict[str, Any]] = None,
+    initial_trace: Optional[List[Dict[str, Any]]] = None,
+    **context: Any,
+) -> RequestMiddlewareResult:
+    """Apply request middleware serially to the current effective payload."""
+    if original_payload is None:
+        original_payload = _safe_copy(payload)
+    current_payload = _safe_copy(payload)
+    trace = list(initial_trace or [])
+
+    for callback in callbacks:
+        callback_payload = middleware_payload(
+            **context,
+            **{
+                payload_key: _safe_copy(current_payload),
+                original_key: _safe_copy(original_payload),
+            },
+        )
+        try:
+            result = callback(**callback_payload)
+        except Exception as exc:
+            logger.warning(
+                "Middleware '%s' callback %s raised: %s",
+                kind,
+                getattr(callback, "__name__", repr(callback)),
+                exc,
+            )
+            continue
+        if not isinstance(result, dict):
+            continue
+        next_payload = result.get(payload_key)
+        if not isinstance(next_payload, dict):
+            continue
+        current_payload = _safe_copy(next_payload)
+        trace.append(_trace_entry(result))
+
+    return RequestMiddlewareResult(
+        payload=current_payload,
+        original_payload=original_payload,
+        changed=bool(trace),
+        trace=trace,
+    )
 
 
 def _run_execution_chain(

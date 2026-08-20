@@ -1803,7 +1803,21 @@ class SlashCommandCompleter(Completer):
                         continue
                     if count >= limit:
                         break
-                    display_path = os.path.relpath(full_path)
+                    try:
+                        display_path = os.path.relpath(full_path)
+                    except ValueError:
+                        # Windows: os.path.relpath() raises ValueError for
+                        # cross-mount paths (a different drive letter from cwd
+                        # or a UNC/device path).  A user browsing an absolute
+                        # `@file:`/`@folder:` path on another drive would
+                        # otherwise crash the prompt_toolkit event loop.  Skip
+                        # the entry rather than propagating the error (#31915).
+                        logger.debug(
+                            "Skipping cross-mount path during explicit "
+                            "@file:/@folder: autocomplete: %s",
+                            full_path,
+                        )
+                        continue
                     suffix = "/" if is_dir else ""
                     meta = "dir" if is_dir else _file_size_label(full_path)
                     completion = f"{prefix}{display_path}{suffix}"

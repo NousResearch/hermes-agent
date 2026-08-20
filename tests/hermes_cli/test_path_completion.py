@@ -118,3 +118,96 @@ class TestFileSizeLabel:
 
     def test_nonexistent(self):
         assert _file_size_label("/nonexistent_xyz") == ""
+
+
+class TestGetProjectFilesWindowsCrossMount:
+    """_get_project_files() should skip paths on a different Windows mount point.
+
+    Regression coverage for #31915 — typing ``@`` to invoke file autocomplete
+    on Windows used to crash the prompt_toolkit event loop when ``rg``/``fd``
+    returned a path on a different drive or a UNC/device path (e.g.
+    ``\\\\.\\nul``), because ``os.path.relpath`` raises ``ValueError`` in
+    that case.  These tests simulate the failure on any platform so the
+    regression is caught in CI without needing a Windows runner.
+    """
+
+    @staticmethod
+    def _install_cross_mount_fakes(monkeypatch, bad_path):
+        """Patch subprocess/os helpers so ``bad_path`` triggers the cross-mount branch."""
+        import subprocess as _subprocess
+
+        class FakeProc:
+            returncode = 0
+            stdout = bad_path + "\n"
+            stderr = ""
+
+        monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: FakeProc())
+
+        original_relpath = os.path.relpath
+        original_isabs = os.path.isabs
+
+        def patched_relpath(path, start=None):
+            if path == bad_path:
+                raise ValueError("path is on mount 'X:', start on mount 'Y:'")
+            return original_relpath(path, start) if start is not None else original_relpath(path)
+
+        monkeypatch.setattr(os.path, "relpath", patched_relpath)
+        monkeypatch.setattr(
+            os.path, "isabs", lambda p: p == bad_path or original_isabs(p)
+        )
+
+    def test_cross_drive_path_is_skipped(self, monkeypatch, tmp_path):
+        cwd = str(tmp_path)
+        cross_drive_path = "D:\\other\\file.txt" if os.sep != "/" else "/mnt/other/file.txt"
+
+        self._install_cross_mount_fakes(monkeypatch, cross_drive_path)
+
+        completer = SlashCommandCompleter()
+        completer._file_cache_cwd = cwd
+
+        files = completer._get_project_files()
+
+        assert cross_drive_path not in files
+
+    def test_unc_device_path_is_skipped(self, monkeypatch, tmp_path):
+        cwd = str(tmp_path)
+        unc_device_path = "\\\\.\\nul"
+
+        self._install_cross_mount_fakes(monkeypatch, unc_device_path)
+
+        completer = SlashCommandCompleter()
+        completer._file_cache_cwd = cwd
+
+        files = completer._get_project_files()
+
+        assert unc_device_path not in files
+
+
+class TestExplicitAtPathCrossMount:
+    """Regression tests for cross-mount handling in the explicit
+    ``@file:``/``@folder:`` completion branch.
+
+    A user browsing an absolute path on another Windows drive must not crash
+    the prompt_toolkit event loop when ``os.path.relpath`` raises ``ValueError``.
+    """
+
+    def test_cross_drive_explicit_file_path_is_skipped(self, monkeypatch, tmp_path):
+        entry_name = "cross.txt"
+        (tmp_path / entry_name).write_text("x")
+        search_dir = str(tmp_path)
+
+        original_relpath = os.path.relpath
+
+        def patched_relpath(path, start=None):
+            if os.path.basename(str(path)) == entry_name:
+                raise ValueError("path is on mount 'X:', start on mount 'Y:'")
+            return original_relpath(path, start) if start is not None else original_relpath(path)
+
+        monkeypatch.setattr(os.path, "relpath", patched_relpath)
+
+        completer = SlashCommandCompleter()
+        word = f"@file:{search_dir}/"
+
+        completions = list(completer._context_completions(word))
+        names = _display_names(completions)
+        assert entry_name not in names

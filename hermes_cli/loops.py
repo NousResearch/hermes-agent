@@ -48,6 +48,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field, asdict
@@ -89,6 +90,15 @@ _INTERVAL_TOKEN_RE = re.compile(
     r"^(?=\d)(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", re.IGNORECASE
 )
 
+_NATURAL_INTERVAL_UNITS = {
+    "hour": 3600,
+    "hours": 3600,
+    "minute": 60,
+    "minutes": 60,
+    "second": 1,
+    "seconds": 1,
+}
+
 
 WAKEUP_PROMPT_TEMPLATE = (
     "[/loop wakeup #{tick}{cadence}]\n"
@@ -122,6 +132,16 @@ WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE = (
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _parse_ascii_int(value: str) -> Optional[int]:
+    """Parse user-entered ASCII digits without leaking conversion errors."""
+    if not value or not value.isascii() or not value.isdecimal():
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def parse_interval_token(token: str) -> Optional[int]:
     """Parse a compact interval token (``30s``/``5m``/``2h``/``1h30m``).
 
@@ -134,9 +154,37 @@ def parse_interval_token(token: str) -> Optional[int]:
     m = _INTERVAL_TOKEN_RE.match(token.strip())
     if not m:
         return None
-    h, mnt, s = (int(g) if g else 0 for g in m.groups())
+    values = [_parse_ascii_int(group) if group else 0 for group in m.groups()]
+    if any(value is None for value in values):
+        return None
+    h, mnt, s = values
     total = h * 3600 + mnt * 60 + s
     return total if total > 0 else None
+
+
+def _parse_natural_interval_prefix(text: str) -> Tuple[Optional[int], str]:
+    """Consume leading ``<number> <unit>`` pairs from loop arguments."""
+    tokens = text.split()
+    consumed = 0
+    total = 0
+    while consumed + 1 < len(tokens):
+        amount, unit = tokens[consumed : consumed + 2]
+        multiplier = _NATURAL_INTERVAL_UNITS.get(unit.lower())
+        if multiplier is None:
+            break
+        parsed_amount = _parse_ascii_int(amount)
+        if parsed_amount is None:
+            if amount.isascii() and amount.isdecimal():
+                raise ValueError("interval is too large")
+            return None, text
+        is_plural = unit.lower().endswith("s")
+        if (parsed_amount == 1) == is_plural:
+            return None, text
+        total += parsed_amount * multiplier
+        consumed += 2
+    if consumed == 0 or total <= 0:
+        return None, text
+    return total, " ".join(tokens[consumed:])
 
 
 def parse_loop_args(text: str) -> Dict[str, Any]:
@@ -145,6 +193,7 @@ def parse_loop_args(text: str) -> Dict[str, Any]:
     Recognized shapes::
 
         /loop 5m check the deploy status
+        /loop 2 hours check the pull requests
         /loop every 10m /babysit-prs
         /loop keep fixing the failing test until the suite passes
         /loop 2m poll CI --times 30
@@ -191,8 +240,11 @@ def parse_loop_args(text: str) -> Dict[str, Any]:
         raw = raw[: m_until.start()].strip()
 
     # Leading "every" sugar: /loop every 5m <prompt>
+    interval_source = raw
+    had_every = False
     tokens = raw.split(None, 1)
     if tokens and tokens[0].lower() == "every" and len(tokens) > 1:
+        had_every = True
         raw = tokens[1]
         tokens = raw.split(None, 1)
 
@@ -202,6 +254,13 @@ def parse_loop_args(text: str) -> Dict[str, Any]:
         if maybe is not None:
             interval = maybe
             raw = tokens[1].strip() if len(tokens) > 1 else ""
+        else:
+            try:
+                interval, remainder = _parse_natural_interval_prefix(raw)
+            except ValueError as exc:
+                result["error"] = str(exc)
+                return result
+            raw = remainder if interval is not None or not had_every else interval_source
 
     if not raw:
         result["error"] = "missing prompt (usage: /loop [interval] <prompt>)"
@@ -606,13 +665,19 @@ class LoopManager:
 
         now = time.time()
         if interval_seconds is not None:
-            interval = max(int(interval_seconds), min_interval_seconds())
+            try:
+                interval = float(max(int(interval_seconds), min_interval_seconds()))
+                next_due_at = now + interval
+            except (OverflowError, ValueError):
+                raise ValueError("loop interval is too large") from None
+            if not math.isfinite(next_due_at):
+                raise ValueError("loop interval is too large")
             state = LoopState(
                 prompt=prompt,
                 mode="interval",
-                interval_seconds=float(interval),
-                current_delay=float(interval),
-                next_due_at=now + interval,
+                interval_seconds=interval,
+                current_delay=interval,
+                next_due_at=next_due_at,
             )
         else:
             floor = self_paced_floor_seconds()
@@ -892,6 +957,7 @@ def dispatch_loop_command(
             "output": (
                 "Usage: /loop [interval] <prompt> [--times N] [--until <condition>]\n"
                 "  /loop 5m check the deploy status      — fixed cadence\n"
+                "  /loop 2 hours check pull requests     — natural-language cadence\n"
                 "  /loop every 10m /recap                — loop a slash command\n"
                 "  /loop keep fixing tests until green   — self-paced (backs off while output is unchanged)\n"
                 "  /loop 2m poll CI --times 30           — stop after 30 runs\n"

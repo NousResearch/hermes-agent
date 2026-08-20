@@ -39,10 +39,11 @@ Loop a slash command just as easily:
 
 ## The two cadence modes
 
-**Fixed interval — you set the clock.** Give an interval (`30s`, `5m`, `2h`, `1h30m`) and the loop fires on that schedule. Use it when the thing you're watching changes on its own timeline:
+**Fixed interval — you set the clock.** Give a compact interval (`30s`, `5m`, `2h`, `1h30m`) or write it naturally (`30 seconds`, `5 minutes`, `2 hours`, `1 hour 30 minutes`) and the loop fires on that schedule. Use it when the thing you're watching changes on its own timeline:
 
 ```
 /loop 2m poll the build at ci.example.com/job/42 and ping me the moment it finishes
+/loop every 2 hours check whether my pull requests need attention
 ```
 
 **Self-paced — Hermes sets the clock.** Omit the interval and the loop paces itself: it starts at the floor (1 minute by default), and while the agent's replies stop changing it backs off exponentially — 2m, 4m, 8m, up to the ceiling (15 minutes by default). The moment a reply differs from the last one, cadence snaps back to the floor. Change detection is a local digest comparison (timestamps are ignored), so idle waits cost nothing extra:

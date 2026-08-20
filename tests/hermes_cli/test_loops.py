@@ -79,6 +79,11 @@ class TestParseIntervalToken:
         assert parse_interval_token("0m") is None
         assert parse_interval_token("0s") is None
 
+    def test_oversized_amount_rejected(self):
+        from hermes_cli.loops import parse_interval_token
+
+        assert parse_interval_token(f"{'9' * 5000}h") is None
+
 
 class TestParseLoopArgs:
     def test_fixed_interval(self):
@@ -95,6 +100,78 @@ class TestParseLoopArgs:
         p = parse_loop_args("every 10m /recap")
         assert p["interval_seconds"] == 600
         assert p["prompt"] == "/recap"
+
+    @pytest.mark.parametrize(
+        ("text", "seconds", "prompt"),
+        [
+            ("2 hours check the pull requests", 7200, "check the pull requests"),
+            ("every 1 hour 30 minutes check CI", 5400, "check CI"),
+            ("45 seconds poll the queue", 45, "poll the queue"),
+            ("1 minute recap", 60, "recap"),
+        ],
+    )
+    def test_natural_language_interval(self, text, seconds, prompt):
+        from hermes_cli.loops import parse_loop_args
+
+        parsed = parse_loop_args(text)
+
+        assert parsed["interval_seconds"] == seconds
+        assert parsed["prompt"] == prompt
+        assert parsed["error"] is None
+
+    @pytest.mark.parametrize("amount", ["²", "①"])
+    def test_unsupported_natural_amount_remains_self_paced(self, amount):
+        from hermes_cli.loops import parse_loop_args
+
+        text = f"{amount} hours check the pull requests"
+        parsed = parse_loop_args(text)
+
+        assert parsed["interval_seconds"] is None
+        assert parsed["prompt"] == text
+        assert parsed["error"] is None
+
+    def test_oversized_natural_amount_returns_error(self):
+        from hermes_cli.loops import parse_loop_args
+
+        parsed = parse_loop_args(f"{'9' * 5000} hours check the pull requests")
+
+        assert parsed["interval_seconds"] is None
+        assert parsed["error"] == "interval is too large"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "3 second thoughts about the incident",
+            "5 minute the whole thing",
+            "1 hours check the queue",
+        ],
+    )
+    def test_mismatched_natural_unit_remains_self_paced(self, text):
+        from hermes_cli.loops import parse_loop_args
+
+        parsed = parse_loop_args(text)
+
+        assert parsed["interval_seconds"] is None
+        assert parsed["prompt"] == text
+        assert parsed["error"] is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "1 hour 5 minute check CI",
+            "every 1 hour 5 minute check CI",
+            "1 hour ² minutes check CI",
+            "every 1 hour ² minutes check CI",
+        ],
+    )
+    def test_invalid_compound_natural_interval_remains_self_paced(self, text):
+        from hermes_cli.loops import parse_loop_args
+
+        parsed = parse_loop_args(text)
+
+        assert parsed["interval_seconds"] is None
+        assert parsed["prompt"] == text
+        assert parsed["error"] is None
 
     def test_self_paced(self):
         from hermes_cli.loops import parse_loop_args
@@ -620,6 +697,21 @@ class TestDispatchLoopCommand:
         result = dispatch_loop_command(mgr, "5m poll --times banana")
         assert result["created"] is False
         assert "--times" in result["output"]
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            f"{'9' * 308}h check",
+            f"{'9' * 308} hours check",
+        ],
+    )
+    def test_unrepresentable_interval_returns_error(self, hermes_home, args):
+        from hermes_cli.loops import LoopManager, dispatch_loop_command
+
+        result = dispatch_loop_command(LoopManager(session_id="d8"), args)
+
+        assert result["created"] is False
+        assert "interval is too large" in result["output"]
 
 
 # ──────────────────────────────────────────────────────────────────────

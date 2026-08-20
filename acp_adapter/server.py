@@ -2158,7 +2158,12 @@ class HermesACPAgent(acp.Agent):
                     exc_info=True,
                 )
 
-        final_response = result.get("final_response", "")
+        # ``or ""`` rather than a ``.get`` default: the conversation loop can
+        # return the key with an explicit ``None`` (e.g. the truncation path's
+        # ``partial_response or None``), and a default only applies when the
+        # key is absent. Other consumers already tolerate None — see
+        # ``turn_finalizer``'s ``len(final_response) if final_response else 0``.
+        final_response = result.get("final_response") or ""
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         interrupted = bool(result.get("interrupted")) or cancelled
         # Hermes' local "waiting for model response" interrupt status is metadata,

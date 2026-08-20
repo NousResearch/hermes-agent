@@ -206,6 +206,7 @@ export const zh: Translations = {
     swapSidebarSides: '交换侧边栏位置',
     hideRightSidebar: '隐藏右侧栏',
     showRightSidebar: '显示右侧栏',
+    unreadSessions: count => (count === 1 ? '1 个未读会话' : `${count} 个未读会话`),
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',

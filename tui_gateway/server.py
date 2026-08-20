@@ -1534,13 +1534,12 @@ def _profile_home(profile: str | None) -> Path | None:
 
 
 def _profile_scoped(handler):
-    """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
+    """Bind ``params['profile']``'s HERMES_HOME around a handler.
 
-    Pets are per-profile: ``display.pet.*`` lives in the profile's config.yaml and
-    sprites install under its ``pets/`` dir (both resolve via ``get_hermes_home``).
-    The desktop sends ``profile`` on pet calls so config + pets dir resolve to the
-    focused profile even in app-global remote mode, where one backend serves every
-    profile. No-op for the launch profile (own-profile backends already resolve it).
+    Pets (config + sprites) and projects (projects.db, discovery policy) both
+    resolve via ``get_hermes_home``. The desktop sends ``profile`` so a single
+    backend serving every profile in app-global remote mode still hits the
+    focused profile's home. No-op for the launch profile.
     """
 
     def wrapper(rid, params):
@@ -12634,13 +12633,14 @@ def _projects_payload(conn) -> dict:
 def _projects_method(name: str):
     """Register a projects RPC, injecting (pdb, conn) and unifying error mapping.
 
-    Every project CRUD handler opened the per-profile DB, mapped a missing id to
-    5062, bad args to 5063, and everything else to 5061. This collapses that
-    boilerplate so each handler is just its one meaningful operation.
+    Binds ``params['profile']`` (via ``@_profile_scoped``) so app-global remote
+    mode reads that profile's ``projects.db``. Missing id maps to 5062, bad args
+    to 5063, everything else to 5061.
     """
 
     def decorator(fn):
         @method(name)
+        @_profile_scoped
         def handler(rid, params: dict) -> dict:
             try:
                 from hermes_cli import projects_db as pdb
@@ -12877,6 +12877,89 @@ def _repo_discovery_policy_is_default(policy: dict) -> bool:
     return _repo_discovery_policy_key(policy) == _repo_discovery_policy_key(
         _repo_discovery_policy(DEFAULT_CONFIG["desktop"])
     )
+
+
+def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
+    """Backend-side disk scan of the discovery policy roots.
+
+    The desktop's native repo scan only runs on the local filesystem. On a
+    remote gateway connection the host must scan its own disk so repos with
+    zero Hermes sessions still appear in the sidebar (#81723). Mirrors the
+    desktop's behavior: walk each root (bounded depth), find `.git`
+    directories, record (root, label) pairs into the discovery cache.
+
+    Best-effort: any failure logs and leaves the cache untouched — the
+    session-derived repos from `_discover_repos_payload` still surface.
+
+    Returns True when the scan is authoritative (every root was walked to
+    completion without error and the per-scan cap was not hit). Only then may
+    the caller treat the result as a full replacement and pass ``replace=True``
+    to the cache write — a partial or errored scan must merge, never wipe, so
+    a failed remote refresh can't blank the previously cached repos into the
+    silent, unpopulated sidebar of #81723.
+    """
+    from hermes_cli import projects_db as pdb
+
+    roots = policy.get("roots") or []
+    excludes = policy.get("exclude_paths") or []
+    pairs: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    authoritative = True
+
+    def _is_excluded(path: str) -> bool:
+        return any(path == ex or path.startswith(ex.rstrip("/\\") + os.sep) for ex in excludes if ex)
+
+    for root in roots:
+        if not os.path.isdir(root):
+            # `os.walk` on a missing root silently yields nothing instead of
+            # raising, so a temporarily unavailable root (unmounted volume,
+            # moved path) would otherwise look like a genuinely empty scan and
+            # let `authoritative` stay True — letting the replace wipe every
+            # cached repo that lived under the missing root. A missing root
+            # contributes nothing and must not be treated as authoritative.
+            authoritative = False
+            logger.debug("discover_repos scan root missing, skipping: %s", root)
+            continue
+        try:
+            for dirpath, dirnames, _filenames in os.walk(root):
+                if _is_excluded(dirpath):
+                    dirnames[:] = []
+                    continue
+                # A `.git` directory marks this directory as a repo root. Check
+                # BEFORE pruning hidden dirs — `.git` is itself hidden, so a
+                # prune-first order would drop it and never detect any repo.
+                if ".git" in dirnames:
+                    repo_root = dirpath
+                    if repo_root not in seen:
+                        seen.add(repo_root)
+                        pairs.append((repo_root, os.path.basename(repo_root)))
+                    # Don't descend into the repo's own .git to hunt nested repos.
+                    dirnames[:] = []
+                else:
+                    # Not a repo: skip hidden dirs (e.g. .hermes) and node_modules.
+                    dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in ("node_modules",)]
+                if len(pairs) >= 500:
+                    break
+        except Exception:
+            # A root that can't be walked yields no authoritative set — fall back
+            # to merging, never replacing, so the prior cache survives.
+            authoritative = False
+            logger.debug("discover_repos scan failed for root %s", root, exc_info=True)
+        if len(pairs) >= 500:
+            # Cap hit means the walk didn't cover the full roots; the collected
+            # set must not be treated as the complete authoritative universe.
+            authoritative = False
+            break
+
+    if pairs:
+        try:
+            pdb.record_discovered_repos(
+                conn, pairs, replace=authoritative, policy_key=_repo_discovery_policy_key(policy)
+            )
+        except Exception:
+            logger.debug("discover_repos cache write failed", exc_info=True)
+            authoritative = False
+    return authoritative
 
 
 def _discover_repos_payload(

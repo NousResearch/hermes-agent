@@ -151,6 +151,12 @@ Notes:
 - SVGs inherit `size-3.5` (`size-3` at `xs`). Don't re-set icon size.
 - Polymorph with `asChild` when the button must render as a link/Slot.
 
+## Badges — one component
+
+`src/components/ui/badge.tsx`. Variants: `default` (tinted primary), `muted`,
+`warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
+Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
+
 ## Form controls
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for

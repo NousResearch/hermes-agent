@@ -2232,6 +2232,29 @@ class TestCORS:
             assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
             assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
 
+    @pytest.mark.asyncio
+    async def test_cors_allows_hermes_session_headers(self):
+        """X-Hermes-Session-Id and X-Hermes-Session-Key must be in the CORS allowlist.
+
+        Both are first-party headers documented in the API and returned in every
+        response — browser clients that send them in a preflight must not be blocked.
+        """
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/chat/completions",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "X-Hermes-Session-Id, X-Hermes-Session-Key",
+                },
+            )
+            assert resp.status == 200
+            allow_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "X-Hermes-Session-Id" in allow_headers
+            assert "X-Hermes-Session-Key" in allow_headers
+
 
 # ---------------------------------------------------------------------------
 # Conversation parameter

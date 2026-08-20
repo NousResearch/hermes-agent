@@ -89,6 +89,58 @@ def test_compression_threshold_for_codex_gpt55() -> None:
     assert _compression_threshold_for_model("gpt-5.5", "openai-codex") == 0.85
     assert _compression_threshold_for_model("gpt-5.5-pro", "openai-codex") == 0.85
     assert _compression_threshold_for_model("openai/gpt-5.5", "openai-codex") == 0.85
+    # gpt-5.6 family shares the route and, with no resolved window, keeps the
+    # historical unconditional raise.
+    assert _compression_threshold_for_model("gpt-5.6-luna", "openai-codex") == 0.85
+    assert _compression_threshold_for_model("gpt-5.6-sol", "openai-codex") == 0.85
+
+
+def test_codex_autoraise_disabled_above_verified_window() -> None:
+    """The 0.85 raise is premised on the ~272K cap: once the resolver verifies
+    a materially larger window for the same route (e.g. gpt-5.6 → 900K on
+    Codex), the override must defer to the user's global threshold instead of
+    compacting at 0.85 * 900K = 765K."""
+    # Above the cap → no override (keep global threshold).
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-luna", "openai-codex", resolved_context_length=900_000
+        )
+        is None
+    )
+    # At/under the old cap → the raise still applies.
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.5", "openai-codex", resolved_context_length=272_000
+        )
+        == 0.85
+    )
+    # Boundary: exactly the ceiling still raises; one token over defers.
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-sol", "openai-codex", resolved_context_length=276_000
+        )
+        == 0.85
+    )
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-sol", "openai-codex", resolved_context_length=276_001
+        )
+        is None
+    )
+    # Unknown window (None) preserves historical behaviour.
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.6-terra", "openai-codex", resolved_context_length=None
+        )
+        == 0.85
+    )
+    # A verified-large window does not affect spark (native 128K, ungated).
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.3-codex-spark", "openai-codex", resolved_context_length=900_000
+        )
+        == 0.70
+    )
 
 
 

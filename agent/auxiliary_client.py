@@ -622,19 +622,31 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
-# Context window enforced by ChatGPT's Codex OAuth backend for the
-# gpt-5.4 / gpt-5.5 / gpt-5.6 families. The raw OpenAI API and OpenRouter
-# expose 1.05M for the same slugs, but the Codex backend hard-caps at 272K
-# (verified live for 5.4/5.5: a ~330K-token request to
+# Context window historically enforced by ChatGPT's Codex OAuth backend for
+# the gpt-5.4 / gpt-5.5 / gpt-5.6 families. The raw OpenAI API and OpenRouter
+# expose 1.05M for the same slugs, but the Codex backend used to hard-cap at
+# 272K (verified live for 5.4/5.5: a ~330K-token request to
 # chatgpt.com/backend-api/codex/responses is rejected with
-# ``context_length_exceeded`` while ~250K succeeds; gpt-5.6 shares the same
-# 272K Codex cap — see _CODEX_OAUTH_CONTEXT_FALLBACK in model_metadata.py).
-# With a 272K ceiling the default 50% compaction trigger fires at ~136K —
-# wasteful, since the model can hold far more raw context before
-# summarization actually buys anything. We raise the trigger to 85% (~231K)
-# on this exact route so Codex gpt-5.4 / gpt-5.5 / gpt-5.6 sessions use the
-# window they actually have.
+# ``context_length_exceeded`` while ~250K succeeds). With a 272K ceiling the
+# default 50% compaction trigger fires at ~136K — wasteful, since the model
+# can hold far more raw context before summarization actually buys anything.
+# We raise the trigger to 85% (~231K) on this route so a genuinely 272K-capped
+# Codex session uses the window it actually has.
+#
+# The cap is NOT static, though: the resolver has since verified some of these
+# routes materially above 272K (e.g. gpt-5.6 sol/terra/luna resolve to 900K on
+# Codex — model_metadata._CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_*). When the
+# resolved window exceeds the old cap the 85% rationale is stale (0.85 * 900K =
+# 765K would defer compaction until hundreds of thousands of tokens accrue), so
+# the raise self-disables above _CODEX_AUTORAISE_MAX_CONTEXT and the session
+# keeps the user's global threshold. See _compression_threshold_for_model.
 _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
+
+# Ceiling for the gpt-5.4/5.5/5.6 autoraise above. The raise only makes sense
+# while the resolved Codex window is still at/under the old ~272K cap; a small
+# margin over the 272K stale advertisement absorbs rounding in live catalog
+# values. Above this the override defers to the configured global threshold.
+_CODEX_AUTORAISE_MAX_CONTEXT = 276_000
 
 # gpt-5.3-codex-spark is Codex-OAuth-only (ChatGPT Pro entitlement) with a
 # native 128K context window.  The default 50% compaction trigger fires at
@@ -717,6 +729,7 @@ def _compression_threshold_for_model(
     provider: Optional[str] = None,
     *,
     allow_codex_gpt55_autoraise: bool = True,
+    resolved_context_length: Optional[int] = None,
 ) -> Optional[float]:
     """Return a context-compression threshold override for specific models.
 
@@ -727,16 +740,21 @@ def _compression_threshold_for_model(
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
       - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth route → 0.85, because
-        Codex caps all three families at 272K and the default 50% trigger
-        would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
+        Codex historically caps these families at 272K and the default 50%
+        trigger would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
         (historical config-key name kept for backward compatibility) so the
         user can opt back down to the global default (the caller passes the
-        config flag through here).
+        config flag through here). Also gated on ``resolved_context_length``:
+        the raise only applies while the resolved Codex window is still at/under
+        the old cap (``_CODEX_AUTORAISE_MAX_CONTEXT``). Once the resolver
+        verifies a larger window for the same route (e.g. gpt-5.6 → 900K on
+        Codex) the 85% rationale is stale, so the override defers to the user's
+        global threshold. ``None`` (window unknown) keeps historical behaviour.
       - gpt-5.3-codex-spark on the Codex OAuth route → 0.70, because the model
         has a native 128K window and the default 50% trigger would compact at
         ~64K — wasting half the usable context. Not gated by the gpt-5.5
-        opt-out flag: 128K is the model's native window, so the raise is
-        unambiguously correct.
+        opt-out flag or the window ceiling: 128K is the model's native window,
+        so the raise is unambiguously correct.
 
     Returns a float in (0, 1] to override the global ``compression.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
@@ -744,7 +762,16 @@ def _compression_threshold_for_model(
     if _is_arcee_trinity_thinking(model):
         return 0.75
     if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider):
-        return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
+        # The 0.85 raise exists only to avoid wasting the old 272K Codex cap.
+        # Above a verified-larger window it would delay compaction far past the
+        # user's intent, so fall back to the global threshold there. An unknown
+        # window (None) preserves the historical unconditional raise.
+        if (
+            resolved_context_length is None
+            or resolved_context_length <= _CODEX_AUTORAISE_MAX_CONTEXT
+        ):
+            return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
+        return None
     if _is_codex_spark(model, provider):
         return _CODEX_SPARK_COMPACTION_THRESHOLD
     return None

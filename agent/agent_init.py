@@ -2056,10 +2056,31 @@ def init_agent(
             _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
             _is_codex_spark as _is_codex_spark_fn,
         )
+        # The Codex gpt-5.4/5.5/5.6 autoraise is premised on the old ~272K cap,
+        # so it must self-disable once the resolver verifies a larger window for
+        # the route (e.g. gpt-5.6 → 900K). Resolve the window here — only for
+        # that route, so no other model pays a lookup — and pass it through.
+        # get_model_context_length is cached and the compressor resolves the
+        # same value moments later, so this warms the cache rather than adding a
+        # probe. Best-effort: any failure leaves the window unknown, preserving
+        # the historical unconditional raise.
+        _codex_autoraise_ctx = None
+        if _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider):
+            try:
+                from agent.model_metadata import get_model_context_length
+                _codex_autoraise_ctx = get_model_context_length(
+                    agent.model,
+                    base_url=agent.base_url,
+                    api_key=getattr(agent, "api_key", ""),
+                    provider=agent.provider,
+                )
+            except Exception:
+                _codex_autoraise_ctx = None
         _model_cthresh = _cthresh_fn(
             agent.model,
             agent.provider,
             allow_codex_gpt55_autoraise=_codex_gpt55_autoraise,
+            resolved_context_length=_codex_autoraise_ctx,
         )
         # The Codex autoraises (gpt-5.4/5.5 272K family and gpt-5.3-codex-spark)
         # apply only when they RAISE (never lower a user's higher global

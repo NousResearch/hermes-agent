@@ -366,6 +366,39 @@ def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
     assert observed["agent_runs"] == 1  # still suppressed after restart
 
 
+def test_persist_failure_keeps_previous_snapshot(hermes_env, monkeypatch):
+    """A failed hash commit must not overwrite the snapshot file.
+
+    Writing the snapshot before the hash desyncs the two: the next tick
+    would render an EMPTY diff and re-alert on identical content forever —
+    the exact alert storm the hash suppression exists to prevent.
+    """
+    from cron import monitor
+    from cron.jobs import _job_output_dir, update_job as real_update_job
+
+    job_id = "j-monitor-desync"
+    snap_dir = _job_output_dir(job_id)
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = snap_dir / "monitor_last_output.txt"
+    snapshot.write_text("old output\n", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("jobs.json locked")
+
+    monkeypatch.setattr("cron.jobs.update_job", boom)
+    monitor._persist_monitor_state(job_id, "newhash", "new output\n")
+
+    assert snapshot.read_text(encoding="utf-8") == "old output\n", (
+        "snapshot must survive a failed hash commit or the next tick "
+        "renders an empty diff"
+    )
+
+    # Success path: hash commit first, then the snapshot lands.
+    monkeypatch.setattr("cron.jobs.update_job", real_update_job)
+    monitor._persist_monitor_state(job_id, "newhash", "new output\n")
+    assert snapshot.read_text(encoding="utf-8") == "new output\n"
+
+
 def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     from cron.jobs import get_job
     from cron.scheduler import run_job

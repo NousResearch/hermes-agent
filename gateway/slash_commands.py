@@ -1045,12 +1045,27 @@ class GatewaySlashCommandsMixin:
         # chat. is_shared_multi_user_session only decides participant sharing
         # WITHIN a thread, never across threads — require thread equality before
         # any sharing logic so a live origin in thread A cannot match a caller in
-        # thread B of the same parent chat.
-        if str(getattr(current, "thread_id", "") or "") != str(
-            getattr(origin, "thread_id", "") or ""
-        ):
-            return False
+        # thread B of the same parent chat.  When either side has no recorded
+        # thread_id (legacy sessions, or a caller without thread context), the
+        # thread comparison is skipped — the chat_id + platform already scope
+        # the session correctly.
+        cur_thread = str(getattr(current, "thread_id", "") or "")
+        orig_thread = str(getattr(origin, "thread_id", "") or "")
         chat_type = (getattr(current, "chat_type", "") or "").lower()
+        caller_is_dm = chat_type in {"dm", "direct", "private", ""}
+        # Non-DM (group/channel/forum) always require strict thread equality.
+        # DM sessions are scoped by chat_id + user_id; thread_id in DMs is
+        # platform-specific — Telegram uses DM topic lanes as independent
+        # sessions, while Feishu/Signal DMs have no thread_id at all.  Skip
+        # the comparison only when at least one side has no thread_id (legacy
+        # sessions, or a caller on a threadless DM platform).
+        if caller_is_dm:
+            if cur_thread and orig_thread and cur_thread != orig_thread:
+                # Both sides carry a thread_id and they differ (Telegram DM
+                # topic lanes are independent sessions).
+                return False
+        elif cur_thread != orig_thread:
+            return False
         # DM-like chats are always per-user.
         if chat_type in {"dm", "direct", "private", ""}:
             # chat_id was already required equal above and, when present, IS the
@@ -1188,7 +1203,13 @@ class GatewaySlashCommandsMixin:
             origin_ok = (
                 bool(row_src) and bool(caller_src)
                 and str(row_src) == str(caller_src)
-                and row_thread == caller_thread
+                and (
+                    (
+                        caller_is_dm
+                        and (not row_thread or not caller_thread or row_thread == caller_thread)
+                    )
+                    or (not caller_is_dm and row_thread == caller_thread)
+                )
             )
             if not origin_ok:
                 return False

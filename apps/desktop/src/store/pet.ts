@@ -94,7 +94,13 @@ export interface PetActivity {
   error?: boolean
   justCompleted?: boolean
   celebrate?: boolean
+  /** Date.now() stamps for the recency guard in deriveLivePetState (#84434/#84438). */
+  toolRunningAt?: number
+  reasoningAt?: number
 }
+
+/** How long a steady flag counts without a $busy confirmation. */
+export const STEADY_ACTIVITY_TTL_MS = 30_000
 
 /**
  * Resolve the animation state from coarse activity signals.
@@ -165,7 +171,20 @@ export const markPetUnread = () => $petUnread.set(true)
 export const clearPetUnread = () => $petUnread.set(false)
 
 /** Steady activity flags (toolRunning / reasoning) set + cleared by the stream. */
-export const setPetActivity = (next: Partial<PetActivity>) => $petActivity.set({ ...$petActivity.get(), ...next })
+export const setPetActivity = (next: Partial<PetActivity>) => {
+  const now = Date.now()
+  const stamped: PetActivity = { ...next }
+
+  if (next.toolRunning === true) {
+    stamped.toolRunningAt = now
+  }
+
+  if (next.reasoning === true) {
+    stamped.reasoningAt = now
+  }
+
+  $petActivity.set({ ...$petActivity.get(), ...stamped })
+}
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -196,13 +215,23 @@ export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
 function deriveLivePetState(activity: PetActivity, busy: boolean): PetState {
   const live = activity.busy ?? busy
 
+  // The global $busy can read false for a session that IS working: a
+  // reclaimed session reopened after idle timeout (#84434) or a desktop-
+  // minted draft (#84438) doesn't always flip the busy mirror on its turn,
+  // so the pet froze idle while tools ran. Honor a steady flag while it is
+  // RECENT (stream-refreshed) even when busy is stuck false — the stamp is
+  // re-set on every tool.start / message.start — and let it decay back to
+  // idle when the stream goes silent, which preserves the original intent
+  // of ignoring stale flags from interrupted turns.
+  const now = Date.now()
+  const recentTool = (activity.toolRunningAt ?? 0) > now - STEADY_ACTIVITY_TTL_MS
+  const recentReasoning = (activity.reasoningAt ?? 0) > now - STEADY_ACTIVITY_TTL_MS
+
   return derivePetState({
     busy: live,
     awaitingInput: activity.awaitingInput,
-    // Steady flags only count mid-turn — ignore stale ones once at rest so an
-    // interrupted turn can't pin the pet on `run`/`review`.
-    toolRunning: live && activity.toolRunning,
-    reasoning: live && activity.reasoning,
+    toolRunning: (live || recentTool) && activity.toolRunning,
+    reasoning: (live || recentReasoning) && activity.reasoning,
     error: activity.error,
     justCompleted: activity.justCompleted,
     celebrate: activity.celebrate

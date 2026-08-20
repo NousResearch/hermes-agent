@@ -12,7 +12,7 @@ record_har is unavailable — we assemble the HAR from CDP Network.* events
 ourselves via page.on("request"/"response").
 
 Usage:
-  python3 har_capture_cdp.py <cdp_url> <output.har> [--wait S] \
+  uv run python har_capture_cdp.py <cdp_url> <output.har> [--wait S] \
       [--goto URL] [--action "fill:SEL:TEXT"] [--action "click:SEL"] ...
 
 <cdp_url> is the ws:// or http:// CDP endpoint. For Hermes: run

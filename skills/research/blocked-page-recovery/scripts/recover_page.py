@@ -11,7 +11,7 @@ redirect-stub detection (meta-refresh/JS pointing back at the original host),
 and interstitial-title rejection. Fake 200s are the norm in this space.
 
 Stdlib only. Usage:
-    python3 recover_page.py URL [--json] [--out FILE] [--timeout N]
+    uv run python recover_page.py URL [--json] [--out FILE] [--timeout N]
 
 Exit codes: 0 recovered, 1 nothing worked, 2 bad invocation.
 """

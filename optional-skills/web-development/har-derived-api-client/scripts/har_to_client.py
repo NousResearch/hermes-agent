@@ -2,7 +2,7 @@
 """Distill a HAR file into an API summary an agent can turn into a client.
 
 Usage:
-  python3 har_to_client.py <input.har> [--include-static] [--host SUBSTRING] [--max-body 600]
+  uv run python har_to_client.py <input.har> [--include-static] [--host SUBSTRING] [--max-body 600]
 
 Filters to XHR/fetch/JSON traffic by default, groups by (method, host, path
 template), and prints per-endpoint: query params, interesting request headers,

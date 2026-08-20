@@ -2,7 +2,7 @@
 """Record a HAR file while driving a website with Playwright.
 
 Usage:
-  python3 har_capture.py <url> <output.har> [--wait SECONDS] \
+  uv run python har_capture.py <url> <output.har> [--wait SECONDS] \
       [--action "fill:SELECTOR:TEXT"] [--action "press:SELECTOR:KEY"] \
       [--action "click:SELECTOR"] [--action "goto:URL"] [--action "sleep:SECONDS"]
 

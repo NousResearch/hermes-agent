@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -62,6 +63,135 @@ class _SuccessfulAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
+
+
+@pytest.mark.asyncio
+async def test_runner_stays_alive_for_retryable_startup_errors(monkeypatch, tmp_path):
+    """Retryable startup errors should leave the gateway running in
+    degraded mode so the reconnect watcher can recover the platform when
+    the underlying problem clears.  Previously this returned False from
+    ``start()`` and exited the process, which converted a single broken
+    platform (e.g. unpaired WhatsApp, DNS blip on Telegram) into a
+    systemd restart loop and killed cron jobs in the meantime.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _RetryableFailureAdapter())
+
+    ok = await runner.start()
+
+    # Gateway stays alive in degraded mode; reconnect watcher takes over.
+    assert ok is True
+    assert runner.should_exit_cleanly is False
+    state = read_runtime_status()
+    assert state["gateway_state"] in {"degraded", "running"}
+    # Telegram was queued for retry, not given up on.
+    assert Platform.TELEGRAM in runner._failed_platforms
+    assert state["platforms"]["telegram"]["state"] == "retrying"
+    assert state["platforms"]["telegram"]["error_code"] == "telegram_connect_error"
+
+
+@pytest.mark.asyncio
+async def test_runner_allows_cron_only_mode_when_no_platforms_are_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=False, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert runner.should_exit_cleanly is False
+    assert runner.adapters == {}
+    state = read_runtime_status()
+    assert state["gateway_state"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_runner_records_connected_platform_state_on_success(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _SuccessfulAdapter())
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+
+    ok = await runner.start()
+
+    assert ok is True
+    state = read_runtime_status()
+    assert state["gateway_state"] == "running"
+    assert state["platforms"]["discord"]["state"] == "connected"
+    assert state["platforms"]["discord"]["error_code"] is None
+    assert state["platforms"]["discord"]["error_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_chat_restart_does_not_also_broadcast_home_startup(
+    monkeypatch, tmp_path
+):
+    """The restart marker is consumed before the home-broadcast decision.
+
+    The decision must therefore use the pre-send snapshot; re-reading the
+    marker after ``_send_restart_notification`` would always look like a cold
+    start and send a duplicate lifecycle notification.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / ".restart_notify.json"
+    marker.write_text("{}")
+
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    monkeypatch.setattr(
+        runner,
+        "_create_adapter",
+        lambda platform, platform_config: _SuccessfulAdapter(),
+    )
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+
+    async def _consume_restart_marker():
+        marker.unlink()
+        return ("discord", "restart-chat", None)
+
+    monkeypatch.setattr(
+        runner,
+        "_send_restart_notification",
+        AsyncMock(side_effect=_consume_restart_marker),
+    )
+    home_notification = AsyncMock(return_value=set())
+    monkeypatch.setattr(
+        runner,
+        "_send_home_channel_startup_notifications",
+        home_notification,
+    )
+
+    assert await runner.start() is True
+    assert marker.exists() is False
+    home_notification.assert_not_awaited()
 
 
 @pytest.mark.asyncio

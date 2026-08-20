@@ -344,7 +344,7 @@ class GatewaySlashCommandsMixin:
         # Append a random tip to the reset message
         try:
             from hermes_cli.tips import get_random_tip
-            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
+            _tip_line = t("gateway.reset.tip", tip=get_random_tip(surface="gateway"))
         except Exception:
             _tip_line = ""
 

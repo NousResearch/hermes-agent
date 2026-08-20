@@ -425,6 +425,87 @@ class TestSaveConfigAtomicity:
             assert raw["agent"]["max_turns"] == 77
 
 
+class TestUnsetConfigValuePreservesExtraContent:
+    """Regression: unset_config_value() called atomic_yaml_write() directly
+    with no extra_content, silently dropping the trailing commented-out
+    reference sections (Security / Fallback Model) that save_config() writes
+    on every save. A user running `hermes config unset <anything>` lost that
+    documentation from their config.yaml even though the unset itself had
+    nothing to do with those sections."""
+
+    def test_unset_preserves_fallback_model_comment_block(self, tmp_path):
+        from hermes_cli.config import unset_config_value
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["display"]["pet"]["enabled"] = True
+            save_config(config)
+
+            config_path = tmp_path / "config.yaml"
+            before = config_path.read_text(encoding="utf-8")
+            assert "Fallback Model" in before
+
+            unset_config_value("display.pet.enabled")
+
+            after = config_path.read_text(encoding="utf-8")
+            assert "Fallback Model" in after
+
+    def test_unset_preserves_security_comment_block(self, tmp_path):
+        from hermes_cli.config import unset_config_value
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["display"]["pet"]["enabled"] = True
+            save_config(config)
+
+            config_path = tmp_path / "config.yaml"
+            before = config_path.read_text(encoding="utf-8")
+            assert "Security" in before
+
+            unset_config_value("display.pet.enabled")
+
+            after = config_path.read_text(encoding="utf-8")
+            assert "Security" in after
+
+    def test_unset_still_removes_the_target_key(self, tmp_path):
+        """The fix must not regress the actual unset behavior."""
+        from hermes_cli.config import unset_config_value
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["display"]["pet"]["enabled"] = True
+            save_config(config)
+
+            unset_config_value("display.pet.enabled")
+
+            reloaded = load_config()
+            # Reverts to the DEFAULT_CONFIG value once the explicit
+            # user-set key is removed.
+            assert reloaded["display"]["pet"]["enabled"] is False
+
+    def test_unset_omits_fallback_comment_once_fallback_model_is_configured(self, tmp_path):
+        """Sanity check on the shared helper: the comment block should NOT
+        reappear once the user has a real, valid fallback_model configured
+        -- matching save_config()'s existing behavior."""
+        from hermes_cli.config import unset_config_value
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["fallback_model"] = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+            config["display"]["pet"]["enabled"] = True
+            save_config(config)
+
+            config_path = tmp_path / "config.yaml"
+            before = config_path.read_text(encoding="utf-8")
+            assert "# fallback_model:" not in before  # commented example absent once real config exists
+
+            unset_config_value("display.pet.enabled")
+
+            after = config_path.read_text(encoding="utf-8")
+            assert "# fallback_model:" not in after
+            assert "fallback_model:" in after  # the real (uncommented) config survives
+
+
 class TestSanitizeEnvLines:
     """Tests for semantics-preserving .env line normalization."""
 

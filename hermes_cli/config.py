@@ -3812,6 +3812,40 @@ _FALLBACK_COMMENT = """
 """
 
 
+def _build_config_extra_content(normalized: Dict[str, Any]) -> Optional[str]:
+    """Build the trailing commented-out reference sections for config.yaml.
+
+    Shared by every writer of the user config file (save_config(),
+    unset_config_value(), ...) so they can't drift out of sync with each
+    other -- a writer that builds `extra_content` independently and forgets
+    a case here silently drops these sections on every write through that
+    path (unset_config_value() previously called atomic_yaml_write()
+    directly with no extra_content at all, so every `hermes config unset`
+    silently deleted the Fallback Model block).
+
+    Args:
+        normalized: the config dict about to be written (post-normalisation
+            in save_config(); the raw on-disk dict is fine too since only
+            `security` and `fallback_model` are inspected).
+
+    Returns:
+        The concatenated comment blocks, or None if none apply.
+    """
+    parts = []
+    sec = normalized.get("security", {})
+    if not sec or sec.get("redact_secrets") is None:
+        parts.append(_SECURITY_COMMENT)
+    fb = normalized.get("fallback_model", {})
+    fb_is_valid = False
+    if isinstance(fb, list):
+        fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
+    elif isinstance(fb, dict):
+        fb_is_valid = bool(fb.get("provider") and fb.get("model"))
+    if not fb_is_valid:
+        parts.append(_FALLBACK_COMMENT)
+    return "".join(parts) if parts else None
+
+
 _COMMENTED_SECTIONS = """
 # ── Security ──────────────────────────────────────────────────────────
 # Secret redaction is ON by default. Set to false to pass tool output,
@@ -3937,23 +3971,12 @@ def save_config(
 
         # Build optional commented-out sections for features that are off by
         # default or only relevant when explicitly configured.
-        parts = []
-        sec = normalized.get("security", {})
-        if not sec or sec.get("redact_secrets") is None:
-            parts.append(_SECURITY_COMMENT)
-        fb = normalized.get("fallback_model", {})
-        fb_is_valid = False
-        if isinstance(fb, list):
-            fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
-        elif isinstance(fb, dict):
-            fb_is_valid = bool(fb.get("provider") and fb.get("model"))
-        if not fb_is_valid:
-            parts.append(_FALLBACK_COMMENT)
+        extra_content = _build_config_extra_content(normalized)
 
         atomic_yaml_write(
             config_path,
             normalized,
-            extra_content="".join(parts) if parts else None,
+            extra_content=extra_content,
         )
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
@@ -5738,7 +5761,12 @@ def unset_config_value(key: str):
 
     ensure_hermes_home()
     from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    atomic_yaml_write(
+        config_path,
+        user_config,
+        sort_keys=False,
+        extra_content=_build_config_extra_content(user_config),
+    )
     print(f"✓ Unset {key} from {config_path}")
 
 

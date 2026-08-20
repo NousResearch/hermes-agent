@@ -142,6 +142,9 @@ Hermes 在执行 `hermes update` 时也会同步内置技能，但同步清单�
 | 技能 | 描述 | 路径 |
 |-------|-------------|------|
 | [`xurl`](/user-guide/skills/bundled/social-media/social-media-xurl) | 通过 xurl CLI 操作 X/Twitter：发帖、搜索、私信、媒体、v2 API。 | `social-media/xurl` |
+| [`linkidn-posting`](/user-guide/skills/bundled/social-media/social-media-linkidn-posting) | 通过 API 向 LinkedIn 公司页面发布图文。 | `social-media/linkidn-posting` |
+| [`social-har-api-connectivity`](/user-guide/skills/bundled/social-media/social-media-social-har-api-connectivity) | 通过捕获的 HAR 连接社交平台 API（仅授权使用）。 | `social-media/social-har-api-connectivity` |
+| [`read-x-articles`](/user-guide/skills/bundled/social-media/social-media-read-x-articles) | 无需 API 密钥，端到端阅读 X（Twitter）长文 Article。 | `social-media/read-x-articles` |
 
 ## software-development
 

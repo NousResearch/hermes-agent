@@ -200,25 +200,24 @@ class TestConnectCleanup:
     """Verify failure paths release the scoped session lock."""
 
     @pytest.mark.asyncio
-    async def test_releases_lock_when_npm_install_fails(self):
+    async def test_missing_dependencies_fail_without_installing_at_runtime(self):
         adapter = _make_adapter()
 
         def _path_exists(path_obj):
             return not str(path_obj).endswith("node_modules")
 
-        install_result = MagicMock(returncode=1, stderr="install failed")
-
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
-             patch("subprocess.run", return_value=install_result), \
+             patch("plugins.platforms.whatsapp.adapter.subprocess.run") as mock_run, \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("gateway.status.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False
-        assert adapter.fatal_error_code == "whatsapp_npm_install_failed"
+        assert adapter.fatal_error_code == "whatsapp_dependencies_missing"
         assert adapter.fatal_error_retryable is False
-        assert "npm install failed" in (adapter.fatal_error_message or "")
+        assert "preinstalled" in (adapter.fatal_error_message or "").lower()
+        mock_run.assert_not_called()
         mock_release.assert_called_once_with("whatsapp-session", str(adapter._session_path))
         assert adapter._platform_lock_identity is None
 

@@ -295,7 +295,6 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_url,
 )
-from utils import env_int
 
 
 def _is_allowed_bridge_path(url: str) -> bool:
@@ -565,61 +564,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
 
         try:
-            # Auto-install npm dependencies when node_modules is missing OR
-            # package.json changed since the last install (e.g. after
-            # `hermes update` bumps the Baileys pin).  The stamp file records
-            # the package.json hash of the last successful install.
+            # Gateway startup is runtime-only. Dependency installation belongs
+            # to the explicit setup/update phase, never to adapter connection.
             bridge_dir = bridge_path.parent
-            _pkg_json = bridge_dir / "package.json"
-            _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"
-            _pkg_hash = _file_content_hash(_pkg_json)
-            _deps_fresh = False
-            if (bridge_dir / "node_modules").exists():
-                try:
-                    _deps_fresh = (
-                        _dep_stamp.read_text(encoding="utf-8").strip() == _pkg_hash
-                    ) and bool(_pkg_hash)
-                except OSError:
-                    _deps_fresh = False
-            if not _deps_fresh:
-                print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-                # Resolve npm path so Windows uses npm.cmd from the
-                # Hermes-managed portable Node before falling back to PATH.
-                _npm_bin = find_node_executable("npm") or "npm"
-                try:
-                    # Read timeout from environment variable, default to 300 seconds (5 minutes)
-                    # to accommodate slower systems like Unraid NAS
-                    npm_install_timeout = env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300)
-                    install_result = subprocess.run(
-                        [_npm_bin, "install", "--silent"],
-                        cwd=str(bridge_dir),
-                        capture_output=True,
-                        text=True, encoding='utf-8', errors='replace',
-                        timeout=npm_install_timeout,
-                        env=with_hermes_node_path(),
-                    )
-                    if install_result.returncode != 0:
-                        print(f"[{self.name}] npm install failed: {install_result.stderr}")
-                        self._set_fatal_error(
-                            "whatsapp_npm_install_failed",
-                            f"WhatsApp bridge npm install failed. Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `hermes gateway`.",
-                            retryable=False,
-                        )
-                        return False
-                    print(f"[{self.name}] Dependencies installed")
-                    if _pkg_hash:
-                        try:
-                            _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
-                        except OSError:
-                            pass  # Stamp is an optimization; install still succeeded
-                except Exception as e:
-                    print(f"[{self.name}] Failed to install dependencies: {e}")
-                    self._set_fatal_error(
-                        "whatsapp_npm_install_failed",
-                        f"WhatsApp bridge npm install failed ({e}). Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `hermes gateway`.",
-                        retryable=False,
-                    )
-                    return False
+            if not (bridge_dir / "node_modules").exists():
+                self._set_fatal_error(
+                    "whatsapp_dependencies_missing",
+                    "WhatsApp bridge dependencies are missing; they must be preinstalled during Hermes setup or update before the gateway starts.",
+                    retryable=False,
+                )
+                return False
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)

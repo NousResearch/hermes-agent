@@ -43,17 +43,26 @@ def _descriptor(**overrides):
 
 
 class FakeTransport:
-    def __init__(self):
+    def __init__(self, descriptors_by_platform=None, identities=None):
         self.frames = []
+        # Phase 1.5 multi-platform: per-platform negotiated descriptors and
+        # the handshaked identity set (fronts_platform reads _identities).
+        self._descriptors_by_platform = descriptors_by_platform or {}
+        self._identities = identities or [("slack", "hermes")]
+
+    def descriptor_for_platform(self, platform):
+        return self._descriptors_by_platform.get(platform)
 
     async def send_outbound(self, frame, platform=None):
         self.frames.append((frame, platform))
         return {"success": True, "message_id": "1.2"}
 
 
-def _adapter(extra=None, descriptor=None):
+def _adapter(extra=None, descriptor=None, transport=None):
     config = PlatformConfig(enabled=True, extra=extra or {})
-    a = RelayAdapter(config, descriptor or _descriptor(), transport=FakeTransport())
+    a = RelayAdapter(
+        config, descriptor or _descriptor(), transport=transport or FakeTransport()
+    )
     return a
 
 
@@ -148,3 +157,97 @@ class TestFormatHintsStamping:
         frame, _ = a._transport.frames[-1]
         hints = (frame.get("metadata") or {}).get("format_hints")
         assert hints == {"rich_blocks": True}
+
+
+class TestMultiPlatformResolution:
+    """One RelayAdapter fronts N platforms: capability must resolve from the
+    DESTINATION platform's negotiated descriptor, never the primary identity's
+    scalar — a Slack-primary adapter must not leak Slack hints onto Discord,
+    and a Discord-primary adapter must not suppress hints for Slack."""
+
+    def _two_platform_transport(self, slack_capable=True, discord_capable=False):
+        return FakeTransport(
+            descriptors_by_platform={
+                "slack": _descriptor(supports_block_formatting=slack_capable),
+                "discord": _descriptor(
+                    platform="discord", label="Discord",
+                    markdown_dialect="markdown", max_message_length=2000,
+                    supports_block_formatting=discord_capable,
+                ),
+            },
+            identities=[("slack", "hermes"), ("discord", "hermes")],
+        )
+
+    @pytest.mark.asyncio
+    async def test_slack_primary_does_not_leak_hints_onto_discord_chat(self):
+        """REGRESSION: _format_hints read self.descriptor (Slack primary,
+        capable) and the Slack config sub-block for EVERY chat — a known
+        Discord chat got Slack's format_hints stamped."""
+        transport = self._two_platform_transport()
+        a = _adapter(
+            extra={"slack": {"rich_blocks": True}},
+            descriptor=_descriptor(supports_block_formatting=True),
+            transport=transport,
+        )
+        # The adapter learned this chat is Discord from inbound traffic.
+        a._platform_by_chat["777"] = "discord"
+        await a.send("777", "text")
+        frame, _ = transport.frames[-1]
+        assert "format_hints" not in (frame.get("metadata") or {}), (
+            "Slack-primary adapter stamped Slack format hints on a Discord chat"
+        )
+
+    @pytest.mark.asyncio
+    async def test_discord_primary_still_stamps_hints_for_slack_chat(self):
+        """The inverse: a non-Slack primary must not suppress hints for a
+        chat whose own (Slack) descriptor advertises the capability."""
+        transport = self._two_platform_transport()
+        a = _adapter(
+            extra={"slack": {"rich_blocks": True}},
+            descriptor=_descriptor(
+                platform="discord", label="Discord",
+                markdown_dialect="markdown", max_message_length=2000,
+            ),
+            transport=transport,
+        )
+        a._platform_by_chat["D01"] = "slack"
+        await a.send("D01", "text")
+        frame, _ = transport.frames[-1]
+        hints = (frame.get("metadata") or {}).get("format_hints")
+        assert hints == {"rich_blocks": True}, (
+            "Discord-primary adapter suppressed hints for a capable Slack chat"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_for_platform_stamps_hints(self):
+        """REGRESSION: the scheduled/persisted-home lane (gateway/delivery.py
+        → send_for_platform) never stamped hints at all — yet it is the cron
+        delivery path, the flagship consumer of block formatting."""
+        transport = self._two_platform_transport()
+        a = _adapter(
+            extra={"slack": {"rich_blocks": True, "markdown_blocks": True}},
+            descriptor=_descriptor(supports_block_formatting=True),
+            transport=transport,
+        )
+        # No inbound ever seen for this chat — the explicit platform routes it.
+        await a.send_for_platform("slack", "C123", "| a |\n|---|")
+        frame, _ = transport.frames[-1]
+        hints = (frame.get("metadata") or {}).get("format_hints")
+        assert hints == {"rich_blocks": True, "markdown_blocks": True}
+
+    @pytest.mark.asyncio
+    async def test_send_for_platform_no_hints_for_incapable_platform(self):
+        """Explicit-platform sends to a platform whose descriptor does not
+        advertise the bit stay clean, whatever the primary identity says."""
+        transport = self._two_platform_transport()
+        a = _adapter(
+            extra={
+                "slack": {"rich_blocks": True},
+                "discord": {"rich_blocks": True},
+            },
+            descriptor=_descriptor(supports_block_formatting=True),
+            transport=transport,
+        )
+        await a.send_for_platform("discord", "777", "text")
+        frame, _ = transport.frames[-1]
+        assert "format_hints" not in (frame.get("metadata") or {})

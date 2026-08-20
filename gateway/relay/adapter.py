@@ -1078,7 +1078,15 @@ class RelayAdapter(BasePlatformAdapter):
                 "chat_id": chat_id,
                 "content": content,
                 "reply_to": reply_to,
-                "metadata": self._with_scope(chat_id, metadata),
+                # format_hints on the explicit-platform lane too: this is the
+                # scheduled/cron delivery path — the in_channel brief itself —
+                # and it must render blocks exactly like an interactive send.
+                "metadata": self._with_scope(
+                    chat_id,
+                    self._with_format_hints_for_platform(
+                        str(platform_value), metadata
+                    ),
+                ),
             },
             platform=str(platform_value),
         )
@@ -1089,37 +1097,95 @@ class RelayAdapter(BasePlatformAdapter):
             raw_response=result,
         )
 
-    def _format_hints(self) -> Optional[Dict[str, bool]]:
-        """Block-formatting hints for outbound text frames, or None.
+    def _format_hints(
+        self, descriptor: Optional[CapabilityDescriptor], platform: Optional[str]
+    ) -> Optional[Dict[str, bool]]:
+        """Block-formatting hints for one outbound text frame, or None.
 
         Native Slack reads ``platforms.slack.extra.rich_blocks`` /
         ``markdown_blocks`` and renders Block Kit locally; on the relay lane
-        the CONNECTOR owns the Slack API call, so the gateway can only signal
-        intent. Hints are stamped ONLY when (a) the connector advertises
-        ``supports_block_formatting`` in its descriptor — an old connector
-        never receives dead metadata — and (b) the operator enabled at least
-        one knob under the relay's per-platform sub-block
-        (``platforms.relay.extra.slack.rich_blocks`` / ``markdown_blocks``,
-        same seam and same _coerce_flag semantics as reply_in_thread).
-        Both knobs default OFF, matching native's opt-in posture.
+        the CONNECTOR owns the platform API call, so the gateway can only
+        signal intent. Hints are stamped ONLY when (a) the DESTINATION
+        platform's negotiated descriptor advertises
+        ``supports_block_formatting`` — an old connector never receives dead
+        metadata — and (b) the operator enabled at least one knob under the
+        relay's per-logical-platform sub-block
+        (``platforms.relay.extra.<platform>.rich_blocks`` /
+        ``markdown_blocks``, same seam and same _coerce_flag semantics as
+        reply_in_thread). Both knobs default OFF, matching native's opt-in
+        posture.
+
+        ``descriptor``/``platform`` are the DESTINATION's, not the adapter's
+        scalar primary identity: one RelayAdapter fronts N platforms, and
+        gating on the primary descriptor both leaked hints onto platforms
+        that never advertised the bit (Slack-primary, Discord chat) and
+        suppressed them for platforms that did (Discord-primary, Slack chat).
+        Same seam as ``_descriptor_for_chat`` / max_message_length.
         """
-        if not getattr(self.descriptor, "supports_block_formatting", False):
+        if descriptor is None or not getattr(
+            descriptor, "supports_block_formatting", False
+        ):
             return None
         try:
-            extra = self._relay_slack_extra()
+            extra = getattr(self.config, "extra", None) or {}
+            sub = extra.get(str(platform or "").lower())
+            knob_src = sub if isinstance(sub, dict) else extra
         except Exception:  # noqa: BLE001 - config shape is operator-owned
             return None
         hints: Dict[str, bool] = {}
         for knob in ("rich_blocks", "markdown_blocks"):
-            if self._coerce_flag(extra.get(knob), False):
+            if self._coerce_flag(knob_src.get(knob), False):
                 hints[knob] = True
         return hints or None
 
-    def _with_format_hints(
-        self, metadata: Optional[Dict[str, Any]]
+    def _with_format_hints_for_chat(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
-        """Return metadata with ``format_hints`` stamped when applicable."""
-        hints = self._format_hints()
+        """Metadata with ``format_hints`` stamped for a chat-addressed send.
+
+        Resolves the chat's platform from what we saw inbound
+        (``_platform_by_chat``) and that platform's negotiated descriptor
+        (``_descriptor_for_chat``) — falling back to the primary identity for
+        chats we never saw inbound, matching every other per-chat capability.
+        """
+        platform = self._platform_by_chat.get(str(chat_id)) or getattr(
+            self.descriptor, "platform", None
+        )
+        hints = self._format_hints(self._descriptor_for_chat(chat_id), platform)
+        if not hints:
+            return metadata
+        merged = dict(metadata or {})
+        merged.setdefault("format_hints", hints)
+        return merged
+
+    def _with_format_hints_for_platform(
+        self, platform_value: str, metadata: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Metadata with ``format_hints`` stamped for an explicit-platform send.
+
+        ``send_for_platform`` is the scheduled/persisted-home lane — the cron
+        delivery path, i.e. the flagship consumer of the in_channel brief —
+        and it has no inbound event to populate ``_platform_by_chat``, so the
+        destination platform is the caller-supplied logical platform.
+        Resolves that platform's negotiated descriptor off the transport;
+        falls back to the scalar descriptor only when it IS that platform's
+        (fail closed: never stamp from another platform's capability bit).
+        """
+        descriptor: Optional[CapabilityDescriptor] = None
+        if self._transport is not None:
+            resolve = getattr(self._transport, "descriptor_for_platform", None)
+            if callable(resolve):
+                try:
+                    descriptor = cast(
+                        Optional[CapabilityDescriptor], resolve(str(platform_value))
+                    )
+                except Exception:  # noqa: BLE001 - capability lookup must never break a send
+                    descriptor = None
+        if descriptor is None and getattr(
+            self.descriptor, "platform", None
+        ) == str(platform_value):
+            descriptor = self.descriptor
+        hints = self._format_hints(descriptor, str(platform_value))
         if not hints:
             return metadata
         merged = dict(metadata or {})
@@ -1159,7 +1225,7 @@ class RelayAdapter(BasePlatformAdapter):
                 "content": content,
                 "reply_to": effective_reply_to,
                 "metadata": self._with_scope(
-                    chat_id, self._with_format_hints(send_metadata)
+                    chat_id, self._with_format_hints_for_chat(chat_id, send_metadata)
                 ),
             },
             platform=self._platform_by_chat.get(str(chat_id)),
@@ -1403,7 +1469,7 @@ class RelayAdapter(BasePlatformAdapter):
                 # lane must signal block rendering too or streams would seal
                 # as plain text (boundary rule: every text egress lane).
                 "metadata": self._with_scope(
-                    chat_id, self._with_format_hints(metadata)
+                    chat_id, self._with_format_hints_for_chat(chat_id, metadata)
                 ),
             },
             platform=self._platform_by_chat.get(str(chat_id)),

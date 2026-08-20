@@ -204,6 +204,23 @@ def _compile() -> None:
 _compile()
 
 
+def _is_emoji_cp(cp: int) -> bool:
+    """True when *cp* is a code point that commonly appears in emoji ZWJ sequences."""
+    # Emoji ranges: Misc Symbols (2600-26FF), Dingbats (2700-27BF),
+    # Supplemental Symbols (1F100-1F1FF), Emoticons (1F600-1F64F),
+    # Transport & Map (1F680-1F6FF), Supplemental (1F900-1F9FF),
+    # Symbols & Pictographs (1F300-1F5FF), Extended-A (1FA00-1FA6F),
+    # Extended-B (1FA70-1FAFF), Regional Indicators (1F1E6-1F1FF),
+    # Variation Selectors (FE00-FE0F), Tag characters (E0020-E007F).
+    return (
+        (0x2600 <= cp <= 0x27BF) or
+        (0xFE00 <= cp <= 0xFE0F) or
+        (0x1F000 <= cp <= 0x1FFFF) or
+        (0x20E3 <= cp <= 0x20E3) or  # combining enclosing keycap
+        (0xE0020 <= cp <= 0xE007F)
+    )
+
+
 def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     """Return a list of matched pattern IDs in ``content`` at the given scope.
 
@@ -231,10 +248,28 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     # Invisible unicode — single pass through the content set, not 17
     # ``in`` lookups.  Run this on the RAW content before NFKC normalisation,
     # since normalisation can strip some of these codepoints.
+    #
+    # U+200D (ZWJ) is excluded when it joins two emoji code points — this is
+    # a legitimate emoji ZWJ sequence (e.g. 👨‍💻, 🐈‍⬛), not injection hiding.
+    # See #59492.
     char_set = set(content)
     invisible_hits = char_set & INVISIBLE_CHARS
     for ch in invisible_hits:
-        findings.append(f"invisible_unicode_U+{ord(ch):04X}")
+        if ch == '\u200d':
+            # Check if every ZWJ in the content is between emoji code points.
+            # If ANY ZWJ is not part of an emoji sequence, flag it.
+            zwj_positions = [i for i, c in enumerate(content) if c == '\u200d']
+            has_non_emoji_zwj = False
+            for pos in zwj_positions:
+                prev_cp = ord(content[pos - 1]) if pos > 0 else 0
+                next_cp = ord(content[pos + 1]) if pos + 1 < len(content) else 0
+                if not (_is_emoji_cp(prev_cp) and _is_emoji_cp(next_cp)):
+                    has_non_emoji_zwj = True
+                    break
+            if has_non_emoji_zwj:
+                findings.append(f"invisible_unicode_U+{ord(ch):04X}")
+        else:
+            findings.append(f"invisible_unicode_U+{ord(ch):04X}")
 
     # Normalise to NFKC so full-width / compatibility Unicode variants
     # (e.g. ｃａｔ → cat, Ａ → A) are folded to their ASCII counterparts before

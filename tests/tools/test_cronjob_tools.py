@@ -93,6 +93,11 @@ class TestScanCronPrompt:
         assert _scan_cron_prompt("Summarize family updates 👨‍👩‍👧 every morning") == ""
         assert _scan_cron_prompt("Report rainbow-flag usage 🏳️‍🌈 in the feed") == ""
         assert _scan_cron_prompt("Check dev activity 🧑‍💻 and report daily") == ""
+        # Tag-character flag sequences (England flag) — ZWJ not present but
+        # tag chars must not be blocked as invisible unicode (#59503).
+        assert _scan_cron_prompt("Region 🏴󠁧󠁢󠁥󠁮󠁧󠁿 report") == ""
+        # Keycap sequence (digit + VS16 + keycap) — VS16 allowed
+        assert _scan_cron_prompt("Option 1️⃣ selected") == ""
 
     def test_non_emoji_zwj_still_blocked(self):
         assert "Blocked" in _scan_cron_prompt("hide\u200dme")
@@ -162,6 +167,14 @@ class TestScanCronSkillAssembled:
         assert err == ""
         # The legitimate emoji ZWJ is preserved.
         assert "👨‍👩‍👧" in cleaned
+        # Tag-character flag sequences (England flag) — tag chars allowed
+        cleaned2, err2 = _scan_cron_skill_assembled("Region 🏴󠁧󠁢󠁥󠁮󠁧󠁿 report")
+        assert err2 == ""
+        assert "🏴󠁧󠁢󠁥󠁮󠁧󠁿" in cleaned2
+        # Keycap sequence (digit + VS16 + keycap) — VS16 allowed
+        cleaned3, err3 = _scan_cron_skill_assembled("Option 1️⃣ selected")
+        assert err3 == ""
+        assert "1️⃣" in cleaned3
 
     def test_descriptive_attack_command_prose_allowed(self):
         """Security postmortems and runbooks routinely describe attack

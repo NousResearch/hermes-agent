@@ -3576,6 +3576,15 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
         raw = _normalize_root_model_keys(raw)
     except Exception:
         pass
+    # Expand ${VAR} / ${env:VAR} references so every caller — including
+    # _resolve_gateway_model and slash-commands — sees resolved values.
+    # Without this, model: "${env:MODEL_NAME}" stays literal in the gateway
+    # while the TUI expands it correctly (#82399).
+    try:
+        from hermes_cli.config import _expand_env_vars
+        raw = _expand_env_vars(raw) if isinstance(raw, dict) else raw
+    except Exception:
+        pass
     return raw
 
 

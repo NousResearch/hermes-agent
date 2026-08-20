@@ -410,3 +410,56 @@ class TestBulkUpload:
         mgr.sync(force=True)
         bulk_upload.assert_called_once()
         assert len(bulk_upload.call_args[0][0]) == 3
+
+    def test_parallel_sync_transactions_are_serialized(self, tmp_path):
+        source = tmp_path / "changing.txt"
+        source.write_text("initial", encoding="utf-8")
+        get_calls = 0
+        get_lock = threading.Lock()
+        active_uploads = 0
+        max_active_uploads = 0
+        upload_calls = 0
+        upload_lock = threading.Lock()
+
+        def get_files():
+            nonlocal get_calls
+            with get_lock:
+                get_calls += 1
+                source.write_text(f"version-{get_calls}", encoding="utf-8")
+            return [(str(source), "/root/.hermes/cache/changing.txt")]
+
+        def bulk_upload(_files):
+            nonlocal active_uploads, max_active_uploads, upload_calls
+            with upload_lock:
+                active_uploads += 1
+                upload_calls += 1
+                max_active_uploads = max(max_active_uploads, active_uploads)
+            time.sleep(0.03)
+            with upload_lock:
+                active_uploads -= 1
+
+        manager = FileSyncManager(
+            get_files_fn=get_files,
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_upload_fn=bulk_upload,
+        )
+        start = threading.Barrier(3)
+
+        def sync():
+            start.wait()
+            manager.sync(force=True)
+
+        first = threading.Thread(target=sync)
+        second = threading.Thread(target=sync)
+        first.start()
+        second.start()
+        start.wait()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert upload_calls == 2
+        assert max_active_uploads == 1
+        assert manager._pushed_hashes["/root/.hermes/cache/changing.txt"]

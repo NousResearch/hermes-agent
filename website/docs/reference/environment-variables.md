@@ -189,6 +189,10 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `VERCEL_PROJECT_ID` | Vercel project ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_TEAM_ID` | Vercel team ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_OIDC_TOKEN` | Vercel short-lived OIDC token (development-only alternative) |
+| `TENKI_AUTH_TOKEN` / `TENKI_API_KEY` | Tenki cloud sandboxes ([tenki.cloud](https://tenki.cloud)); alternatively run `tenki login` |
+| `TENKI_CONFIG_PATH` | Override the Tenki CLI config path Hermes reads for auth and workspace defaults |
+| `TENKI_API_ENDPOINT` / `TENKI_API_URL` | Direct Tenki API endpoint override used when terminal config is blank |
+| `TENKI_WORKSPACE_ID` / `TENKI_WORKSPACE` | Direct Tenki workspace ID override used when terminal config is blank |
 
 ### Skill API Keys
 
@@ -232,7 +236,7 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 
 | Variable | Description |
 |----------|-------------|
-| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona`, `vercel_sandbox` |
+| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, `tenki` |
 | `HERMES_DOCKER_BINARY` | Override the container binary Hermes shells out to (e.g. `podman`, `/usr/local/bin/docker`). When unset, Hermes auto-discovers `docker` or `podman` on `PATH`. Needed when both are installed and you want the non-default, or when the binary lives outside `PATH`. |
 | `TERMINAL_DOCKER_IMAGE` | Docker image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions. Note: skill-declared `required_environment_variables` are forwarded automatically — you only need this for vars not declared by any skill. |
@@ -244,6 +248,17 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
 | `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox runtime (`node24`, `node22`, `python3.13`) |
+| `TERMINAL_TENKI_IMAGE` | Optional Tenki registry image reference; blank uses Tenki default |
+| `TERMINAL_TENKI_API_ENDPOINT` | Tenki API endpoint (default: `https://api.tenki.cloud`) |
+| `TERMINAL_TENKI_WORKSPACE_ID` | Tenki workspace ID; blank falls back to Tenki CLI config |
+| `TERMINAL_TENKI_NAME_PREFIX` | Prefix for Hermes-created Tenki sandbox names (default: `hermes`) |
+| `TERMINAL_TENKI_ALLOW_INBOUND` | Allow inbound network access in Tenki sandboxes (`true`/`false`, default: `false`) |
+| `TERMINAL_TENKI_ALLOW_OUTBOUND` | Allow outbound network access in Tenki sandboxes (`true`/`false`, default: `true`) |
+| `TERMINAL_TENKI_MAX_DURATION` | Tenki sandbox maximum duration in seconds (default: `3600`) |
+| `TERMINAL_TENKI_IDLE_TIMEOUT` | Tenki sandbox idle timeout in seconds; converted to minutes for the SDK (`0` disables explicit idle timeout) |
+| `TERMINAL_TENKI_PAUSE_RETENTION` | Tenki pause retention duration in seconds (`0` uses Tenki default) |
+| `TERMINAL_TENKI_SYNC_HERMES_HOME` | Opt-in sync of selected `~/.hermes` credentials, skills, and cache files into Tenki sandboxes (`true`/`false`, default: `false`) |
+| `TERMINAL_TENKI_FORWARD_ENV` | JSON array of env var names to explicitly forward into Tenki sandboxes. Use this for task credentials such as `GITHUB_TOKEN`; values are resolved from the shell first, then `~/.hermes/.env`. |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Deprecated direct override for gateway/cron terminal sessions. Prefer `terminal.cwd` in `config.yaml`; CLI still uses the launch directory. |
@@ -261,14 +276,14 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_SSH_KEY` | Path to private key |
 | `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
-## Container Resources (Docker, Singularity, Modal, Daytona)
+## Container Resources (Docker, Singularity, Modal, Daytona, Tenki)
 
 | Variable | Description |
 |----------|-------------|
-| `TERMINAL_CONTAINER_CPU` | CPU cores (default: 1) |
-| `TERMINAL_CONTAINER_MEMORY` | Memory in MB (default: 5120) |
-| `TERMINAL_CONTAINER_DISK` | Disk in MB (default: 51200) |
-| `TERMINAL_CONTAINER_PERSISTENT` | Persist container filesystem across sessions (default: `true`) |
+| `TERMINAL_CONTAINER_CPU` | CPU cores (default: 1; Tenki accepts 1-16) |
+| `TERMINAL_CONTAINER_MEMORY` | Memory in MB (default: 5120; Tenki accepts even values from 128-65536) |
+| `TERMINAL_CONTAINER_DISK` | Disk in MB (default: 51200; Tenki accepts 5-100 GB) |
+| `TERMINAL_CONTAINER_PERSISTENT` | Persist container filesystem across sessions (default: `true`; Tenki defaults to `false` unless explicitly set) |
 | `TERMINAL_SANDBOX_DIR` | Host directory for workspaces and overlays (default: `~/.hermes/sandboxes/`) |
 
 ## Persistent Shell

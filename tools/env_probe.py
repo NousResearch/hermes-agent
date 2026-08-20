@@ -19,7 +19,7 @@ short line** when something non-default is detected.  When the
 environment looks normal (python3+pip both present and matched, no
 PEP 668), it emits nothing — no token cost.
 
-Remote terminal backends (docker, modal, ssh, …) are skipped: the
+Remote terminal backends (docker, modal, tenki, ssh, …) are skipped: the
 host's Python state is irrelevant when tools run inside a sandbox.
 The sandbox has its own existing probe (``_probe_remote_backend``)
 in ``agent/prompt_builder.py``.
@@ -74,7 +74,7 @@ _WAIT_ALREADY_TIMED_OUT = False
 # imports nothing from tools).
 _REMOTE_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
-    "vercel_sandbox",
+    "vercel_sandbox", "tenki",
 })
 
 

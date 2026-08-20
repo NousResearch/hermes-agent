@@ -1,6 +1,7 @@
 """Tests for terminal/file tool availability in local dev environments."""
 
 import importlib
+import os
 
 import pytest
 
@@ -54,6 +55,118 @@ class TestTerminalRequirements:
 
         assert "terminal" in names
         assert "execute_code" in names
+
+    def test_tenki_requires_auth_only_for_plain_sessions(self, monkeypatch, tmp_path):
+        original_find_spec = terminal_tool_module.importlib.util.find_spec
+
+        def fake_find_spec(name):
+            if name == "tenki":
+                return object()
+            return original_find_spec(name)
+
+        monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", fake_find_spec)
+        monkeypatch.setenv("TENKI_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+        monkeypatch.delenv("TENKI_WORKSPACE_ID", raising=False)
+        monkeypatch.delenv("TENKI_WORKSPACE", raising=False)
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {
+                "env_type": "tenki",
+                "tenki_workspace_id": "",
+            },
+        )
+
+        assert terminal_tool_module.check_terminal_requirements() is False
+
+        monkeypatch.setenv("TENKI_AUTH_TOKEN", "tok")
+        assert terminal_tool_module.check_terminal_requirements() is True
+
+    def test_tool_definition_cache_isolates_profiles_and_rechecks_credentials(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        import model_tools
+        import tools.registry as registry_module
+        from agent.secret_scope import is_multiplex_active, set_multiplex_active
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli import config as hermes_config
+
+        home_a = tmp_path / "a"
+        home_b = tmp_path / "b"
+        config_text = "terminal:\n  backend: tenki\n  cwd: /home/tenki\n"
+        for home in (home_a, home_b):
+            home.mkdir()
+            (home / "config.yaml").write_text(config_text, encoding="utf-8")
+        (home_a / ".env").write_text(
+            "TENKI_AUTH_TOKEN=token-a\n",
+            encoding="utf-8",
+        )
+        (home_b / ".env").write_text("", encoding="utf-8")
+        # Same config contents and fingerprint make profile identity, not mtime
+        # luck, the distinguishing cache-key invariant.
+        stat_a = (home_a / "config.yaml").stat()
+        os.utime(
+            home_b / "config.yaml",
+            ns=(stat_a.st_atime_ns, stat_a.st_mtime_ns),
+        )
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TENKI_AUTH_TOKEN", "process-token-must-not-leak")
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(model_tools.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(
+            registry_module.time,
+            "monotonic",
+            lambda: clock["now"],
+        )
+        previous = is_multiplex_active()
+        set_multiplex_active(True)
+        model_tools._clear_tool_defs_cache()
+        registry_module.invalidate_check_fn_cache()
+        hermes_config._LOAD_CONFIG_CACHE.clear()
+        hermes_config._RAW_CONFIG_CACHE.clear()
+        try:
+            with _profile_runtime_scope(home_a):
+                names_a = {
+                    tool["function"]["name"]
+                    for tool in get_tool_definitions(
+                        enabled_toolsets=["terminal"],
+                        quiet_mode=True,
+                    )
+                }
+            with _profile_runtime_scope(home_b):
+                names_b = {
+                    tool["function"]["name"]
+                    for tool in get_tool_definitions(
+                        enabled_toolsets=["terminal"],
+                        quiet_mode=True,
+                    )
+                }
+
+            assert "terminal" in names_a
+            assert "terminal" not in names_b
+            assert len(model_tools._tool_defs_cache) == 2
+
+            (home_b / ".env").write_text(
+                "TENKI_AUTH_TOKEN=token-b\n",
+                encoding="utf-8",
+            )
+            clock["now"] += registry_module._CHECK_FN_TTL_SECONDS + 1
+            with _profile_runtime_scope(home_b):
+                names_b_after_rotation = {
+                    tool["function"]["name"]
+                    for tool in get_tool_definitions(
+                        enabled_toolsets=["terminal"],
+                        quiet_mode=True,
+                    )
+                }
+            assert "terminal" in names_b_after_rotation
+        finally:
+            set_multiplex_active(previous)
+            model_tools._clear_tool_defs_cache()
+            registry_module.invalidate_check_fn_cache()
 
 
 class TestCheckFnTransientFailureSuppression:
@@ -113,6 +226,42 @@ class TestCheckFnTransientFailureSuppression:
         # Different fn so last-good for `good` doesn't apply; bad has no success.
         assert reg._check_fn_cached(bad) is False
 
+
+    def test_cache_is_scoped_to_profile_secret_context(self, tmp_path):
+        """A success under profile A cannot make profile B's unavailable
+        backend appear ready through the shared check_fn TTL cache."""
+        import tools.registry as reg
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        home_a = tmp_path / "a"
+        home_b = tmp_path / "b"
+        home_a.mkdir()
+        home_b.mkdir()
+
+        def profile_probe():
+            from hermes_constants import get_hermes_home
+
+            return get_hermes_home() == home_a
+
+        home_token = set_hermes_home_override(home_a)
+        secret_token = set_secret_scope({"TENKI_AUTH_TOKEN": "token-a"})
+        try:
+            assert reg._check_fn_cached(profile_probe) is True
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
+
+        home_token = set_hermes_home_override(home_b)
+        secret_token = set_secret_scope({})
+        try:
+            assert reg._check_fn_cached(profile_probe) is False
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
 
     def test_grace_expiry_lets_real_outage_through(self, monkeypatch):
         import tools.registry as reg

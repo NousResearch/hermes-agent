@@ -24,10 +24,10 @@ def _clean_state():
     """Reset module state between tests."""
     import tools.credential_files as _cred_mod
     clear_credential_files()
-    _cred_mod._config_files = None
+    _cred_mod._config_files.clear()
     yield
     clear_credential_files()
-    _cred_mod._config_files = None
+    _cred_mod._config_files.clear()
 
 
 class TestRegisterCredentialFiles:
@@ -301,6 +301,40 @@ class TestConfigPathTraversal:
         mounts = get_credential_file_mounts()
         assert len(mounts) == 1
         assert "oauth.json" in mounts[0]["container_path"]
+
+    def test_config_credential_cache_is_profile_scoped(self, tmp_path):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli import config as hermes_config
+
+        home_a = tmp_path / "a"
+        home_b = tmp_path / "b"
+        home_a.mkdir()
+        home_b.mkdir()
+        (home_a / "service.json").write_text("profile-a", encoding="utf-8")
+        self._write_config(home_a, ["service.json"])
+        self._write_config(home_b, [])
+
+        hermes_config._LOAD_CONFIG_CACHE.clear()
+        hermes_config._RAW_CONFIG_CACHE.clear()
+        token = set_hermes_home_override(home_a)
+        try:
+            mounts_a = get_credential_file_mounts()
+        finally:
+            reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(home_b)
+        try:
+            mounts_b = get_credential_file_mounts()
+        finally:
+            reset_hermes_home_override(token)
+
+        assert [Path(row["host_path"]) for row in mounts_a] == [
+            home_a / "service.json"
+        ]
+        assert mounts_b == []
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,7 @@
           "messaging"
           "modal"
           "parallel-web"
+          "tenki"
           "tts-premium"
           "vercel"
           "voice"

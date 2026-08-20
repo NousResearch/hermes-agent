@@ -600,6 +600,56 @@ class TestEditMessageStreamingSafety:
         await adapter.edit_message("123", "456", "y" * 9100, finalize=False)
         assert adapter._bot.edit_message_text.await_count == 3
 
+    @pytest.mark.asyncio
+    async def test_retryafter_fallback_strips_mdv2_and_clears_parse_mode(self):
+        """When edit_message's plain-text fallback itself hits RetryAfter
+        flood control, the retry must send the already-stripped plain text,
+        not the raw MarkdownV2 content.
+
+        Regression: the RetryAfter retry path previously sent ``text=content``
+        (raw ``**bold**`` markers) instead of the stripped fallback text.
+        """
+        from unittest.mock import patch
+
+        # Minimal RetryAfter stand-in — the adapter detects via
+        # ``getattr(e, "retry_after", None)`` so a real telegram.error
+        # import is not required.
+        class _RetryAfter(Exception):
+            def __init__(self, retry_after: float = 1.0):
+                super().__init__()
+                self.retry_after = retry_after
+
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        # Sequence: formatted send → RetryAfter (inner except catches,
+        # falls back to plain text) → plain text send → RetryAfter
+        # (outer except catches, sleeps, retries) → retry succeeds.
+        retry_err = _RetryAfter(retry_after=1.0)
+        adapter._bot.edit_message_text = AsyncMock(
+            side_effect=[retry_err, retry_err, None],
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter.edit_message(
+                "123", "456", "hello **bold** world", finalize=True,
+            )
+
+        assert result.success is True
+        calls = adapter._bot.edit_message_text.await_args_list
+        assert len(calls) == 3
+        # First call: MarkdownV2 formatted send.
+        assert calls[0].kwargs["parse_mode"] is not None
+        # Second call: plain text fallback (inner except, _strip_mdv2).
+        assert calls[1].kwargs.get("parse_mode") is None
+        assert calls[1].kwargs["text"] == "hello bold world"
+        # Third call: RetryAfter retry must use the stripped plain text,
+        # NOT the raw content with ** markers.
+        assert calls[2].kwargs == {
+            "chat_id": 123,
+            "message_id": 456,
+            "text": "hello bold world",
+        }
+
 
 # =========================================================================
 # Telegram guest mention gating

@@ -3492,12 +3492,14 @@ class TelegramAdapter(BasePlatformAdapter):
             # that immediately gets 409'd by the previous one, creating
             # the very conflict we are trying to recover from (#75017).
             self._polling_conflict_recovery_generation = expected_generation
+            polling_started = False
             try:
                 await self._start_polling_once(
                     app,
                     drop_pending_updates=True,
                     error_callback=self._polling_error_callback_ref,
                 )
+                polling_started = True
                 logger.info(
                     "[%s] Telegram polling restarted after conflict retry %d/%d; "
                     "health pending getUpdates progress",
@@ -3537,7 +3539,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 # Fall through to fatal on the last retry.
             finally:
-                if self._polling_conflict_recovery_generation == expected_generation:
+                if (
+                    not polling_started
+                    and self._polling_conflict_recovery_generation
+                    == expected_generation
+                ):
                     self._polling_conflict_recovery_generation = None
 
         if getattr(self, "_polling_teardown_started", False):

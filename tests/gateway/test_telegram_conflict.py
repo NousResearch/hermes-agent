@@ -217,6 +217,38 @@ async def test_conflict_retry_progress_does_not_reset_retry_ladder(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_conflict_retry_keeps_recovery_marker_until_background_progress(
+    monkeypatch,
+):
+    """Progress arriving after start_polling returns must preserve the ladder."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(updater=updater)
+
+    conflict = type("Conflict", (Exception,), {})
+    error = conflict("Conflict: terminated by other getUpdates request")
+
+    await adapter._handle_polling_conflict(error)
+    recovered_generation = adapter._polling_generation
+
+    # PTB starts getUpdates in the background, so progress normally arrives
+    # only after start_polling() and the conflict handler have returned.
+    adapter._record_polling_progress(recovered_generation)
+    await adapter._handle_polling_conflict(error)
+
+    assert updater.start_polling.await_count == 2
+    assert adapter._polling_conflict_count == 2
+
+
+@pytest.mark.asyncio
 async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     """After exhausting retries, the conflict should become fatal."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))

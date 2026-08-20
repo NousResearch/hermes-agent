@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from agent import auxiliary_client
 from hermes_cli import lifecycle, plugins
 from hermes_cli.observability import relay_runtime, relay_shared_metrics
 from hermes_cli.plugins import PluginManager
@@ -462,6 +463,214 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "termination": "none",
         "tool_call_count_bucket": "1",
     }
+
+
+def test_direct_runtime_ignores_auxiliary_attempts_under_an_active_turn(
+    direct_runtime,
+):
+    """Auxiliary routes are counted through their tagged Relay logical scopes;
+    the shared-metrics hook runtime must not consume the lifecycle events too,
+    or every auxiliary attempt would be double-counted and pollute the turn's
+    model-call/retry buckets."""
+    assert lifecycle.has_hook("pre_api_request")
+    lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id="session-aux",
+        platform="cli",
+    )
+    turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+        lease,
+        turn_id="turn-aux",
+        task_id="task-aux",
+    )
+    turn_event = {
+        "session_id": "session-aux",
+        "task_id": "task-aux",
+        "turn_id": "turn-aux",
+        "platform": "cli",
+    }
+    aux = {
+        **turn_event,
+        "request_kind": "auxiliary",
+        "auxiliary_task": "title_generation",
+        "auxiliary_call_id": "aux-logical",
+        "provider": "anthropic",
+        "model": "claude-sonnet",
+        "base_url": "https://api.anthropic.com",
+        "api_mode": "chat_completions",
+    }
+    try:
+        lifecycle.invoke_hook("pre_llm_call", **turn_event)
+        lifecycle.invoke_hook(
+            "pre_api_request",
+            **aux,
+            api_request_id="aux-attempt-1",
+            attempt_index=0,
+        )
+        lifecycle.invoke_hook(
+            "api_request_error",
+            **aux,
+            api_request_id="aux-attempt-1",
+            attempt_index=0,
+            error={"type": "ConnectionError"},
+        )
+        lifecycle.invoke_hook(
+            "pre_api_request",
+            **aux,
+            api_request_id="aux-attempt-2",
+            attempt_index=1,
+        )
+        lifecycle.invoke_hook(
+            "post_api_request",
+            **aux,
+            api_request_id="aux-attempt-2",
+            attempt_index=1,
+            response={"content": "done"},
+        )
+
+        runtime = relay_shared_metrics._get_runtime()
+        assert runtime is not None
+        session = runtime._sessions["session-aux"]
+        assert session.model_calls == {}
+        assert session.tasks["task-aux"].model_call_ids == set()
+        assert session.tasks["task-aux"].retry_count == 0
+
+        lifecycle.invoke_hook(
+            "on_session_end",
+            **turn_event,
+            completed=True,
+            failed=False,
+            interrupted=False,
+            turn_exit_reason="text_response(stop)",
+        )
+    finally:
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+        relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+
+    assert not any(event[0] == "llm.call" for event in direct_runtime.events)
+    assert plugins.get_plugin_manager().list_plugins() == []
+
+
+def test_auxiliary_client_dispatches_to_direct_runtime_without_a_plugin(
+    direct_runtime,
+    monkeypatch,
+):
+    assert lifecycle.has_hook("pre_api_request")
+    lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id="session-client-aux",
+        platform="gateway",
+    )
+    turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+        lease,
+        turn_id="turn-client-aux",
+        task_id="task-client-aux",
+    )
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="title", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        model="claude-sonnet",
+        usage=None,
+    )
+    client = SimpleNamespace(
+        base_url="https://api.anthropic.com",
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_: response),
+        ),
+    )
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_resolve_task_provider_model",
+        lambda *_, **__: (
+            "anthropic",
+            "claude-sonnet",
+            None,
+            None,
+            "chat_completions",
+        ),
+    )
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_get_cached_client",
+        lambda *_, **__: (client, "claude-sonnet"),
+    )
+    monkeypatch.setattr(
+        "agent.relay_llm.execute_current",
+        lambda request, callback, **_: callback(request),
+    )
+    monkeypatch.setattr("agent.relay_llm.complete_logical_call", lambda *_, **__: None)
+    monkeypatch.setattr(plugins, "discover_plugins", lambda: None)
+    monkeypatch.setattr(plugins, "invoke_hook", lambda *_, **__: [])
+    observed = []
+    real_observe = relay_shared_metrics.observe_lifecycle
+
+    def _observe_spy(hook_name, **hook_kwargs):
+        observed.append((hook_name, hook_kwargs))
+        real_observe(hook_name, **hook_kwargs)
+
+    monkeypatch.setattr(relay_shared_metrics, "observe_lifecycle", _observe_spy)
+    base = {
+        "session_id": "session-client-aux",
+        "task_id": "task-client-aux",
+        "turn_id": "turn-client-aux",
+        "platform": "gateway",
+    }
+    try:
+        lifecycle.invoke_hook("pre_llm_call", **base)
+        result = auxiliary_client.call_llm(
+            task="title_generation",
+            messages=[{"role": "user", "content": "title this"}],
+        )
+        lifecycle.invoke_hook(
+            "on_session_end",
+            **base,
+            completed=True,
+            failed=False,
+            interrupted=False,
+            turn_exit_reason="text_response(stop)",
+        )
+    finally:
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+        relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+
+    assert result is response
+    # The auxiliary attempt's lifecycle events reach the first-party observer
+    # without any plugin ...
+    auxiliary_hooks = [
+        name
+        for name, event in observed
+        if event.get("request_kind") == "auxiliary"
+    ]
+    assert auxiliary_hooks == ["pre_api_request", "post_api_request"]
+    # ... and the shared-metrics runtime deliberately records no model-call
+    # scope for them (routes are counted via the tagged Relay logical scopes
+    # instead).
+    assert not any(event[0] == "llm.call" for event in direct_runtime.events)
+
+
+def test_direct_runtime_ignores_standalone_auxiliary_attempts(direct_runtime):
+    event = {
+        "session_id": "standalone-session",
+        "task_id": "standalone-task",
+        "turn_id": "standalone-turn",
+        "api_request_id": "standalone-request",
+        "request_kind": "auxiliary",
+        "auxiliary_task": "title_generation",
+        "provider": "anthropic",
+        "model": "claude-sonnet",
+    }
+
+    lifecycle.invoke_hook("pre_api_request", **event)
+    lifecycle.invoke_hook("post_api_request", **event)
+
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    assert "standalone-session" not in runtime._sessions
+    assert not any(event[0] == "llm.call" for event in direct_runtime.events)
 
 
 def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(

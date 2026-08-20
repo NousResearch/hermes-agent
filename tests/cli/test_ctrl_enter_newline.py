@@ -154,10 +154,8 @@ def test_unknown_terminal_does_not_enable_extended_enter_keys():
 
 
 # ---------------------------------------------------------------------------
-# Ghostty: must push ONLY modifyOtherKeys, not the Kitty keyboard protocol.
-# Ghostty's Kitty disambiguate mode strips the Alt modifier from Backspace,
-# so Option+Backspace arrives as bare \x7f instead of \x1b[27;3;127~,
-# breaking backward-kill-word.  modifyOtherKeys mode works correctly.
+# Ghostty: must push ONLY modifyOtherKeys, not the Kitty keyboard protocol —
+# see cli._is_ghostty_terminal for the full rationale (#87630).
 # ---------------------------------------------------------------------------
 class _FakeOutput:
     """Minimal output object with write_raw + flush for _enable_extended_enter_keys."""
@@ -237,3 +235,14 @@ def test_proc_version_microsoft_marker_preserves_newline():
 # ---------------------------------------------------------------------------
 # install_ctrl_enter_alias() — ANSI sequence mappings for enhanced terminals
 # ---------------------------------------------------------------------------
+
+
+def test_is_ghostty_terminal_detection_paths():
+    """_is_ghostty_terminal matches exactly the two allowlist conditions."""
+    import cli as cli_mod
+
+    assert cli_mod._is_ghostty_terminal({"TERM_PROGRAM": "ghostty"}) is True
+    assert cli_mod._is_ghostty_terminal({"TERM": "xterm-ghostty"}) is True
+    assert cli_mod._is_ghostty_terminal({"TERM": "XTERM-GHOSTTY"}) is True
+    assert cli_mod._is_ghostty_terminal({"TERM_PROGRAM": "iTerm.app"}) is False
+    assert cli_mod._is_ghostty_terminal({}) is False

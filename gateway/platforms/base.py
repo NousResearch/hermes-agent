@@ -3059,6 +3059,12 @@ class BasePlatformAdapter(ABC):
         # construction (gateway/run.py). Default to "interrupt" so a stray
         # pre-sync read matches the single-knob default rather than silently
         # queueing.
+        # Track the platform message currently being processed for each
+        # session. Webhook transports (notably BlueBubbles/iMessage) can
+        # redeliver the same inbound message while the first copy is still
+        # active; without this guard the duplicate is queued as a follow-up and
+        # causes the response to be sent twice.
+        self._active_session_message_ids: Dict[str, str] = {}
         self._busy_text_mode: str = (
             os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower()
             or "interrupt"
@@ -5814,6 +5820,7 @@ class BasePlatformAdapter(ABC):
         if guard is not None and current_guard is not guard:
             return
         del self._active_sessions[session_key]
+        self._active_session_message_ids.pop(session_key, None)
 
     def _session_task_is_stale(self, session_key: str) -> bool:
         """Return True if the owner task for ``session_key`` is done/cancelled.
@@ -5856,8 +5863,20 @@ class BasePlatformAdapter(ABC):
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
+        self._active_session_message_ids.pop(session_key, None)
         self._discard_text_debounce(session_key)
         return True
+
+    def _set_active_session_message_id(
+        self,
+        session_key: str,
+        event: MessageEvent,
+    ) -> None:
+        """Record the inbound event identity for the task owning a session."""
+        if event.message_id:
+            self._active_session_message_ids[session_key] = str(event.message_id)
+        else:
+            self._active_session_message_ids.pop(session_key, None)
 
     def _start_session_processing(
         self,
@@ -5875,6 +5894,7 @@ class BasePlatformAdapter(ABC):
         """
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
+        self._set_active_session_message_id(session_key, event)
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
         self._session_tasks[session_key] = task
@@ -6089,6 +6109,16 @@ class BasePlatformAdapter(ABC):
 
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            active_message_id = self._active_session_message_ids.get(session_key)
+            if active_message_id and event.message_id and str(event.message_id) == active_message_id:
+                logger.info(
+                    "[%s] Dropping duplicate inbound message for active session %s (message_id=%s)",
+                    self.name,
+                    session_key,
+                    active_message_id,
+                )
+                return
+
             # Certain commands must bypass the active-session guard and be
             # dispatched directly to the gateway runner.  Without this, they
             # are queued as pending messages and either:
@@ -6844,6 +6874,7 @@ class BasePlatformAdapter(ABC):
                 # exhaust at ~2000 frames and SIGSEGV the process.
                 # Mirror the late-arrival drain pattern below: hand off
                 # to a new task and return so this frame can unwind.
+                self._set_active_session_message_id(session_key, pending_event)
                 drain_task = asyncio.create_task(
                     self._process_message_background(pending_event, session_key)
                 )
@@ -6977,6 +7008,7 @@ class BasePlatformAdapter(ABC):
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:
                         _active.clear()
+                    self._set_active_session_message_id(session_key, late_pending)
                     drain_task = asyncio.create_task(
                         self._process_message_background(late_pending, session_key)
                     )
@@ -7089,6 +7121,7 @@ class BasePlatformAdapter(ABC):
             pass
         self._pending_messages.clear()
         self._active_sessions.clear()
+        self._active_session_message_ids.clear()
         for state in list(self._text_debounce_store().values()):
             if state.task is not None and not state.task.done():
                 state.task.cancel()

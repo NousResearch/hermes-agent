@@ -200,3 +200,79 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
             env.cleanup()
         except Exception:
             pass
+
+
+def test_wait_for_process_closes_stdout_on_timeout():
+    """Regression test for the fd leak fixed 2026-08-11.
+
+    ``_wait_for_process`` used to close ``proc.stdout`` only on the
+    natural-completion path at the bottom of the function. The timeout
+    early-return, the interrupt early-return, and the KeyboardInterrupt/
+    SystemExit re-raise all skipped it, so every timed-out or interrupted
+    terminal command leaked one fd (the read end of the stdout pipe). On a
+    long-lived gateway process sharing that fd table across every plugin
+    (Telegram, Discord, Buzz, cron, config parsing, ...), those leaks
+    accumulated over ~3 days of uptime until the process hit its fd ulimit
+    and everything started failing at once with "Too many open files".
+    """
+    env = LocalEnvironment(cwd="/tmp")
+    proc = subprocess.Popen(
+        ["sleep", "5"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
+    )
+    proc._hermes_pgid = os.getpgid(proc.pid)
+    try:
+        result = env._wait_for_process(proc, timeout=0.2)
+        assert result["returncode"] == 124, f"expected timeout returncode, got {result}"
+        assert proc.stdout.closed, (
+            "proc.stdout leaked on the timeout exit path — the fd-leak "
+            "regression from the 2026-08-11 'Too many open files' incident"
+        )
+    finally:
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+        try:
+            env.cleanup()
+        except Exception:
+            pass
+
+
+def test_wait_for_process_closes_stdout_on_interrupt():
+    """Same fd-leak regression, but via the is_interrupted() early return
+    (agent-level interrupt) rather than the timeout path."""
+    from tools.interrupt import set_interrupt
+
+    env = LocalEnvironment(cwd="/tmp")
+    proc = subprocess.Popen(
+        ["sleep", "5"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
+    )
+    proc._hermes_pgid = os.getpgid(proc.pid)
+    set_interrupt(True)
+    try:
+        result = env._wait_for_process(proc, timeout=60)
+        assert result["returncode"] == 130, f"expected interrupt returncode, got {result}"
+        assert proc.stdout.closed, (
+            "proc.stdout leaked on the interrupt exit path — the fd-leak "
+            "regression from the 2026-08-11 'Too many open files' incident"
+        )
+    finally:
+        set_interrupt(False)
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+        try:
+            env.cleanup()
+        except Exception:
+            pass

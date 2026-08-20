@@ -804,7 +804,20 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            persisted_artifacts: list[str] = []
+            if run is not None and isinstance(run.metadata, dict):
+                raw_artifacts = run.metadata.get("artifacts")
+                if isinstance(raw_artifacts, (list, tuple)):
+                    persisted_artifacts = [
+                        str(path).strip()
+                        for path in raw_artifacts
+                        if str(path).strip()
+                    ]
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                artifacts=persisted_artifacts,
+            )
         finally:
             conn.close()
     except ValueError as e:

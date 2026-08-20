@@ -116,6 +116,20 @@ class TestSlackManifestArgparse:
 class TestSlackFullManifest:
     """Generated full Slack app manifest used by `hermes slack manifest`."""
 
+    def test_manifest_registers_send_to_hermes_message_shortcut(self):
+        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+
+        assert manifest["features"]["shortcuts"] == [
+            {
+                "name": "Send to Hermes",
+                "callback_id": "hermes_send_message",
+                "description": "Refine this message privately with Hermes",
+                "type": "message",
+            }
+        ]
+        assert manifest["settings"]["interactivity"]["is_enabled"] is True
+        assert "commands" in manifest["oauth_config"]["scopes"]["bot"]
+
 
 
 

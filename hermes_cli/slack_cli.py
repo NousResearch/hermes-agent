@@ -73,6 +73,14 @@ def _build_full_manifest(
             "display_name": bot_name[:80],
             "always_online": True,
         },
+        "shortcuts": [
+            {
+                "name": "Send to Hermes",
+                "callback_id": "hermes_send_message",
+                "description": "Refine this message privately with Hermes",
+                "type": "message",
+            }
+        ],
         "slash_commands": slashes,
     }
 

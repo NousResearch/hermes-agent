@@ -2142,6 +2142,7 @@ DEFAULT_CONFIG = {
     # Slack platform settings (gateway mode)
     "slack": {
         "require_mention": True,       # Require @mention to respond in channels
+        "conversational_intake_enabled": False,  # Private shortcut → DM-thread intake
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         # Channel IDs where @mention is ALWAYS required, even when

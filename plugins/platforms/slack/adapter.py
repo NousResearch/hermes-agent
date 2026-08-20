@@ -17,8 +17,10 @@ import os
 import re
 import time
 import unicodedata
+import uuid
 from dataclasses import dataclass, field
 from typing import Callable, ClassVar, Dict, Optional, Any, Tuple, List
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -61,8 +63,26 @@ from gateway.platforms.base import (
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .hermes_intake import (
+        HermesIntakeClient,
+        HermesIntakeError,
+        SlackIntakeStore,
+        build_intake_prompt,
+        build_intake_source,
+        build_promotion_payload,
+        parse_resolved_brief,
+    )
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from hermes_intake import (  # type: ignore
+        HermesIntakeClient,
+        HermesIntakeError,
+        SlackIntakeStore,
+        build_intake_prompt,
+        build_intake_source,
+        build_promotion_payload,
+        parse_resolved_brief,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -972,6 +992,10 @@ class SlackAdapter(BasePlatformAdapter):
         # user target (team_id:user_id) → opened DM conversation ID (D...)
         self._dm_conversation_cache: Dict[str, str] = {}
         self._DM_CONVERSATION_CACHE_MAX = 5000
+        # Message shortcut source payloads stay server-side. Slack modal
+        # private_metadata carries only the opaque nonce, never message text.
+        self._hermes_intake_client: Optional[HermesIntakeClient] = None
+        self._slack_intake_store = SlackIntakeStore()
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events (#4777). The TTL must outlast Slack's
         # worst-case reconnect-redelivery gap, not just a few seconds — the
@@ -2128,6 +2152,11 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 await self._handle_slash_command(command)
 
+            self._register_send_to_hermes_handlers()
+            self._app.action("hermes_intake_create_card")(
+                self._handle_slack_intake_create_card
+            )
+
             # Register Block Kit action handlers for approval buttons
             for _action_id in (
                 "hermes_approve_once",
@@ -2422,7 +2451,413 @@ class SlackAdapter(BasePlatformAdapter):
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
-        return self._app.client  # fallback to primary
+        return self._app.client
+
+    def _send_to_hermes_client(self) -> Optional[HermesIntakeClient]:
+        if self._hermes_intake_client is not None:
+            return self._hermes_intake_client
+        base_url = str(
+            self.config.extra.get("hermes_intake_url")
+            or ""
+        ).strip()
+        parsed_url = urlsplit(base_url)
+        if parsed_url.scheme != "http" or parsed_url.hostname not in {
+            "127.0.0.1",
+            "::1",
+            "localhost",
+        }:
+            return None
+        try:
+            token = get_secret("HERMES_DASHBOARD_SESSION_TOKEN") or ""
+        except UnscopedSecretError:
+            token = ""
+        if not base_url or not token:
+            return None
+        self._hermes_intake_client = HermesIntakeClient(
+            base_url=base_url,
+            session_token=token,
+        )
+        return self._hermes_intake_client
+
+    def _register_send_to_hermes_handlers(self) -> None:
+        """Wire Slack's message shortcut and modal submission callbacks."""
+        # Test/minimal AsyncApp substitutes used by embedders may implement
+        # only event/command/action. Real slack_bolt AsyncApp exposes both.
+        if callable(getattr(self._app, "shortcut", None)):
+            @self._app.shortcut("hermes_send_message")
+            async def handle_send_to_hermes_shortcut(ack, body, client):
+                await self._handle_send_to_hermes_shortcut(ack, body, client)
+
+
+    @staticmethod
+    def _send_to_hermes_status_view(text: str) -> Dict[str, Any]:
+        return {
+            "type": "modal",
+            "title": {"type": "plain_text", "text": "Send to Hermes"},
+            "close": {"type": "plain_text", "text": "Close"},
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": text},
+                }
+            ],
+        }
+
+    async def _handle_send_to_hermes_shortcut(
+        self, ack: Any, body: Dict[str, Any], client: Any
+    ) -> None:
+        # Ack before authorization or API work so Slack does not retry while
+        # still keeping selected-message disclosure behind authorization.
+        await ack()
+        user = body.get("user") or {}
+        channel = body.get("channel") or {}
+        message = body.get("message") or {}
+        user_id = str(user.get("id") or "")
+        channel_id = str(channel.get("id") or "")
+        if self._is_sender_authorized(
+            user_id, chat_type="channel", chat_id=channel_id
+        ) is not True:
+            await client.views_open(
+                trigger_id=body.get("trigger_id"),
+                view=self._send_to_hermes_status_view(
+                    "You are not authorized to send messages to Hermes."
+                ),
+            )
+            return
+
+        if not bool(self.config.extra.get("conversational_intake_enabled", False)):
+            await client.views_open(
+                trigger_id=body.get("trigger_id"),
+                view=self._send_to_hermes_status_view(
+                    "Slack conversational intake is not enabled."
+                ),
+            )
+            return
+
+        team_id = str((body.get("team") or {}).get("id") or "")
+        message_ts = str(message.get("ts") or "")
+        permalink = ""
+        try:
+            result = await client.chat_getPermalink(
+                channel=channel_id, message_ts=message_ts
+            )
+            permalink = str(result.get("permalink") or "")
+        except Exception:
+            # The signed shortcut payload is still authorized source material;
+            # private-channel membership can independently deny permalink lookup.
+            pass
+
+        author_id = str(message.get("user") or "unknown")
+        author_name = await self._resolve_user_name(
+            author_id, chat_id=channel_id, team_id=team_id
+        )
+        source = {
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "channel_name": str(channel.get("name") or ""),
+            "message_ts": message_ts,
+            "message_text": str(message.get("text") or ""),
+            "author_id": author_id,
+            "author_name": author_name,
+            "submitter_id": user_id,
+            "submitter_name": str(user.get("name") or user_id),
+            "permalink": permalink,
+        }
+        await self._start_slack_conversational_intake(
+            invocation_key=str(body.get("trigger_id") or ""),
+            source=source,
+            client=client,
+        )
+        return
+
+    async def _start_slack_conversational_intake(
+        self, *, invocation_key: str, source: Dict[str, str], client: Any
+    ) -> None:
+        """Reserve/reconcile a DM thread and submit one ordinary human turn."""
+        intake = self._slack_intake_store.reserve(invocation_key, "", source)
+        if intake.state == "active":
+            return
+
+        if not intake.dm_channel_id or not intake.thread_ts:
+            seed_owner = self._slack_intake_store.claim_stage(
+                intake.intake_id,
+                from_states=("reserved",),
+                claimed_state="seeding",
+            )
+            if not seed_owner:
+                return
+            try:
+                opened = await client.conversations_open(users=source["submitter_id"])
+                dm_channel_id = str(((opened or {}).get("channel") or {}).get("id") or "")
+                if not dm_channel_id:
+                    raise HermesIntakeError("Hermes could not open the private intake DM.")
+                seed = await client.chat_postMessage(
+                    channel=dm_channel_id,
+                    text="Starting a private Hermes intake… No card exists yet.",
+                    client_msg_id=intake.first_event_id,
+                )
+                thread_ts = str((seed or {}).get("ts") or "")
+                if not thread_ts:
+                    raise HermesIntakeError("Hermes could not start the private intake thread.")
+                intake = self._slack_intake_store.bind_thread(
+                    intake.intake_id, dm_channel_id, thread_ts,
+                    owner_token=seed_owner,
+                )
+                if intake.state != "thread_bound":
+                    return
+            except Exception:
+                self._slack_intake_store.complete_stage(
+                    intake.intake_id, owner_token=seed_owner, state="reserved"
+                )
+                raise
+
+        event_source = build_intake_source(
+            profile=intake.profile,
+            team_id=intake.team_id,
+            dm_channel_id=str(intake.dm_channel_id),
+            thread_ts=str(intake.thread_ts),
+            user_id=intake.submitter_id,
+            user_name=str(source.get("submitter_name") or intake.submitter_id),
+        )
+        profile = intake.profile or self._slack_intake_profile(event_source)
+        intake = self._slack_intake_store.bind_profile(intake.intake_id, profile)
+        event_source.profile = intake.profile
+
+        if not intake.session_key:
+            from gateway.session import build_session_key
+
+            session_key = build_session_key(
+                event_source,
+                group_sessions_per_user=self.config.extra.get(
+                    "group_sessions_per_user", True
+                ),
+                thread_sessions_per_user=self.config.extra.get(
+                    "thread_sessions_per_user", False
+                ),
+            )
+            session_id = "pending-normal-gateway-bind"
+            session_store = getattr(self, "_session_store", None)
+            if session_store is not None:
+                entry = session_store.get_or_create_session(event_source)
+                session_key, session_id = entry.session_key, entry.session_id
+            intake = self._slack_intake_store.bind_session(
+                intake.intake_id, session_key, session_id
+            )
+
+        dispatch_owner = self._slack_intake_store.claim_stage(
+            intake.intake_id,
+            from_states=("session_bound", "failed_retryable"),
+            claimed_state="dispatching",
+        )
+        if not dispatch_owner:
+            return
+
+        event = MessageEvent(
+            text=build_intake_prompt(source, intake_id=intake.intake_id),
+            message_type=MessageType.TEXT,
+            source=event_source,
+            raw_message={"intake_id": intake.intake_id},
+            message_id=intake.first_event_id,
+            user_id=intake.submitter_id,
+            user_name=str(source.get("submitter_name") or intake.submitter_id),
+            internal=False,
+            metadata={
+                "slack_team_id": intake.team_id,
+                "slack_channel_id": intake.dm_channel_id,
+                "slack_thread_ts": intake.thread_ts,
+                "slack_intake_id": intake.intake_id,
+                "slack_intake_owner": dispatch_owner,
+            },
+        )
+        await self.handle_message(event)
+        task = self._session_tasks.get(str(intake.session_key))
+        if task is not None:
+            await asyncio.shield(task)
+        intake = self._slack_intake_store.get(intake.intake_id)
+        if intake.state != "active":
+            return
+        await client.chat_postMessage(
+            channel=intake.dm_channel_id,
+            thread_ts=intake.thread_ts,
+            text="No card exists yet. Keep refining, then use Create card.",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*No card exists yet.* Keep refining with Hermes, then promote explicitly.",
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": "hermes_intake_create_card",
+                            "text": {"type": "plain_text", "text": "Create card"},
+                            "style": "primary",
+                            "value": intake.intake_id,
+                        }
+                    ],
+                },
+            ],
+        )
+
+    def _slack_intake_profile(self, source: Any = None) -> str:
+        """Use the gateway process profile, matching organic Slack messages."""
+        resolver = getattr(getattr(self, "gateway_runner", None), "_profile_name_for_source", None)
+        if source is not None and callable(resolver):
+            routed = resolver(source)
+            if routed:
+                return str(routed)
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "default"
+
+    async def _handle_slack_intake_create_card(
+        self, ack: Any, body: Dict[str, Any], client: Any
+    ) -> None:
+        """Promote one authorized intake and reconcile retries to its card."""
+        await ack()
+        actions = body.get("actions") or []
+        intake_id = str((actions[0] if actions else {}).get("value") or "")
+        try:
+            intake = self._slack_intake_store.get(intake_id)
+        except KeyError:
+            return
+        user_id = str((body.get("user") or {}).get("id") or "")
+        channel_id = str((body.get("channel") or {}).get("id") or "")
+        team_id = str((body.get("team") or {}).get("id") or "")
+        action_message = body.get("message") or {}
+        action_thread_ts = str(
+            action_message.get("thread_ts") or action_message.get("ts") or ""
+        )
+        if (
+            user_id != intake.submitter_id
+            or team_id != intake.team_id
+            or channel_id != intake.dm_channel_id
+            or action_thread_ts != intake.thread_ts
+            or self._is_sender_authorized(
+                user_id, chat_type="dm", chat_id=channel_id
+            ) is not True
+        ):
+            return
+
+        if intake.card_id is None:
+            await client.chat_update(
+                channel=channel_id,
+                ts=(body.get("message") or {}).get("ts"),
+                text="Creating card…",
+                blocks=[
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "action_id": "hermes_intake_create_card",
+                                "text": {"type": "plain_text", "text": "Creating card…"},
+                                "value": intake.intake_id,
+                            }
+                        ],
+                    }
+                ],
+            )
+            self._slack_intake_store.set_state(intake_id, "creating")
+            source = self._slack_intake_store.source(intake_id)
+            session_store = getattr(self, "_session_store", None)
+            if session_store is None or not intake.session_id:
+                self._slack_intake_store.set_state(intake_id, "active")
+                return
+            try:
+                brief = parse_resolved_brief(
+                    session_store.load_transcript(str(intake.session_id))
+                )
+            except (TypeError, ValueError):
+                self._slack_intake_store.set_state(intake_id, "clarifying")
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=(body.get("message") or {}).get("ts"),
+                    text="Keep refining before creating the card.",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "The current brief is incomplete. Keep refining with Hermes; no card was created.",
+                            },
+                        },
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "action_id": "hermes_intake_create_card",
+                                    "text": {"type": "plain_text", "text": "Create card"},
+                                    "value": intake.intake_id,
+                                }
+                            ],
+                        },
+                    ],
+                )
+                return
+            payload = build_promotion_payload(
+                intake_id=intake_id,
+                promotion_key=intake.promotion_key,
+                source=source,
+                session_key=str(intake.session_key),
+                session_id=str(intake.session_id),
+                dm_channel_id=str(intake.dm_channel_id),
+                thread_ts=str(intake.thread_ts),
+                brief=brief,
+            )
+            creator = self._send_to_hermes_client()
+            if creator is None:
+                raise HermesIntakeError(
+                    "The Hermes intake integration is not configured."
+                )
+            try:
+                task = await creator.create_task(payload)
+            except Exception:
+                self._slack_intake_store.set_state(intake_id, "failed_retryable")
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=(body.get("message") or {}).get("ts"),
+                    text="Card creation outcome is unknown. Check and retry safely.",
+                    blocks=[
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "action_id": "hermes_intake_create_card",
+                                    "text": {"type": "plain_text", "text": "Retry creation"},
+                                    "value": intake.intake_id,
+                                }
+                            ],
+                        }
+                    ],
+                )
+                return
+            intake = self._slack_intake_store.bind_card(
+                intake_id, "hrms", str(task["id"])
+            )
+
+        message = body.get("message") or {}
+        await client.chat_update(
+            channel=channel_id,
+            ts=message.get("ts"),
+            text=f"Already created as {intake.card_id}.",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"Created HRMS Triage card `{intake.card_id}`.",
+                    },
+                }
+            ],
+        )
+
 
     async def _ensure_dm_conversation(
         self, chat_id: str, team_id: Optional[str] = None
@@ -4266,6 +4701,17 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
+        intake_id = str((event.metadata or {}).get("slack_intake_id") or "")
+        if intake_id:
+            self._slack_intake_store.complete_stage(
+                intake_id,
+                owner_token=str((event.metadata or {}).get("slack_intake_owner") or ""),
+                state=(
+                    "active"
+                    if outcome == ProcessingOutcome.SUCCESS
+                    else "failed_retryable"
+                ),
+            )
         if not self._reactions_enabled():
             return
         ts = getattr(event, "message_id", None)

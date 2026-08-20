@@ -281,6 +281,44 @@ identify a Messages-tab DM and receive the user's active Slack context with a
 turn. Hermes only supplies that context as a label; it does not read the viewed
 channel's history.
 
+### Private conversational intake from a Slack message
+
+Hermes's generated manifest includes **Send to Hermes** (`hermes_send_message`).
+When `platforms.slack.conversational_intake_enabled` is `true`, an authorized
+user can invoke it from a text message's **More actions** menu. Hermes opens a
+dedicated thread in that user's 1:1 DM, submits the selected text through the
+normal gateway conversation path, and states **No card exists yet**.
+
+Continue refining in the DM thread. Text replies, including casual assent, do
+not create Kanban cards. The persistent **Create card** button is the only
+promotion control. It creates one unassigned card in **HRMS → Triage** with a
+synthesized brief and source/session/thread lineage; raw transcript content is
+not copied into the card. Retries and stale clicks reconcile to the same card.
+
+Enable the private dogfood slice with:
+
+```bash
+hermes config set platforms.slack.conversational_intake_enabled true
+hermes config set platforms.slack.hermes_intake_url http://127.0.0.1:9119 --force
+```
+
+The local Kanban API session token remains a secret in the normal secret store.
+The loopback URL and feature flag are non-secret `config.yaml` settings. The
+feature defaults off. Disabling it stops new intakes while preserving existing
+lineage for retry/reconciliation.
+
+Regenerate and apply the Slack manifest after upgrading:
+
+```bash
+hermes slack manifest --agent-view --write
+```
+
+Verify one invocation yields one private DM thread and zero cards, a natural
+reply continues the same session, casual assent still yields zero cards, and a
+double click on **Create card** yields exactly one HRMS Triage card plus an
+**Open card** control. For rollback, set the feature flag to `false`; do not
+delete the local intake database or already-promoted cards.
+
 ### Refreshing slash commands after updates
 
 When Hermes adds new commands (e.g. after `hermes update`), regenerate

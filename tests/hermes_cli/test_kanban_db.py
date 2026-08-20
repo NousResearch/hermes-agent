@@ -39,6 +39,41 @@ def _init_git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
 
 
+def test_concurrent_idempotent_creators_return_one_task(kanban_home):
+    """Independent DB connections must not create duplicate idempotency rows."""
+    db_path = kanban_home / "kanban.db"
+
+    def create() -> str:
+        with kb.connect(db_path) as conn:
+            return kb.create_task(
+                conn,
+                title="promoted Slack intake",
+                triage=True,
+                idempotency_key="slack-intake:promotion-1",
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        task_ids = list(pool.map(lambda _index: create(), range(2)))
+
+    assert len(set(task_ids)) == 1
+    with kb.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ?",
+            ("slack-intake:promotion-1",),
+        ).fetchall()
+    assert [row["id"] for row in rows] == [task_ids[0]]
+
+
+def test_archived_task_still_satisfies_idempotency_key(kanban_home):
+    db_path = kanban_home / "kanban.db"
+    with kb.connect(db_path) as conn:
+        first = kb.create_task(conn, title="first", idempotency_key="promotion:one")
+        assert kb.archive_task(conn, first)
+        replay = kb.create_task(conn, title="replay", idempotency_key="promotion:one")
+
+    assert replay == first
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------

@@ -197,4 +197,31 @@ describe('retintTheme', () => {
 
     expect(retintTheme(neutralRing, '#8250df').colors.ring).toBe('#9a9a9a')
   })
+
+  // A theme may shade its accent across slots rather than repeating one hex —
+  // midnight runs a `#8b80e8` ring under a `#ddd6ff` primary. Both are the
+  // same violet; matching on exact equality left the ring behind and produced
+  // a half-retinted theme.
+  describe('a theme whose accent slots are shades of each other', () => {
+    const shaded = {
+      ...nousTheme,
+      colors: { ...nousTheme.colors, primary: '#ddd6ff', ring: '#8b80e8', midground: '#8b80e8' },
+      darkColors: undefined
+    }
+
+    it('moves every slot in the family', () => {
+      const teal = retintTheme(shaded, '#0f9b8e')
+
+      expect(teal.colors.ring).not.toBe('#8b80e8')
+      expect(Math.abs(hexToOklch(teal.colors.ring)!.h - hexToOklch('#0f9b8e')!.h)).toBeLessThan(3)
+    })
+
+    it('keeps each slot at its own lightness, rather than flattening them', () => {
+      const teal = retintTheme(shaded, '#0f9b8e')
+      const ring = hexToOklch(teal.colors.ring)!
+
+      expect(ring.l).toBeCloseTo(hexToOklch('#8b80e8')!.l, 1)
+      expect(ring.l).not.toBeCloseTo(hexToOklch(teal.colors.primary)!.l, 1)
+    })
+  })
 })

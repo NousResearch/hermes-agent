@@ -587,6 +587,46 @@ export const solarizedTheme: DesktopTheme = {
 }
 
 /** Warm crimson and bronze — forge vibes. Matches the CLI ares skin. */
+/**
+ * Midnight — deep blue-violet, near-monotone. Dark only: it has no light
+ * palette because the whole idea is the dark end of the spectrum.
+ */
+export const midnightTheme: DesktopTheme = {
+  name: 'midnight',
+  label: 'Midnight',
+  description: 'Deep blue-violet with cool accents',
+  colors: {
+    background: '#08081c',
+    foreground: '#ddd6ff',
+    card: '#0d0d28',
+    cardForeground: '#ddd6ff',
+    muted: '#13133a',
+    mutedForeground: '#7c7ab0',
+    popover: '#0f0f2e',
+    popoverForeground: '#ddd6ff',
+    primary: '#ddd6ff',
+    primaryForeground: '#08081c',
+    secondary: '#1a1a4a',
+    secondaryForeground: '#c4bff0',
+    accent: '#1a1a44',
+    accentForeground: '#d0c8ff',
+    border: '#1e1e52',
+    input: '#1e1e52',
+    ring: '#8b80e8',
+    midground: '#8b80e8',
+    destructive: '#b03060',
+    destructiveForeground: '#fef2f2',
+    sidebarBackground: '#06061a',
+    sidebarBorder: '#12123a',
+    userBubble: '#14143a',
+    userBubbleBorder: '#242466'
+  },
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
 export const emberTheme: DesktopTheme = {
   name: 'ember',
   label: 'Ember',
@@ -735,6 +775,7 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   catppuccin: catppuccinTheme,
   everforest: everforestTheme,
   solarized: solarizedTheme,
+  midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   slate: slateTheme,

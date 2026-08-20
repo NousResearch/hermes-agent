@@ -298,6 +298,14 @@ export function maxChroma(l: number, h: number): number {
 }
 
 /**
+ * Signed shortest angular distance from `from` to `to`, in degrees (-180..180).
+ * Hue is a circle: 350° and 10° are 20° apart, not 340°.
+ */
+export function hueDelta(from: number, to: number): number {
+  return ((to - from + 540) % 360) - 180
+}
+
+/**
  * Bend a semantic color toward the accent along the shortest hue arc.
  *
  * A success green next to a blue accent reads as a clash, but recoloring it to
@@ -319,8 +327,7 @@ export function harmonize(hex: string, accent: string, strength: number): string
   }
 
   // Signed shortest arc, so a green never takes the long way round the wheel.
-  const delta = ((target.h - base.h + 540) % 360) - 180
-  const h = (base.h + delta * Math.min(1, Math.max(0, strength)) + 360) % 360
+  const h = (base.h + hueDelta(base.h, target.h) * Math.min(1, Math.max(0, strength)) + 360) % 360
 
   return oklchToHex({ ...base, c: Math.min(Math.max(base.c, target.c * 0.85), maxChroma(base.l, h)), h })
 }

@@ -994,6 +994,7 @@ class SlackAdapter(BasePlatformAdapter):
         # buttons); mirrors _approval_resolved.
         self._clarify_resolved: Dict[Any, bool] = {}
         self._CLARIFY_RESOLVED_MAX = 1000
+        self._choice_picker_state: Dict[str, Any] = {}
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set[str] = set()
@@ -2156,6 +2157,12 @@ class SlackAdapter(BasePlatformAdapter):
                 _re.compile(r"^hermes_clarify_choice_\d+$")
             )(self._handle_clarify_action)
             self._app.action("hermes_clarify_other")(self._handle_clarify_action)
+
+            # Register Block Kit action handlers for choice picker buttons
+            # (flat single-level pickers; see gateway/slash_commands.py).
+            self._app.action(
+                _re.compile(r"^hermes_cp_\d+$")
+            )(self._handle_choice_picker_action)
 
             # Register plugin-provided Block Kit action handlers.
             #
@@ -7156,6 +7163,78 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] send_clarify failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a flat choice picker as Block Kit buttons.
+
+        Each choice dict: ``{"value": str, "label": str, "is_current": bool}``.
+        Current selection is marked with a "✓ " prefix. Button taps are
+        dispatched via ``hermes_cp_<idx>`` action_id and resolved through
+        ``on_choice_selected``.  Follows the same Block Kit pattern as
+        ``send_clarify`` in this adapter.
+        """
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
+        try:
+            thread_ts = self._resolve_thread_ts(None, metadata)
+
+            t = (title or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            body = t[:3000] if t else "Choose an option"
+
+            elements = []
+            for idx, choice in enumerate(choices):
+                label = str(choice.get("label") or choice.get("value") or f"Option {idx + 1}").strip()
+                if choice.get("is_current"):
+                    label = "✓ " + label
+                elements.append({
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": label[:75], "emoji": True},
+                    "action_id": f"hermes_cp_{idx}",
+                    "value": f"cp:{idx}",
+                })
+
+            if not elements:
+                return SendResult(success=False, error="No choices provided")
+
+            blocks: list = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            ]
+            for start in range(0, len(elements), 5):
+                blocks.append({"type": "actions", "elements": elements[start:start + 5]})
+
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": body,
+                "blocks": blocks,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+
+            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            msg_ts = result.get("ts", "")
+            if msg_ts:
+                self._choice_picker_state[msg_ts] = {
+                    "choices": choices,
+                    "session_key": session_key,
+                    "on_choice_selected": on_choice_selected,
+                }
+            return SendResult(success=True, message_id=msg_ts, raw_response=result)
+        except Exception as e:
+            logger.error("[Slack] send_choice_picker failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     def _is_interactive_user_authorized(
         self,
         user_id: str,
@@ -7524,6 +7603,71 @@ class SlackAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.warning("[Slack] Failed to update clarify message: %s", e)
+
+    async def _handle_choice_picker_action(self, ack, body, action) -> None:
+        """Handle a choice picker button click (hermes_cp_<idx>) from Block Kit."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        if not self._is_interactive_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+        ):
+            logger.warning(
+                "[Slack] Unauthorized choice picker click by %s (%s) - ignoring",
+                user_name, user_id,
+            )
+            return
+
+        # Parse index from action_id: hermes_cp_<idx>
+        try:
+            idx = int(action_id.split("_")[-1])
+        except (ValueError, TypeError):
+            logger.warning("[Slack] Malformed choice picker action_id: %s", action_id)
+            return
+
+        state = self._choice_picker_state.pop(msg_ts, None)
+        if state is None:
+            logger.warning("[Slack] Choice picker state not found for ts=%s", msg_ts)
+            return
+
+        choices = state.get("choices", [])
+        on_choice_selected = state.get("on_choice_selected")
+
+        if idx < 0 or idx >= len(choices):
+            logger.warning("[Slack] Choice picker index %d out of range (%d choices)", idx, len(choices))
+            return
+
+        chosen = choices[idx]
+        label = str(chosen.get("label") or chosen.get("value") or f"Option {idx + 1}")
+
+        # Update the message to show the selection.
+        try:
+            client = self._get_client(channel_id)
+            await client.chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=f"✓ {label} (selected by {user_name})",
+                blocks=[
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"✓ *{label}* — selected by {user_name}"}},
+                ],
+            )
+        except Exception as e:
+            logger.warning("[Slack] Could not update choice picker message: %s", e)
+
+        # Fire the callback.
+        if callable(on_choice_selected):
+            try:
+                await on_choice_selected(chosen.get("value", label))
+            except Exception as e:
+                logger.error("[Slack] on_choice_selected callback failed: %s", e, exc_info=True)
 
     async def _handle_clarify_action(self, ack, body, action) -> None:
         """Handle a clarify button click (a choice or "Other") from Block Kit."""

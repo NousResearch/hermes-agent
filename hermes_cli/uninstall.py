@@ -509,6 +509,29 @@ def _uninstall_profile(profile) -> None:
         log_warn(f"  Could not remove {profile_home}: {e}")
 
 
+def _remove_hermes_home(hermes_home: Path, *, preserve_profiles: bool) -> None:
+    """Delete ``hermes_home``, optionally keeping the named-profiles subtree.
+
+    Named profiles live under ``<default>/profiles/<name>/``. Full uninstall
+    always clears default-root data (config, sessions, .env, …), but when the
+    user declined removing other profiles — or the non-interactive ``--yes``
+    path keeps them — the ``profiles/`` directory must survive. A blanket
+    ``shutil.rmtree(hermes_home)`` would wipe those homes anyway.
+    """
+    profiles_dir = hermes_home / "profiles"
+    if not preserve_profiles or not profiles_dir.is_dir():
+        shutil.rmtree(hermes_home)
+        return
+
+    for child in list(hermes_home.iterdir()):
+        if child.name == "profiles":
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def run_gui_uninstall(args):
     """GUI-only uninstall: remove the Chat GUI, leave the agent + data intact.
 
@@ -745,7 +768,10 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
         if _is_default_hermes_home(hermes_home):
             profiles = _discover_named_profiles()
             if profiles:
-                print("  • Named profiles (interactive uninstall asks before removing):")
+                print(
+                    "  • Named profiles (kept by default on --yes; "
+                    "interactive uninstall asks before removing):"
+                )
                 for prof in profiles:
                     print(f"    - {prof.name}: {prof.path}")
     else:
@@ -834,10 +860,10 @@ def _perform_uninstall(
     #     dir). Both the "keep data" and "full" CLI flows remove the agent
     #     code, so the GUI — which is just another consumer of the same
     #     checkout — should go with it. uninstall_gui() never touches config /
-    #     sessions / .env, so it's safe in keep-data mode; on full uninstall the
-    #     step-5 rmtree(hermes_home) would sweep the in-tree artifacts anyway,
-    #     but the packaged app + Electron userData live OUTSIDE HERMES_HOME and
-    #     must be cleaned explicitly here.
+    #     sessions / .env, so it's safe in keep-data mode; on full uninstall
+    #     step 5 ``_remove_hermes_home`` sweeps in-tree artifacts (full wipe
+    #     when profiles are removed), but the packaged app + Electron userData
+    #     live OUTSIDE HERMES_HOME and must be cleaned explicitly here.
     log_info("Removing desktop Chat GUI artifacts...")
     try:
         from hermes_cli.gui_uninstall import uninstall_gui
@@ -869,9 +895,9 @@ def _perform_uninstall(
     # 4b. Remove Windows-only installer artifacts that are NOT user data:
     #     PortableGit, bundled Node, gateway-service dir.  Installer put them
     #     under HERMES_HOME but they're install tooling, not config — safe to
-    #     remove even in "keep data" mode.  If we're doing a full uninstall
-    #     the step-5 rmtree(hermes_home) would sweep them anyway; calling
-    #     this helper there is a no-op since they'll already be gone.
+    #     remove even in "keep data" mode.  On full uninstall step 5
+    #     ``_remove_hermes_home`` sweeps them when the default root is wiped;
+    #     calling this helper first is still useful in keep-data mode.
     if _is_windows():
         log_info("Removing Windows installer artifacts (PortableGit, Node, gateway-service)...")
         removed_artifacts = remove_portable_tooling_windows(hermes_home)
@@ -882,12 +908,13 @@ def _perform_uninstall(
             log_info("No Windows installer artifacts to remove")
     
     # 5. Optionally remove ~/.hermes/ data directory (and named profiles)
+    preserved_profiles = False
     if full_uninstall:
         # 5a. Stop and remove each named profile's gateway service and
-        #     alias wrapper. The profile HERMES_HOME dirs live under
-        #     ``<default>/profiles/<name>/`` and will be swept away by the
-        #     rmtree below, but services + alias scripts live OUTSIDE the
-        #     default root and have to be cleaned up explicitly.
+        #     alias wrapper. Services + alias scripts live OUTSIDE the
+        #     default root and must be cleaned explicitly. Profile data
+        #     under ``profiles/`` is removed here too when requested;
+        #     otherwise step 5b preserves that subtree.
         if remove_profiles and named_profiles:
             for prof in named_profiles:
                 _uninstall_profile(prof)
@@ -895,8 +922,18 @@ def _perform_uninstall(
         log_info("Removing configuration and data...")
         try:
             if hermes_home.exists():
-                shutil.rmtree(hermes_home)
-                log_success(f"Removed {hermes_home}")
+                preserve_profiles = not remove_profiles
+                _remove_hermes_home(hermes_home, preserve_profiles=preserve_profiles)
+                preserved_profiles = (
+                    preserve_profiles and (hermes_home / "profiles").is_dir()
+                )
+                if preserved_profiles:
+                    log_success(
+                        f"Removed default data under {hermes_home} "
+                        "(kept named profiles)"
+                    )
+                else:
+                    log_success(f"Removed {hermes_home}")
         except Exception as e:
             log_warn(f"Could not fully remove {hermes_home}: {e}")
             log_info("You may need to manually remove it")
@@ -919,6 +956,10 @@ def _perform_uninstall(
             print(color("  iex (irm https://hermes-agent.nousresearch.com/install.ps1)", Colors.DIM))
         else:
             print(color("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash", Colors.DIM))
+        print()
+    elif preserved_profiles:
+        print(color("Named profiles were preserved:", Colors.CYAN))
+        print(f"  {hermes_home / 'profiles'}/")
         print()
 
     if _is_windows():

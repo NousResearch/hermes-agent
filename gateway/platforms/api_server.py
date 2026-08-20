@@ -1447,10 +1447,6 @@ class APIServerAdapter(BasePlatformAdapter):
         # Clarify requests use the same per-run isolation rule as approvals,
         # but remain a separate primitive and response endpoint.
         self._run_clarify_sessions: Dict[str, str] = {}
-        # Process-local waiting-for-user stamp (session_id → bool). H1 keeps
-        # this in-memory so Phase 2 defer/park can read it without requiring
-        # durable session metadata yet; GET /v1/runs also mirrors the flag.
-        self._session_awaiting_user: Dict[str, bool] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         self._session_dbs: Dict[str, Any] = {}
         self._session_db_cache_lock = threading.Lock()
@@ -6648,32 +6644,6 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         return None
 
-    def _set_awaiting_user(
-        self,
-        *,
-        run_id: str,
-        session_id: str,
-        awaiting: bool,
-        status: Optional[str] = None,
-        **fields: Any,
-    ) -> None:
-        """Stamp process-local + pollable awaiting_user for a run/session."""
-        if awaiting:
-            self._session_awaiting_user[session_id] = True
-        else:
-            self._session_awaiting_user.pop(session_id, None)
-        current_status = (
-            status
-            if status is not None
-            else self._run_statuses.get(run_id, {}).get("status", "running")
-        )
-        self._set_run_status(
-            run_id,
-            current_status,
-            awaiting_user=bool(awaiting),
-            **fields,
-        )
-
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -6978,12 +6948,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         if self._run_streams.get(run_id) is not q:
                             clarify_gateway.clear_session(clarify_session_key)
                             return
-                        self._set_awaiting_user(
-                            run_id=run_id,
-                            session_id=session_id,
-                            awaiting=True,
-                            status="waiting_for_clarification",
+                        self._set_run_status(
+                            run_id,
+                            "waiting_for_clarification",
                             last_event="clarify.request",
+                            awaiting_user=True,
                         )
                         _put_event_if_active({
                             "event": "clarify.request",
@@ -7006,12 +6975,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     if not response:
                         def _clear_awaiting_on_timeout() -> None:
                             if self._run_statuses.get(run_id, {}).get("awaiting_user"):
-                                self._set_awaiting_user(
-                                    run_id=run_id,
-                                    session_id=session_id,
-                                    awaiting=False,
-                                    status="running",
+                                self._set_run_status(
+                                    run_id,
+                                    "running",
                                     last_event="clarify.timeout",
+                                    awaiting_user=False,
                                 )
 
                         try:
@@ -7272,7 +7240,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
                 self._run_clarify_sessions.pop(run_id, None)
-                self._session_awaiting_user.pop(session_id, None)
                 cur = self._run_statuses.get(run_id)
                 if cur is not None:
                     cur["awaiting_user"] = False
@@ -7644,15 +7611,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=409,
             )
 
-        session_id = str(
-            self._run_statuses.get(run_id, {}).get("session_id") or run_id
-        )
-        self._set_awaiting_user(
-            run_id=run_id,
-            session_id=session_id,
-            awaiting=False,
-            status="running",
+        self._set_run_status(
+            run_id,
+            "running",
             last_event="clarify.responded",
+            awaiting_user=False,
         )
         q = self._run_streams.get(run_id)
         event = {
@@ -7747,15 +7710,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if agent is None and task is None:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
-        session_id = str(
-            self._run_statuses.get(run_id, {}).get("session_id") or run_id
-        )
-        self._set_awaiting_user(
-            run_id=run_id,
-            session_id=session_id,
-            awaiting=False,
-            status="stopping",
+        self._set_run_status(
+            run_id,
+            "stopping",
             last_event="run.stopping",
+            awaiting_user=False,
         )
         self._stopping_run_ids.add(run_id)
 

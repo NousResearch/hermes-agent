@@ -401,7 +401,6 @@ class TestRunEvents:
                     await asyncio.sleep(0.05)
                 assert polled["status"] == "waiting_for_clarification"
                 assert polled["awaiting_user"] is True
-                assert adapter._session_awaiting_user.get(polled["session_id"]) is True
 
                 response = await cli.post(
                     f"/v1/runs/{run_id}/clarification",
@@ -415,7 +414,6 @@ class TestRunEvents:
                 assert payload["request_id"] == event["request_id"]
                 assert payload["choice_id"] == "choice-2"
                 assert adapter._run_statuses[run_id]["awaiting_user"] is False
-                assert polled["session_id"] not in adapter._session_awaiting_user
 
                 for _ in range(40):
                     status = adapter._run_statuses[run_id]
@@ -427,6 +425,86 @@ class TestRunEvents:
                 assert status["status"] == "completed"
                 assert status["awaiting_user"] is False
                 assert run_id not in adapter._run_clarify_sessions
+
+    @pytest.mark.asyncio
+    async def test_clarification_awaiting_user_is_isolated_per_run(self, adapter):
+        """Resolving one run must not clear awaiting_user on a sibling run."""
+        app = _create_runs_app(adapter)
+        answers = {}
+
+        def make_agent(**kwargs):
+            mock_agent = MagicMock()
+
+            def run_conversation(**_run_kwargs):
+                answers[id(mock_agent)] = kwargs["clarify_callback"](
+                    "Pick one?",
+                    ["Yes", "No"],
+                )
+                return {"final_response": answers[id(mock_agent)]}
+
+            mock_agent.run_conversation.side_effect = run_conversation
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=make_agent):
+                first = await cli.post(
+                    "/v1/runs", json={"input": "one", "session_id": "shared-session"}
+                )
+                second = await cli.post(
+                    "/v1/runs", json={"input": "two", "session_id": "shared-session"}
+                )
+                first_id = (await first.json())["run_id"]
+                second_id = (await second.json())["run_id"]
+                first_event = await asyncio.wait_for(
+                    adapter._run_streams[first_id].get(), timeout=3
+                )
+                second_event = await asyncio.wait_for(
+                    adapter._run_streams[second_id].get(), timeout=3
+                )
+                assert first_event["event"] == "clarify.request"
+                assert second_event["event"] == "clarify.request"
+                for _ in range(40):
+                    if (
+                        adapter._run_statuses[first_id].get("awaiting_user")
+                        and adapter._run_statuses[second_id].get("awaiting_user")
+                    ):
+                        break
+                    await asyncio.sleep(0.05)
+                assert adapter._run_statuses[first_id]["session_id"] == "shared-session"
+                assert adapter._run_statuses[second_id]["session_id"] == "shared-session"
+                assert adapter._run_statuses[first_id]["awaiting_user"] is True
+                assert adapter._run_statuses[second_id]["awaiting_user"] is True
+
+                resolved = await cli.post(
+                    f"/v1/runs/{first_id}/clarification",
+                    json={
+                        "request_id": first_event["request_id"],
+                        "response": {"type": "choice", "choice_id": "choice-1"},
+                    },
+                )
+                assert resolved.status == 200
+                assert adapter._run_statuses[first_id]["awaiting_user"] is False
+                sibling = await cli.get(f"/v1/runs/{second_id}")
+                sibling_status = await sibling.json()
+                assert sibling.status == 200
+                assert sibling_status["awaiting_user"] is True
+                assert sibling_status["status"] == "waiting_for_clarification"
+                assert clarify_mod.get_pending_by_id(
+                    second_event["request_id"], session_key=second_id
+                ) is not None
+
+                leftover = await cli.post(
+                    f"/v1/runs/{second_id}/clarification",
+                    json={
+                        "request_id": second_event["request_id"],
+                        "response": {"type": "choice", "choice_id": "choice-2"},
+                    },
+                )
+                assert leftover.status == 200
+                assert adapter._run_statuses[second_id]["awaiting_user"] is False
 
     @pytest.mark.asyncio
     async def test_clarification_multi_select_returns_json_array(self, adapter):
@@ -1085,7 +1163,6 @@ class TestStopRun:
                     event["request_id"], session_key=run_id
                 ) is None
                 assert adapter._run_statuses[run_id]["awaiting_user"] is False
-                assert adapter._run_statuses[run_id]["session_id"] not in adapter._session_awaiting_user
 
                 for _ in range(40):
                     if run_id not in adapter._active_run_tasks:

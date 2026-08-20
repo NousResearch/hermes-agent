@@ -378,11 +378,13 @@ async def mcp_oauth_callback(
 async def set_mcp_server_enabled(
     name: str, body: MCPEnabledToggle, profile: Optional[str] = None
 ):
-    """Enable or disable an MCP server (takes effect on next session/gateway).
+    """Enable or disable an MCP server.
 
     Toggles the ``enabled`` key on the server's config.yaml entry — the same
     flag the agent reads at startup.  Disabled servers stay in config so they
-    can be re-enabled without re-entering their settings.
+    can be re-enabled without re-entering their settings.  Disabling also
+    stops any live/parked connection in this process immediately so retries
+    do not keep logging after the toggle.
     """
     def _run():
         with _profile_scope(body.profile or profile):
@@ -395,6 +397,17 @@ async def set_mcp_server_enabled(
                     raise HTTPException(status_code=400, detail="Malformed server config")
                 servers[name]["enabled"] = bool(body.enabled)
                 save_config(cfg)
+            if not body.enabled:
+                try:
+                    from tools.mcp_tool import shutdown_mcp_server
+
+                    shutdown_mcp_server(name)
+                except Exception:
+                    _log.debug(
+                        "MCP disable: live shutdown for '%s' skipped",
+                        name,
+                        exc_info=True,
+                    )
         return {"ok": True, "name": name, "enabled": bool(body.enabled)}
 
     return await asyncio.to_thread(_run)

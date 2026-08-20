@@ -120,9 +120,22 @@ def _enable_disable(name: str, *, enable: bool) -> None:
     server["enabled"] = enable
     cfg["mcp_servers"] = servers
     save_config(cfg)
+    if not enable:
+        try:
+            from tools.mcp_tool import shutdown_mcp_server
+
+            shutdown_mcp_server(name)
+        except Exception:
+            pass
+        print(color(
+            f"  ✓ '{name}' disabled (live connection stopped if this "
+            "process was holding one).",
+            Colors.GREEN,
+        ))
+        return
     print(color(
-        f"  ✓ '{name}' {'enabled' if enable else 'disabled'}. "
-        "Start a new Hermes session for changes to take effect.",
+        f"  ✓ '{name}' enabled. "
+        "Start a new Hermes session (or /reload-mcp) for changes to take effect.",
         Colors.GREEN,
     ))
 

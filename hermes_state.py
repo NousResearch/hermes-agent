@@ -4211,6 +4211,59 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         msg = str(exc).lower()
         return "fts5" in msg and "corrupt" in msg
 
+    def _foreign_state_db_holders(self) -> List[Tuple[int, str]]:
+        """Return foreign processes holding this DB or its WAL sidecars.
+
+        Automatic FTS repair is structural maintenance, not an ordinary WAL
+        write.  It must not run while another process remains attached: a
+        sidecar reset under that holder can leave the two processes writing
+        through different WAL inodes.  ``psutil`` reads the kernel's open-file
+        table, including Linux ``(deleted)`` descriptors, so this also catches
+        a split brain already in progress.
+
+        A scan failure is represented as an unknown holder.  Skipping optional
+        automatic maintenance is safer than assuming quiescence; canonical
+        writes continue through the stale-FTS fail-open path.
+        """
+        # The split-brain mechanism requires POSIX unlink semantics: Windows
+        # refuses to replace SQLite sidecars while another process has them
+        # open.  Avoid psutil.open_files() there; querying arbitrary Windows
+        # processes can block for minutes on device-backed handles.
+        if _IS_WINDOWS:
+            return []
+        if psutil is None:
+            return [(-1, "open-file scan unavailable")]
+
+        def _canonical(path: str) -> str:
+            clean = path.removesuffix(" (deleted)")
+            return os.path.normcase(os.path.abspath(clean))
+
+        db_path = os.path.abspath(os.fspath(self.db_path))
+        watched = {
+            _canonical(db_path),
+            _canonical(db_path + "-wal"),
+            _canonical(db_path + "-shm"),
+        }
+        holders: List[Tuple[int, str]] = []
+        try:
+            for process in psutil.process_iter(["pid", "open_files"]):
+                info = process.info
+                pid = int(info["pid"])
+                if pid == os.getpid():
+                    continue
+                for opened in info.get("open_files") or ():
+                    path = getattr(opened, "path", "")
+                    if path and _canonical(path) in watched:
+                        holders.append((pid, path))
+        except Exception as exc:
+            logger.warning(
+                "Could not prove state.db has no foreign holders; deferring "
+                "automatic FTS maintenance: %s",
+                exc,
+            )
+            return holders or [(-1, f"open-file scan failed: {exc}")]
+        return holders
+
     def _try_runtime_fts_rebuild(self, exc: sqlite3.DatabaseError) -> bool:
         """One-shot in-place FTS rebuild after a corrupt-index write failure.
 
@@ -4234,6 +4287,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not self._is_fts_write_corruption_error(exc):
             return False
         self._fts_runtime_rebuild_attempted = True
+        foreign_holders = self._foreign_state_db_holders()
+        if foreign_holders:
+            logger.warning(
+                "Skipping automatic state.db FTS rebuild while foreign "
+                "processes hold the database or WAL sidecars (%s); detaching "
+                "FTS sync so canonical writes can continue.",
+                foreign_holders,
+            )
+            return False
         logger.warning(
             "state.db write failed with an FTS-corruption error (%s) — "
             "attempting one-shot in-place FTS rebuild; canonical message "

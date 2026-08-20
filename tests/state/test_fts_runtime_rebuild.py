@@ -14,9 +14,11 @@ until a later open atomically rebuilds the index and restores the triggers.
 """
 
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
+import hermes_state
 from hermes_state import (
     FTS_STALE_KEY,
     LEGACY_FTS_SQL,
@@ -84,6 +86,47 @@ def _base_fts_triggers(db_path):
 
 
 class TestRuntimeFtsRebuild:
+    def test_foreign_holder_detection_includes_deleted_wal(
+        self, db, tmp_path, monkeypatch
+    ):
+        db_path = tmp_path / "state.db"
+
+        class FakePsutil:
+            @staticmethod
+            def process_iter(_attrs):
+                return iter(
+                    (
+                        SimpleNamespace(
+                            info={
+                                "pid": 111,
+                                "open_files": [SimpleNamespace(path=str(db_path))],
+                            }
+                        ),
+                        SimpleNamespace(
+                            info={
+                                "pid": 222,
+                                "open_files": [
+                                    SimpleNamespace(path=f"{db_path}-wal (deleted)")
+                                ],
+                            }
+                        ),
+                        SimpleNamespace(
+                            info={
+                                "pid": 333,
+                                "open_files": [SimpleNamespace(path=str(tmp_path / "other.db"))],
+                            }
+                        ),
+                    )
+                )
+
+        monkeypatch.setattr(hermes_state, "psutil", FakePsutil)
+        monkeypatch.setattr(hermes_state, "_IS_WINDOWS", False)
+        monkeypatch.setattr(hermes_state.os, "getpid", lambda: 111)
+
+        assert db._foreign_state_db_holders() == [
+            (222, f"{db_path}-wal (deleted)")
+        ]
+
     def test_corruption_error_classification_covers_both_sqlite_messages(self):
         """SQLite's message for a corrupt FTS index varies by version: older
         builds raise the generic malformed-image error, newer builds raise an
@@ -242,6 +285,30 @@ class TestRuntimeFtsRebuild:
         assert _meta_value(db_path, FTS_STALE_KEY) == "1"
         assert _base_fts_triggers(db_path) == set()
 
+    def test_foreign_holder_skips_runtime_rebuild_and_fails_open(
+        self, db, tmp_path, monkeypatch
+    ):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
+
+        monkeypatch.setattr(
+            db,
+            "_foreign_state_db_holders",
+            lambda: [(4242, str(db_path) + "-wal")],
+            raising=False,
+        )
+
+        db.append_message("s1", "user", "canonical survives foreign holder")
+
+        assert _message_contents(db_path)[-1] == "canonical survives foreign holder"
+        assert db._fts_stale is True
+        assert _meta_value(db_path, FTS_STALE_KEY) == "1"
+        assert _base_fts_triggers(db_path) == set()
+
     def test_stale_search_preserves_not_semantics(self, db, tmp_path, monkeypatch):
         if not db._fts_enabled:
             pytest.skip("FTS5 unavailable in this build")
@@ -321,6 +388,39 @@ class TestRuntimeFtsRebuild:
             reopened.append_message("s1", "user", "after failed recovery")
             assert _message_contents(db_path)[-1] == "after failed recovery"
             assert reopened.search_messages("failed recovery")
+        finally:
+            reopened.close()
+
+    def test_foreign_holder_defers_startup_stale_rebuild(
+        self, db, tmp_path, monkeypatch
+    ):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
+        monkeypatch.setattr(
+            db,
+            "rebuild_fts",
+            lambda: (_ for _ in ()).throw(sqlite3.DatabaseError("still corrupt")),
+        )
+        db.append_message("s1", "user", "before restart")
+        db.close()
+
+        monkeypatch.setattr(
+            SessionDB,
+            "_foreign_state_db_holders",
+            lambda self: [(4242, str(db_path) + "-wal")],
+            raising=False,
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_stale is True
+            assert _meta_value(db_path, FTS_STALE_KEY) == "1"
+            assert _base_fts_triggers(db_path) == set()
+            reopened.append_message("s1", "user", "after deferred recovery")
+            assert _message_contents(db_path)[-1] == "after deferred recovery"
         finally:
             reopened.close()
 

@@ -62,6 +62,7 @@ hermes skills uninstall <skill-name>
 | [**creative-ideation**](/docs/user-guide/skills/optional/creative/creative-creative-ideation) | Generate ideas via named methods from creative practice. |
 | [**draw-your-font**](/docs/user-guide/skills/optional/creative/creative-draw-your-font) | Turn a photo of handwriting into an installable font (TTF/WOFF). |
 | [**heartmula**](/docs/user-guide/skills/optional/creative/creative-heartmula) | HeartMuLa: Suno-like song generation from lyrics + tags. |
+| [**human-writing**](/docs/user-guide/skills/optional/creative/creative-human-writing) | Natural-sounding Chinese prose (活人感写作): write or revise Chinese long-form content — Zhihu answers, forum posts, WeChat articles, blogs, stories, scripts — so it reads like a real person, not a model. Enforces material-first drafting and... |
 | [**hyperframes**](/docs/user-guide/skills/optional/creative/creative-hyperframes) | Render MP4/WebM videos from HTML compositions. |
 | [**kanban-video-orchestrator**](/docs/user-guide/skills/optional/creative/creative-kanban-video-orchestrator) | Plan and run multi-agent video production pipelines. |
 | [**meme-generation**](/docs/user-guide/skills/optional/creative/creative-meme-generation) | Create meme PNGs from templates with Pillow text overlay. |

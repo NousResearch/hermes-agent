@@ -824,7 +824,155 @@ class TestWeixinVoiceGatewayHandoff:
         # The text field must be empty (Tencent text dropped) so the runner
         # has no pre-filled body and routes the audio to STT.
         assert event.text != tencent_text, (
-            "VOICE event body leaked Tencent's STT text — runner would trust "
+            "VOICE event body leaked Tencent's STT text - runner would trust "
             "the wrong transcript instead of re-transcribing (#27300)."
         )
+
+
+class TestWeixinPreferPlatformTranscription:
+    """Tests for ``prefer_platform_transcription`` config option.
+
+    When enabled (``gateway.platforms.weixin.extra.prefer_platform_transcription:
+    true``), the adapter trusts Tencent Cloud's ``voice_item.text`` and skips
+    downloading / re-transcribing the raw audio. This is useful for
+    Chinese-heavy users where Tencent's STT quality is high and local STT
+    (faster-whisper etc.) may not be installed.
+
+    When disabled (default), behaviour is unchanged from #27300: always
+    download audio, ignore Tencent's text.
+    """
+
+    def _make_voice_item(self, text: str = "", with_media: bool = True) -> dict:
+        item: dict = {"type": weixin.ITEM_VOICE, "voice_item": {}}
+        if text:
+            item["voice_item"]["text"] = text
+        if with_media:
+            item["voice_item"]["media"] = {
+                "encrypt_query_param": "q",
+                "aes_key": "a" * 32,
+                "full_url": "https://example.invalid/voice.silk",
+            }
+        return item
+
+    def test_extract_text_returns_tencent_text_when_enabled(self):
+        """With prefer_platform_transcription=True, Tencent's text is used."""
+        item_list = [self._make_voice_item(text="帮我查一下今天天气")]
+        result = weixin._extract_text(
+            item_list, prefer_platform_transcription=True
+        )
+        assert result == (
+            "[Voice transcription provided by Weixin]\n"
+            "帮我查一下今天天气"
+        )
+
+    def test_extract_text_ignores_tencent_text_when_disabled(self):
+        """With prefer_platform_transcription=False (default), Tencent's
+        text is ignored when raw audio is available - the central STT
+        pipeline will produce the body instead (#27300)."""
+        item_list = [self._make_voice_item(text="garbled-tencent-transcript")]
+        result = weixin._extract_text(
+            item_list, prefer_platform_transcription=False
+        )
+        assert result == ""
+
+    def test_extract_text_uses_tencent_text_when_no_media(self):
+        """Even with prefer_platform_transcription=False, if Tencent
+        supplied text but no raw audio, the text is used (there's
+        nothing else to transcribe)."""
+        item_list = [self._make_voice_item(text="some text", with_media=False)]
+        result = weixin._extract_text(
+            item_list, prefer_platform_transcription=False
+        )
+        assert result == (
+            "[Voice transcription provided by Weixin]\n"
+            "some text"
+        )
+
+    def test_extract_text_empty_when_no_text_and_no_media(self):
+        """No text and no media -> empty string regardless of setting."""
+        item_list = [self._make_voice_item(text="", with_media=False)]
+        result = weixin._extract_text(
+            item_list, prefer_platform_transcription=True
+        )
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_download_voice_skips_when_enabled(self, tmp_path, monkeypatch):
+        """With prefer_platform_transcription=True, _download_voice returns
+        None when Tencent text is available - no need to download audio."""
+        adapter = _make_adapter()
+        adapter._prefer_platform_transcription = True
+
+        download_called = False
+
+        async def _fake_download(*a, **k):
+            nonlocal download_called
+            download_called = True
+            return b"should-not-reach-here"
+
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        item = self._make_voice_item(text="帮我查一下今天天气")
+        result = await adapter._download_voice(item)
+
+        assert result is None
+        assert not download_called, "Audio was downloaded despite having Tencent text"
+
+    @pytest.mark.asyncio
+    async def test_download_voice_downloads_when_enabled_but_no_text(self, tmp_path, monkeypatch):
+        """With prefer_platform_transcription=True but no Tencent text,
+        audio is still downloaded for local STT."""
+        adapter = _make_adapter()
+        adapter._prefer_platform_transcription = True
+        adapter._cdn_base_url = "https://example.invalid"
+        adapter._poll_session = Mock()
+
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
+                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+
+        async def _fake_download(*a, **k):
+            return b"\x00\x01FAKE_SILK"
+
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        item = self._make_voice_item(text="", with_media=True)
+        result = await adapter._download_voice(item)
+
+        assert result is not None
+        assert result.endswith(".silk")
+
+    @pytest.mark.asyncio
+    async def test_download_voice_downloads_when_disabled(self, tmp_path, monkeypatch):
+        """With prefer_platform_transcription=False (default), audio is
+        always downloaded even when Tencent text is present (#27300)."""
+        adapter = _make_adapter()
+        adapter._prefer_platform_transcription = False
+        adapter._cdn_base_url = "https://example.invalid"
+        adapter._poll_session = Mock()
+
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
+                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+
+        async def _fake_download(*a, **k):
+            return b"\x00\x01FAKE_SILK"
+
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        item = self._make_voice_item(text="garbled-tencent-transcript")
+        result = await adapter._download_voice(item)
+
+        assert result is not None
+        assert result.endswith(".silk")
+
+    def test_config_option_read_from_extra(self):
+        """The config option is read from platform extra dict."""
+        from gateway.platforms.weixin import _coerce_bool
+
+        extra = {"account_id": "test", "prefer_platform_transcription": True}
+        val = _coerce_bool(extra.get("prefer_platform_transcription"), default=False)
+        assert val is True
+
+        extra2 = {"account_id": "test"}
+        val2 = _coerce_bool(extra2.get("prefer_platform_transcription"), default=False)
+        assert val2 is False
 

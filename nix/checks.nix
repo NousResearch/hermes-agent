@@ -1,8 +1,10 @@
 # nix/checks.nix — Build-time verification tests
 #
-# Checks are Linux-only: the full Python venv (via uv2nix) includes
-# transitive deps like onnxruntime that lack compatible wheels on
-# aarch64-darwin. The package and devShell still work on macOS.
+# Full runtime checks are Linux-only: the complete Python venv (via uv2nix)
+# includes transitive deps like onnxruntime that lack compatible wheels on
+# aarch64-darwin. The package and devShell still work on macOS, and a
+# structural Darwin-only check for the desktop .app bundle layout lives at
+# the bottom of this file.
 { inputs, ... }: {
   perSystem = { pkgs, lib, self', ... }:
     let
@@ -1064,6 +1066,72 @@ json.dump(load_config(), sys.stdout, default=str)
 
           echo ""
           echo "=== All 7 merge scenarios passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+        # Verify the Darwin .app bundle layout from nix/desktop.nix: the
+        # bundle must ship the wrapped executable, the renderer at
+        # Resources/app, and install-stamp.json at Contents/Resources —
+        # where the runtime's process.resourcesPath lookup reads it
+        # (apps/desktop/electron/main.ts).
+        desktop-app-layout = pkgs.runCommand "hermes-desktop-app-layout" { } ''
+          set -e
+          APP=${self'.packages.desktop}/Applications/Hermes.app
+
+          echo "=== Checking Hermes.app bundle layout ==="
+          test -d "$APP" || (echo "FAIL: Applications/Hermes.app missing"; exit 1)
+          echo "PASS: Applications/Hermes.app exists"
+
+          test -x "$APP/Contents/MacOS/Hermes" || \
+            (echo "FAIL: Contents/MacOS/Hermes missing or not executable"; exit 1)
+          echo "PASS: bundle executable present"
+
+          # CFBundleExecutable must be the real Mach-O binary, not a wrapper
+          # script, or codesign/notarization fails. LSEnvironment in
+          # Info.plist carries the env; $out/bin has the CLI wrapper instead.
+          test ! -e "$APP/Contents/MacOS/Hermes.real" || \
+            (echo "FAIL: wrapper remnant Hermes.real present in bundle"; exit 1)
+          if head -c 2 "$APP/Contents/MacOS/Hermes" | grep -q '#!'; then
+            echo "FAIL: Contents/MacOS/Hermes is a script — must be the Mach-O binary"
+            exit 1
+          fi
+          echo "PASS: bundle main executable is the Mach-O binary (signable)"
+
+          grep -q "LSEnvironment" "$APP/Contents/Info.plist" || \
+            (echo "FAIL: LSEnvironment missing from Info.plist"; exit 1)
+          grep -q "HERMES_DESKTOP_HERMES" "$APP/Contents/Info.plist" || \
+            (echo "FAIL: HERMES_DESKTOP_HERMES missing from LSEnvironment"; exit 1)
+          echo "PASS: LSEnvironment carries HERMES_DESKTOP_HERMES"
+
+          test -d "$APP/Contents/Resources/app" || \
+            (echo "FAIL: Contents/Resources/app missing"; exit 1)
+          test -f "$APP/Contents/Resources/app/dist/electron-main.mjs" || \
+            (echo "FAIL: renderer bundle missing from Resources/app"; exit 1)
+          echo "PASS: Resources/app renderer present"
+
+          test -f "$APP/Contents/Resources/install-stamp.json" || \
+            (echo "FAIL: install-stamp.json missing at Contents/Resources"; exit 1)
+          echo "PASS: install stamp at Contents/Resources/install-stamp.json"
+
+          # Each helper's own Info.plist must be rebranded too, not just its
+          # file/folder names.
+          helper_plist=$(ls "$APP"/Contents/Frameworks/Hermes\ Helper*.app/Contents/Info.plist | head -1)
+          test -n "$helper_plist" || (echo "FAIL: no helper Info.plist found"; exit 1)
+          if grep -q "Electron" "$helper_plist"; then
+            echo "FAIL: $helper_plist still references Electron: $(grep Electron "$helper_plist")"
+            exit 1
+          fi
+          grep -q "com.nousresearch.hermes.helper" "$helper_plist" || \
+            (echo "FAIL: helper Info.plist missing rebranded CFBundleIdentifier"; exit 1)
+          echo "PASS: helper Info.plist rebranded"
+
+          # Bundle must carry a coherent signature end to end (ad-hoc is fine).
+          codesign --verify --deep --strict "$APP" || \
+            (echo "FAIL: codesign --verify --deep --strict failed on $APP"; exit 1)
+          echo "PASS: bundle signature is internally consistent"
+
+          echo "=== All desktop layout checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

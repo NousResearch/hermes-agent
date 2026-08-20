@@ -1,0 +1,17 @@
+{
+  "name": "Example Dev Container",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": "latest",
+    "ghcr.io/devcontainers/features/git:1": "latest"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python"
+      ]
+    }
+  },
+  "forwardPorts": [],
+  "postCreateCommand": "pip install -r requirements.txt"
+}

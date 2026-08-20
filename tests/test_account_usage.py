@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 from agent.account_usage import (
@@ -12,18 +13,7 @@ class _Response:
     def __init__(self, payload, status_code=200):
         self._payload = payload
         self.status_code = status_code
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
-
-    def json(self):
-        return self._payload
-
-
-class _Client:
-    def __init__(self, payload):
-        self._payload = payload
+        self.headers = {}
 
     def __enter__(self):
         return self
@@ -31,7 +21,31 @@ class _Client:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def get(self, url, headers=None):
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def iter_raw(self):
+        yield json.dumps(self._payload).encode()
+
+    def close(self):
+        pass
+
+
+class _Client:
+    def __init__(self, payload, calls=None):
+        self._payload = payload
+        self._calls = calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def stream(self, method, url, headers=None, **kwargs):
+        if self._calls is not None:
+            self._calls.append({"method": method, "url": url, "headers": headers})
         return _Response(self._payload)
 
 
@@ -45,7 +59,7 @@ class _RoutingClient:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def get(self, url, headers=None):
+    def stream(self, method, url, headers=None, **kwargs):
         return _Response(self._payloads[url])
 
 
@@ -93,6 +107,28 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_anthropic_uses_bounded_stream(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token", lambda: "oauth-token"
+    )
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {"five_hour": {"utilization": 0.25, "resets_at": 1_900_000_000}},
+            calls,
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert snapshot.windows[0].used_percent == 25.0
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["headers"]["Accept-Encoding"] == "identity"
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

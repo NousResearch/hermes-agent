@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,12 +9,22 @@ from agent import account_usage
 class _FakeResponse:
     def __init__(self, payload):
         self._payload = payload
+        self.headers = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
     def raise_for_status(self):
         return None
 
-    def json(self):
-        return self._payload
+    def iter_raw(self):
+        yield json.dumps(self._payload).encode()
+
+    def close(self):
+        pass
 
 
 class _FakeClient:
@@ -27,8 +38,8 @@ class _FakeClient:
     def __exit__(self, *exc):
         return False
 
-    def get(self, url, headers):
-        self.calls.append({"url": url, "headers": headers})
+    def stream(self, method, url, headers=None, **kwargs):
+        self.calls.append({"method": method, "url": url, "headers": headers})
         return _FakeResponse(self.payload)
 
 
@@ -76,6 +87,7 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
     assert snapshot.windows[0].used_percent == 21
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer live-agent-token"
+    assert calls[0]["headers"]["Accept-Encoding"] == "identity"
 
 
 def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usage_payload):
@@ -181,13 +193,12 @@ class _FakeResetClient:
     def __exit__(self, *exc):
         return False
 
-    def get(self, url, headers):
-        self.calls.append({"method": "GET", "url": url, "headers": headers})
-        return _FakeResponse(self.usage_payload)
-
-    def post(self, url, headers=None, json=None):
-        self.calls.append({"method": "POST", "url": url, "headers": headers, "json": json})
-        return _FakeResponse(self.consume_payload)
+    def stream(self, method, url, headers=None, json=None):
+        self.calls.append(
+            {"method": method, "url": url, "headers": headers, "json": json}
+        )
+        payload = self.usage_payload if method == "GET" else self.consume_payload
+        return _FakeResponse(payload)
 
 
 def _usage_payload_with_resets(primary_used, secondary_used, banked):
@@ -200,6 +211,35 @@ def _usage_payload_with_resets(primary_used, secondary_used, banked):
         "rate_limit_reset_credits": {"available_count": banked},
         "credits": {"has_credits": False},
     }
+
+
+def test_redeem_streams_usage_and_consume_responses(monkeypatch):
+    calls = []
+    client = _FakeResetClient(
+        calls,
+        _usage_payload_with_resets(100, 25, 1),
+        {"code": "reset", "windows_reset": 2},
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_codex_usage_credentials",
+        lambda base_url, api_key: (
+            "codex-token",
+            "https://chatgpt.com/backend-api/codex",
+            "acct_123",
+        ),
+    )
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: client)
+    monkeypatch.setattr(
+        "hermes_cli.auth.clear_codex_pool_quota_cooldowns", lambda: None
+    )
+
+    result = account_usage.redeem_codex_reset_credit(force=True)
+
+    assert result.status == "reset"
+    assert result.windows_reset == 2
+    assert [call["method"] for call in calls] == ["GET", "POST"]
+    assert all(call["headers"]["Accept-Encoding"] == "identity" for call in calls)
 
 
 

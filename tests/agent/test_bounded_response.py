@@ -11,6 +11,7 @@ body) or hang forever (body opens then stalls).
 
 from __future__ import annotations
 
+import gzip
 import http.server
 import json
 import socketserver
@@ -21,8 +22,11 @@ import httpx
 import pytest
 
 from agent.bounded_response import (
+    HTTPXResponseBodyTooLarge,
+    HTTPXUnsupportedContentEncoding,
     read_error_body_or_default,
     read_streaming_error_body,
+    read_streaming_json_response,
 )
 
 
@@ -75,6 +79,17 @@ def _make_handler():
                 self.send_response(500)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
+            elif self.path == "/gzip-bomb":
+                expanded = json.dumps(
+                    {"padding": "x" * (1_048_576 + 1)}
+                ).encode()
+                body = gzip.compress(expanded, compresslevel=9)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
     return _Handler
 
@@ -128,3 +143,58 @@ def test_or_default_returns_text_when_present(server_base, client):
     with client.stream("POST", server_base + "/normal") as response:
         result = read_error_body_or_default(response)
     assert result is not None and "RESOURCE_EXHAUSTED" in result
+
+
+def test_json_response_parses_complete_identity_body(server_base, client):
+    with client.stream(
+        "POST",
+        server_base + "/normal",
+        headers={"Accept-Encoding": "identity"},
+    ) as response:
+        result = read_streaming_json_response(response, max_bytes=64 * 1024)
+
+    assert result["error"]["status"] == "RESOURCE_EXHAUSTED"
+
+
+def test_json_response_stops_at_byte_cap(server_base, client):
+    start = time.monotonic()
+    with client.stream(
+        "POST",
+        server_base + "/oversize",
+        headers={"Accept-Encoding": "identity"},
+    ) as response:
+        with pytest.raises(HTTPXResponseBodyTooLarge, match="exceeds 65536 bytes"):
+            read_streaming_json_response(response, max_bytes=64 * 1024)
+
+    assert time.monotonic() - start < 9.0
+
+
+def test_json_response_has_hard_deadline(server_base, client):
+    start = time.monotonic()
+    with client.stream(
+        "POST",
+        server_base + "/stall",
+        headers={"Accept-Encoding": "identity"},
+    ) as response:
+        with pytest.raises(TimeoutError, match="exceeded 0.1s deadline"):
+            read_streaming_json_response(
+                response,
+                max_bytes=64 * 1024,
+                timeout_s=0.1,
+            )
+
+    assert time.monotonic() - start < 2.0
+
+
+def test_json_response_rejects_real_gzip_bomb(server_base, client):
+    with client.stream(
+        "POST",
+        server_base + "/gzip-bomb",
+        headers={"Accept-Encoding": "identity"},
+    ) as response:
+        assert response.request.headers["Accept-Encoding"] == "identity"
+        with pytest.raises(
+            HTTPXUnsupportedContentEncoding,
+            match="unsupported Content-Encoding: gzip",
+        ):
+            read_streaming_json_response(response, max_bytes=1_048_576)

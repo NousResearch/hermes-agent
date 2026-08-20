@@ -1,4 +1,4 @@
-"""Bounded reads of HTTP error response bodies.
+"""Bounded reads of streamed HTTP response bodies.
 
 When a provider returns a non-OK status on a *streaming* request, Hermes reads
 the response body to build a useful diagnostic error. A bare ``response.read()``
@@ -14,11 +14,10 @@ provider having a bad day. The diagnostic body is only ever shown to the user
 truncated to a few hundred characters, so reading megabytes — or blocking
 forever — buys nothing.
 
-``read_streaming_error_body`` bounds the read to a byte cap and enforces a
-hard wall-clock deadline, returning the decoded text snippet. Callers pass the
-returned text into their existing error builders instead of touching
-``response.text`` (which would be unbounded / would raise after a partial
-stream read).
+``read_streaming_error_body`` returns a best-effort decoded diagnostic.
+``read_streaming_json_response`` applies the same byte and deadline bounds to
+successful identity-encoded JSON responses, but raises if the body is
+incomplete so callers cannot accidentally accept truncated data.
 
 A subtlety the implementation must respect: ``httpx``'s ``iter_bytes()`` blocks
 *inside* the C/socket read while waiting for the next chunk. A wall-clock check
@@ -36,9 +35,10 @@ streams"), generalized to cover Hermes's three streaming error-body sites
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import httpx
 
@@ -51,6 +51,14 @@ DEFAULT_ERROR_BODY_MAX_BYTES = 64 * 1024
 # that does not finish within this window is abandoned and the connection is
 # closed; we keep whatever partial bytes arrived.
 DEFAULT_ERROR_BODY_TIMEOUT_S = 10.0
+
+
+class HTTPXResponseBodyTooLarge(ValueError):
+    """Raised when a streamed response exceeds its byte cap."""
+
+
+class HTTPXUnsupportedContentEncoding(ValueError):
+    """Raised when an identity-only response uses a content coding."""
 
 
 def read_streaming_error_body(
@@ -71,58 +79,128 @@ def read_streaming_error_body(
     via a worker thread so it can interrupt a socket read that stalls mid-chunk)
     protects against bodies that open and then hang.
     """
+    data, timed_out, truncated, error = _read_streaming_body(
+        response,
+        max_bytes=max_bytes,
+        timeout_s=timeout_s,
+        raw=False,
+    )
+    if error is not None:
+        logger.debug("bounded error-body read failed: %s", error)
+    if timed_out:
+        logger.debug(
+            "bounded error-body read: hard timeout after %.1fs (%d bytes so far)",
+            timeout_s,
+            len(data),
+        )
+    if truncated:
+        logger.debug(
+            "bounded error-body read: capped at %d bytes (max=%d)",
+            len(data),
+            max_bytes,
+        )
+    return data.decode("utf-8", errors="replace")
+
+
+def read_streaming_json_response(
+    response: httpx.Response,
+    *,
+    max_bytes: int,
+    timeout_s: float = DEFAULT_ERROR_BODY_TIMEOUT_S,
+) -> Any:
+    """Read complete JSON through an identity-only raw stream within hard bounds.
+
+    Callers must send ``Accept-Encoding: identity``. Rejecting a server that
+    ignores that negotiation before calling ``iter_raw()`` prevents a small
+    compressed chunk from expanding ahead of the byte cap.
+    """
+    if max_bytes < 0:
+        raise ValueError("max_bytes must be non-negative")
+
+    content_encoding = response.headers.get("content-encoding", "").strip().lower()
+    if content_encoding not in {"", "identity"}:
+        _safe_close(response)
+        raise HTTPXUnsupportedContentEncoding(
+            f"response used unsupported Content-Encoding: {content_encoding}"
+        )
+
+    content_length = response.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_bytes = int(content_length)
+        except ValueError:
+            pass
+        else:
+            if declared_bytes > max_bytes:
+                _safe_close(response)
+                raise HTTPXResponseBodyTooLarge(
+                    f"streaming JSON response exceeds {max_bytes} bytes"
+                )
+
+    data, timed_out, truncated, error = _read_streaming_body(
+        response,
+        max_bytes=max_bytes,
+        timeout_s=timeout_s,
+        raw=True,
+    )
+    if timed_out:
+        raise TimeoutError(
+            f"streaming JSON response exceeded {timeout_s:g}s deadline"
+        )
+    if truncated:
+        raise HTTPXResponseBodyTooLarge(
+            f"streaming JSON response exceeds {max_bytes} bytes"
+        )
+    if error is not None:
+        raise error
+    return json.loads(data)
+
+
+def _read_streaming_body(
+    response: httpx.Response,
+    *,
+    max_bytes: int,
+    timeout_s: float,
+    raw: bool,
+) -> tuple[bytes, bool, bool, Optional[Exception]]:
     chunks: List[bytes] = []
-    state = {"truncated": False}
+    truncated = threading.Event()
+    errors: List[Exception] = []
     done = threading.Event()
 
     def _drain() -> None:
         total = 0
         try:
-            for chunk in response.iter_bytes():
+            iterator = response.iter_raw() if raw else response.iter_bytes()
+            for chunk in iterator:
                 if not chunk:
                     continue
                 remaining = max_bytes - total
                 if remaining <= 0:
-                    state["truncated"] = True
+                    truncated.set()
                     break
                 if len(chunk) > remaining:
                     chunks.append(chunk[:remaining])
-                    total += remaining
-                    state["truncated"] = True
+                    truncated.set()
                     break
                 chunks.append(chunk)
                 total += len(chunk)
-        except Exception as exc:  # noqa: BLE001 - error path must not raise
-            logger.debug("bounded error-body read failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - surfaced by JSON reader
+            errors.append(exc)
         finally:
             done.set()
 
     worker = threading.Thread(
-        target=_drain, name="bounded-error-body-read", daemon=True
+        target=_drain, name="bounded-response-read", daemon=True
     )
     worker.start()
     finished = done.wait(timeout=timeout_s)
 
-    if not finished:
-        logger.debug(
-            "bounded error-body read: hard timeout after %.1fs (%d bytes so far)",
-            timeout_s,
-            sum(len(c) for c in chunks),
-        )
-        # Closing the response cancels the in-flight socket read, letting the
-        # worker thread unwind. We do not join (it is a daemon and may be
-        # blocked in C); the partial `chunks` collected so far are returned.
-        _safe_close(response)
-    else:
-        _safe_close(response)
-
-    if state["truncated"]:
-        logger.debug(
-            "bounded error-body read: capped at %d bytes (max=%d)",
-            sum(len(c) for c in chunks),
-            max_bytes,
-        )
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    # Closing cancels an in-flight socket read. Do not join: a daemon worker
+    # may still be blocked in C, and callers must keep the hard deadline.
+    _safe_close(response)
+    data = b"".join(chunks)
+    return data, not finished, truncated.is_set(), errors[0] if errors else None
 
 
 def _safe_close(response: httpx.Response) -> None:

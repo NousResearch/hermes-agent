@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+from agent.bounded_response import read_streaming_json_response
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -17,9 +18,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+USAGE_RESPONSE_MAX_BYTES = 1_048_576
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _request_usage_json(
+    client: httpx.Client, method: str, url: str, **kwargs: Any
+) -> Any:
+    """Request one small usage payload through the shared bounded reader."""
+    headers = httpx.Headers(kwargs.pop("headers", None))
+    headers["Accept-Encoding"] = "identity"
+    with client.stream(method, url, headers=headers, **kwargs) as response:
+        response.raise_for_status()
+        return read_streaming_json_response(
+            response, max_bytes=USAGE_RESPONSE_MAX_BYTES
+        )
 
 
 @dataclass(frozen=True)
@@ -520,9 +536,12 @@ def _fetch_codex_account_usage(
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
     with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(resolved_base_url), headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+        payload = _request_usage_json(
+            client,
+            "GET",
+            _resolve_codex_usage_url(resolved_base_url),
+            headers=headers,
+        ) or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
     for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
@@ -629,9 +648,9 @@ def redeem_codex_reset_credit(
 
     try:
         with httpx.Client(timeout=15.0) as client:
-            usage_resp = client.get(usage_url, headers=headers)
-            usage_resp.raise_for_status()
-            payload = usage_resp.json() or {}
+            payload = _request_usage_json(
+                client, "GET", usage_url, headers=headers
+            ) or {}
 
             reset_credits = payload.get("rate_limit_reset_credits") or {}
             raw_count = reset_credits.get("available_count")
@@ -667,13 +686,13 @@ def redeem_codex_reset_credit(
                     available_count=available,
                 )
 
-            consume_resp = client.post(
+            body = _request_usage_json(
+                client,
+                "POST",
                 consume_url,
                 headers={**headers, "Content-Type": "application/json"},
                 json={"redeem_request_id": str(uuid.uuid4())},
-            )
-            consume_resp.raise_for_status()
-            body = consume_resp.json() or {}
+            ) or {}
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
         if code in (401, 403):
@@ -767,9 +786,12 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         "User-Agent": "claude-code/2.1.0",
     }
     with httpx.Client(timeout=15.0) as client:
-        response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+        payload = _request_usage_json(
+            client,
+            "GET",
+            "https://api.anthropic.com/api/oauth/usage",
+            headers=headers,
+        ) or {}
     windows: list[AccountUsageWindow] = []
     mapping = (
         ("five_hour", "Current session"),
@@ -826,13 +848,13 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
         "Accept": "application/json",
     }
     with httpx.Client(timeout=10.0) as client:
-        credits_resp = client.get(credits_url, headers=headers)
-        credits_resp.raise_for_status()
-        credits = (credits_resp.json() or {}).get("data") or {}
+        credits = (
+            _request_usage_json(client, "GET", credits_url, headers=headers) or {}
+        ).get("data") or {}
         try:
-            key_resp = client.get(key_url, headers=headers)
-            key_resp.raise_for_status()
-            key_data = (key_resp.json() or {}).get("data") or {}
+            key_data = (
+                _request_usage_json(client, "GET", key_url, headers=headers) or {}
+            ).get("data") or {}
         except Exception:
             key_data = {}
     total_credits = float(credits.get("total_credits") or 0.0)

@@ -36,6 +36,38 @@ class TestCodexTransportBasic:
         assert result[0]["type"] == "function"
         assert result[0]["name"] == "terminal"
 
+    def test_codex_backend_aliases_reserved_tool_search(self, transport):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "tool_search",
+                "description": "Find deferred tools",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        result = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            is_codex_backend=True,
+        )
+        assert result["tools"][0]["name"] == "hermes_tool_search"
+
+    def test_non_codex_tool_search_name_is_unchanged(self, transport):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "tool_search",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        result = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+        )
+        assert result["tools"][0]["name"] == "tool_search"
+
 
 class TestCodexBuildKwargs:
 

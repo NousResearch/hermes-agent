@@ -59,6 +59,25 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
 # (Firecrawl / Tavily / …). Mapped back to ``web_search`` in normalize_response.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 
+# OpenAI Responses reserves the ``tool_search`` namespace for its native
+# Tool Search feature. Hermes progressive disclosure uses a client-side
+# function with that name, so the Codex wire payload must use an alias while
+# dispatch still receives the canonical Hermes name.
+_CODEX_TOOL_SEARCH_ALIAS = "hermes_tool_search"
+
+
+def _rename_codex_tool_search(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rename Hermes's tool-search bridge on the OpenAI Codex wire."""
+    rewritten: List[Dict[str, Any]] = []
+    for tool in response_tools:
+        if isinstance(tool, dict) and tool.get("name") == "tool_search":
+            aliased = dict(tool)
+            aliased["name"] = _CODEX_TOOL_SEARCH_ALIAS
+            rewritten.append(aliased)
+        else:
+            rewritten.append(tool)
+    return rewritten
+
 
 def _xai_prefers_native_web_search() -> bool:
     """True when xAI Responses should use Grok's native ``web_search`` built-in.
@@ -466,6 +485,12 @@ class ResponsesApiTransport(ProviderTransport):
 
         response_tools = _responses_tools(tools)
 
+        # OpenAI Codex now reserves the ``tool_search`` namespace for its
+        # native Tool Search feature. Keep Hermes's bridge implementation and
+        # dispatch contract, but alias only the wire declaration.
+        if is_codex_backend and response_tools:
+            response_tools = _rename_codex_tool_search(response_tools)
+
         # xAI server-side web search vs Hermes web providers.
         #
         # grok models on xAI's /v1/responses surface have a *native*,
@@ -733,6 +758,8 @@ class ResponsesApiTransport(ProviderTransport):
                 # the real ``web_search`` tool (Firecrawl / etc.).
                 if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
                     name = "web_search"
+                elif name == _CODEX_TOOL_SEARCH_ALIAS:
+                    name = "tool_search"
                 tool_calls.append(ToolCall(
                     id=tc.id if hasattr(tc, "id") else (name or None),
                     name=name,

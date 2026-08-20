@@ -122,10 +122,12 @@ def test_is_timeout_error_recognizes_subprocess_timeout_expired():
 def test_is_timeout_error_recognizes_timeout_messages():
     assert terminal_tool._is_timeout_error(RuntimeError("connection timeout")) is True
     assert terminal_tool._is_timeout_error(RuntimeError("request timed out")) is True
+    assert terminal_tool._is_timeout_error(RuntimeError("timeout: 5 seconds")) is True
 
 
 def test_is_timeout_error_does_not_flag_unrelated_errors():
     assert terminal_tool._is_timeout_error(RuntimeError("something went wrong")) is False
+    assert terminal_tool._is_timeout_error(RuntimeError("timeout must be positive")) is False
 
 
 class _FakeTimeoutEnv:
@@ -161,3 +163,36 @@ def test_terminal_tool_subprocess_timeout_expired_returns_124_without_retry(monk
     result = _run_terminal_with_timeout_exc(monkeypatch, exc)
     assert result["exit_code"] == 124
     assert "timed out after 5 seconds" in result["error"].lower()
+
+
+class _FakeTransientEnv:
+    def __init__(self):
+        self.calls = 0
+        self.cwd = None
+
+    def execute(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls <= 3:
+            raise RuntimeError("connection reset")
+        return {"output": "ok", "returncode": 0}
+
+
+def test_terminal_tool_retries_non_timeout_transient_error(monkeypatch):
+    terminal_tool._active_environments.clear()
+    fake_env = _FakeTransientEnv()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", "/tmp")
+    monkeypatch.setattr(terminal_tool.time, "sleep", lambda _x: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_create_environment",
+        lambda *args, **kwargs: fake_env,
+    )
+
+    result = json.loads(
+        terminal_tool.terminal_tool("printf ok", force=True, timeout=5)
+    )
+
+    assert result["output"] == "ok"
+    assert result["exit_code"] == 0
+    assert fake_env.calls == 4

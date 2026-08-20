@@ -69,10 +69,21 @@ def _is_timeout_error(exc: BaseException) -> bool:
     - subprocess.TimeoutExpired: "Command ... timed out after N seconds"
     Some third-party backends include "timeout" or "timed out" in their message.
     """
+    # Check the exception type first: built-in, asyncio, and concurrent.futures
+    # timeout exceptions commonly stringify to an empty message.
     if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
         return True
     error_str = str(exc).lower()
-    return "timed out" in error_str or "timeout" in error_str
+    return bool(
+        re.search(
+            r"\btimed out\b|"
+            r"\b(?:connection|command|execution|operation|process|read|request|"
+            r"rpc|socket|ssh|sandbox|session|subprocess|wait)\s+timeout\b|"
+            r"\btimeout\s+(?:occurred|expired|while|during|after|waiting)\b|"
+            r"\btimeout\s*[:=]\s*\d",
+            error_str,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

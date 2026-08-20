@@ -11091,12 +11091,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
 
-        cache_enabled = (
-            (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-            or result.api_mode == "anthropic_messages"
-        )
-        if cache_enabled:
-            _cprint("    Prompt caching: enabled")
+        # Show prompt caching status. Anthropic requires client-side
+        # cache_control breakpoints; all other cloud providers use automatic
+        # server-side prefix caching with no client markers needed.
+        if result.api_mode == "anthropic_messages" or (
+            base_url_host_matches(result.base_url or "", "openrouter.ai")
+            and "claude" in result.new_model.lower()
+        ):
+            _cprint("    Prompt caching: enabled (client-side breakpoints)")
+        elif not base_url_host_matches(result.base_url or "", "localhost") and not base_url_host_matches(result.base_url or "", "127.0.0.1"):
+            _cprint("    Prompt caching: automatic (server-side)")
+
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
@@ -11485,13 +11490,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
 
-        # Cache notice
-        cache_enabled = (
-            (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-            or result.api_mode == "anthropic_messages"
-        )
-        if cache_enabled:
-            _cprint("    Prompt caching: enabled")
+        # Cache notice — show status for all providers.
+        # Anthropic requires client-side cache_control breakpoints;
+        # all other cloud providers use automatic server-side prefix
+        # caching with no client markers needed.
+        if result.api_mode == "anthropic_messages" or (
+            base_url_host_matches(result.base_url or "", "openrouter.ai")
+            and "claude" in result.new_model.lower()
+        ):
+            _cprint("    Prompt caching: enabled (client-side breakpoints)")
+        elif not base_url_host_matches(result.base_url or "", "localhost") and not base_url_host_matches(result.base_url or "", "127.0.0.1"):
+            _cprint("    Prompt caching: automatic (server-side)")
 
         # Warning from validation
         if result.warning_message:

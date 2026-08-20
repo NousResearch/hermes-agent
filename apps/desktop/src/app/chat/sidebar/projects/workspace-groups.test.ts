@@ -482,6 +482,18 @@ describe('liveSessionProjectId', () => {
     expect(id).toBe('p_app')
   })
 
+  it('prefers an equally specific cwd project over the git repo root project regardless of catalog order', () => {
+    const session = makeSession('C:\\tmp\\suvp', {
+      git_branch: 'feature/container',
+      git_repo_root: 'C:\\Users\\operator\\Documents\\suvp-mvp'
+    })
+    const cwdProject = makeProject('p_suvp', ['C:\\tmp\\suvp'])
+    const repoProject = makeProject('p_home', ['C:\\Users\\operator'])
+
+    expect(liveSessionProjectId(session, [repoProject, cwdProject])).toBe('p_suvp')
+    expect(liveSessionProjectId(session, [cwdProject, repoProject])).toBe('p_suvp')
+  })
+
   it('anchors a cwd-less session on its git_repo_root (backend groups it there too)', () => {
     // Older/imported rows carry only a repo root; the sidebar files them under
     // the repo's project, so membership (and color) must resolve from the root.
@@ -532,6 +544,13 @@ describe('liveSessionProjectId', () => {
         makeProject('p_www', ['/www/elsewhere'])
       ])
     ).toBe('p_www')
+    // A strictly deeper repo-root match still overrides a broader cwd match.
+    expect(
+      liveSessionProjectId(makeSession('/www/elsewhere', { git_repo_root: '/home/u/proj/nested' }), [
+        makeProject('p_www', ['/www']),
+        makeProject('p_nested', ['/home/u/proj'])
+      ])
+    ).toBe('p_nested')
   })
 
   it('matches a mixed-case/separator Windows cwd to its explicit project in the live overlay', () => {

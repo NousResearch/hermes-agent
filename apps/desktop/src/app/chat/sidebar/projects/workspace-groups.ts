@@ -396,21 +396,36 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   let projectId = ''
   let bestLen = -1
 
-  for (const project of explicitProjects) {
-    if (project.archived) {
-      continue
+  const matchExplicitProject = (target: string) => {
+    if (!target) {
+      return
     }
 
-    for (const folder of project.folders) {
-      if (isPathUnder(folder.path, cwd) || isPathUnder(folder.path, repoRoot)) {
-        const len = segments(folder.path).length
+    for (const project of explicitProjects) {
+      if (project.archived) {
+        continue
+      }
 
-        if (len > bestLen) {
-          bestLen = len
-          projectId = project.id
+      for (const folder of project.folders) {
+        if (isPathUnder(folder.path, target)) {
+          const len = segments(folder.path).length
+
+          if (len > bestLen) {
+            bestLen = len
+            projectId = project.id
+          }
         }
       }
     }
+  }
+
+  // Match the same ordered candidate ladder as the backend: cwd first, then
+  // the persisted git root. A root may win only when its project folder is
+  // strictly deeper; equal-depth matches retain the cwd project.
+  matchExplicitProject(cwd)
+
+  if (repoRoot !== cwd) {
+    matchExplicitProject(repoRoot)
   }
 
   if (projectId) {

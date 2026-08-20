@@ -209,6 +209,33 @@ for cr in data.get('check_runs', []):
     print(f\"  {cr['name']}: {cr['status']} / {cr['conclusion'] or 'pending'}\")"
 ```
 
+### When a PR Has No Reported Checks
+
+If `gh pr checks` says no checks are reported, do not assume the branch is
+green. GitHub can have a queued check suite with zero check runs, or no Actions
+workflow run for the branch. Inspect all three surfaces separately:
+
+```bash
+SHA=$(git rev-parse HEAD)
+BRANCH=$(git branch --show-current)
+
+# Check suites attached to this commit, including the owning GitHub App
+gh api repos/$OWNER/$REPO/commits/$SHA/check-suites \
+  --jq '.check_suites[] | {id,status,conclusion,app:.app.slug,head_branch,head_sha,created_at,updated_at,latest_check_runs_count}'
+
+# Check runs under a specific suite
+gh api repos/$OWNER/$REPO/check-suites/<SUITE_ID>/check-runs \
+  --jq '{total_count, check_runs:[.check_runs[] | {id,name,status,conclusion,started_at,completed_at}]}'
+
+# Actions runs are separate from App-owned check suites
+gh run list --branch "$BRANCH" --limit 20
+```
+
+If a suite is stuck in `queued` with `latest_check_runs_count: 0` and there are
+no workflow runs for the branch, there is no Actions run to rerun. Prefer a
+branch-refresh push, close/reopen, or asking the owning GitHub App provider to
+inspect the suite/webhook delivery.
+
 ### Poll Until Complete (git + curl)
 
 ```bash

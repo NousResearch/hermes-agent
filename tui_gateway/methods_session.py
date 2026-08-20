@@ -23,15 +23,15 @@ def _(rid, params: dict) -> dict:
     # sidebar can nest it under its parent. Mirrors the TUI /branch marker.
     parent_session_id = str(params.get("parent_session_id") or "").strip() or None
     # Did the client pick a workspace, or are we falling back to the gateway's
-    # launch directory? Only an explicit choice is persisted as the session's
-    # workspace (see _ensure_session_db_row); otherwise it lands in "No
-    # workspace" instead of whatever folder the desktop launched in.
+    # launch directory? Explicit choices and active-project fallbacks persist as
+    # session workspaces (see _persisted_session_cwd); a launch artifact lands
+    # in "No workspace" instead.
     raw_cwd = str(params.get("cwd") or "").strip()
     try:
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     except Exception:
         explicit_cwd = False
-    resolved_cwd = _completion_cwd(params)
+    resolved_cwd, cwd_source = _completion_cwd_resolution(params)
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
     _enable_gateway_prompts()
 
@@ -91,6 +91,7 @@ def _(rid, params: dict) -> dict:
             "history_version": 0,
             "image_counter": 0,
             "cwd": resolved_cwd,
+            "cwd_source": cwd_source,
             "inflight_turn": None,
             "last_active": now,
             "model_override": session_model_override,

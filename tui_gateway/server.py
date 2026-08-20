@@ -1627,6 +1627,27 @@ def _launch_configured_cwd() -> str | None:
         return None
 
 
+def _active_project_cwd(profile_home: Path | None = None) -> str | None:
+    """Return the active project's existing primary folder for a profile."""
+    try:
+        from hermes_cli import projects_db
+
+        home = Path(profile_home) if profile_home is not None else Path(_hermes_home)
+        db_path = home / "projects.db"
+        if not db_path.is_file():
+            return None
+        with contextlib.closing(projects_db.connect(db_path)) as conn:
+            active_id = projects_db.get_active_id(conn)
+            project = projects_db.get_project(conn, active_id) if active_id else None
+        primary = str(project.primary_path or "").strip() if project else ""
+        if not primary:
+            return None
+        resolved = os.path.abspath(os.path.expanduser(primary))
+        return resolved if os.path.isdir(resolved) else None
+    except Exception:
+        return None
+
+
 def _default_session_cwd() -> str:
     """Fallback cwd for a session with no explicit / stored / profile cwd.
 
@@ -2573,29 +2594,44 @@ def _normalize_completion_path(path_part: str) -> str:
     return expanded
 
 
-def _completion_cwd(params: dict | None = None) -> str:
+def _completion_cwd_resolution(params: dict | None = None) -> tuple[str, str]:
+    """Resolve a completion cwd and identify the winning precedence rung."""
     params = params or {}
-    raw = (
-        params.get("cwd")
-        or _sessions.get(params.get("session_id") or "", {}).get("cwd")
+    source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+    profile_home = _profile_home(params.get("profile"))
+    candidates = (
+        (params.get("cwd"), "explicit"),
+        (_sessions.get(params.get("session_id") or "", {}).get("cwd"), "session"),
         # A session bound to another profile resolves its workspace from THAT
         # profile's config before falling back to the launch profile's env var.
-        or _profile_configured_cwd(_profile_home(params.get("profile")))
+        (_profile_configured_cwd(profile_home), "profile_config"),
         # The launch profile's dashboard /chat attaches to the dashboard's
         # in-memory gateway, which does NOT inherit the PTY child's bridged
         # TERMINAL_CWD. Read the launch profile's config.yaml directly so a
         # configured terminal.cwd wins over a stale process env / launch dir.
-        or _launch_configured_cwd()
-        or os.environ.get("TERMINAL_CWD")
-        or os.getcwd()
+        (_launch_configured_cwd() if profile_home is None else None, "launch_config"),
+        # A Desktop backend may launch from the packaged install/source clone.
+        # Its bridged TERMINAL_CWD can carry the same launch artifact, so the
+        # profile's active project must win before that process-global fallback.
+        (
+            _active_project_cwd(profile_home) if source == "desktop" else None,
+            "active_project",
+        ),
+        (os.environ.get("TERMINAL_CWD"), "process"),
+        (os.getcwd(), "process"),
     )
+    raw, cwd_source = next((value, origin) for value, origin in candidates if value)
     try:
         resolved = os.path.abspath(os.path.expanduser(str(raw)))
         if os.path.isdir(resolved):
-            return resolved
+            return resolved, cwd_source
     except Exception:
         pass
-    return os.getcwd()
+    return os.getcwd(), "process"
+
+
+def _completion_cwd(params: dict | None = None) -> str:
+    return _completion_cwd_resolution(params)[0]
 
 
 def _terminal_task_cwd(session: dict | None) -> str:
@@ -2696,7 +2732,13 @@ def _persisted_session_cwd(session: dict) -> str | None:
     if session.get("explicit_cwd"):
         return _session_cwd(session)
     if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE:
-        return None
+        # An active project is an intentional profile workspace, not the
+        # launch artifact this Desktop-only guard exists to discard.
+        return (
+            _session_cwd(session)
+            if session.get("cwd_source") == "active_project"
+            else None
+        )
     # Only the session's OWN directory. `_session_cwd` falls back to the
     # gateway-wide completion cwd, which belongs to no session in particular —
     # stamping that would invent a workspace for a session that never had one.

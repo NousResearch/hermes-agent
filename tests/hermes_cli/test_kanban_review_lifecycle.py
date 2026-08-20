@@ -842,6 +842,31 @@ def test_active_pr_guard_yields_to_an_unblock_reason_quoting_the_pr(
         assert kb.check_respawn_guard(conn, tid) is None
 
 
+def test_active_pr_guard_yields_to_current_unblock_comment_binding(
+    kanban_home: Path,
+) -> None:
+    """Current comments use event ids for the native unblock ordering."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="current unblock", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: awaiting review",
+            expected_run_id=claimed.current_run_id,
+        )
+        kb.add_comment(
+            conn,
+            tid,
+            author="operator",
+            body=f"UNBLOCK: changes requested on {_PR_URL}",
+        )
+
+        assert kb.unblock_task(conn, tid)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
 def test_legacy_same_second_comment_fails_closed_without_native_unblock_prefix(
     kanban_home: Path,
 ) -> None:
@@ -995,3 +1020,43 @@ def test_active_pr_guard_survives_automatic_dependency_promotion(
         )
         assert kb.get_task(conn, child).status == "ready"
         assert kb.check_respawn_guard(conn, child) == "active_pr"
+
+
+def test_active_pr_guard_survives_generic_status_event(
+    kanban_home: Path,
+) -> None:
+    """A generic status write is not explicit PR-continuation authority."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="generic status", assignee="worker")
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, "status", {"status": "ready"})
+
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_yields_to_manual_promotion(
+    kanban_home: Path,
+) -> None:
+    """A deliberate manual promotion explicitly resumes the PR-bearing card."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="unfinished parent", assignee="worker")
+        child = kb.create_task(
+            conn,
+            title="manually resumed PR",
+            assignee="worker",
+            parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        kb.add_comment(conn, child, author="worker", body=f"Opened {_PR_URL}")
+
+        promoted, reason = kb.promote_task(
+            conn,
+            child,
+            actor="operator",
+            reason="continue the existing PR",
+            force=True,
+        )
+        assert promoted is True, reason
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.check_respawn_guard(conn, child) is None

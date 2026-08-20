@@ -7145,6 +7145,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
+    def _get_peer_presence_fragments(self):
+        """Peer-presence line rendered UNDER the input textbox (G7).
+
+        Three-state ambient indicator: ``● N Live`` (green) · ``○ M Idle``
+        (grey) · ``× K Offline`` (red). Rendered only when >= 2 sessions are
+        known (single session = you only = no signal). This is a dedicated
+        line below the input — NOT part of the status bar — so the session
+        state reads clearly without competing with model/context chrome.
+        """
+        try:
+            from hermes_cli.peer_presence import peer_presence_summary
+
+            peer = peer_presence_summary()
+            if peer is None:
+                return []
+            total = int(peer.get("total") or 0)
+            if total < 2:
+                return []
+            active = int(peer.get("active_count") or 0)
+            idle = int(peer.get("idle_count") or 0)
+            offline = int(peer.get("offline_count") or 0)
+            frags = [("class:peer-presence-label", " peers ")]
+            if active:
+                frags.append(("class:peer-presence-live", f"● {active} Live"))
+            if idle:
+                frags.append(("class:peer-presence-idle", f" ○ {idle} Idle"))
+            if offline:
+                frags.append(("class:peer-presence-off", f" × {offline} Offline"))
+            return frags
+        except Exception:
+            return []
+
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
             return []
@@ -16796,6 +16828,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # idle time since the last final response.
             self._last_turn_finished_at = time.time()
 
+            # ── KENSEI CUSTOM: Walkie-Talkie freshness (G7) ──
+            # Clear the peer-presence cache at turn end so the NEXT prompt
+            # re-reads live session state (sessions that opened/closed during
+            # this turn are reflected immediately, not after the 2s cache
+            # window). Defensive: plugin may be absent.
+            try:
+                from hermes_cli.peer_presence import clear_peer_presence_cache
+
+                clear_peer_presence_cache()
+            except Exception:
+                pass
+            # ── END KENSEI CUSTOM ──
+
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
             # to a per-thread event loop; if that loop is now closed, those
@@ -17406,6 +17451,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
+        # ── KENSEI CUSTOM: Walkie-Talkie ambient ●N pill (G7) ──
+        # Show live peer count in the prompt when the peer plugin is active.
+        # Defensive: empty when the plugin is absent — never breaks the prompt.
+        try:
+            from hermes_cli.peer_presence import peer_presence_pill
+
+            pill = peer_presence_pill()
+            if pill:
+                return [("class:peer-presence", pill + " ")] + [("class:prompt", symbol)]
+        except Exception:
+            pass
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
@@ -17508,6 +17564,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         image_bar,
         input_area,
         input_rule_bot,
+        peer_presence_bar,
         voice_status_bar,
         completions_menu,
     ) -> list:
@@ -17537,6 +17594,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 image_bar,
                 input_area,
                 input_rule_bot,
+                peer_presence_bar,
                 voice_status_bar,
                 completions_menu,
             ] if item is not None
@@ -20146,6 +20204,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ),
         )
 
+        # ── KENSEI CUSTOM: peer-presence line UNDER the input textbox (G7) ──
+        # A dedicated 1-line ambient indicator below the input, separate from
+        # the status bar. Renders only when >= 2 sessions are known (the
+        # fragment method returns [] otherwise, so the window collapses).
+        peer_presence_bar = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(lambda: cli_ref._get_peer_presence_fragments()),
+                height=1,
+                wrap_lines=False,
+            ),
+            filter=Condition(
+                lambda: cli_ref._status_bar_visible
+                and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)
+            ),
+        )
+        # ── END KENSEI CUSTOM ──
+
         # Stash browse panel — appears just above the status bar when the user
         # presses Ctrl+S on an empty composer with 2+ stashed drafts.
         def _get_stash_panel_display():
@@ -20195,6 +20270,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     image_bar=image_bar,
                     input_area=input_area,
                     input_rule_bot=input_rule_bot,
+                    peer_presence_bar=peer_presence_bar,
                     voice_status_bar=voice_status_bar,
                     completions_menu=completions_menu,
                 )
@@ -20212,6 +20288,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'placeholder': '#888888 italic',
             'prompt': '',
             'prompt-working': '#888888 italic',
+            'peer-presence': '#8FBC8F bold',
+            'peer-presence-label': '#8B8682',
+            'peer-presence-live': '#8FBC8F bold',
+            'peer-presence-idle': '#C0C0C0',
+            'peer-presence-off': '#FF6B6B bold',
             'hint': '#888888 italic',
             'status-bar': 'bg:#1a1a2e #C0C0C0',
             'status-bar-strong': 'bg:#1a1a2e #FFD700 bold',

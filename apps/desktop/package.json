@@ -159,7 +159,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "4.2.0",
-    "@playwright/test": "1.58.2",
+    "@playwright/test": "^1.60.0",
     "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.2",
     "@types/d3-force": "3.0.10",

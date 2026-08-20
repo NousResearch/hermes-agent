@@ -29,10 +29,10 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
 
 from agent.reasoning_effort import (
     ACTUAL_RELAY_EFFORTS,
-    CODEX_RESPONSES_EFFORTS,
     XAI_GROK46_EFFORTS,
     XAI_LEGACY_EFFORTS,
     clamp_effort,
+    codex_supported_efforts,
 )
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
@@ -459,9 +459,10 @@ class ResponsesApiTransport(ProviderTransport):
             # none/low/medium/high/max.
             _supported = ACTUAL_RELAY_EFFORTS
         else:
-            # OpenAI/Codex Responses backend rejects "minimal" and the
-            # internal "ultra" level.
-            _supported = CODEX_RESPONSES_EFFORTS
+            # OpenAI/Codex Responses backend — per-model vocabulary
+            # (live-verified: "max" is gpt-5.6-only, "minimal" always
+            # rejected). #68365 premise confirmed.
+            _supported = codex_supported_efforts(model)
         reasoning_effort = clamp_effort(reasoning_effort, _supported)
 
         response_tools = _responses_tools(tools)

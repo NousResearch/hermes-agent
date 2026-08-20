@@ -55,10 +55,27 @@ OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = (
     "none", "minimal", "low", "medium", "high", "xhigh", "max",
 )
 
-#: OpenAI/Codex Responses backend (``minimal`` is rejected → clamps to low).
-CODEX_RESPONSES_EFFORTS: tuple[str, ...] = (
-    "low", "medium", "high", "xhigh", "max",
+#: OpenAI/Codex Responses backend — per-model vocabulary, live-verified
+#: (Aug 2026): ``minimal`` is rejected by both generations (clamps to low);
+#: ``max`` is gpt-5.6-only — gpt-5.5 rejects it with "Supported values are:
+#: 'none', 'low', 'medium', 'high', 'xhigh'" (#68365's premise, confirmed).
+CODEX_GPT56_EFFORTS: tuple[str, ...] = (
+    "none", "low", "medium", "high", "xhigh", "max",
 )
+CODEX_LEGACY_EFFORTS: tuple[str, ...] = (
+    "none", "low", "medium", "high", "xhigh",
+)
+
+
+def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
+    """Supported effort set for an OpenAI/Codex Responses model."""
+    if "gpt-5.6" in (model or "").lower():
+        return CODEX_GPT56_EFFORTS
+    return CODEX_LEGACY_EFFORTS
+
+
+#: Backward-compat alias (pre-#68365-verification name).
+CODEX_RESPONSES_EFFORTS: tuple[str, ...] = CODEX_GPT56_EFFORTS
 
 #: xAI Responses — Grok 4.6+ accepts xhigh; older Grok tops out at high.
 XAI_GROK46_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh")

@@ -4630,6 +4630,27 @@ def _pool_error_context(exc: Exception) -> Dict[str, Any]:
     return payload
 
 
+def _is_opencode_go_region_error(provider: str, exc: Exception) -> bool:
+    """Detect OpenCode Go workspace-region gates that should rotate keys.
+
+    OpenCode Go returns HTTP 403 ``RegionError`` when the selected workspace has
+    not opted into a model hosted only in China. The token is syntactically
+    valid, so treating this as refreshable auth leaves auxiliary tasks wedged
+    on the same fill-first pool entry. Another OpenCode Go pool entry may belong
+    to a workspace where the model is enabled, so rotate the credential.
+    """
+    if _normalize_aux_provider(provider) != "opencode-go":
+        return False
+    status = getattr(exc, "status_code", None)
+    if status != 403:
+        return False
+    err_lower = str(exc).lower()
+    return (
+        "regionerror" in err_lower
+        or ("hosted in china" in err_lower and "explicit opt in" in err_lower)
+    )
+
+
 def _recoverable_pool_provider(
     resolved_provider: str,
     client: Any,
@@ -4693,6 +4714,19 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     status_code = getattr(exc, "status_code", None)
     error_context = _pool_error_context(exc)
     hint = failed_api_key or None
+
+    if _is_opencode_go_region_error(normalized, exc):
+        region_context = dict(error_context)
+        region_context.setdefault("reason", "region_error")
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=status_code if status_code is not None else 403,
+            error_context=region_context,
+            api_key_hint=hint,
+        )
+        if next_entry is not None:
+            _evict_cached_clients(normalized)
+            return True
+        return False
 
     if _is_auth_error(exc):
         refreshed = pool.try_refresh_current()

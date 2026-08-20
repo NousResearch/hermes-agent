@@ -37,6 +37,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _recover_provider_pool,
 )
 
 
@@ -4620,3 +4621,68 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+class TestAuxiliaryOpenCodeGoRegionErrorPoolRecovery:
+    def test_opencode_go_regionerror_rotates_pool_entry_without_refresh(self, monkeypatch):
+        calls = []
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                raise AssertionError("RegionError is workspace-gated, not refreshable auth")
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(id="next-good-entry")
+
+        class _RegionError(Exception):
+            status_code = 403
+
+        exc = _RegionError(
+            "Error code: 403 - RegionError: The latest version of this model "
+            "is only available hosted in China and requires explicit opt in"
+        )
+
+        evicted = []
+        monkeypatch.setattr("agent.auxiliary_client.load_pool", lambda provider: _Pool())
+        monkeypatch.setattr("agent.auxiliary_client._evict_cached_clients", lambda provider: evicted.append(provider))
+
+        recovered = _recover_provider_pool("opencode-go", exc, failed_api_key="failed-key")
+
+        assert recovered is True
+        assert evicted == ["opencode-go"]
+        assert calls == [{
+            "status_code": 403,
+            "error_context": {
+                "message": str(exc),
+                "status_code": 403,
+                "reason": "region_error",
+            },
+            "api_key_hint": "failed-key",
+        }]
+
+    def test_non_opencode_go_regionerror_shape_does_not_rotate_generic_403(self, monkeypatch):
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                raise AssertionError("generic 403 must not be treated as OpenCode Go RegionError")
+
+        class _Forbidden(Exception):
+            status_code = 403
+
+        exc = _Forbidden(
+            "Error code: 403 - RegionError: The latest version of this model "
+            "is only available hosted in China and requires explicit opt in"
+        )
+
+        monkeypatch.setattr("agent.auxiliary_client.load_pool", lambda provider: _Pool())
+
+        assert _recover_provider_pool("openrouter", exc, failed_api_key="failed-key") is False

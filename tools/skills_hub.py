@@ -99,6 +99,20 @@ def _index_cache_dir() -> Path:
     return Path(forced) if forced is not None else _hub_dir() / "index-cache"
 
 
+def _index_cache_file(key: str) -> Path:
+    """Path inside ``index-cache`` for *key*, as an opaque SHA-256 name.
+
+    Cache keys are built from tap-controlled values (repo, path, search
+    query, catalog identifier). Interpolating one straight into a filename
+    lets separators in the key steer the write out of ``index-cache``: on
+    Windows a tap path of ``..\\..\\..\\victim`` produces the key
+    ``owner_repo_..\\..\\..\\victim``, and ``index-cache / f"{key}.json"``
+    then resolves two directories above the cache. Hashing makes the
+    filename independent of the key's contents.
+    """
+    return _index_cache_dir() / f"{hashlib.sha256(key.encode('utf-8')).hexdigest()}.json"
+
+
 _DYNAMIC_PATH_RESOLVERS = {
     "HERMES_HOME": _hermes_home,
     "SKILLS_DIR": _skills_dir,
@@ -762,7 +776,10 @@ class GitHubSource(SkillSource):
 
     def _list_skills_in_repo(self, repo: str, path: str) -> List[SkillMeta]:
         """List skill directories in a GitHub repo path, using cached index."""
-        cache_key = f"{repo}_{path}".replace("/", "_").replace(" ", "_")
+        # NUL-joined rather than separator-squashed: the filename is hashed, so
+        # the key no longer has to be path-safe, and a lossless key stops
+        # ("a/b", "c") and ("a", "b/c") from sharing one cache entry.
+        cache_key = f"github\0{repo}\0{path}"
         cached = self._read_cache(cache_key)
         if cached is not None:
             return [SkillMeta(**s) for s in cached]
@@ -1145,7 +1162,7 @@ class GitHubSource(SkillSource):
 
     def _read_cache(self, key: str) -> Optional[list]:
         """Read cached index if not expired."""
-        cache_file = _index_cache_dir() / f"{key}.json"
+        cache_file = _index_cache_file(key)
         if not cache_file.exists():
             return None
         try:
@@ -1158,9 +1175,8 @@ class GitHubSource(SkillSource):
 
     def _write_cache(self, key: str, data: list) -> None:
         """Write index data to cache."""
-        index_cache_dir = _index_cache_dir()
-        index_cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = index_cache_dir / f"{key}.json"
+        _index_cache_dir().mkdir(parents=True, exist_ok=True)
+        cache_file = _index_cache_file(key)
         try:
             cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         except OSError as e:
@@ -3678,7 +3694,7 @@ class OptionalSkillSource(SkillSource):
 
 def _read_index_cache(key: str) -> Optional[Any]:
     """Read cached data if not expired."""
-    cache_file = _index_cache_dir() / f"{key}.json"
+    cache_file = _index_cache_file(key)
     if not cache_file.exists():
         return None
     try:
@@ -3692,8 +3708,7 @@ def _read_index_cache(key: str) -> Optional[Any]:
 
 def _write_index_cache(key: str, data: Any) -> None:
     """Write data to cache."""
-    index_cache_dir = _index_cache_dir()
-    index_cache_dir.mkdir(parents=True, exist_ok=True)
+    _index_cache_dir().mkdir(parents=True, exist_ok=True)
     # Ensure .ignore exists so ripgrep (and tools respecting .ignore) skip
     # this directory.  Cache files contain unvetted community content that
     # could include adversarial text (prompt injection via catalog entries).
@@ -3703,7 +3718,7 @@ def _write_index_cache(key: str, data: Any) -> None:
             ignore_file.write_text("# Exclude hub internals from search tools\n*\n", encoding="utf-8")
         except OSError:
             pass
-    cache_file = index_cache_dir / f"{key}.json"
+    cache_file = _index_cache_file(key)
     try:
         cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except OSError as e:

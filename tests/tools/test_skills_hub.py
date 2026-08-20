@@ -1804,3 +1804,60 @@ class TestLoadHermesIndex:
 
         data = hub._load_hermes_index()
         assert data == {"skills": [{"name": "stale"}]}
+
+
+class TestIndexCacheKeyContainment:
+    """Cache keys are tap-controlled; the filename they produce must not be."""
+
+    @staticmethod
+    def _assert_opaque(cache_dir):
+        """Exactly one cache entry, named as a bare SHA-256 hex digest."""
+        written = list(cache_dir.iterdir())
+        assert len(written) == 1, [p.name for p in written]
+        stem = written[0].stem
+        assert len(stem) == 64
+        assert all(c in "0123456789abcdef" for c in stem)
+        return written[0]
+
+    def test_github_tap_path_cannot_escape_index_cache(self, tmp_path):
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        cache_dir = hub_dir / "index-cache"
+        cache_dir.mkdir(parents=True)
+
+        # Sits two levels above index-cache — where "..\..\..\victim" lands.
+        victim = tmp_path / "victim.json"
+        victim.write_text(json.dumps({"sentinel": "original"}), encoding="utf-8")
+
+        class _Resp:
+            status_code = 200
+            content = b""
+
+            @staticmethod
+            def json():
+                return []
+
+        source = GitHubSource(GitHubAuth())
+        with patch.object(hub, "HUB_DIR", hub_dir), \
+                patch.object(hub, "INDEX_CACHE_DIR", cache_dir), \
+                patch.object(source, "_get_skillsh_groupings", lambda *a, **k: {}), \
+                patch.object(source, "_github_get", lambda *a, **k: _Resp()):
+            source._list_skills_in_repo("owner/repo", "..\\..\\..\\victim")
+
+        assert json.loads(victim.read_text(encoding="utf-8")) == {"sentinel": "original"}
+        self._assert_opaque(cache_dir)
+
+    def test_hostile_key_round_trips_inside_index_cache(self, tmp_path):
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        cache_dir = hub_dir / "index-cache"
+        cache_dir.mkdir(parents=True)
+
+        key = "owner/repo_..\\..\\..\\victim"
+        with patch.object(hub, "HUB_DIR", hub_dir), \
+                patch.object(hub, "INDEX_CACHE_DIR", cache_dir):
+            hub._write_index_cache(key, [{"name": "demo"}])
+            self._assert_opaque(cache_dir)
+            assert hub._read_index_cache(key) == [{"name": "demo"}]

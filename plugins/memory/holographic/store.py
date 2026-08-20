@@ -91,6 +91,46 @@ _RE_AKA          = re.compile(
     re.IGNORECASE,
 )
 
+# CJK-aware patterns. Every rule above keys off ASCII capitalization, which
+# Hangul, Han and Kana do not have, so a fact written in Korean, Chinese or
+# Japanese produced no entities at all: fact_entities stayed empty, the HRR
+# vector was encoded with entities=[], and probe/related/reason silently
+# degraded to FTS5 keyword matching. Both rules below only fire when the text
+# actually contains CJK, so extraction from English text is unchanged.
+# Segmenting bare CJK noun phrases ("김철수는", "白兔控股") needs a morphological
+# analyzer and stays out of scope. CJK punctuation is part of the range set, so
+# a bracket-quoted name gates rule 5 on its own.
+_RE_CJK = re.compile(
+    '[\u1100-\u11ff\u3000-\u303f\u3040-\u30ff\u3130-\u318f'
+    '\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7a3\uf900-\ufaff]'
+)
+# Bracket quotes are the CJK "this is a name" marker, the role ASCII quotes
+# already play for English.
+_RE_CJK_QUOTE = re.compile(r'[「『《〈【“‘]'
+                           r'([^」』》〉】”’]{1,40})'
+                           r'[」』》〉】”’]')
+# A Latin run in a CJK fact is usually a proper noun or identifier:
+# "Notion에 정리한다" -> Notion, "飞书白兔 App 已接入" -> App. The run stops at the
+# first Hangul/Han character, so particles fall off for free, and trailing
+# capitalized words are absorbed so "John Doe가" stays one entity like rule 1
+# gives in English. The second branch keeps internal capitals whole (iPhone,
+# macOS, eBay); the lookbehind stops either branch from starting mid-word.
+_RE_LATIN_RUN = re.compile(
+    r'(?<![A-Za-z0-9])'
+    r'(?:[A-Z][A-Za-z0-9]*(?:[.+-][A-Za-z0-9]+)*(?:\s+[A-Z][a-z]+)*'
+    r'|[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*(?:[.+-][A-Za-z0-9]+)*)'
+)
+# A fact only has to contain one CJK character for this rule to see the whole
+# sentence, so an English clause inside it would otherwise become entities
+# (#57900). A name is followed by CJK, by another name, or by nothing:
+# "Slack 대신", "Notion, Slack 그리고 Jira", "회의록 Jira". English prose keeps
+# going in lowercase, which is what "Today we discussed" and "Follow up
+# needed" do, so a lowercase word after the run rules it out.
+_RE_RUN_TRAILER = re.compile(r'[\s,;:.!?/()\[\]{}"\'\u201c\u201d\u2018\u2019]*(.?)')
+_LATIN_RUN_STOPWORDS = frozenset(
+    'a an the and or of in on at to for with is are was were be it this that'.split()
+)
+
 
 def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
@@ -454,6 +494,11 @@ class MemoryStore:
         3. Single-quoted terms             e.g. 'pytest'
         4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
 
+        Rules 5-6 apply only when the text contains CJK, where rules 1-4 find
+        nothing because Hangul/Han/Kana have no capitalization:
+        5. CJK bracket-quoted terms        e.g. 「白兔控股」 -> 白兔控股
+        6. Latin runs in CJK prose         e.g. "Notion에 정리" -> Notion
+
         Returns a deduplicated list preserving first-seen order.
         """
         seen: set[str] = set()
@@ -477,6 +522,20 @@ class MemoryStore:
         for m in _RE_AKA.finditer(text):
             _add(m.group(1))
             _add(m.group(2))
+
+        if _RE_CJK.search(text):
+            for m in _RE_CJK_QUOTE.finditer(text):
+                _add(m.group(1))
+
+            for m in _RE_LATIN_RUN.finditer(text):
+                run = m.group(0)
+                trailer = _RE_RUN_TRAILER.match(text, m.end()).group(1)
+                if (
+                    len(run) > 1
+                    and not (trailer.isascii() and trailer.islower())
+                    and run.lower() not in _LATIN_RUN_STOPWORDS
+                ):
+                    _add(run)
 
         return candidates
 

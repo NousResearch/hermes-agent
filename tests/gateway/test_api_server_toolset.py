@@ -1,4 +1,5 @@
 """Tests for hermes-api-server toolset and API server tool availability."""
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 
@@ -79,4 +80,73 @@ class TestApiServerAdapterToolset:
             assert isinstance(toolsets, list)
             assert len(toolsets) > 0
             assert call_kwargs.kwargs.get("platform") == "api_server"
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_create_agent_empty_request_tools_excludes_toolsets_and_default_mcp(self):
+        """``no_tools`` is the resolver sentinel for a truly tool-free agent."""
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_gateway_model") as mock_model, \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_kwargs.return_value = {
+                "api_key": "test-key", "base_url": None, "provider": None,
+                "api_mode": None, "command": None, "args": [],
+            }
+            mock_model.return_value = "test/model"
+            mock_agent_cls.return_value = MagicMock()
+
+            adapter._create_agent(request_tools_disabled=True)
+
+        assert mock_agent_cls.call_args.kwargs["enabled_toolsets"] == ["no_tools"]
+
+    def test_no_tools_stays_empty_for_dispatcher_owned_kanban_worker(self, monkeypatch):
+        """Request isolation overrides implicit Kanban lifecycle tool injection."""
+        import model_tools
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+        monkeypatch.setattr(model_tools, "_is_dispatcher_owned_worker", lambda: True)
+        monkeypatch.setattr(model_tools, "_is_delegated_child_context", lambda: False)
+
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=["no_tools"], quiet_mode=True
+        )
+
+        assert definitions == []
+        assert model_tools._last_resolved_tool_names == []
+
+    def test_no_tools_survives_late_mcp_memory_and_context_refresh(self):
+        """A refresh cannot reintroduce registry or post-build provider tools."""
+        from tools.mcp_tool import refresh_agent_mcp_tools
+
+        memory_manager = SimpleNamespace(
+            get_all_tool_schemas=lambda: [
+                {"name": "memory_provider_tool", "description": "", "parameters": {}}
+            ]
+        )
+        compressor = SimpleNamespace(
+            get_tool_schemas=lambda: [
+                {"name": "context_engine_tool", "description": "", "parameters": {}}
+            ]
+        )
+        agent = SimpleNamespace(
+            enabled_toolsets=["no_tools"],
+            disabled_toolsets=None,
+            tools=[],
+            valid_tool_names=set(),
+            _memory_manager=memory_manager,
+            context_compressor=compressor,
+            _context_engine_tool_names=set(),
+            _tool_snapshot_generation=-1,
+        )
+
+        added = refresh_agent_mcp_tools(agent)
+
+        assert added == set()
+        assert agent.tools == []
+        assert agent.valid_tool_names == set()
+        assert agent._context_engine_tool_names == set()
 

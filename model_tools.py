@@ -344,6 +344,17 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    global _last_resolved_tool_names
+
+    # Internal fail-closed posture for request-scoped tool isolation. This must
+    # run before cache lookup and implicit toolset expansion: dispatcher-owned
+    # Kanban workers otherwise auto-add lifecycle tools. Late MCP/plugin
+    # refreshes also pass through this resolver, so the exact sentinel remains
+    # authoritative for the lifetime of this agent instance.
+    if enabled_toolsets == ["no_tools"]:
+        _last_resolved_tool_names = []
+        return []
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
@@ -380,7 +391,6 @@ def get_tool_definitions(
         if cached is not None:
             # Update _last_resolved_tool_names so downstream callers see
             # consistent state even on a cache hit.
-            global _last_resolved_tool_names
             _last_resolved_tool_names = [t["function"]["name"] for t in cached]
             # Return a shallow copy of the list but share the dict references —
             # schemas are treated as read-only by all known callers.

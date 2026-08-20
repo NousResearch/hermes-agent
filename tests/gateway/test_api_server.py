@@ -983,6 +983,115 @@ class TestChatCompletionsEndpoint:
             data = await resp.json()
             assert "messages" in data["error"]["message"]
 
+    @pytest.mark.asyncio
+    async def test_empty_tools_disables_all_tools_for_same_agent_run(self, adapter):
+        """Explicit ``tools: []`` constrains the same run that sees the prompt."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "tools": [],
+                    },
+                )
+
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs["request_tools_disabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_absent_tools_preserves_configured_agent_tools(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs["request_tools_disabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_empty_tools_rejects_incompatible_tool_choice(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "tools": [],
+                        "tool_choice": "required",
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert "tool_choice" in data["error"]["message"]
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_tools_disables_all_tools_for_streaming_run(self, adapter):
+        async def _mock_run_agent(**kwargs):
+            callback = kwargs.get("stream_delta_callback")
+            if callback:
+                callback("ok")
+            return (
+                {"final_response": "ok", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "tools": [],
+                        "stream": True,
+                    },
+                )
+                body = await resp.text()
+
+        assert resp.status == 200
+        assert "data: " in body
+        assert mock_run.call_args.kwargs["request_tools_disabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_nonempty_openai_tools_fail_closed(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "tools": [{"type": "function", "function": {"name": "unsafe"}}],
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert "tools" in data["error"]["message"]
+        mock_run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_chat_completions_stream_passes_request_model_provider_options(self, adapter):

@@ -1957,7 +1957,7 @@ def _run_post_setup(post_setup_key: str):
             pass
         _print_info("    Installing faster-whisper (model ~150MB downloads on first use)...")
         try:
-            result = _pip_install(["-U", "faster-whisper", "--quiet"], timeout=300)
+            result = _pip_install(["faster-whisper", "--quiet"], timeout=300)
             if result.returncode == 0:
                 _print_success("    faster-whisper installed")
                 _print_info("    Model sizes: tiny, base (default), small, medium, large-v3")
@@ -1965,10 +1965,10 @@ def _run_post_setup(post_setup_key: str):
             else:
                 _print_warning("    faster-whisper install failed:")
                 _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                _print_info("    Run manually: uv pip install -U faster-whisper")
+                _print_info("    Run manually: uv pip install faster-whisper")
         except subprocess.TimeoutExpired:
             _print_warning("    faster-whisper install timed out (>5min)")
-            _print_info("    Run manually: uv pip install -U faster-whisper")
+            _print_info("    Run manually: uv pip install faster-whisper")
 
     elif post_setup_key == "kittentts":
         try:
@@ -1983,7 +1983,7 @@ def _run_post_setup(post_setup_key: str):
             "0.8.1/kittentts-0.8.1-py3-none-any.whl"
         )
         try:
-            result = _pip_install(["-U", wheel_url, "soundfile", "--quiet"], timeout=300)
+            result = _pip_install([wheel_url, "soundfile", "--quiet"], timeout=300)
             if result.returncode == 0:
                 _print_success("    kittentts installed")
                 _print_info("    Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
@@ -1991,10 +1991,10 @@ def _run_post_setup(post_setup_key: str):
             else:
                 _print_warning("    kittentts install failed:")
                 _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                _print_info(f"    Run manually: uv pip install -U '{wheel_url}' soundfile")
+                _print_info(f"    Run manually: uv pip install '{wheel_url}' soundfile")
         except subprocess.TimeoutExpired:
             _print_warning("    kittentts install timed out (>5min)")
-            _print_info(f"    Run manually: uv pip install -U '{wheel_url}' soundfile")
+            _print_info(f"    Run manually: uv pip install '{wheel_url}' soundfile")
 
     elif post_setup_key == "piper":
         try:
@@ -2003,17 +2003,17 @@ def _run_post_setup(post_setup_key: str):
         except ImportError:
             _print_info("    Installing piper-tts (~14MB wheel, voices downloaded on first use)...")
             try:
-                result = _pip_install(["-U", "piper-tts", "--quiet"], timeout=300)
+                result = _pip_install(["piper-tts", "--quiet"], timeout=300)
                 if result.returncode == 0:
                     _print_success("    piper-tts installed")
                 else:
                     _print_warning("    piper-tts install failed:")
                     _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                    _print_info("    Run manually: uv pip install -U piper-tts")
+                    _print_info("    Run manually: uv pip install piper-tts")
                     return
             except subprocess.TimeoutExpired:
                 _print_warning("    piper-tts install timed out (>5min)")
-                _print_info("    Run manually: uv pip install -U piper-tts")
+                _print_info("    Run manually: uv pip install piper-tts")
                 return
         _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
         _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
@@ -2026,17 +2026,17 @@ def _run_post_setup(post_setup_key: str):
         except ImportError:
             _print_info("    Installing ddgs (DuckDuckGo search package)...")
             try:
-                result = _pip_install(["-U", "ddgs", "--quiet"], timeout=300)
+                result = _pip_install(["ddgs", "--quiet"], timeout=300)
                 if result.returncode == 0:
                     _print_success("    ddgs installed")
                 else:
                     _print_warning("    ddgs install failed:")
                     _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                    _print_info("    Run manually: uv pip install -U ddgs")
+                    _print_info("    Run manually: uv pip install ddgs")
                     return
             except subprocess.TimeoutExpired:
                 _print_warning("    ddgs install timed out (>5min)")
-                _print_info("    Run manually: uv pip install -U ddgs")
+                _print_info("    Run manually: uv pip install ddgs")
                 return
         _print_info("    No API key required. DuckDuckGo enforces server-side rate limits.")
         _print_info("    Pair with an extract provider if you also need web_extract.")

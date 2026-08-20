@@ -45,6 +45,36 @@ def _signal_name(sig: Any) -> str:
     return _SIGNAL_NAME_BY_NUM.get(sig_int, f"signal#{sig_int}")
 
 
+def label_marker_driven_shutdown(
+    ctx: Dict[str, Any],
+    *,
+    planned_takeover: bool,
+    planned_stop: bool,
+    received_signal: Any,
+) -> None:
+    """Relabel ``ctx["signal"]`` for marker-driven shutdowns with no OS signal.
+
+    On Windows, ``asyncio.add_signal_handler`` raises NotImplementedError, so
+    ``hermes gateway stop`` / ``/restart`` reach the shutdown handler via the
+    planned-stop marker watcher, which invokes it with ``signal=None``
+    (#33778). ``snapshot_shutdown_context(None)`` renders that as UNKNOWN —
+    making every normal Windows stop log like an external kill
+    ("Received UNKNOWN as a planned gateway stop",
+    "Shutdown context: signal=UNKNOWN"), #61596.
+
+    The marker consumption has already proven operator intent by the time
+    the snapshot exists, so label the context accordingly. A real OS signal
+    (POSIX SIGTERM/SIGINT) keeps its true name — this only replaces the
+    UNKNOWN placeholder. Mutates *ctx* in place; never raises.
+    """
+    if received_signal is not None or not isinstance(ctx, dict):
+        return
+    if planned_takeover:
+        ctx["signal"] = "PLANNED_TAKEOVER"
+    elif planned_stop:
+        ctx["signal"] = "PLANNED_STOP"
+
+
 def _read_proc_field(pid: int, key: str) -> Optional[str]:
     """Read a single field from /proc/<pid>/status.  Linux only; None elsewhere."""
     try:

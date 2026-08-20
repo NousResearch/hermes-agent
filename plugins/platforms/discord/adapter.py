@@ -2307,61 +2307,83 @@ class DiscordAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _extract_discord_retry_after(exc: BaseException) -> Optional[float]:
+        """Return a valid Discord retry delay without inventing a fallback."""
+        def _coerce_delay(value: Any) -> Optional[float]:
+            try:
+                delay = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return delay if math.isfinite(delay) and delay >= 0 else None
+
         value = getattr(exc, "retry_after", None)
         if value is not None:
-            try:
-                return max(1.0, float(value))
-            except (TypeError, ValueError):
-                return None
+            delay = _coerce_delay(value)
+            if delay is not None:
+                return delay
+
         response = getattr(exc, "response", None)
         headers = getattr(response, "headers", None)
         if headers:
-            for key in ("Retry-After", "X-RateLimit-Reset-After"):
+            candidate_keys = (
+                "Retry-After",
+                "retry-after",
+                "X-RateLimit-Reset-After",
+                "x-ratelimit-reset-after",
+            )
+            for key in candidate_keys:
                 try:
                     raw = headers.get(key)
                 except Exception:
                     raw = None
                 if raw is None:
                     continue
-                try:
-                    return max(1.0, float(raw))
-                except (TypeError, ValueError):
-                    continue
+                delay = _coerce_delay(raw)
+                if delay is not None:
+                    return delay
+            try:
+                items = headers.items()
+                for key, raw in items:
+                    if str(key).lower() not in {"retry-after", "x-ratelimit-reset-after"}:
+                        continue
+                    delay = _coerce_delay(raw)
+                    if delay is not None:
+                        return delay
+            except (AttributeError, TypeError):
+                pass
         return None
 
     @staticmethod
     def _is_discord_rate_limit(exc: BaseException) -> bool:
-        """True only for exceptions that look like Discord 429 rate limits.
-
-        Narrower than ``hasattr(exc, 'retry_after')``: discord.py's own
-        ``RateLimited`` exception and any HTTPException with status 429
-        qualify. This prevents suppressing unrelated failures that happen
-        to expose a ``retry_after`` attribute."""
-        # discord.py emits RateLimited / HTTPException subclasses for 429s.
-        # Guard with isinstance-of-class so a mocked ``discord`` module
-        # (where attrs are MagicMocks, not types) doesn't trip isinstance.
+        """True only for Discord 429/rate-limit exceptions."""
         if DISCORD_AVAILABLE and discord is not None:
-            for attr_name in ("RateLimited", "HTTPException"):
-                cls = getattr(discord, attr_name, None)
-                if not isinstance(cls, type):
-                    continue
-                if isinstance(exc, cls):
-                    if attr_name == "RateLimited":
-                        return True
-                    status = getattr(exc, "status", None)
-                    if status == 429:
-                        return True
-        # Fallback duck-type: something named like a rate-limit with a
-        # numeric retry_after. Covers mocked clients in tests and exotic
-        # transports, without swallowing arbitrary exceptions.
+            rate_limited_type = getattr(getattr(discord, "errors", None), "RateLimited", None)
+            if isinstance(rate_limited_type, type) and isinstance(exc, rate_limited_type):
+                return True
+            http_exception_type = getattr(getattr(discord, "errors", None), "HTTPException", None)
+            if isinstance(http_exception_type, type) and isinstance(exc, http_exception_type):
+                status = getattr(exc, "status", None)
+                if status is None:
+                    status = getattr(exc, "status_code", None)
+                if status == 429:
+                    return True
+
         name = type(exc).__name__.lower()
-        if ("ratelimit" in name or "rate_limit" in name) and getattr(exc, "retry_after", None) is not None:
-            return True
+        status = getattr(exc, "status", None)
+        if status is None:
+            status = getattr(exc, "status_code", None)
         response = getattr(exc, "response", None)
-        status = getattr(response, "status", None) or getattr(response, "status_code", None)
-        if status == 429:
-            return True
-        return False
+        if status is None and response is not None:
+            status = getattr(response, "status", None)
+            if status is None:
+                status = getattr(response, "status_code", None)
+
+        # Keep the compatibility path narrow: an unrelated exception can be
+        # named ``RateLimitError`` without being a Discord 429.  A name match
+        # must carry a second rate-limit/Discord marker before it can suppress
+        # the seed-message fallback.
+        if "ratelimit" in name or "rate_limit" in name:
+            return status == 429 or response is not None or hasattr(exc, "retry_after")
+        return status == 429
 
     @staticmethod
     def _is_discord_unknown_interaction(exc: BaseException) -> bool:
@@ -5620,7 +5642,7 @@ class DiscordAdapter(BasePlatformAdapter):
                                 chat_id, e,
                             )
                             return
-                        await asyncio.sleep(retry_after)
+                        await asyncio.sleep(max(1.0, retry_after))
                         continue
                     await asyncio.sleep(12)
             except asyncio.CancelledError:
@@ -7217,11 +7239,11 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
-        Returns the created thread object, or ``None`` on failure. Both the
-        primary ``message.create_thread`` and the seed-message fallback are
-        retried once after a short backoff so transient connect errors
-        (e.g. ``Cannot connect to host discord.com:443``) don't immediately
-        burn through to the caller's failure path (#20243).
+        Returns the created thread object, or ``None`` on failure. Transient
+        connection errors retry through the seed-message fallback. Discord
+        rate limits are handled separately: the fallback is suppressed, the
+        requested ``Retry-After`` interval is honored, and only the original
+        thread request is retried once.
         """
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -7229,6 +7251,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
+        direct_rate_limit_retry = False
 
         for attempt in range(2):
             try:
@@ -7240,6 +7263,40 @@ class DiscordAdapter(BasePlatformAdapter):
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
+
+                # Discord's rate-limit exceptions must not enter the seed-message
+                # fallback: that fallback makes another REST request while the
+                # route/global bucket is blocked and can turn one 429 into a burst
+                # of additional 429s.  Wait for Discord's requested interval and
+                # retry only the original operation once.
+                if self._is_discord_rate_limit(direct_error):
+                    retry_after = self._extract_discord_retry_after(direct_error)
+                    if retry_after is None or not math.isfinite(retry_after) or retry_after < 0:
+                        logger.warning(
+                            "[%s] Discord rate-limited auto-thread direct creation but provided no valid Retry-After; stopping",
+                            self.name,
+                        )
+                        break
+                    logger.warning(
+                        "[%s] Discord rate-limited auto-thread direct creation; retrying in %.2f seconds",
+                        self.name,
+                        retry_after,
+                    )
+                    if attempt == 0:
+                        await asyncio.sleep(retry_after)
+                        direct_rate_limit_retry = True
+                        continue
+                    break
+
+                if direct_rate_limit_retry:
+                    logger.warning(
+                        "[%s] Auto-thread creation failed after rate-limit retry; suppressing fallback: %s",
+                        self.name,
+                        direct_error,
+                    )
+                    break
+
+                seed_msg = None
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
@@ -7256,6 +7313,48 @@ class DiscordAdapter(BasePlatformAdapter):
                     return thread
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
+                    if self._is_discord_rate_limit(fallback_error):
+                        # A seed-send 429 cannot be retried by repeating the seed:
+                        # no seed message exists, and doing so would duplicate the
+                        # fallback side effect if a transport returns one later.
+                        if seed_msg is None:
+                            logger.warning(
+                                "[%s] Discord rate-limited auto-thread seed send; stopping without resend",
+                                self.name,
+                            )
+                            break
+                        retry_after = self._extract_discord_retry_after(fallback_error)
+                        if retry_after is None or not math.isfinite(retry_after) or retry_after < 0:
+                            logger.warning(
+                                "[%s] Discord rate-limited auto-thread fallback creation but provided no valid Retry-After; stopping",
+                                self.name,
+                            )
+                            break
+                        logger.warning(
+                            "[%s] Discord rate-limited auto-thread fallback creation; retrying in %.2f seconds",
+                            self.name,
+                            retry_after,
+                        )
+                        await asyncio.sleep(retry_after)
+                        try:
+                            thread = await seed_msg.create_thread(
+                                name=thread_name,
+                                auto_archive_duration=1440,
+                                reason=reason,
+                            )
+                            try:
+                                setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
+                            except Exception:
+                                pass
+                            return thread
+                        except Exception as retry_error:
+                            last_fallback_error = retry_error
+                            logger.warning(
+                                "[%s] Auto-thread fallback creation failed after rate-limit retry: %s",
+                                self.name,
+                                retry_error,
+                            )
+                            break
                     if attempt == 0:
                         # Brief backoff before the second attempt — most failures
                         # in this path are transient connect errors that recover

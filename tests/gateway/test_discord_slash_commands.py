@@ -1,8 +1,9 @@
 """Tests for native Discord slash command fast-paths (thread creation & auto-thread)."""
 
+import asyncio
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-import sys
 
 import pytest
 
@@ -425,6 +426,351 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
     assert "<@" not in name, f"role/user mention leaked: {name!r}"
     assert "<#" not in name, f"channel mention leaked: {name!r}"
     assert name == "please help"
+
+
+def _make_rate_limited(retry_after):
+    """Build the real discord.py exception or a compatible test fake."""
+    class RateLimitedWithoutDelay(Exception):
+        retry_after = None
+
+    if retry_after is None:
+        return RateLimitedWithoutDelay()
+    errors = getattr(_discord_mod, "errors", None)
+    rate_limited_type = getattr(errors, "RateLimited", None)
+    if isinstance(rate_limited_type, type):
+        return rate_limited_type(retry_after)
+
+    class RateLimited(Exception):
+        def __init__(self, delay):
+            self.retry_after = delay
+
+    return RateLimited(retry_after)
+
+
+def test_is_discord_rate_limit_rejects_class_name_only_exception(adapter):
+    class UnrelatedRateLimitError(Exception):
+        pass
+
+    assert not adapter._is_discord_rate_limit(UnrelatedRateLimitError())
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_rate_limited_retries_direct_without_seed(adapter):
+    thread = SimpleNamespace(id=999, name="please help")
+    message = SimpleNamespace(
+        id=123,
+        content="please help",
+        create_thread=AsyncMock(side_effect=[_make_rate_limited(2.5), thread]),
+        channel=SimpleNamespace(id=100, name="general", send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    sleep.assert_awaited_once_with(2.5)
+    assert message.create_thread.await_count == 2
+    assert message.channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_rate_limit_without_retry_after_stops(adapter):
+    message = SimpleNamespace(
+        content="missing delay",
+        create_thread=AsyncMock(side_effect=[_make_rate_limited(None), SimpleNamespace(id=999)]),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    sleep.assert_not_awaited()
+    assert message.create_thread.await_count == 1
+    assert message.channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_http_429_retries_without_seed(adapter):
+    class Http429(Exception):
+        status = 429
+
+        def __init__(self):
+            self.response = SimpleNamespace(headers={"Retry-After": "4.25"})
+
+    thread = SimpleNamespace(id=1000, name="rate limited")
+    message = SimpleNamespace(
+        content="rate limited",
+        create_thread=AsyncMock(side_effect=[Http429(), thread]),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    sleep.assert_awaited_once_with(4.25)
+    assert message.channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_http_429_status_code_uses_header_delay(adapter):
+    class Http429(Exception):
+        status_code = 429
+
+        def __init__(self):
+            self.response = SimpleNamespace(headers={"x-ratelimit-reset-after": "1.25"})
+
+    thread = SimpleNamespace(id=1003, name="status code")
+    message = SimpleNamespace(
+        content="status code",
+        create_thread=AsyncMock(side_effect=[Http429(), thread]),
+        channel=SimpleNamespace(send=AsyncMock(side_effect=AssertionError("seed must not be sent"))),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    sleep.assert_awaited_once_with(1.25)
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_invalid_exception_delay_falls_back_to_header(adapter):
+    class Http429(Exception):
+        retry_after = "not-a-delay"
+        status = 429
+
+        def __init__(self):
+            self.response = SimpleNamespace(headers={"Retry-After": "2.75"})
+
+    thread = SimpleNamespace(id=1004, name="header fallback")
+    message = SimpleNamespace(
+        content="header fallback",
+        create_thread=AsyncMock(side_effect=[Http429(), thread]),
+        channel=SimpleNamespace(send=AsyncMock(side_effect=AssertionError("seed must not be sent"))),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    sleep.assert_awaited_once_with(2.75)
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_header_lookup_is_case_insensitive(adapter):
+    class Http429(Exception):
+        status = 429
+
+        def __init__(self):
+            self.response = SimpleNamespace(headers={"rEtRy-AfTeR": "1.5"})
+
+    thread = SimpleNamespace(id=1005, name="case insensitive")
+    message = SimpleNamespace(
+        content="case insensitive",
+        create_thread=AsyncMock(side_effect=[Http429(), thread]),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    sleep.assert_awaited_once_with(1.5)
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_negative_rate_limit_delay_stops_without_fallback(adapter):
+    message = SimpleNamespace(
+        content="negative delay",
+        create_thread=AsyncMock(side_effect=[_make_rate_limited(-1.0), SimpleNamespace(id=999)]),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    sleep.assert_not_awaited()
+    assert message.create_thread.await_count == 1
+    assert message.channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_nonfinite_rate_limit_delay_stops_without_fallback(adapter):
+    message = SimpleNamespace(
+        content="nonfinite delay",
+        create_thread=AsyncMock(side_effect=[_make_rate_limited(float("inf")), SimpleNamespace(id=999)]),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    sleep.assert_not_awaited()
+    assert message.create_thread.await_count == 1
+    assert message.channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_second_rate_limit_stops_without_fallback(adapter):
+    message = SimpleNamespace(
+        content="still limited",
+        create_thread=AsyncMock(side_effect=[_make_rate_limited(2.5), _make_rate_limited(8.0)]),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    sleep.assert_awaited_once_with(2.5)
+    assert message.create_thread.await_count == 2
+    assert message.channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_rate_limit_retry_failure_stops_without_fallback(adapter):
+    message = SimpleNamespace(
+        content="rate limit then ordinary failure",
+        create_thread=AsyncMock(side_effect=[_make_rate_limited(2.5), RuntimeError("still failed")]),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    sleep.assert_awaited_once_with(2.5)
+    assert message.create_thread.await_count == 2
+    assert message.channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_fallback_rate_limit_retries_only_thread_create(adapter):
+    thread = SimpleNamespace(id=1001, name="fallback rate limited")
+    seed_message = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=[_make_rate_limited(3.75), thread]),
+    )
+    channel = SimpleNamespace(send=AsyncMock(return_value=seed_message))
+    message = SimpleNamespace(
+        content="fallback rate limited",
+        create_thread=AsyncMock(side_effect=RuntimeError("ordinary direct failure")),
+        channel=channel,
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    sleep.assert_awaited_once_with(3.75)
+    assert message.create_thread.await_count == 1
+    assert channel.send.await_count == 1
+    assert seed_message.create_thread.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_fallback_second_rate_limit_stops_without_seed_resend(adapter):
+    seed_message = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=[_make_rate_limited(3.75), _make_rate_limited(8.0)]),
+    )
+    channel = SimpleNamespace(send=AsyncMock(return_value=seed_message))
+    message = SimpleNamespace(
+        content="fallback still limited",
+        create_thread=AsyncMock(side_effect=RuntimeError("ordinary direct failure")),
+        channel=channel,
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    sleep.assert_awaited_once_with(3.75)
+    assert message.create_thread.await_count == 1
+    assert channel.send.await_count == 1
+    assert seed_message.create_thread.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_seed_send_rate_limit_stops_without_resend(adapter):
+    channel = SimpleNamespace(send=AsyncMock(side_effect=_make_rate_limited(3.5)))
+    message = SimpleNamespace(
+        content="seed send rate limited",
+        create_thread=AsyncMock(side_effect=RuntimeError("ordinary direct failure")),
+        channel=channel,
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    sleep.assert_not_awaited()
+    assert message.create_thread.await_count == 1
+    assert channel.send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_send_typing_rate_limit_with_zero_delay_uses_positive_sleep(adapter):
+    class RateLimitedZeroDelay(Exception):
+        retry_after = 0.0
+
+    request = AsyncMock(side_effect=RateLimitedZeroDelay())
+    adapter._client.http = SimpleNamespace(request=request)
+    real_sleep = asyncio.sleep
+
+    async def yield_once(_delay):
+        await real_sleep(0)
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        sleep.side_effect = yield_once
+        await adapter.send_typing("typing-zero-delay")
+        for _ in range(10):
+            await real_sleep(0)
+            if any(call.args == (1.0,) for call in sleep.await_args_list):
+                break
+        await adapter.stop_typing("typing-zero-delay")
+
+    assert any(call.args == (1.0,) for call in sleep.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_ordinary_errors_keep_fallback_and_retry(adapter):
+    thread = SimpleNamespace(id=1002, name="ordinary retry")
+    seed_message = SimpleNamespace(create_thread=AsyncMock(side_effect=RuntimeError("fallback failed")))
+    channel = SimpleNamespace(send=AsyncMock(return_value=seed_message))
+    message = SimpleNamespace(
+        content="ordinary retry",
+        create_thread=AsyncMock(side_effect=RuntimeError("direct failed")),
+        channel=channel,
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch("plugins.platforms.discord.adapter.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    sleep.assert_awaited_once_with(0.75)
+    assert message.create_thread.await_count == 2
+    assert channel.send.await_count == 2
+    assert seed_message.create_thread.await_count == 2
 
 
 @pytest.mark.asyncio

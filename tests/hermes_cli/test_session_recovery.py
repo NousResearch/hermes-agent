@@ -479,12 +479,87 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
     assert report["installed"] is False
 
 
+def test_inspection_reads_payload_not_only_covering_count_index(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "count-readable-payload-corrupt.db"
+    message_count = 320
+    messages_root, count_index_root = _make_page_spanning_source(
+        source,
+        message_count,
+    )
+    assert count_index_root is not None, (
+        "fixture requires SQLite to satisfy COUNT(*) from a covering index"
+    )
+    _corrupt_middle_table_leaf(source, messages_root)
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        plan = " ".join(
+            str(row[3])
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM messages"
+            ).fetchall()
+        )
+        assert "COVERING INDEX" in plan
+        assert (
+            conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            == message_count
+        )
+        with pytest.raises(sqlite3.DatabaseError, match="malformed"):
+            conn.execute("SELECT * FROM messages").fetchall()
+    finally:
+        conn.close()
+
+    inspection = inspect_session_database(source, work_dir=tmp_path)
+
+    messages = inspection["tables"]["messages"]
+    assert messages["available"] is True
+    assert messages["rows"] is None
+    assert messages["payload_readable"] is False
+    assert "malformed" in messages["error"]
+    assert inspection["recoverable"] is False
 
 
+def test_inspection_ignores_corrupt_covering_index_when_payload_is_readable(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "count-index-corrupt-payload-readable.db"
+    message_count = 320
+    _messages_root, count_index_root = _make_page_spanning_source(
+        source,
+        message_count,
+    )
+    assert count_index_root is not None, (
+        "fixture requires SQLite to satisfy COUNT(*) from a covering index"
+    )
+    _corrupt_middle_table_leaf(
+        source,
+        count_index_root,
+        require_interior=False,
+    )
 
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        with pytest.raises(sqlite3.DatabaseError, match="malformed"):
+            conn.execute("SELECT COUNT(*) FROM messages").fetchone()
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM messages NOT INDEXED"
+            ).fetchone()[0]
+            == message_count
+        )
+    finally:
+        conn.close()
 
+    inspection = inspect_session_database(source, work_dir=tmp_path)
 
-
+    messages = inspection["tables"]["messages"]
+    assert messages["available"] is True
+    assert messages["rows"] == message_count
+    assert messages["payload_readable"] is True
+    assert "error" not in messages
+    assert inspection["recoverable"] is True
 
 
 def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(

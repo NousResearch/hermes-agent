@@ -277,6 +277,8 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
 def _table_inventory(
     conn: sqlite3.Connection,
     table: str,
+    *,
+    scan_payload: bool = False,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {"available": False, "columns": [], "rows": None}
     try:
@@ -285,15 +287,35 @@ def _table_inventory(
             return result
         result["available"] = True
         result["columns"] = columns
-        result["rows"] = int(
-            conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
-        )
+        if scan_payload:
+            # COUNT(*) may be answered entirely from a healthy covering index,
+            # masking malformed table leaves or overflow pages. Inspect-only
+            # promises readability, so force the table b-tree and materialize
+            # every payload column one row at a time (bounded to one row of
+            # memory). Derived indexes are rebuilt in the destination and must
+            # not decide whether canonical payload data is recoverable.
+            quoted = ", ".join(f'"{column}"' for column in columns)
+            rows = 0
+            for _row in conn.execute(f'SELECT {quoted} FROM "{table}" NOT INDEXED'):
+                rows += 1
+            result["rows"] = rows
+            result["payload_readable"] = True
+        else:
+            result["rows"] = int(
+                conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            )
     except sqlite3.DatabaseError as exc:
+        if scan_payload and result["available"]:
+            result["payload_readable"] = False
         result["error"] = str(exc)
     return result
 
 
-def _inspect_connection(conn: sqlite3.Connection) -> dict[str, Any]:
+def _inspect_connection(
+    conn: sqlite3.Connection,
+    *,
+    scan_payload: bool = False,
+) -> dict[str, Any]:
     conn.execute("PRAGMA writable_schema=ON")
     report: dict[str, Any] = {"tables": {}, "errors": [], "warnings": []}
     try:
@@ -306,7 +328,11 @@ def _inspect_connection(conn: sqlite3.Connection) -> dict[str, Any]:
         report["warnings"].append(f"journal mode: {exc}")
 
     for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES):
-        report["tables"][table] = _table_inventory(conn, table)
+        report["tables"][table] = _table_inventory(
+            conn,
+            table,
+            scan_payload=scan_payload,
+        )
 
     for required in ("sessions", "messages"):
         table_report = report["tables"][required]
@@ -321,6 +347,8 @@ def _inspect_connection(conn: sqlite3.Connection) -> dict[str, Any]:
 def _snapshot_and_inspect(
     source: Path,
     work_root: Path,
+    *,
+    scan_payload: bool = False,
 ) -> tuple[tempfile.TemporaryDirectory[str], Path, dict[str, Any]]:
     before = _source_fingerprint(source)
     temp_dir = tempfile.TemporaryDirectory(
@@ -351,7 +379,7 @@ def _snapshot_and_inspect(
             timeout=1.0,
         )
         try:
-            inspection = _inspect_connection(conn)
+            inspection = _inspect_connection(conn, scan_payload=scan_payload)
         finally:
             conn.close()
         inspection["source_bundle"] = copied
@@ -371,7 +399,11 @@ def inspect_session_database(
 
     source, _, work_root = _validate_paths(source_path, work_dir=work_dir)
     disk_space = _disk_space_preflight(source, work_root, None)
-    temp_dir, _, inspection = _snapshot_and_inspect(source, work_root)
+    temp_dir, _, inspection = _snapshot_and_inspect(
+        source,
+        work_root,
+        scan_payload=True,
+    )
     try:
         return {
             "operation": "inspect",

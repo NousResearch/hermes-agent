@@ -307,11 +307,7 @@ function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disa
       <Button
         aria-label={label}
         aria-pressed={active}
-        className={cn(
-          GHOST_ICON_BTN,
-          'p-0',
-          active && ACTIVE_ICON_BTN
-        )}
+        className={cn(GHOST_ICON_BTN, 'p-0', active && ACTIVE_ICON_BTN)}
         disabled={disabled}
         onClick={() => {
           triggerHaptic(active ? 'close' : 'open')
@@ -356,11 +352,7 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
       <Button
         aria-label={label}
         aria-pressed={wake.listening && !pausedForVoice}
-        className={cn(
-          GHOST_ICON_BTN,
-          'p-0',
-          wake.listening && !pausedForVoice && ACTIVE_ICON_BTN
-        )}
+        className={cn(GHOST_ICON_BTN, 'p-0', wake.listening && !pausedForVoice && ACTIVE_ICON_BTN)}
         disabled={disabled || pausedForVoice || wake.pending}
         onClick={() => {
           triggerHaptic(wake.listening ? 'close' : 'open')

@@ -12148,6 +12148,7 @@ const hudIpc = registerHudIpc({
     hudSessionId = value
   }
 })
+
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the

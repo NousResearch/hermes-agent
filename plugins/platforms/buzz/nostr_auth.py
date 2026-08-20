@@ -228,3 +228,53 @@ def build_auth_event(
             auxiliary_randomness=auxiliary_randomness,
         ).hex(),
     }
+
+
+def compute_auth_tag(
+    owner_private_key: str,
+    agent_pubkey_hex: str,
+    conditions: str = "",
+) -> str:
+    """Compute a NIP-OA owner-attestation auth tag for a Buzz agent.
+
+    This is the value to set as ``BUZZ_AUTH_TAG`` in ``~/.hermes/.env`` when
+    running the Hermes gateway outside of Buzz Desktop (which normally injects
+    it automatically).
+
+    Signing preimage (per nip_oa.rs)::
+
+        preimage = "nostr:agent-auth:<agent_pubkey_hex>:<conditions>"
+        message  = SHA256(preimage)
+        sig      = BIP-340 Schnorr(message, owner_secret_key)
+
+    Returns a JSON string of the form::
+
+        ["auth", "<owner_pubkey_hex>", "<conditions>", "<sig_hex>"]
+
+    Args:
+        owner_private_key: Owner's Nostr private key (nsec1… or 64-char hex).
+        agent_pubkey_hex:  Agent's 64-char hex pubkey (e.g. HermesX's pubkey).
+        conditions:        Optional NIP-OA conditions string (default: empty,
+                           meaning the attestation is unconditional).
+
+    Example::
+
+        tag = compute_auth_tag(
+            owner_private_key="nsec1…",
+            agent_pubkey_hex="e1765f6b949aeb87…",
+        )
+        # Write to ~/.hermes/.env:
+        # BUZZ_AUTH_TAG=["auth","5c576a…","","<sig>"]
+    """
+    owner_pubkey = public_key_hex(owner_private_key)
+    if owner_pubkey == agent_pubkey_hex.lower():
+        raise ValueError("owner and agent pubkeys must differ (self-attestation rejected)")
+
+    preimage = f"nostr:agent-auth:{agent_pubkey_hex.lower()}:{conditions}"
+    message = hashlib.sha256(preimage.encode()).digest()
+    sig = schnorr_sign(message, owner_private_key)
+
+    return json.dumps(
+        ["auth", owner_pubkey, conditions, sig.hex()],
+        separators=(",", ":"),
+    )

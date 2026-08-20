@@ -371,6 +371,9 @@ class TestDeliverResultWrapping:
         relay.send_for_platform = AsyncMock(return_value=MagicMock(success=True))
         relay.send_voice = AsyncMock(return_value=MagicMock(success=True))
         relay.supports_inchannel_continuable = False
+        # Not a real RelayAdapter: keep the auto-created accessor from
+        # shadowing the scalar False (MagicMock fabricates truthy callables).
+        relay.supports_inchannel_continuable_for_platform = None
 
         config = GatewayConfig(
             platforms={
@@ -2390,6 +2393,13 @@ class TestCronContinuableSurfaceInChannel:
         )
         # Capability flag read via getattr in the scheduler.
         adapter.supports_inchannel_continuable = supports_inchannel
+        # Pin the per-platform accessor OFF: an unspecced AsyncMock would
+        # auto-create it as a truthy callable, silently routing every test
+        # through the relay accessor branch instead of the native scalar
+        # fallback these tests describe (and making supports_inchannel=False
+        # unenforceable). None -> not callable -> scalar path, like a real
+        # native adapter that never defines the method.
+        adapter.supports_inchannel_continuable_for_platform = None
         # A live session store so the in_channel seed can CREATE the flat row
         # (the real bug: without a create step the mirror no-ops on a missing
         # session and the brief is lost). Use a plain MagicMock store.
@@ -2566,6 +2576,38 @@ class TestCronContinuableSurfaceInChannel:
                 attach_to_session=False,
             )
         assert "scope_id" not in captured["metadata"]
+
+    def test_native_adapter_scalar_false_fails_safe_to_thread(self):
+        """D6 fallback boundary with a REAL (non-mock) adapter shape: a native
+        adapter defines only the scalar supports_inchannel_continuable and no
+        per-platform accessor — MagicMock-based fixtures can't prove this
+        branch because they fabricate a truthy accessor. Scalar False must
+        fail safe to thread mode: the in_channel seed never fires."""
+
+        class _NativeShapedAdapter:
+            supports_inchannel_continuable = False
+            _session_store = None
+
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, chat_id, content, metadata=None, **kwargs):
+                self.sent.append((chat_id, content))
+                return MagicMock(success=True, message_id="msg_1",
+                                 raw_response=None)
+
+        adapter = _NativeShapedAdapter()
+        assert not callable(
+            getattr(adapter, "supports_inchannel_continuable_for_platform", None)
+        )
+        with patch("cron.scheduler._seed_cron_channel_session") as seed_mock:
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False,
+            )
+        # Capability absent -> surface fails safe to thread -> flat seed
+        # must NOT run (D6).
+        seed_mock.assert_not_called()
 
     def test_seed_mirrors_into_exact_created_session_on_populated_chat(self):
         """REGRESSION (live, Alice 2026-08-19 19:17): 'in_channel seed did NOT

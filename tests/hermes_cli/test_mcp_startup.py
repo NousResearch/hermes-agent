@@ -163,6 +163,31 @@ def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     assert mcp_startup._has_configured_mcp_servers() is True
 
 
+def test_disabled_native_mcp_configuration_does_not_open_startup_gate(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {
+                "mcp_servers": {
+                    "playwright": {
+                        "command": "npx",
+                        "args": ["-y", "@playwright/mcp@latest"],
+                        "enabled": False,
+                    }
+                }
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _config: False),
+    )
+
+    assert mcp_startup._has_configured_mcp_servers() is False
+
+
 
 
 

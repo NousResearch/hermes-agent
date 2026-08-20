@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { bridgeAuthProof, createBridgeAuthMiddleware } from './bridge_auth.js';
 import {
   buildPollPayload,
   createReconnectScheduler,
@@ -103,13 +104,19 @@ const AUDIO_CACHE_DIR = process.env.HERMES_AUDIO_CACHE_DIR
 // keeps serving the old behavior forever).
 let SCRIPT_HASH = '';
 try {
-  SCRIPT_HASH = createHash('sha256')
-    .update(readFileSync(fileURLToPath(import.meta.url)))
-    .digest('hex')
-    .slice(0, 16);
+  const entryPath = fileURLToPath(import.meta.url);
+  const digest = createHash('sha256');
+  for (const sourcePath of [entryPath, path.join(path.dirname(entryPath), 'bridge_auth.js')]) {
+    digest.update(path.basename(sourcePath));
+    digest.update('\0');
+    digest.update(readFileSync(sourcePath));
+    digest.update('\0');
+  }
+  SCRIPT_HASH = digest.digest('hex').slice(0, 16);
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
+const BRIDGE_TOKEN = process.env.HERMES_WHATSAPP_BRIDGE_TOKEN || '';
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
@@ -780,7 +787,6 @@ async function startSocket() {
 
 // HTTP server
 const app = express();
-app.use(express.json());
 
 // Host-header validation — defends against DNS rebinding.
 // The bridge binds loopback-only (127.0.0.1) but a victim browser on
@@ -812,6 +818,21 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Prove that an existing listener already knows the session secret before the
+// Python adapter sends that listener any bearer-authenticated request.
+app.get('/auth-proof', (req, res) => {
+  const challenge = req.headers['x-hermes-bridge-challenge'];
+  if (typeof challenge !== 'string' || !challenge) {
+    return res.status(400).json({ error: 'Missing bridge challenge' });
+  }
+  res.json({ authProof: bridgeAuthProof(BRIDGE_TOKEN, challenge) });
+});
+
+// Loopback binding does not establish the caller's identity: another local
+// process can bind the configured port or call this API directly.
+app.use(createBridgeAuthMiddleware(BRIDGE_TOKEN));
+app.use(express.json());
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
@@ -1104,7 +1125,7 @@ app.get('/chat/:id', async (req, res) => {
 });
 
 // Health check
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({
     status: connectionState,
     queueLength: messageQueue.length,
@@ -1132,6 +1153,10 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
+  if (!BRIDGE_TOKEN) {
+    console.error('WhatsApp bridge authentication token is required.');
+    process.exit(1);
+  }
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);

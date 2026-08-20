@@ -69,15 +69,37 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     return adapter
 
 
-def _mock_health(json_data):
+_TEST_BRIDGE_TOKEN = "test-bridge-token-with-enough-entropy"
+
+
+def _mock_health(json_data, *, authenticated=True, reflect_request_token=False):
     """Mock aiohttp.ClientSession whose GET returns 200 + *json_data*."""
-    mock_resp = MagicMock()
-    mock_resp.status = 200
-    mock_resp.json = AsyncMock(return_value=json_data)
     mock_session = MagicMock()
-    mock_session.get = MagicMock(return_value=_AsyncCM(mock_resp))
+
+    def get(url, **kwargs):
+        if url.endswith("/auth-proof"):
+            payload = {}
+            from plugins.platforms.whatsapp.adapter import _bridge_auth_proof
+
+            challenge = kwargs["headers"]["X-Hermes-Bridge-Challenge"]
+            token = _TEST_BRIDGE_TOKEN if authenticated else ""
+            if reflect_request_token:
+                authorization = kwargs["headers"].get("Authorization", "")
+                token = authorization.removeprefix("Bearer ")
+            if token:
+                payload["authProof"] = _bridge_auth_proof(token, challenge)
+        else:
+            payload = dict(json_data)
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=payload)
+        return _AsyncCM(mock_resp)
+
+    mock_session.get = MagicMock(side_effect=get)
     mock_session.close = AsyncMock()
-    return MagicMock(return_value=_AsyncCM(mock_session))
+    factory = MagicMock(return_value=_AsyncCM(mock_session))
+    factory.mock_session = mock_session
+    return factory
 
 
 def _setup_bridge_dir(tmp_path: Path) -> Path:
@@ -85,10 +107,12 @@ def _setup_bridge_dir(tmp_path: Path) -> Path:
     bridge_dir = tmp_path / "whatsapp-bridge"
     bridge_dir.mkdir()
     (bridge_dir / "bridge.js").write_text("// current bridge code\n")
+    (bridge_dir / "bridge_auth.js").write_text("// current auth code\n")
     (bridge_dir / "package.json").write_text('{"name": "bridge"}\n')
     session_path = tmp_path / "session"
     session_path.mkdir()
     (session_path / "creds.json").write_text("{}")
+    (session_path / ".bridge-token").write_text(_TEST_BRIDGE_TOKEN)
     return bridge_dir
 
 
@@ -116,10 +140,115 @@ class TestFileContentHash:
 
 class TestStaleBridgeHandshake:
 
+    @pytest.mark.asyncio
+    async def test_reuses_only_authenticated_matching_bridge(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        disk_hash = _bridge_source_hash(bridge_dir / "bridge.js")
+        mock_client = _mock_health(
+            {
+                "status": "connected",
+                "scriptHash": disk_hash,
+                "sendReadReceipts": False,
+            }
+        )
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"), \
+             patch("subprocess.Popen") as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            result = await adapter.connect()
+
+        assert result is True
+        mock_popen.assert_not_called()
+        assert mock_client.call_args_list[-1].kwargs["headers"] == {
+            "Authorization": f"Bearer {_TEST_BRIDGE_TOKEN}"
+        }
+
+    @pytest.mark.asyncio
+    async def test_rejects_matching_listener_without_auth_proof(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        disk_hash = _bridge_source_hash(bridge_dir / "bridge.js")
+        mock_client = _mock_health(
+            {
+                "status": "connected",
+                "scriptHash": disk_hash,
+                "sendReadReceipts": False,
+            },
+            authenticated=False,
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            result = await adapter.connect()
+
+        assert result is False
+        mock_popen.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rejects_listener_that_can_only_reflect_disclosed_credentials(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        disk_hash = _bridge_source_hash(bridge_dir / "bridge.js")
+        mock_client = _mock_health(
+            {
+                "status": "connected",
+                "scriptHash": disk_hash,
+                "sendReadReceipts": False,
+            },
+            authenticated=False,
+            reflect_request_token=True,
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            result = await adapter.connect()
+
+        assert result is False
+        mock_popen.assert_called_once()
+        first_request_headers = mock_client.mock_session.get.call_args_list[0].kwargs["headers"]
+        assert "Authorization" not in first_request_headers
+
 
     @pytest.mark.asyncio
     async def test_restarts_bridge_when_read_receipt_config_changed(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
 
         bridge_dir = _setup_bridge_dir(tmp_path)
         _fresh_node_modules(bridge_dir)
@@ -128,7 +257,7 @@ class TestStaleBridgeHandshake:
             session_path=tmp_path / "session",
         )
         adapter._send_read_receipts = True
-        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        disk_hash = _bridge_source_hash(bridge_dir / "bridge.js")
         mock_client = _mock_health(
             {
                 "status": "connected",

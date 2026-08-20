@@ -88,8 +88,11 @@ def _session_with(responses):
     return session_ctx, calls
 
 
-def _pconfig():
-    return SimpleNamespace(token="", extra={"bridge_port": 3000})
+def _pconfig(session_path=None):
+    extra = {"bridge_port": 3000}
+    if session_path is not None:
+        extra["session_path"] = str(session_path)
+    return SimpleNamespace(token="", extra=extra)
 
 
 def _tmpfile(suffix):
@@ -112,7 +115,11 @@ def test_text_plus_mixed_media_routes_native_types():
                 _resp(200, {"messageId": "m3"}),
             ]
         )
-        with patch("aiohttp.ClientSession", return_value=session_ctx):
+        with patch("aiohttp.ClientSession", return_value=session_ctx), \
+             patch(
+                 "plugins.platforms.whatsapp.adapter._request_authenticated_bridge_health",
+                 new=AsyncMock(return_value={"status": "connected"}),
+             ):
             res = asyncio.run(
                 _standalone_send(
                     _pconfig(),
@@ -138,7 +145,11 @@ def test_missing_captioned_file_falls_back_to_text():
     """If the single captioned file is missing, the caption is delivered as a
     plain /send message rather than being silently lost (W1)."""
     session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
-    with patch("aiohttp.ClientSession", return_value=session_ctx):
+    with patch("aiohttp.ClientSession", return_value=session_ctx), \
+         patch(
+             "plugins.platforms.whatsapp.adapter._request_authenticated_bridge_health",
+             new=AsyncMock(return_value={"status": "connected"}),
+         ):
         res = asyncio.run(
             _standalone_send(
                 _pconfig(),
@@ -155,3 +166,61 @@ def test_missing_captioned_file_falls_back_to_text():
     assert len(calls) == 1
     assert calls[0][0].endswith("/send")
     assert calls[0][1]["message"] == "floor plan"
+
+
+def test_standalone_delivery_authenticates_text_caption_fallback_and_media(tmp_path):
+    """Every standalone bridge route uses the session's persisted bearer token."""
+    token = "persistent-standalone-bridge-token"
+    (tmp_path / ".bridge-token").write_text(token, encoding="utf-8")
+    media_path = _tmpfile(".png")
+    missing_path = str(tmp_path / "missing.png")
+
+    try:
+        session_ctx, calls = _session_with(
+            [
+                _resp(200, {"messageId": "text"}),
+                _resp(200, {"messageId": "media"}),
+                _resp(200, {"messageId": "fallback"}),
+            ]
+        )
+        with patch("aiohttp.ClientSession", return_value=session_ctx) as client_session, \
+             patch(
+                 "plugins.platforms.whatsapp.adapter._request_authenticated_bridge_health",
+                 new=AsyncMock(return_value={"status": "connected"}),
+             ) as authenticate:
+            text_and_media = asyncio.run(
+                _standalone_send(
+                    _pconfig(tmp_path),
+                    "12345",
+                    "hello",
+                    media_files=[(media_path, False)],
+                )
+            )
+            caption_fallback = asyncio.run(
+                _standalone_send(
+                    _pconfig(tmp_path),
+                    "12345",
+                    "",
+                    media_files=[(missing_path, False)],
+                    caption="fallback caption",
+                )
+            )
+
+        assert text_and_media["success"] is True
+        assert "not found" in caption_fallback["error"]
+        assert [call[0].rsplit("/", 1)[-1] for call in calls] == [
+            "send",
+            "send-media",
+            "send",
+        ]
+        assert client_session.call_count == 2
+        for call in client_session.call_args_list:
+            assert "headers" not in call.kwargs
+        assert authenticate.await_count == 2
+        for call in authenticate.await_args_list:
+            assert call.args[1] == "http://127.0.0.1:3000"
+            assert call.args[2] == token
+        for call in session_ctx.__aenter__.return_value.post.call_args_list:
+            assert call.kwargs["headers"] == {"Authorization": f"Bearer {token}"}
+    finally:
+        os.unlink(media_path)

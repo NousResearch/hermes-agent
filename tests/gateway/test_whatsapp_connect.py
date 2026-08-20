@@ -13,6 +13,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+from contextlib import ExitStack
 import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -94,6 +95,10 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
         patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "mkdir", return_value=None),
+        patch(
+            "plugins.platforms.whatsapp.adapter._load_or_create_bridge_token",
+            return_value="test-bridge-token-with-enough-entropy",
+        ),
         patch("subprocess.run", return_value=MagicMock(returncode=0)),
         patch("subprocess.Popen", return_value=mock_proc),
         patch("builtins.open", return_value=mock_fh),
@@ -142,8 +147,8 @@ class TestDataInitialized:
         """HTTP 200 sets http_ready but json() always raises.
 
         Without the fix, ``data`` was never assigned and the Phase 2 check
-        ``data.get("status")`` raised NameError.  With ``data = {}``, the
-        check evaluates to ``None != "connected"`` and Phase 2 runs normally.
+        ``data.get("status")`` raised NameError. The authenticated health path
+        now fails closed without ever reading an uninitialized value.
         """
         adapter = _make_adapter()
 
@@ -157,15 +162,18 @@ class TestDataInitialized:
 
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8], \
-             patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(
+                patch.object(type(adapter), "_poll_messages", return_value=MagicMock())
+            )
             # Must NOT raise NameError
             result = await adapter.connect()
 
-        # connect() returns True (warn-and-proceed path)
-        assert result is True
-        assert adapter._running is True
+        # Invalid health responses are not authenticated and fail closed.
+        assert result is False
+        assert adapter._running is False
 
 
 # ---------------------------------------------------------------------------
@@ -187,8 +195,9 @@ class TestFileHandleClosedOnError:
         mock_fh = MagicMock()
         patches = _connect_patches(mock_proc, mock_fh)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
             result = await adapter.connect()
 
         assert result is False
@@ -299,8 +308,9 @@ class TestBridgeRuntimeFailure:
         mock_fh = MagicMock()
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
             result = await adapter.connect()
 
         assert result is False

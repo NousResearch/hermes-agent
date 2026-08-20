@@ -11,6 +11,11 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { api } from "@/lib/api";
+import {
+  CONSOLE_CONNECTING_TIMEOUT_MS,
+  CONSOLE_TICKET_TIMEOUT_MS,
+  raceTicket,
+} from "@/lib/console-connect";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import { cn, themedBody } from "@/lib/utils";
 import { useTheme } from "@/themes";
@@ -397,15 +402,60 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
     hasReadyFrameRef.current = false;
     writeLine(term, "\x1b[2mConnecting to Hermes Console...\x1b[0m");
 
+    // Two phases here can wedge without ever producing a `close` event,
+    // leaving the modal on "connecting" with nothing to act on: the ticket
+    // request that runs before any socket exists, and a socket that never
+    // leaves CONNECTING. Mirrors the guards the PTY surface carries
+    // (PTY_TICKET_TIMEOUT_MS / PTY_CONNECTING_TIMEOUT_MS in lib/pty-reconnect).
+    let connectingTimer: null | ReturnType<typeof setTimeout> = null;
+    const clearConnectingTimer = () => {
+      if (connectingTimer !== null) {
+        clearTimeout(connectingTimer);
+        connectingTimer = null;
+      }
+    };
+
     void (async () => {
       try {
         const params = profile ? { profile } : undefined;
-        const url = await api.buildWsUrl("/api/console", params);
+
+        const ticket = await raceTicket(() =>
+          api.buildWsUrl("/api/console", params),
+        );
         if (cancelled) return;
-        const ws = new WebSocket(url);
+        if (ticket.status === "timeout") {
+          setConnectionState("error");
+          writeLine(
+            term,
+            `\x1b[31mConsole did not get a connection ticket within ${Math.round(
+              CONSOLE_TICKET_TIMEOUT_MS / 1000,
+            )}s. Close and reopen to retry.\x1b[0m`,
+          );
+          return;
+        }
+        if (ticket.status === "failed") {
+          throw ticket.error;
+        }
+
+        const ws = new WebSocket(ticket.value);
         wsRef.current = ws;
 
+        // A socket can sit in CONNECTING indefinitely (radio handoff, a proxy
+        // that accepts and stalls) without firing onclose. Force-close it so
+        // the onclose handler below reports the failure.
+        connectingTimer = setTimeout(() => {
+          connectingTimer = null;
+          if (wsRef.current === ws && ws.readyState === WebSocket.CONNECTING) {
+            try {
+              ws.close();
+            } catch {
+              /* already tearing down */
+            }
+          }
+        }, CONSOLE_CONNECTING_TIMEOUT_MS);
+
         ws.onopen = () => {
+          clearConnectingTimer();
           setConnectionState("connecting");
         };
 
@@ -424,6 +474,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
         };
 
         ws.onclose = (ev) => {
+          clearConnectingTimer();
           if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
             return;
           }
@@ -448,6 +499,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
 
     return () => {
       cancelled = true;
+      clearConnectingTimer();
       dataDisposable.dispose();
       ro.disconnect();
       if (resizeFrame) cancelAnimationFrame(resizeFrame);

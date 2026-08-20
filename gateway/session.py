@@ -595,11 +595,10 @@ def build_session_context_prompt(
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
-        # Inject the Slack capability note only when the agent actually has
-        # Slack tools loaded this session — native `slack` toolset opt-in,
-        # or a connected MCP server that has registered Slack tools.
-        # Otherwise keep the stale-API disclaimer honest so we never
-        # promise tools the agent lacks. Mirrors the Discord pattern below.
+        # A false dedicated-tool detector does not prove that the deployment has
+        # no scoped Slack route. Skills, CLIs, plugins, and helpers may expose
+        # governed operations through existing tools, so keep the fallback
+        # non-promissory without issuing a false absolute denial.
         if _slack_tools_loaded():
             lines.append("")
             lines.append(
@@ -613,12 +612,14 @@ def build_session_context_prompt(
         else:
             lines.append("")
             lines.append(
-                "**Platform notes:** You are running inside Slack. "
-                "You do NOT have access to Slack-specific APIs — you cannot search "
-                "channel history, pin/unpin messages, manage channels, or list users. "
-                "Do not promise to perform these actions. The gateway may inline the "
-                "current message's Slack block/attachment payload when available, but "
-                "you still cannot call Slack APIs yourself."
+                "**Platform notes:** You are running inside Slack. No dedicated "
+                "native or MCP Slack tool is loaded. Do not assume broad Slack API "
+                "access. Inspect the loaded capabilities before attempting or "
+                "refusing Slack API work; a deployment skill, CLI, plugin, or helper "
+                "may provide scoped Slack operations. Use only documented operations "
+                "and authorized targets. Do not use raw Slack credentials or "
+                "undocumented API calls. The gateway may inline the current message's "
+                "Slack block/attachment payload when available."
             )
         if context.shared_multi_user_session:
             lines.append(

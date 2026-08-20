@@ -35,6 +35,7 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 const ELECTRON_DIR = path.join(REPO_ROOT, 'apps', 'desktop', 'electron')
 const MAIN_PLIST = path.join(ELECTRON_DIR, 'entitlements.mac.plist')
 const INHERIT_PLIST = path.join(ELECTRON_DIR, 'entitlements.mac.inherit.plist')
+const DESKTOP_PKG = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
 
 const DEVICE_PREFIX = 'com.apple.security.device.'
 
@@ -58,6 +59,41 @@ test('inherit plist grants microphone (regression #37718)', () => {
       '`com.apple.security.device.audio-input`; without it the ' +
       'hardened-runtime Helper process is denied the microphone and no ' +
       'TCC prompt appears (#37718).'
+  )
+})
+
+test('both plists grant Apple Events automation', () => {
+  const main = loadEntitlements(MAIN_PLIST)
+  const inherit = loadEntitlements(INHERIT_PLIST)
+
+  for (const [name, data] of [
+    ['entitlements.mac.plist', main],
+    ['entitlements.mac.inherit.plist', inherit],
+  ] as const) {
+    assert.equal(
+      data['com.apple.security.automation.apple-events'],
+      true,
+      `${name} must grant \`com.apple.security.automation.apple-events\`; ` +
+        'without it the hardened runtime denies sending Apple Events, so ' +
+        'AppleScript/osascript automation of other apps (e.g. Apple Notes, ' +
+        'which has no framework API) fails silently with no TCC prompt — ' +
+        'even when NSAppleEventsUsageDescription is present in Info.plist.'
+    )
+  }
+})
+
+test('Info.plist declares NSAppleEventsUsageDescription', () => {
+  const pkg = JSON.parse(fs.readFileSync(DESKTOP_PKG, 'utf-8'))
+  const value = pkg?.build?.mac?.extendInfo?.NSAppleEventsUsageDescription
+
+  assert.ok(
+    typeof value === 'string' && value.trim().length > 0,
+    'apps/desktop/package.json build.mac.extendInfo must declare ' +
+      '`NSAppleEventsUsageDescription`; the hardened runtime requires the ' +
+      'usage string in addition to the apple-events entitlement before the ' +
+      'Automation TCC prompt can fire — without it, AppleScript/osascript ' +
+      'from desktop-spawned runs is refused with errAEEventNotPermitted ' +
+      '(-1743) and no prompt ever appears (#69723).'
   )
 })
 

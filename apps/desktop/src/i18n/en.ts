@@ -2251,6 +2251,7 @@ export const en: Translations = {
     stopShort: 'Stop',
     endConversation: 'End voice conversation',
     endShort: 'End',
+    cancelDictation: 'Cancel dictation',
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceControls: 'Voice',

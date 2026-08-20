@@ -1952,6 +1952,7 @@ export const ja = defineLocale({
     stopShort: '停止',
     endConversation: '音声会話を終了',
     endShort: '終了',
+    cancelDictation: '口述をキャンセル',
     stopDictation: '口述を停止',
     transcribingDictation: '口述を文字起こし中',
     voiceControls: '音声',

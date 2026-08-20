@@ -54,6 +54,7 @@ import { triggerKeyUpHandler, useComposerTrigger } from './hooks/use-composer-tr
 import { useComposerUndo } from './hooks/use-composer-undo'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
+import { useDictationEscCancel } from './hooks/use-dictation-esc-cancel'
 import { useEmojiCompletions } from './hooks/use-emoji-completions'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
@@ -885,6 +886,13 @@ export function ChatBar({
     }
 
     if (event.key === 'Escape') {
+      // A capture-phase owner (dictation discard) already consumed this Esc.
+      // One cancel gesture does one thing — don't also exit an edit or halt
+      // the turn on the same keypress.
+      if (event.defaultPrevented) {
+        return
+      }
+
       // Editing a queued turn → Esc cancels the edit, restoring the prior draft.
       if (queueEdit) {
         event.preventDefault()
@@ -926,6 +934,7 @@ export function ChatBar({
   useComposerEscCancel({ awaitingInput, busy, onCancel: haltRun, target: scope.target })
 
   const {
+    cancelDictation,
     conversation,
     dictate,
     endConversation,
@@ -946,6 +955,15 @@ export function ChatBar({
     onSubmit,
     onTranscribeAudio,
     sessionId,
+    target: scope.target
+  })
+
+  // Esc discards an in-flight dictation. Registered after the turn-cancel hook
+  // above but listening in the capture phase, so its precedence is explicit
+  // rather than dependent on hook order.
+  useDictationEscCancel({
+    onCancel: cancelDictation,
+    recording: voiceStatus === 'recording',
     target: scope.target
   })
 
@@ -1282,7 +1300,7 @@ export function ChatBar({
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
                   <ContribSlot area={COMPOSER_AREAS.top} />
-                  <VoiceActivity state={voiceActivityState} />
+                  <VoiceActivity onCancel={cancelDictation} state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && (
                     <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">

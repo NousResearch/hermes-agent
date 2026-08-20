@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
-import { iconSize, Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
+import { iconSize, Loader2, Mic, Volume2, VolumeX, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { stopVoicePlayback } from '@/lib/voice-playback'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -163,7 +163,7 @@ function PlaybackWaveform({ audioElement }: { audioElement: HTMLAudioElement | n
   return <canvas aria-hidden="true" className="block h-4 w-[88px]" ref={canvasRef} />
 }
 
-export function VoiceActivity({ state }: { state: VoiceActivityState }) {
+export function VoiceActivity({ state, onCancel }: { onCancel?: () => void; state: VoiceActivityState }) {
   const { t } = useI18n()
 
   if (state.status === 'idle') {
@@ -199,6 +199,28 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
       </div>
 
       <VoiceLevelBars active={recording} level={state.level} />
+
+      {/* Discard lives here, inside the panel that already appears for the
+          duration of the capture — putting it in the control row would shift
+          the model pill and every sibling icon sideways mid-dictation. Only
+          while recording: once transcription starts the audio has already
+          reached the provider, so "cancel" could no longer undo the cost.
+
+          Icon-only, matching the composer's language: every action here is a
+          glyph. Per DESIGN.md a dismiss X is self-describing, so it carries an
+          `aria-label` and no tooltip. */}
+      {recording && onCancel ? (
+        <Button
+          aria-label={t.composer.cancelDictation}
+          className="shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={onCancel}
+          size="icon-xs"
+          type="button"
+          variant="ghost"
+        >
+          <X className={iconSize.xs} />
+        </Button>
+      ) : null}
     </div>
   )
 }

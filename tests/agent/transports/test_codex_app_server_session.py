@@ -366,6 +366,67 @@ class TestRunTurn:
         assert "sk-stalled-secret-abc123" not in r.error
         assert r.should_retire is True
 
+    def test_turn_start_transport_failure_returns_retiring_result(self):
+        from agent.transports.codex_app_server import CodexAppServerTransportError
+
+        client = FakeClient()
+        client.set_stderr_tail(["provider token sk-transport-secret"])
+
+        def fail_write(method, params):
+            if method == "turn/start":
+                raise CodexAppServerTransportError("stdin closed unexpectedly")
+            return {
+                "thread": {"id": "thread-fake-001"},
+                "activePermissionProfile": {"id": "x"},
+            }
+
+        client._request_handler = fail_write
+
+        result = make_session(client).run_turn("hi", turn_timeout=2.0)
+
+        assert result.thread_id == "thread-fake-001"
+        assert result.error and "turn/start transport failed" in result.error
+        assert "stdin closed unexpectedly" in result.error
+        assert "sk-transport-secret" not in result.error
+        assert result.should_retire is True
+
+    def test_turn_start_unrelated_runtime_error_still_escapes(self):
+        client = FakeClient()
+
+        def programming_error(method, params):
+            if method == "turn/start":
+                raise RuntimeError("unexpected adapter defect")
+            return {
+                "thread": {"id": "thread-fake-001"},
+                "activePermissionProfile": {"id": "x"},
+            }
+
+        client._request_handler = programming_error
+
+        with pytest.raises(RuntimeError, match="unexpected adapter defect"):
+            make_session(client).run_turn("hi", turn_timeout=2.0)
+
+    def test_approval_response_transport_failure_returns_retiring_result(self):
+        from agent.transports.codex_app_server import CodexAppServerTransportError
+
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            command="pwd",
+            cwd="/tmp",
+        )
+
+        def fail_write(_request_id, _result):
+            raise CodexAppServerTransportError("stdin closed")
+
+        client.respond = fail_write
+
+        result = make_session(client).run_turn("hi", turn_timeout=2.0)
+
+        assert result.error and "response transport failed" in result.error
+        assert "stdin closed" in result.error
+        assert result.should_retire is True
+
 
 
 
@@ -384,6 +445,22 @@ class TestRunTurn:
             "input": [{"type": "text", "text": "Use Postgres instead"}],
             "expectedTurnId": "turn-live-123",
         }
+
+    def test_steer_transport_failure_is_non_fatal(self):
+        from agent.transports.codex_app_server import CodexAppServerTransportError
+
+        client = FakeClient()
+        session = make_session(client)
+        session.ensure_started()
+        with session._active_turn_lock:
+            session._active_turn_id = "turn-live-123"
+
+        def fail_write(method, params):
+            raise CodexAppServerTransportError("stdin closed")
+
+        client._request_handler = fail_write
+
+        assert session.request_steer("Use Postgres instead") is False
 
 
 
@@ -437,6 +514,48 @@ class TestCompactThread:
         assert r.final_text == "compacted"
         assert r.token_usage_last["totalTokens"] == 12
         assert r.model_context_window == 200000
+
+    def test_compact_start_transport_failure_returns_retiring_result(self):
+        from agent.transports.codex_app_server import CodexAppServerTransportError
+
+        client = FakeClient()
+
+        def fail_write(method, params):
+            if method == "thread/compact/start":
+                raise CodexAppServerTransportError("stdin closed unexpectedly")
+            return {
+                "thread": {"id": "thread-fake-001"},
+                "activePermissionProfile": {"id": "x"},
+            }
+
+        client._request_handler = fail_write
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.thread_id == "thread-fake-001"
+        assert result.error and "thread/compact/start transport failed" in result.error
+        assert result.should_retire is True
+
+    def test_compact_approval_response_transport_failure_retires(self):
+        from agent.transports.codex_app_server import CodexAppServerTransportError
+
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            command="pwd",
+            cwd="/tmp",
+        )
+
+        def fail_write(_request_id, _result):
+            raise CodexAppServerTransportError("stdin closed")
+
+        client.respond = fail_write
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error and "response transport failed" in result.error
+        assert "stdin closed" in result.error
+        assert result.should_retire is True
 
     def test_compact_thread_ignores_foreign_child_completion(self):
         client = FakeClient()
@@ -822,6 +941,20 @@ class TestSessionRetirement:
         assert r.should_retire is True
         # Stderr-derived auth hint takes precedence over generic message
         assert r.error and "codex login" in r.error
+
+    def test_interrupt_transport_failure_is_non_fatal(self):
+        from agent.transports.codex_app_server import CodexAppServerTransportError
+
+        client = FakeClient()
+        session = make_session(client)
+        session.ensure_started()
+
+        def fail_write(method, params):
+            raise CodexAppServerTransportError("stdin closed")
+
+        client._request_handler = fail_write
+
+        session._issue_interrupt("turn-fake-001")
 
 
 # ---- thread/start cross-fill ----

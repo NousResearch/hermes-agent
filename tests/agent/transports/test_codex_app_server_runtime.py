@@ -7,6 +7,8 @@ covered by a separate live test gated on `codex --version`.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from hermes_cli.runtime_provider import (
@@ -109,6 +111,28 @@ class TestCodexAppServerModule:
         assert isinstance(err, RuntimeError)
         assert "boom" in str(err)
         assert "-32600" in str(err)
+
+    def test_request_write_failure_is_typed_and_clears_pending(self) -> None:
+        from agent.transports.codex_app_server import (
+            CodexAppServerClient,
+            CodexAppServerTransportError,
+        )
+
+        client = object.__new__(CodexAppServerClient)
+        client._next_id = 1
+        client._pending = {}
+        client._pending_lock = threading.Lock()
+
+        def fail_send(_payload: dict) -> None:
+            raise CodexAppServerTransportError("stdin closed")
+
+        client._send = fail_send
+
+        with pytest.raises(CodexAppServerTransportError, match="stdin closed") as exc:
+            client.request("turn/start", {})
+
+        assert isinstance(exc.value, RuntimeError)
+        assert client._pending == {}
 
 
 class TestSpawnEnvIsolation:

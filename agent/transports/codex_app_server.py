@@ -44,6 +44,10 @@ class CodexAppServerError(RuntimeError):
         return f"codex app-server error {self.code}: {self.message}"
 
 
+class CodexAppServerTransportError(RuntimeError):
+    """Raised when a JSON-RPC message cannot be written to the child."""
+
+
 @dataclass
 class _Pending:
     queue: queue.Queue
@@ -222,7 +226,12 @@ class CodexAppServerClient:
         q: queue.Queue = queue.Queue(maxsize=1)
         with self._pending_lock:
             self._pending[rid] = _Pending(queue=q, method=method)
-        self._send({"id": rid, "method": method, "params": params or {}})
+        try:
+            self._send({"id": rid, "method": method, "params": params or {}})
+        except CodexAppServerTransportError:
+            with self._pending_lock:
+                self._pending.pop(rid, None)
+            raise
         try:
             msg = q.get(timeout=timeout)
         except queue.Empty:
@@ -300,14 +309,16 @@ class CodexAppServerClient:
 
     def _send(self, obj: dict) -> None:
         if self._closed:
-            raise RuntimeError("codex app-server client is closed")
+            raise CodexAppServerTransportError("codex app-server client is closed")
         if self._proc.stdin is None:
-            raise RuntimeError("codex app-server stdin not available")
+            raise CodexAppServerTransportError(
+                "codex app-server stdin not available"
+            )
         try:
             self._proc.stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
             self._proc.stdin.flush()
         except (BrokenPipeError, ValueError) as exc:
-            raise RuntimeError(
+            raise CodexAppServerTransportError(
                 f"codex app-server stdin closed unexpectedly: {exc}"
             ) from exc
 

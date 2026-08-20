@@ -143,6 +143,21 @@ class TestValidateFilePath:
         err = _validate_file_path("README.md")
         assert "File must be under one of:" in err
 
+    def test_two_part_skill_md_must_name_the_skill(self):
+        # '<skill-name>/SKILL.md' is accepted only when the first part is the
+        # skill being edited — anything else plants a nested SKILL.md that
+        # skill discovery picks up as a hidden shadow skill.
+        assert _validate_file_path("foo/SKILL.md", "foo") is None
+        assert _validate_file_path("SKILL.md", "foo") is None
+
+        err = _validate_file_path("evil/SKILL.md", "foo")
+        assert "does not refer to skill 'foo'" in err
+
+    def test_two_part_skill_md_rejected_without_skill_name(self):
+        # Callers that don't pass the skill name get no 2-part exception.
+        err = _validate_file_path("foo/SKILL.md")
+        assert err is not None
+
 
 # ---------------------------------------------------------------------------
 # CRUD operations
@@ -217,6 +232,34 @@ class TestPatchSkill:
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "Do the new thing." in content
 
+    def test_patch_two_part_skill_md_routes_to_root(self, tmp_path):
+        # '<skill-name>/SKILL.md' patches the skill's main file, not a
+        # nested 'my-skill/my-skill/SKILL.md' shadow file.
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill(
+                "my-skill", "Do the thing.", "Do the new thing.",
+                file_path="my-skill/SKILL.md",
+            )
+        assert result["success"] is True
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Do the new thing." in content
+        assert not (tmp_path / "my-skill" / "my-skill").exists()
+
+    def test_patch_skill_md_spelling_frontmatter_guard(self, tmp_path):
+        # Patching via an explicit main-file spelling must hit the same
+        # frontmatter guard as the default SKILL.md patch.
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            original = (tmp_path / "my-skill" / "SKILL.md").read_text()
+            result = _patch_skill(
+                "my-skill", "---\nname:", "name:",
+                file_path="my-skill/SKILL.md",
+            )
+        assert result["success"] is False
+        assert "break SKILL.md structure" in result["error"]
+        assert (tmp_path / "my-skill" / "SKILL.md").read_text() == original
+
 
     def test_patch_ambiguous_match_rejected(self, tmp_path):
         content = """\
@@ -284,6 +327,34 @@ class TestWriteFile:
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "references" / "api.md").exists()
 
+    def test_two_part_skill_md_routes_to_root(self, tmp_path):
+        # '<skill-name>/SKILL.md' addresses the skill's main file, not a
+        # nested 'my-skill/my-skill/SKILL.md' shadow file.
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "my-skill/SKILL.md", VALID_SKILL_CONTENT)
+        assert result["success"] is True
+        assert not (tmp_path / "my-skill" / "my-skill").exists()
+
+    def test_write_skill_md_spelling_validates_frontmatter(self, tmp_path):
+        # Main-file spellings route through edit: a full rewrite with broken
+        # frontmatter must be rejected and leave the root file untouched.
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            original = (tmp_path / "my-skill" / "SKILL.md").read_text()
+            for spelling in ("SKILL.md", "my-skill/SKILL.md"):
+                result = _write_file("my-skill", spelling, "# no frontmatter here")
+                assert result["success"] is False
+        assert (tmp_path / "my-skill" / "SKILL.md").read_text() == original
+
+    def test_two_part_skill_md_wrong_name_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "evil/SKILL.md", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "does not refer to skill 'my-skill'" in result["error"]
+        assert not (tmp_path / "my-skill" / "evil").exists()
+
     def test_write_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()
@@ -312,6 +383,17 @@ class TestRemoveFile:
             result = _remove_file("my-skill", "references/api.md")
         assert result["success"] is True
         assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_remove_skill_md_spelling_rejected(self, tmp_path):
+        # SKILL.md *is* the skill — remove_file must refuse both main-file
+        # spellings and point at action='delete' instead.
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            for spelling in ("SKILL.md", "my-skill/SKILL.md"):
+                result = _remove_file("my-skill", spelling)
+                assert result["success"] is False
+                assert "action='delete'" in result["error"]
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
     def test_remove_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"

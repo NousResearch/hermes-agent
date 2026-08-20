@@ -11620,6 +11620,62 @@ _IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
 )
 
 
+def _attach_caller_is_local() -> bool:
+    """Whether the current RPC arrived from a local (loopback/stdio) caller.
+
+    The TUI gateway is a local-IPC surface (SECURITY.md §2.6): resolving a HOST
+    filesystem path for an attachment is only meaningful for, and safe to hand
+    to, a *local* caller. When the dispatch surface is reached over the network
+    (the dashboard ``/api/ws`` bridge) from a non-loopback peer, host-path
+    resolution must be refused — remote clients upload bytes via
+    ``content_base64`` instead. Mirrors the ``/api/media`` root-confinement in
+    ``hermes_cli/web_server.py`` for the attach direction.
+
+    Returns ``True`` for the Ink stdio transport (no peer) and for WebSocket
+    peers on the loopback interface; ``False`` for any non-loopback WS peer.
+    """
+    peer = getattr(current_transport(), "_peer", None)  # only WSTransport carries a peer label
+    if peer is None:
+        return True  # stdio / in-process transport -> local Ink CLI
+    host = str(peer).rsplit(":", 1)[0].strip().strip("[]").lower()
+    return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
+
+
+def _looks_like_host_path_drop(raw: str) -> bool:
+    """Cheap syntactic precheck for file-drop input without touching the host FS."""
+    stripped = raw.strip()
+    if not stripped:
+        return False
+    return (
+        stripped.startswith("/")
+        or stripped.startswith("~")
+        or stripped.startswith("./")
+        or stripped.startswith("../")
+        or stripped.startswith("file://")
+        or stripped.startswith('"/')
+        or stripped.startswith('"~')
+        or stripped.startswith("'/")
+        or stripped.startswith("'~")
+        or stripped.startswith('"./')
+        or stripped.startswith('"../')
+        or stripped.startswith("'./")
+        or stripped.startswith("'../")
+        or (
+            len(stripped) >= 3
+            and stripped[1] == ":"
+            and stripped[2] in {"\\", "/"}
+            and stripped[0].isalpha()
+        )
+        or (
+            len(stripped) >= 4
+            and stripped[0] in {"'", '"'}
+            and stripped[2] == ":"
+            and stripped[3] in {"\\", "/"}
+            and stripped[1].isalpha()
+        )
+    )
+
+
 def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
     """Decode a base64 (optionally data-URL-wrapped) payload.
 
@@ -11850,19 +11906,33 @@ def _stage_session_file_attachment(
     Returns ``(stored_path, uploaded)``.
     """
     workspace = Path(_session_cwd(session)).resolve()
-    resolved = _resolve_gateway_attachment_path(raw_path)
-    if resolved is not None:
-        try:
-            resolved.relative_to(workspace)
-            return resolved, False
-        except ValueError:
-            payload = resolved.read_bytes()
-            filename = resolved.name
-    else:
+    # Non-loopback /api/ws callers must not be allowed to resolve or read a
+    # caller-supplied path on the gateway host. If such a caller supplied upload
+    # bytes, treat the path only as a filename hint; otherwise refuse the host
+    # path branch outright. Local stdio/loopback callers keep the existing
+    # gateway-visible path behavior.
+    if not _attach_caller_is_local():
         if not data_url:
-            raise ValueError("file not found on gateway and no data_url provided")
+            raise ValueError(
+                "host-path attach is not available over a remote connection; "
+                "upload the file bytes via data_url instead"
+            )
         payload = _decode_attachment_data_url(data_url)
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
+    else:
+        resolved = _resolve_gateway_attachment_path(raw_path)
+        if resolved is not None:
+            try:
+                resolved.relative_to(workspace)
+                return resolved, False
+            except ValueError:
+                payload = resolved.read_bytes()
+                filename = resolved.name
+        else:
+            if not data_url:
+                raise ValueError("file not found on gateway and no data_url provided")
+            payload = _decode_attachment_data_url(data_url)
+            filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
 
     upload_dir = _desktop_attachment_dir(session)
     target = _unique_attachment_path(upload_dir, _sanitize_attachment_name(filename))

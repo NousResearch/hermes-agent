@@ -13,6 +13,22 @@ from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
 
+# Drive comment APIs accept these file_type values for list/reply operations.
+SUPPORTED_FILE_TYPES = ("docx", "sheet", "slides", "file")
+
+# The new-comment (whole-document) API is only reliable for docx.
+ADD_COMMENT_FILE_TYPES = ("docx",)
+
+
+def _validate_file_type(file_type: str, allowed) -> str | None:
+    if file_type not in allowed:
+        return (
+            f"Invalid file_type {file_type!r}; expected one of: "
+            f"{', '.join(allowed)}"
+        )
+    return None
+
+
 # Thread-local storage for the lark client injected by feishu_comment handler.
 _local = threading.local()
 
@@ -95,7 +111,7 @@ _LIST_COMMENTS_URI = "/open-apis/drive/v1/files/:file_token/comments"
 FEISHU_DRIVE_LIST_COMMENTS_SCHEMA = {
     "name": "feishu_drive_list_comments",
     "description": (
-        "List comments on a Feishu document. "
+        "List comments on a Feishu docx, sheet, slides, or file. "
         "Use is_whole=true to list whole-document comments only."
     ),
     "parameters": {
@@ -103,11 +119,12 @@ FEISHU_DRIVE_LIST_COMMENTS_SCHEMA = {
         "properties": {
             "file_token": {
                 "type": "string",
-                "description": "The document file token.",
+                "description": "The file token of the docx/sheet/slides/file.",
             },
             "file_type": {
                 "type": "string",
-                "description": "File type (default: docx).",
+                "enum": list(SUPPORTED_FILE_TYPES),
+                "description": "File type: docx, sheet, slides, or file (default: docx).",
                 "default": "docx",
             },
             "is_whole": {
@@ -140,6 +157,9 @@ def _handle_list_comments(args: dict, **kwargs) -> str:
         return tool_error("file_token is required")
 
     file_type = args.get("file_type", "docx") or "docx"
+    err = _validate_file_type(file_type, SUPPORTED_FILE_TYPES)
+    if err:
+        return tool_error(err)
     is_whole = args.get("is_whole", False)
     page_size = args.get("page_size", 100)
     page_token = args.get("page_token", "")
@@ -173,13 +193,16 @@ _LIST_REPLIES_URI = "/open-apis/drive/v1/files/:file_token/comments/:comment_id/
 
 FEISHU_DRIVE_LIST_REPLIES_SCHEMA = {
     "name": "feishu_drive_list_comment_replies",
-    "description": "List all replies in a comment thread on a Feishu document.",
+    "description": (
+        "List all replies in a comment thread on a Feishu docx, sheet, "
+        "slides, or file."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "file_token": {
                 "type": "string",
-                "description": "The document file token.",
+                "description": "The file token of the docx/sheet/slides/file.",
             },
             "comment_id": {
                 "type": "string",
@@ -187,7 +210,8 @@ FEISHU_DRIVE_LIST_REPLIES_SCHEMA = {
             },
             "file_type": {
                 "type": "string",
-                "description": "File type (default: docx).",
+                "enum": list(SUPPORTED_FILE_TYPES),
+                "description": "File type: docx, sheet, slides, or file (default: docx).",
                 "default": "docx",
             },
             "page_size": {
@@ -216,6 +240,9 @@ def _handle_list_replies(args: dict, **kwargs) -> str:
         return tool_error("file_token and comment_id are required")
 
     file_type = args.get("file_type", "docx") or "docx"
+    err = _validate_file_type(file_type, SUPPORTED_FILE_TYPES)
+    if err:
+        return tool_error(err)
     page_size = args.get("page_size", 100)
     page_token = args.get("page_token", "")
 
@@ -247,16 +274,17 @@ _REPLY_COMMENT_URI = "/open-apis/drive/v1/files/:file_token/comments/:comment_id
 FEISHU_DRIVE_REPLY_SCHEMA = {
     "name": "feishu_drive_reply_comment",
     "description": (
-        "Reply to a local comment thread on a Feishu document. "
-        "Use this for local (quoted-text) comments. "
-        "For whole-document comments, use feishu_drive_add_comment instead."
+        "Reply to a local comment thread on a Feishu docx, sheet, slides, "
+        "or file. Use this for local (quoted-text) comments. "
+        "For whole-document comments on a docx, use feishu_drive_add_comment "
+        "instead."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "file_token": {
                 "type": "string",
-                "description": "The document file token.",
+                "description": "The file token of the docx/sheet/slides/file.",
             },
             "comment_id": {
                 "type": "string",
@@ -268,7 +296,8 @@ FEISHU_DRIVE_REPLY_SCHEMA = {
             },
             "file_type": {
                 "type": "string",
-                "description": "File type (default: docx).",
+                "enum": list(SUPPORTED_FILE_TYPES),
+                "description": "File type: docx, sheet, slides, or file (default: docx).",
                 "default": "docx",
             },
         },
@@ -289,6 +318,9 @@ def _handle_reply_comment(args: dict, **kwargs) -> str:
         return tool_error("file_token, comment_id, and content are required")
 
     file_type = args.get("file_type", "docx") or "docx"
+    err = _validate_file_type(file_type, SUPPORTED_FILE_TYPES)
+    if err:
+        return tool_error(err)
 
     body = {
         "content": {
@@ -322,7 +354,8 @@ _ADD_COMMENT_URI = "/open-apis/drive/v1/files/:file_token/new_comments"
 FEISHU_DRIVE_ADD_COMMENT_SCHEMA = {
     "name": "feishu_drive_add_comment",
     "description": (
-        "Add a new whole-document comment on a Feishu document. "
+        "Add a new whole-document comment on a Feishu docx (docx only; "
+        "the new-comment API does not support sheet/slides/file). "
         "Use this for whole-document comments or as a fallback when "
         "reply_comment fails with code 1069302."
     ),
@@ -331,7 +364,7 @@ FEISHU_DRIVE_ADD_COMMENT_SCHEMA = {
         "properties": {
             "file_token": {
                 "type": "string",
-                "description": "The document file token.",
+                "description": "The docx file token.",
             },
             "content": {
                 "type": "string",
@@ -339,7 +372,8 @@ FEISHU_DRIVE_ADD_COMMENT_SCHEMA = {
             },
             "file_type": {
                 "type": "string",
-                "description": "File type (default: docx).",
+                "enum": list(ADD_COMMENT_FILE_TYPES),
+                "description": "File type. Only 'docx' is supported (default: docx).",
                 "default": "docx",
             },
         },
@@ -359,6 +393,9 @@ def _handle_add_comment(args: dict, **kwargs) -> str:
         return tool_error("file_token and content are required")
 
     file_type = args.get("file_type", "docx") or "docx"
+    err = _validate_file_type(file_type, ADD_COMMENT_FILE_TYPES)
+    if err:
+        return tool_error(err)
 
     body = {
         "file_type": file_type,
@@ -390,7 +427,7 @@ registry.register(
     check_fn=_check_feishu,
     requires_env=[],
     is_async=False,
-    description="List document comments",
+    description="List comments on a docx/sheet/slides/file",
     emoji="\U0001f4ac",
 )
 
@@ -414,7 +451,7 @@ registry.register(
     check_fn=_check_feishu,
     requires_env=[],
     is_async=False,
-    description="Reply to a document comment",
+    description="Reply to a comment on a docx/sheet/slides/file",
     emoji="\u2709\ufe0f",
 )
 

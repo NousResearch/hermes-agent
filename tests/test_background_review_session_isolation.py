@@ -137,3 +137,32 @@ class TestPersistDisabledHardStop:
                 assert db.get_messages("s-review") == []
             finally:
                 db.close()
+
+    def test_json_snapshot_is_a_noop_when_persist_disabled(self, tmp_path):
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        agent._persist_disabled = True
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+
+        agent._save_session_log(
+            [{"role": "user", "content": "caller-managed transcript"}]
+        )
+
+        assert list(tmp_path.glob("session_*.json")) == []
+
+    def test_request_debug_dump_is_a_noop_when_persist_disabled(self, tmp_path):
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        agent._persist_disabled = True
+        agent.logs_dir = tmp_path
+
+        dump_file = agent._dump_api_request_debug(
+            {"messages": [{"role": "user", "content": "private input"}]},
+            reason="test",
+        )
+
+        assert dump_file is None
+        assert list(tmp_path.glob("request_dump_*.json")) == []

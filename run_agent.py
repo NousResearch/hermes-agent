@@ -3152,6 +3152,8 @@ class AIAgent:
         fewer messages") is preserved so resume + branch don't clobber a
         fuller existing snapshot.
         """
+        if getattr(self, "_persist_disabled", False):
+            return
         if not getattr(self, "_session_json_enabled", False):
             return
         messages = messages or self._session_messages

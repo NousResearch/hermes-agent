@@ -870,6 +870,7 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["run_store_control"] is True
             assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
@@ -2475,6 +2476,34 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     )
     monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+
+def test_create_agent_without_persistence_skips_session_db(monkeypatch):
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._persist_disabled = False
+
+    _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    ensure_session_db = MagicMock(side_effect=AssertionError("SessionDB must not be opened"))
+    monkeypatch.setattr(adapter, "_ensure_session_db", ensure_session_db)
+    session_override = MagicMock(
+        side_effect=AssertionError("caller-managed runs must not read session state")
+    )
+    monkeypatch.setattr(adapter, "_session_model_override_for", session_override)
+
+    agent = adapter._create_agent(
+        session_id="caller-managed-session",
+        persist_session=False,
+    )
+
+    ensure_session_db.assert_not_called()
+    session_override.assert_not_called()
+    assert captured["session_db"] is None
+    assert agent._persist_disabled is True
 
 
 class TestModelRoutesParsing:

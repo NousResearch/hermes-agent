@@ -2301,6 +2301,66 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         self.assertNotIn("[Mentioned:", event.text)
         self.assertTrue(event.text.startswith("/model"))
 
+    def test_mid_text_self_mention_preserved(self):
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "stop pinging @_user_1 please"}),
+            message_type="text",
+            message_id="m4",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m4",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.text, "stop pinging @Hermes please")
+
+    def test_pure_self_mention_message_dispatches_now(self):
+        """A message containing only '@Bot' (no body, no media) now dispatches.
+
+        The bare @-mention guard was relaxed: messages with only @-mentions
+        and no text are no longer dropped, so the bot can process them
+        in a normal session turn.
+        """
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1"}),
+            message_type="text",
+            message_id="m5",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m5",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_called_once()
+
 
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):

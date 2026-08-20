@@ -70,6 +70,17 @@ class TestBuildLocalTranscribeKwargs:
         assert kwargs["language"] == "en"
         assert kwargs["initial_prompt"] == "Hermes glossary"
 
+    def test_thresholds_configurable_in_transcribe(self):
+        cfg = {
+            "local": {
+                "no_speech_prob_threshold": 0.8,
+                "logprob_threshold": -2.0,
+            }
+        }
+        kwargs = build_local_transcribe_kwargs(cfg)
+        assert kwargs["no_speech_threshold"] == 0.8
+        assert kwargs["log_prob_threshold"] == -2.0
+
 
 class TestConfidenceGate:
     def test_high_no_speech_and_low_logprob_dropped(self):
@@ -125,6 +136,22 @@ class TestTranscribeLocalWiring:
         assert captured["log_prob_threshold"] == _LOGPROB_THRESHOLD_DEFAULT
 
 
+    def test_vad_parameters_configurable(self, monkeypatch):
+        stt_cfg = {
+            "local": {
+                "vad_min_silence_ms": 300,
+                "vad_threshold": 0.35,
+                "vad_min_speech_duration_ms": 250,
+            }
+        }
+        captured, _ = self._run(monkeypatch, stt_cfg)
+        assert captured["vad_filter"] is True
+        assert captured["vad_parameters"] == {
+            "min_silence_duration_ms": 300,
+            "threshold": 0.35,
+            "min_speech_duration_ms": 250,
+        }
+
     def test_hallucinated_segments_filtered_from_transcript(self, monkeypatch):
         segments = [
             _seg(" real speech"),
@@ -132,3 +159,31 @@ class TestTranscribeLocalWiring:
         ]
         _, result = self._run(monkeypatch, {}, segments=segments)
         assert result["transcript"] == "real speech"
+
+    def test_thresholds_reach_model_defaults(self, monkeypatch):
+        captured, _ = self._run(monkeypatch, {})
+        assert captured["no_speech_threshold"] == 0.6
+        assert captured["log_prob_threshold"] == -1.0
+
+    def test_thresholds_reach_model_configured(self, monkeypatch):
+        stt_cfg = {
+            "local": {
+                "no_speech_prob_threshold": 0.4,
+                "logprob_threshold": -0.7,
+            }
+        }
+        captured, _ = self._run(monkeypatch, stt_cfg)
+        assert captured["no_speech_threshold"] == 0.4
+        assert captured["log_prob_threshold"] == -0.7
+
+    def test_thresholds_reach_model_invalid_fallback(self, monkeypatch):
+        stt_cfg = {
+            "local": {
+                "no_speech_prob_threshold": "invalid",
+                "logprob_threshold": None,
+            }
+        }
+        captured, _ = self._run(monkeypatch, stt_cfg)
+        assert captured["no_speech_threshold"] == 0.6
+        assert captured["log_prob_threshold"] == -1.0
+

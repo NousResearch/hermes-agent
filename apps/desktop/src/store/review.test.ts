@@ -456,9 +456,10 @@ describe('view state', () => {
 
     // A repository move arms the debounce before the direct file-open intent.
     $currentCwd.set('/repo-next')
-    const openTarget = openReviewForPath('/repo-next/target.ts')
+    const openTarget = openReviewForPath('/repo-next/target.ts', '/repo-next', 'tile:project-b')
 
     expect(review.list).toHaveBeenCalledTimes(1)
+    expect($reviewScopeTarget.get()).toBe('tile:project-b')
     await vi.advanceTimersByTimeAsync(100)
 
     directList.resolve({ files: [file('target.ts')] })

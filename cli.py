@@ -7149,10 +7149,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Peer-presence line rendered UNDER the input textbox (G7).
 
         Three-state ambient indicator: ``● N Live`` (green) · ``○ M Idle``
-        (grey) · ``× K Offline`` (red). Rendered only when >= 2 sessions are
-        known (single session = you only = no signal). This is a dedicated
-        line below the input — NOT part of the status bar — so the session
-        state reads clearly without competing with model/context chrome.
+        (grey) · ``× K Offline`` (red). Rendered only when >= 2 live sessions
+        are open (single session = you only = no signal). Live = OPEN
+        interactive sessions (probe-live, cli/tui/desktop) regardless of
+        mid-turn state — a session you have open counts as live.
         """
         try:
             from hermes_cli.peer_presence import peer_presence_summary
@@ -7160,19 +7160,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             peer = peer_presence_summary()
             if peer is None:
                 return []
-            total = int(peer.get("total") or 0)
-            if total < 2:
+            live = int(peer.get("live_count") or 0)
+            if live < 2:
                 return []
             active = int(peer.get("active_count") or 0)
             idle = int(peer.get("idle_count") or 0)
             offline = int(peer.get("offline_count") or 0)
             frags = [("class:peer-presence-label", " peers ")]
-            if active:
-                frags.append(("class:peer-presence-live", f"● {active} Live"))
+            frags.append(("class:peer-presence-live", f"● {live} Live"))
+            if active and active < live:
+                frags.append(("class:peer-presence-working", f" ({active} working)"))
             if idle:
                 frags.append(("class:peer-presence-idle", f" ○ {idle} Idle"))
             if offline:
                 frags.append(("class:peer-presence-off", f" × {offline} Offline"))
+            # Profile badge: show the ACTIVE profile so the session identity
+            # is unambiguous (issue 3).
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+
+                profile = get_active_profile_name()
+                if profile and profile != "default":
+                    frags.append(("class:peer-presence-profile", f" [{profile}]"))
+            except Exception:
+                pass
             return frags
         except Exception:
             return []
@@ -12409,6 +12420,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 from hermes_cli.plugins import (
                     dispatch_plugin_command,
                     get_plugin_command_handler,
+                    get_plugin_manager,
                 )
                 plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
                 if plugin_handler:
@@ -17610,10 +17622,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # BEFORE the first model turn. Distinct from on_session_start.
         try:
             from hermes_cli.plugins import invoke_hook
+            from hermes_cli.profiles import get_active_profile_name
+
             invoke_hook(
                 "on_session_open",
                 session_id=str(getattr(self, "session_id", "") or ""),
                 platform="cli",
+                profile=get_active_profile_name(),
             )
         except Exception:
             pass
@@ -20291,8 +20306,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'peer-presence': '#8FBC8F bold',
             'peer-presence-label': '#8B8682',
             'peer-presence-live': '#8FBC8F bold',
+            'peer-presence-working': '#FFD700 bold',
             'peer-presence-idle': '#C0C0C0',
             'peer-presence-off': '#FF6B6B bold',
+            'peer-presence-profile': '#87CEEB bold',
             'hint': '#888888 italic',
             'status-bar': 'bg:#1a1a2e #C0C0C0',
             'status-bar-strong': 'bg:#1a1a2e #FFD700 bold',

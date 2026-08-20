@@ -79,20 +79,18 @@ def peer_presence_summary(force: bool = False) -> Optional[Dict[str, Any]]:
 def peer_presence_pill(force: bool = False) -> str:
     """Compact ambient pill for the CLI prompt: ``●N`` / ``""``.
 
-    Returns ``●N`` (N = reachable/live peers) when ``total >= 2``, and
-    ``""`` otherwise (single session = you only, or plugin absent). The
+    Returns ``●N`` (N = live OPEN interactive sessions) when ``total >= 2``,
+    and ``""`` otherwise (single session = you only, or plugin absent). The
     pill is ambient chrome — it exists to signal OTHER live sessions, so
     it hides entirely when there is nothing to signal.
     """
     summary = peer_presence_summary(force=force)
     if summary is None:
         return ""
-    total = int(summary.get("total") or 0)
-    if total < _MIN_VISIBLE_TOTAL:
+    live = int(summary.get("live_count") or 0)
+    if live < _MIN_VISIBLE_TOTAL:
         return ""
-    offline = int(summary.get("offline_count") or 0)
-    live = max(0, total - offline)
-    return f"●{live}" if live else f"○{total}"
+    return f"●{live}"
 
 
 def peer_presence_status_line(force: bool = True) -> str:
@@ -101,24 +99,27 @@ def peer_presence_status_line(force: bool = True) -> str:
     Copy uses distinct dot glyphs per state so the renderer can colour them
     independently:
       ``● N Live · ○ M Idle · × K Offline``
-    Live = probe-live + working/held (actively working). Idle = probe-live +
-    not working (running but idle). Offline = PID alive but socket-dead.
+    Live = OPEN interactive sessions (probe-live, cli/tui/desktop surface),
+    regardless of mid-turn state. Idle = live but not working. Offline = PID
+    alive but socket-dead, outside the registration grace period.
 
-    Empty string when the plugin is absent OR fewer than two sessions are
-    known (single session = you only = no signal to convey).
+    Empty string when the plugin is absent OR fewer than two live sessions
+    (single session = you only = no signal to convey).
     """
     summary = peer_presence_summary(force=force)
     if summary is None:
         return ""
-    total = int(summary.get("total") or 0)
-    if total < _MIN_VISIBLE_TOTAL:
+    live = int(summary.get("live_count") or 0)
+    if live < _MIN_VISIBLE_TOTAL:
         return ""
     active = int(summary.get("active_count") or 0)
     idle = int(summary.get("idle_count") or 0)
     offline = int(summary.get("offline_count") or 0)
     parts = []
-    if active:
-        parts.append(f"● {active} Live")
+    if live:
+        parts.append(f"● {live} Live")
+    if active and active < live:
+        parts.append(f"{active} working")
     if idle:
         parts.append(f"○ {idle} Idle")
     if offline:

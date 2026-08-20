@@ -86,7 +86,10 @@ export function ProjectTree({
   // propagate without a reload.
   const { data: config } = useHermesConfigRecord()
   const desktopCfg = (config?.desktop ?? {}) as { files_double_click?: 'preview' | 'open' }
-  const doubleClickAction = desktopCfg.files_double_click ?? 'preview'
+  const doubleClickAction: 'preview' | 'open' =
+    desktopCfg.files_double_click === 'preview' || desktopCfg.files_double_click === 'open'
+      ? desktopCfg.files_double_click
+      : 'preview'
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)

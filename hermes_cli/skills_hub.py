@@ -711,6 +711,16 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         cache_dir=HUB_DIR / "scan-cache",
     )
     c.print(format_scan_report(result))
+    if result.ignored_findings:
+        c.print(
+            f"[bold yellow]This skill excludes {len(result.ignored_findings)} finding(s) "
+            f"from its own scan via .skillignore:[/]"
+        )
+        for finding in result.ignored_findings:
+            c.print(
+                f"[dim]  {finding.file}: {finding.pattern_id} "
+                f"({finding.severity}, {finding.category})[/]"
+            )
     freshness = "fresh" if scan_provenance["fresh"] else "cached"
     c.print(
         f"[dim]Scan provenance: {freshness}; scanner "

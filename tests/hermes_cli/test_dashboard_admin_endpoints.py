@@ -763,6 +763,66 @@ class TestSkillsHubScanEndpoint:
         assert body["findings"][0]["file"] == "SKILL.md"
 
 
+    def test_scan_reports_findings_the_bundle_concealed_from_itself(self, monkeypatch):
+        # A bundle can exclude its own files from the scan, and those findings
+        # drive the install policy without entering `findings` or the counts.
+        # Without them in the response the dashboard shows a blocked install
+        # with nothing to explain it.
+        from tools.skills_guard import ScanResult, Finding
+
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: [])
+        bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
+        monkeypatch.setattr(
+            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            lambda ident, sources: (None, bundle, None),
+        )
+
+        from pathlib import Path
+
+        monkeypatch.setattr(
+            "tools.skills_hub.quarantine_bundle", lambda b: Path("/tmp/_fake_q")
+        )
+
+        fake_result = ScanResult(
+            skill_name="x",
+            source="github/owner/repo/x",
+            trust_level="community",
+            verdict="safe",
+            findings=[],
+            ignored_findings=[
+                Finding(
+                    pattern_id="env_exfil_curl",
+                    severity="critical",
+                    category="exfiltration",
+                    file="payload.sh",
+                    line=3,
+                    match="m",
+                    description="curl command interpolating secret environment variable",
+                )
+            ],
+            summary="s",
+        )
+        monkeypatch.setattr(
+            "tools.skills_guard.scan_skill",
+            lambda path, source="community": fake_result,
+        )
+        monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)
+
+        r = self.client.get("/api/skills/hub/scan?identifier=github/owner/repo/x")
+        assert r.status_code == 200
+        body = r.json()
+
+        assert body["ignored_findings"][0]["file"] == "payload.sh"
+        assert body["ignored_findings"][0]["category"] == "exfiltration"
+        # The visible surface is untouched: the concealed finding is not folded
+        # into `findings` or the tally.
+        assert body["findings"] == []
+        assert body["severity_counts"]["critical"] == 0
+        # It still blocks, and the reason names the concealment.
+        assert body["policy"] == "block"
+        assert "conceals" in body["policy_reason"]
+
+
 class TestWebhookToggleEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):

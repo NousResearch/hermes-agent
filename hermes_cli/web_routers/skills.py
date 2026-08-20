@@ -411,6 +411,20 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
             "policy": policy,
             "policy_reason": reason,
             "findings": findings,
+            # Findings the bundle excluded from its own scan via .skillignore.
+            # They drive the install policy without appearing in `findings` or
+            # `severity_counts`, so a blocked install would otherwise show no
+            # reason here at all.
+            "ignored_findings": [
+                {
+                    "severity": f.severity,
+                    "category": f.category,
+                    "file": f.file,
+                    "line": f.line,
+                    "description": f.description,
+                }
+                for f in result.ignored_findings
+            ],
             "severity_counts": counts,
             # Advisory SkillEvaluator Tier 1 block, or None when the
             # optional scanner isn't installed/enabled.

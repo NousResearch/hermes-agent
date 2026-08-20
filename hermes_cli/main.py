@@ -7628,53 +7628,6 @@ def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
         return False
 
 
-def _desktop_macos_reset_keychain_safe_storage(app: Path) -> None:
-    """Delete the 'Hermes Safe Storage' keychain item after an ad-hoc re-sign.
-
-    NOTE: this does NOT update the item's ACL — it deletes the item, which
-    permanently orphans every credential encrypted under it. It is only safe
-    on the LEGACY AD-HOC fallback path, where every rebuild produces a new
-    cdhash so the keychain ACL can never match and the alternative is a
-    recurring prompt. It MUST NOT be called on the stable signing path: there
-    the designated requirement is certificate-anchored and stable, so after
-    the first launch under the new identity the ACL already matches and
-    deleting the item only destroys credentials that were working fine.
-
-    Electron's ``safeStorage`` stores its encryption key in a Keychain item
-    named ``<productName> Safe Storage`` (here: "Hermes Safe Storage").  macOS
-    ties each keychain item's Access Control List to the code signature of
-    the app that created it.  When the self-updater rebuilds and re-signs the
-    bundle ad-hoc, the new cdhash no longer matches the stored ACL, so macOS
-    re-prompts on every launch.
-
-    Deleting the item makes Electron recreate it with the correct ACL for the
-    newly-signed app on next launch.  The trade-off: previously encrypted
-    tokens become unreadable (the user re-enters the gateway token once), but
-    the keychain prompt stops appearing on every launch.  The durable fix is
-    a stable signing identity (``desktop.macos_signing_identity``), which
-    makes this path unreachable.
-
-    If the item doesn't exist yet (first launch), this is a no-op.
-
-    Best-effort: never raises.
-    """
-    security = shutil.which("security")
-    if not security:
-        return
-    service_name = "Hermes Safe Storage"
-    # Chromium/Electron safeStorage uses "<appName> Key" as the account name.
-    account_name = "Hermes Key"
-    try:
-        result = subprocess.run(
-            [security, "delete-generic-password", "-s", service_name, "-a", account_name],
-            check=False, capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            print("  → Reset Hermes Safe Storage keychain entry for new signing identity")
-    except Exception:
-        pass  # Best-effort; the prompt is annoying but not fatal.
-
-
 def _desktop_macos_local_codesign(
     app: Path, *, desktop_dir: Path, identity: str = "-"
 ) -> bool:
@@ -7834,14 +7787,37 @@ def _desktop_macos_relaunchable_fixup(
             )
         print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
     try:
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
-        # Legacy ad-hoc fallback only: every rebuild produces a new cdhash, so
-        # the keychain ACL can never match and the alternative is a recurring
-        # prompt. This deletes the item (credentials are re-entered once per
-        # update); it is intentionally NOT called on the stable identity path
-        # above, where the cert-anchored DR is stable and the deletion would
-        # destroy working credentials on every update.
-        _desktop_macos_reset_keychain_safe_storage(app)
+        # Legacy ad-hoc fallback: re-sign, but NEVER delete the safeStorage
+        # keychain item. Deleting it would permanently orphan every
+        # credential encrypted under it (gateway token, native OAuth access/
+        # refresh tokens) — and this path is reached exactly when the
+        # entitlement-preserving signer failed, so there is no verified
+        # successor identity to hand the key to. The keychain prompt macOS
+        # shows instead is recoverable ("Always Allow" updates the item's ACL
+        # partition list and preserves the key); deletion is not. The real
+        # fix (proof-carrying rotation/migration) belongs in Electron, where
+        # safeStorage can read the old key. Tracked as follow-up.
+        result = subprocess.run(
+            [codesign, "--force", "--deep", "--sign", "-", str(app)],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(
+                f"  (warning: legacy ad-hoc re-sign failed (exit {result.returncode}); "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        verify = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(app)],
+            check=False, capture_output=True, text=True,
+        )
+        if verify.returncode != 0:
+            print(
+                f"  (warning: legacy ad-hoc re-sign did not pass strict verification; "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        print("  → macOS desktop re-signed (legacy ad-hoc); safeStorage keychain item left untouched")
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
     return False

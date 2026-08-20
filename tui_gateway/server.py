@@ -5637,6 +5637,33 @@ def _session_usage_snapshot(session: dict | None) -> dict:
     return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
 
 
+_USAGE_UPDATE_FIELDS = frozenset(
+    {
+        "active_subagents",
+        "calls",
+        "compressions",
+        "context_max",
+        "context_percent",
+        "context_used",
+        "cost_status",
+        "cost_usd",
+        "dev_credits_spent_micros",
+        "input",
+        "output",
+        "reasoning",
+        "total",
+    }
+)
+
+
+def _usage_update_snapshot(session: dict | None) -> dict:
+    return {
+        key: value
+        for key, value in _session_usage_snapshot(session).items()
+        if key in _USAGE_UPDATE_FIELDS
+    }
+
+
 def _project_info_for_cwd(cwd: str) -> dict | None:
     """Return the first-class Project owning ``cwd`` for UI status surfaces.
 
@@ -6328,6 +6355,12 @@ def _agent_cbs(sid: str) -> dict:
         ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
+        ),
+        # A step begins after the preceding API response and tool batch have
+        # updated the agent's token counters. Push that fresh snapshot instead
+        # of leaving the context meter frozen until the entire turn ends.
+        "step_callback": lambda _iteration, _prev_tools: _emit(
+            "usage.update", sid, _usage_update_snapshot(_sessions.get(sid))
         ),
         # Credits/notice spine (L1): an AgentNotice fired by the agent becomes a
         # notification.show WS event; a recovery clear becomes notification.clear.

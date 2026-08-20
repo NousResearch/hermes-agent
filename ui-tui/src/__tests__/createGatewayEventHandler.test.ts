@@ -67,6 +67,36 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('refreshes the live context meter from usage.update events', () => {
+    patchUiState({
+      usage: {
+        calls: 2,
+        context_max: 272_000,
+        context_percent: 25,
+        context_used: 68_000,
+        input: 10,
+        output: 5,
+        total: 15
+      }
+    })
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { calls: 3, context_max: 272_000, context_percent: 50, context_used: 136_000, total: 30 },
+      type: 'usage.update'
+    })
+
+    expect(getUiState().usage).toMatchObject({
+      calls: 3,
+      context_max: 272_000,
+      context_percent: 50,
+      context_used: 136_000,
+      input: 10,
+      output: 5,
+      total: 30
+    })
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

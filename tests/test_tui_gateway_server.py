@@ -3933,6 +3933,41 @@ def test_status_callback_accepts_single_message_argument():
     )
 
 
+def test_step_callback_emits_live_usage_snapshot(monkeypatch):
+    usage = {
+        "model": "gpt-5.6-sol",
+        "calls": 7,
+        "input": 100,
+        "output": 20,
+        "prompt": 90,
+        "completion": 18,
+        "total": 120,
+        "context_used": 123_456,
+        "context_max": 272_000,
+        "context_percent": 45,
+    }
+    monkeypatch.setitem(server._sessions, "sid", {"agent": object()})
+    monkeypatch.setattr(server, "_session_usage_snapshot", lambda _session: usage)
+
+    with patch("tui_gateway.server._emit") as emit:
+        cb = server._agent_cbs("sid")["step_callback"]
+        cb(8, [])
+
+    emit.assert_called_once_with(
+        "usage.update",
+        "sid",
+        {
+            "calls": 7,
+            "input": 100,
+            "output": 20,
+            "total": 120,
+            "context_used": 123_456,
+            "context_max": 272_000,
+            "context_percent": 45,
+        },
+    )
+
+
 def test_resolve_model_uses_inference_model_env(monkeypatch):
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", " anthropic/claude-sonnet-4.6\n")

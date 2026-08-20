@@ -783,6 +783,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       }
+      case 'usage.update':
+        patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload } }))
+
+        return
 
       case 'session.usage': {
         // Live usage tick while a turn runs (see tui_gateway

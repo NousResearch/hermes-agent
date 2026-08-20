@@ -140,6 +140,87 @@ class TestSteerBusyPathDispatch:
         cli._pending_input.put.assert_called_once_with("would-be-next-turn")
 
 
+class _FakeBuffer:
+    """Minimal stand-in for a prompt_toolkit buffer.
+
+    Records reset() calls and the buffer text at the moment of each reset so a
+    test can assert ordering relative to the steer dispatch.
+    """
+
+    def __init__(self, text: str = ""):
+        self.text = text
+        self.reset_calls: list[str] = []
+        self.append_to_history_flags: list[bool] = []
+
+    def reset(self, append_to_history: bool = False):
+        # Capture what was in the buffer at reset time, then clear it.
+        self.reset_calls.append(self.text)
+        self.append_to_history_flags.append(append_to_history)
+        self.text = ""
+
+
+class TestInlineSteerBufferClear:
+    """Regression tests for issue #34569.
+
+    The submitted ``/steer <prompt>`` must never linger in the TUI input
+    buffer, where the next Enter / turn-handoff could re-submit it.  The
+    Enter handler routes the inline-steer case through
+    ``_dispatch_inline_steer``, which must reset the buffer BEFORE running
+    ``process_command`` so the clear is not skipped if the dispatch re-enters
+    the event loop or raises.
+    """
+
+    def test_buffer_cleared_before_dispatch(self):
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.agent = MagicMock()
+        cli.agent.steer = MagicMock(return_value=True)
+
+        buf = _FakeBuffer("/steer focus on errors")
+        observed = {}
+
+        real_process = cli.process_command
+
+        def _spy_process(cmd):
+            # At dispatch time the buffer must already be empty.
+            observed["text_at_dispatch"] = buf.text
+            return real_process(cmd)
+
+        with patch.object(cli, "process_command", side_effect=_spy_process):
+            cli._dispatch_inline_steer(buf, "/steer focus on errors")
+
+        # Buffer reset happened, captured the submitted text, and appended to history.
+        assert buf.reset_calls == ["/steer focus on errors"]
+        assert buf.append_to_history_flags == [True]
+        # Reset happened strictly before process_command ran.
+        assert observed["text_at_dispatch"] == ""
+        # And the steer still reached the agent.
+        cli.agent.steer.assert_called_once_with("focus on errors")
+        # Final buffer state is empty — nothing left to accidentally re-submit.
+        assert buf.text == ""
+
+    def test_buffer_cleared_even_if_dispatch_raises(self):
+        """If process_command raises, the buffer must STILL be clear.
+
+        This is the core of #34569: a post-dispatch reset would be skipped on
+        an exception, leaving the prompt in the box.  Reset-first guarantees
+        the input-state contract holds regardless.
+        """
+        cli = _make_cli()
+        cli._agent_running = True
+
+        buf = _FakeBuffer("/steer do the thing")
+
+        with patch.object(cli, "process_command", side_effect=RuntimeError("boom")):
+            try:
+                cli._dispatch_inline_steer(buf, "/steer do the thing")
+            except RuntimeError:
+                pass  # exception is allowed to propagate; the buffer must still be clear
+
+        assert buf.reset_calls == ["/steer do the thing"]
+        assert buf.text == ""
+
+
 if __name__ == "__main__":  # pragma: no cover
     import pytest
 

@@ -44,6 +44,34 @@ class TestWriteAndRead:
             {"id": "2", "content": "Verify freed space", "status": "pending"},
         ]
 
+    def test_write_preserves_multiple_items_without_ids(self):
+        # Regression: id-less items used to share the "?" fallback key, so
+        # every id-less item after the first was silently dropped.
+        store = TodoStore()
+        result = store.write([
+            {"content": "Task 1", "status": "pending"},
+            {"content": "Task 2", "status": "pending"},
+        ])
+        assert len(result) == 2
+        assert result[0]["content"] == "Task 1"
+        assert result[1]["content"] == "Task 2"
+
+    def test_dedupe_keeps_idless_items_and_still_collapses_real_ids(self):
+        # Mixed list: real duplicate ids collapse to the last occurrence in
+        # its position, while id-less items are all preserved.
+        store = TodoStore()
+        result = store.write([
+            {"id": "1", "content": "First version", "status": "pending"},
+            {"content": "No id A", "status": "pending"},
+            {"id": "1", "content": "Latest version", "status": "in_progress"},
+            {"content": "No id B", "status": "pending"},
+        ])
+        assert [item["content"] for item in result] == [
+            "No id A",
+            "Latest version",
+            "No id B",
+        ]
+
 
 class TestHasItems:
     def test_empty_store(self):

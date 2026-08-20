@@ -985,6 +985,19 @@ _DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
 _DISCORD_PROMPT_TIMEOUT_MIN = 30
 _DISCORD_PROMPT_TIMEOUT_MAX = 900
 
+# Grace window (seconds) granted after a clarify's BUTTONS expire, during
+# which a typed reply still resolves the prompt. Keep it strictly shorter
+# than ``agent.clarify_timeout`` minus the view timeout, otherwise the
+# agent-side wait fires first and the window is dead time. 0 disables the
+# window: an expired view releases the agent immediately.
+_CLARIFY_TEXT_GRACE_DEFAULT = 300
+_CLARIFY_TEXT_GRACE_MAX = 3600
+
+# Strong references to in-flight clarify-expiry tasks. asyncio only keeps a
+# weak reference to a running task, so without this the GC can collect one
+# mid-sleep and the agent never gets released.
+_CLARIFY_EXPIRY_TASKS: set = set()
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name, "").strip().lower()
@@ -1022,6 +1035,44 @@ def _read_discord_prompt_timeout() -> int:
     if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
         return _DISCORD_PROMPT_TIMEOUT_MAX
     return seconds
+
+
+def _read_clarify_text_grace() -> int:
+    """Return the typed-answer grace window (seconds) after buttons expire.
+
+    Reads ``approvals.discord_clarify_text_grace`` from config.yaml, falling
+    back to ``_CLARIFY_TEXT_GRACE_DEFAULT``. Clamped to
+    ``[0, _CLARIFY_TEXT_GRACE_MAX]``; 0 means "release the agent as soon as
+    the view times out".
+    """
+    raw: Any = None
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config() or {}
+        approvals_cfg = cfg.get("approvals", {}) or {}
+        raw = approvals_cfg.get("discord_clarify_text_grace")
+    except Exception:
+        return _CLARIFY_TEXT_GRACE_DEFAULT
+    if raw is None or raw == "":
+        return _CLARIFY_TEXT_GRACE_DEFAULT
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        return _CLARIFY_TEXT_GRACE_DEFAULT
+    if seconds < 0:
+        return 0
+    if seconds > _CLARIFY_TEXT_GRACE_MAX:
+        return _CLARIFY_TEXT_GRACE_MAX
+    return seconds
+
+
+def _clarify_entry_pending(clarify_id: str) -> bool:
+    """True while ``clarify_id`` is still waiting for an answer."""
+    try:
+        from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
+        return _clarify_entries.get(clarify_id) is not None
+    except Exception:
+        return False
 
 
 class DiscordAdapter(BasePlatformAdapter):
@@ -9791,21 +9842,101 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass
 
+        async def _edit_expired_embed(self, footer: str, color) -> None:
+            """Repaint the prompt message with an expiry footer."""
+            msg = getattr(self, "_message", None)
+            if not msg:
+                return
+            try:
+                embed = msg.embeds[0] if msg.embeds else None
+                if embed:
+                    embed.color = color
+                    embed.set_footer(text=footer)
+                await msg.edit(embed=embed, view=self)
+            except Exception:
+                pass
+
+        async def _resolve_after_grace(self, grace: int) -> None:
+            """Unblock the agent once the typed-answer grace window closes.
+
+            The view's timeout only kills the BUTTONS.  The agent thread is
+            still parked in ``clarify_gateway.wait_for_response`` until its
+            own ``agent.clarify_timeout`` fires — an hour by default, and
+            never when that is set to 0.  Without this the session stays
+            pinned behind a prompt the user can no longer answer by
+            clicking, and every follow-up message queues up behind a turn
+            that cannot finish.
+            """
+            try:
+                if grace > 0:
+                    await asyncio.sleep(grace)
+                if not _clarify_entry_pending(self.clarify_id):
+                    return  # user typed an answer during the grace window
+                from tools.clarify_gateway import resolve_gateway_clarify
+                resolved = resolve_gateway_clarify(self.clarify_id, "")
+                logger.info(
+                    "Discord clarify expired unanswered (id=%s, grace=%ds, ok=%s) — "
+                    "released the agent with an empty response",
+                    self.clarify_id, grace, resolved,
+                )
+                await self._edit_expired_embed(
+                    "⏱ Prompt expired — no action taken",
+                    discord.Color.greyple(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Discord clarify expiry release failed (id=%s): %s",
+                    self.clarify_id, exc,
+                )
+
         async def on_timeout(self):
             self.resolved = True
             for child in self.children:
                 child.disabled = True
-            # Visually update the Discord message so buttons appear disabled.
-            msg = getattr(self, '_message', None)
-            if msg:
-                try:
-                    embed = msg.embeds[0] if msg.embeds else None
-                    if embed:
-                        embed.color = discord.Color.greyple()
-                        embed.set_footer(text="⏱ Prompt expired — no action taken")
-                    await msg.edit(embed=embed, view=self)
-                except Exception:
-                    pass
+
+            # The entry is already gone when the agent moved on by itself
+            # (answered elsewhere, run interrupted, session cleared) — then
+            # this really is a no-op expiry.
+            if not _clarify_entry_pending(self.clarify_id):
+                await self._edit_expired_embed(
+                    "⏱ Prompt expired — no action taken",
+                    discord.Color.greyple(),
+                )
+                return
+
+            # Buttons are dead but the clarify is still live agent-side, so
+            # flip it into text-capture mode: a typed reply now resolves the
+            # prompt instead of being rejected as "arbitrary prose for a
+            # multi-choice clarify" and silently queued behind the very turn
+            # it was meant to unblock.
+            grace = _read_clarify_text_grace()
+            flipped = False
+            try:
+                from tools.clarify_gateway import mark_awaiting_text
+                flipped = bool(mark_awaiting_text(self.clarify_id))
+            except Exception as exc:
+                logger.warning(
+                    "Discord clarify mark_awaiting_text on timeout failed (id=%s): %s",
+                    self.clarify_id, exc,
+                )
+
+            if flipped and grace > 0:
+                await self._edit_expired_embed(
+                    "⏱ Buttons expired — reply with a message to answer",
+                    discord.Color.orange(),
+                )
+            else:
+                await self._edit_expired_embed(
+                    "⏱ Prompt expired — no action taken",
+                    discord.Color.greyple(),
+                )
+
+            # Never leave the agent parked behind an unanswerable prompt.
+            task = asyncio.create_task(self._resolve_after_grace(grace))
+            _CLARIFY_EXPIRY_TASKS.add(task)
+            task.add_done_callback(_CLARIFY_EXPIRY_TASKS.discard)
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()
 

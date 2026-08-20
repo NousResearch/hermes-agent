@@ -351,7 +351,8 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     query + config read) that used to run serially per create() call before
     the parallel fan-out could start — the dominant source of MoA cold-start
     latency (#66793). The TTL bounds credential staleness (key rotation,
-    base_url edits) instead of caching for the process lifetime.
+    base_url edits) instead of caching for the process lifetime. Callers get a
+    request-local copy so consuming kwargs cannot mutate the cached snapshot.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
@@ -362,7 +363,7 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     if entry is not None:
         stamped_at, cached = entry
         if now - stamped_at < _RUNTIME_CACHE_TTL_SECONDS:
-            return cached
+            return dict(cached)
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -388,7 +389,7 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
         return out
     with _runtime_cache_lock:
         _runtime_cache[cache_key] = (now, out)
-    return out
+    return dict(out)
 
 
 def _merge_slot_extra_body(

@@ -135,6 +135,28 @@ _HARDLINE_BLOCK = [
     "{ poweroff; }",
     "true && (reboot)",
     "echo hi; { reboot; }",
+    # `bash|sh|zsh|ksh -c <script>` runs <script> at a real command
+    # position, but it's written as an ordinary quoted argument word — not
+    # a subshell/brace opener the tokenizer already treated as a command
+    # start. These slipped through --yolo / approvals.mode=off / cron
+    # approve-mode entirely before _iter_interpreter_c_payloads.
+    'sh -c "rm -rf /"',
+    "sh -c 'rm -rf /'",
+    'bash -c "systemctl poweroff"',
+    'sh -lc "shutdown -h now"',
+    'zsh -c "reboot"',
+    'ksh -c "rm -rf /etc"',
+    'sh -xc "rm -rf $HOME"',
+    # Nested one level deep (distinct outer/inner quote chars so no
+    # backslash-escaping is needed): the extracted payload is itself
+    # another -c invocation. Must still be caught (bounded recursion).
+    "sh -c 'sh -c \"rm -rf /\"'",
+    # Nested one level deep with the SAME quote char, so the shell requires
+    # backslash-escaping the inner quotes. The extracted outer payload still
+    # contains that one level of escaping verbatim (`\"` pairs) — must be
+    # unescaped before the inner `-c` is re-tokenized, or the inner quoted
+    # word truncates at its first embedded space and the recursion misses it.
+    'sh -c "sh -c \\"rm -rf /\\""',
 ]
 
 
@@ -199,6 +221,13 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    # Harmless -c payloads must not trip the new interpreter-payload scan.
+    'sh -c "echo hello"',
+    "bash -c 'ls -la'",
+    # The dangerous-looking string is quoted DATA inside another command's
+    # argument, not a real `sh -c` invocation at a command position — same
+    # false-positive boundary as the `git commit -m "rm -rf /"` case above.
+    'git commit -m "sh -c \\"rm -rf /\\""',
 ]
 
 

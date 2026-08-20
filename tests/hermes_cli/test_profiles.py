@@ -42,7 +42,9 @@ from hermes_cli.profiles import (
     seed_profile_skills,
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
+    BackfillEnvResult,
     backfill_profile_envs,
+    format_backfill_env_summary,
     profiles_to_serve,
 )
 from hermes_cli.config import DEFAULT_CONFIG
@@ -229,11 +231,22 @@ class TestBackfillProfileEnvs:
 
         backfilled = backfill_profile_envs(quiet=True)
 
-        assert sorted(backfilled) == ["old1", "old2"]
+        assert backfilled.copied == ("old1", "old2")
+        assert backfilled.placeholder == ()
         for p in (p1, p2):
             assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
             assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
+    def test_never_overwrites_existing_profile_env(self, profile_env):
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / ".env").write_text("KEY=root\n")
+        p = create_profile("hasenv", no_alias=True)
+        (p / ".env").write_text("KEY=mine\n")
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert not backfilled
+        assert (p / ".env").read_text() == "KEY=mine\n"
 
     def test_placeholder_when_default_has_no_env(self, profile_env):
         p = create_profile("noroot", no_alias=True)
@@ -241,7 +254,8 @@ class TestBackfillProfileEnvs:
 
         backfilled = backfill_profile_envs(quiet=True)
 
-        assert backfilled == ["noroot"]
+        assert backfilled.placeholder == ("noroot",)
+        assert backfilled.copied == ()
         content = (p / ".env").read_text(encoding="utf-8")
         assert all(
             line.startswith("#") or not line.strip()
@@ -249,7 +263,27 @@ class TestBackfillProfileEnvs:
         )
 
     def test_no_profiles_root_is_noop(self, profile_env):
-        assert backfill_profile_envs(quiet=True) == []
+        assert not backfill_profile_envs(quiet=True)
+
+    def test_format_summary_distinguishes_copied_and_placeholder(self):
+        only_copied = format_backfill_env_summary(
+            BackfillEnvResult(copied=("old1", "old2"))
+        )
+        assert "copied from default: old1, old2" in only_copied
+        assert "placeholder" not in only_copied
+
+        only_placeholder = format_backfill_env_summary(
+            BackfillEnvResult(placeholder=("legacy-dist",))
+        )
+        assert "placeholder: legacy-dist" in only_placeholder
+        assert "copied from default" not in only_placeholder
+
+        mixed = format_backfill_env_summary(
+            BackfillEnvResult(copied=("old1",), placeholder=("dist1",))
+        )
+        assert "copied from default: old1" in mixed
+        assert "placeholder: dist1" in mixed
+        assert "2 profile(s)" in mixed
 
 
 # ===================================================================

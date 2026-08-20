@@ -144,7 +144,6 @@ import {
   updateEligibility,
   upsertConnection
 } from './connection-registry'
-import { activeRegistrySshScope } from './active-ssh-route'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
@@ -9521,35 +9520,26 @@ async function teardownSshConnection(profile) {
 function activeSshTerminalTarget() {
   const profile = primaryProfileKey()
   const config = readDesktopConnectionConfig()
-  const registryScope = activeRegistrySshScope(readDesktopConnectionsRegistry(), profile)
+  const route = resolveDesktopRemoteRoute({
+    config,
+    env: {
+      token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
+      url: process.env.HERMES_DESKTOP_REMOTE_URL
+    },
+    profile,
+    registry: readDesktopConnectionsRegistry()
+  })
 
-  if (registryScope) {
-    const state = sshConnections.get(registryScope)
-
-    return state && state.ssh ? { ssh: state.ssh, scope: registryScope } : 'pending'
-  }
-
-  if (profileSshOverride(config, profile)) {
-    const scope = sshScopeKey(profile)
-    const state = sshConnections.get(scope)
-
-    return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
-  }
-
-  if (profileRemoteOverride(config, profile)) {
+  if (!route || route.kind !== 'ssh') {
     return null
   }
 
-  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
-    return null
-  }
+  const scope = route.connectionId
+    ? backendScopeKey(route.connectionId, profile)
+    : sshScopeKey(route.source === 'profile' ? profile : null)
+  const state = sshConnections.get(scope)
 
-  if (config.mode === 'ssh') {
-    const state = sshConnections.get('')
-    return state && state.ssh ? { ssh: state.ssh, scope: '' } : 'pending'
-  }
-
-  return null
+  return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
 }
 
 // Loopback reach for the browser pane. Scoped to the SSH connection that

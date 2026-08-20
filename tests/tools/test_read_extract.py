@@ -765,6 +765,25 @@ class TestPdfCoverageNote(unittest.TestCase):
             note,
         )
 
+    def test_short_divider_labels_following_blank_pages(self):
+        """A short divider remains context instead of joining the blank run."""
+        from tools import read_extract
+
+        texts = [
+            "Prior unrelated body with enough characters for the threshold",
+            "Exhibit A",
+            "",
+            "",
+        ]
+        with mock.patch.object(read_extract, "_pdf_page_texts", return_value=texts):
+            note = read_extract._pdf_coverage_note("/x/doc.pdf")
+
+        self.assertNotIn("pages 2-4", note)
+        self.assertIn(
+            'pages 3-4 (2 pages) — after "Exhibit A" (p2)',
+            note,
+        )
+
     def test_gap_map_caps_pathological_alternation(self):
         """Hundreds of alternating text/scan pages must not balloon the
         warning — gaps beyond the cap collapse to one summary line."""

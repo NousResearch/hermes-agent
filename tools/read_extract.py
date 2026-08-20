@@ -267,21 +267,49 @@ def _group_ranges(pages: list[int]) -> list[list[int]]:
 # summarized in one line.
 PDF_GAP_MAP_MAX_ENTRIES = 20
 _GAP_CONTEXT_CHARS = 60
+_GAP_CONTEXT_MIN_CHARS = 4
 
 
-def _gap_map(counts: list[int], texts: list[str], empty: list[int]) -> str:
+def _gap_context(text: str) -> str:
+    """Normalized label text, excluding 1-3 character OCR debris."""
+    normalized = " ".join(text.split())
+    return normalized if len(normalized) >= _GAP_CONTEXT_MIN_CHARS else ""
+
+
+def _group_gap_ranges(empty: list[int], texts: list[str]) -> list[list[int]]:
+    """Group sparse pages without swallowing nonblank divider text."""
+    ranges: list[list[int]] = []
+    for page in empty:
+        page_has_text = bool(_gap_context(texts[page - 1]))
+        previous_has_text = bool(
+            ranges and _gap_context(texts[ranges[-1][1] - 1])
+        )
+        if (
+            ranges
+            and page == ranges[-1][1] + 1
+            and not page_has_text
+            and not previous_has_text
+        ):
+            ranges[-1][1] = page
+        else:
+            ranges.append([page, page])
+    return ranges
+
+
+def _gap_map(texts: list[str], empty: list[int]) -> str:
     """Per-gap breakdown: each empty range labeled with the last text seen
     before it (usually a section divider/header page), so the agent can
     decide WHICH gaps it actually needs to read instead of OCRing all of
     them."""
-    ranges = _group_ranges(empty)
+    ranges = _group_gap_ranges(empty, texts)
     lines: list[str] = []
     for a, b in ranges[:PDF_GAP_MAP_MAX_ENTRIES]:
         label = ""
         # Walk back to the nearest preceding page with text.
         for prev in range(a - 2, -1, -1):
-            if counts[prev] >= PDF_EMPTY_PAGE_CHARS:
-                snippet = " ".join(texts[prev].split())[:_GAP_CONTEXT_CHARS]
+            context = _gap_context(texts[prev])
+            if context:
+                snippet = context[:_GAP_CONTEXT_CHARS]
                 label = f' — after "{snippet}" (p{prev + 1})'
                 break
         span = f"page {a}" if a == b else f"pages {a}-{b}"
@@ -322,7 +350,7 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
         "is MISSING from the extracted text below, even where section "
         "headers appear with empty bodies. Unreadable gaps, each labeled "
         "with the last text extracted before it:\n"
-        f"{_gap_map(counts, texts, empty)}\n"
+        f"{_gap_map(texts, empty)}\n"
         "Decide which gaps you actually need — do NOT OCR or render "
         "everything. For the gaps that matter, render just that range with "
         f"`pdftoppm -jpeg -r 150 -f <first> -l <last> '{shown}' /tmp/page` "

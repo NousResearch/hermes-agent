@@ -108,6 +108,7 @@ class ToolCallGuardrailConfig:
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
     same_tool_failure_halt_after: int = 8
+    total_failure_halt_after: int = 12
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
@@ -150,6 +151,10 @@ class ToolCallGuardrailConfig:
             same_tool_failure_halt_after=_positive_int(
                 hard_stop_after.get("same_tool_failure", data.get("same_tool_failure_halt_after")),
                 defaults.same_tool_failure_halt_after,
+            ),
+            total_failure_halt_after=_positive_int(
+                hard_stop_after.get("total_failure", data.get("total_failure_halt_after")),
+                defaults.total_failure_halt_after,
             ),
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
@@ -313,6 +318,7 @@ class ToolCallGuardrailController:
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
+        self._total_failure_count = 0
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
         # Identical-call loop-breaker state (agent.stall_guards): tracks the
@@ -402,12 +408,32 @@ class ToolCallGuardrailController:
             failed, _ = classify_tool_failure(tool_name, result)
 
         if failed:
+            self._total_failure_count += 1
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)
 
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
+
+            if (
+                self.config.hard_stop_enabled
+                and self._total_failure_count >= self.config.total_failure_halt_after
+            ):
+                decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="total_failure_halt",
+                    message=(
+                        f"Stopped after {self._total_failure_count} failed tool calls this turn. "
+                        "The failures span too many attempts to keep retrying safely; "
+                        "stop and report the blocker or choose a verified approach."
+                    ),
+                    tool_name=tool_name,
+                    count=self._total_failure_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
 
             if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(

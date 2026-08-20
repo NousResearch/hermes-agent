@@ -679,6 +679,7 @@ DEFAULT_CONFIG = {
         "hard_stop_after": {
             "exact_failure": 5,
             "same_tool_failure": 8,
+            "total_failure": 12,
             "idempotent_no_progress": 5,
         },
         # Per-turn runaway-loop caps (inspired by Claude Code v2.1.212,

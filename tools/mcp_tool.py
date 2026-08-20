@@ -107,6 +107,7 @@ import math
 import os
 import random
 import re
+import shlex
 import shutil
 import sys
 import threading
@@ -1048,6 +1049,9 @@ def _coerce_mcp_stdio_args(args: Any) -> List[str]:
     (``args: '["-y", "pkg"]'``). Unpacking that string into the watchdog
     wrapper treats every character as an argv token — ``[`` becomes the
     first argument and ``npx`` dies with ``Invalid tag name "["`` (#79519).
+    Legacy plain strings are shell-split so ``args: -y 'pkg with spaces'``
+    remains usable. Structured-looking values must decode to a list; failing
+    clearly is safer than spawning a malformed one-token command.
     """
     if args is None:
         return []
@@ -1057,18 +1061,26 @@ def _coerce_mcp_stdio_args(args: Any) -> List[str]:
         text = args.strip()
         if not text:
             return []
-        parsed: Any = None
         if text[:1] in "[{":
             try:
-                parsed = json.loads(text)
+                parsed: Any = json.loads(text)
             except json.JSONDecodeError:
                 try:
                     parsed = ast.literal_eval(text)
-                except (ValueError, SyntaxError):
-                    parsed = None
-        if isinstance(parsed, (list, tuple)):
+                except (ValueError, SyntaxError) as exc:
+                    raise ValueError(
+                        "MCP stdio args look structured but are not a valid "
+                        "JSON or Python list"
+                    ) from exc
+            if not isinstance(parsed, (list, tuple)):
+                raise ValueError(
+                    "MCP stdio args must decode to a JSON or Python list"
+                )
             return [str(item) for item in parsed]
-        return [args]
+        try:
+            return shlex.split(args)
+        except ValueError as exc:
+            raise ValueError("MCP stdio args contain invalid shell quoting") from exc
     return [str(args)]
 
 

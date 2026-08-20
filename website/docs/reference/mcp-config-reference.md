@@ -69,6 +69,10 @@ mcp_servers:
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
 | `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. Unrecognized values are treated as `untrusted` (fail-closed) |
 
+Use a YAML list for `args`. Legacy quoted JSON/Python-list strings and plain
+shell-style strings are normalized at spawn time; structured strings that do
+not decode to a list fail with a clear configuration error.
+
 ## Environment variable references
 
 String values anywhere in a server entry (`env`, `headers`, `args`, `url`, …) may reference environment variables with `${VAR}` or the Cursor-style SecretRef form `${env:VAR}` — both resolve to the same variable, so MCP snippets copied from Cursor / Claude configs work unchanged:

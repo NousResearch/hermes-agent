@@ -53,6 +53,17 @@ def test_coerce_mcp_stdio_args_parses_json_and_python_repr():
     ]
     assert mcp_tool._coerce_mcp_stdio_args(None) == []
     assert mcp_tool._coerce_mcp_stdio_args("-y") == ["-y"]
+    assert mcp_tool._coerce_mcp_stdio_args("-y 'pkg with spaces'") == [
+        "-y",
+        "pkg with spaces",
+    ]
+    assert mcp_tool._coerce_mcp_stdio_args('"npx"') == ["npx"]
+
+
+@pytest.mark.parametrize("invalid_args", ['{"flag": true}', "[not valid]"])
+def test_coerce_mcp_stdio_args_rejects_non_list_structured_values(invalid_args):
+    with pytest.raises(ValueError, match="JSON or Python list|must decode"):
+        mcp_tool._coerce_mcp_stdio_args(invalid_args)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="watchdog wrapping is POSIX-only")

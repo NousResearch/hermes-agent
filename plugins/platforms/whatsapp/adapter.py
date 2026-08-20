@@ -659,7 +659,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
                                     self._http_session = aiohttp.ClientSession()
-                                    self._poll_task = asyncio.create_task(self._poll_messages())
+                                    self._poll_task = self._spawn_poll_task()
                                     return True
                                 stale_reason = (
                                     f"running={running_hash or 'unversioned'}, disk={disk_hash}"
@@ -816,7 +816,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._http_session = aiohttp.ClientSession()
 
             # Start message polling task
-            self._poll_task = asyncio.create_task(self._poll_messages())
+            self._poll_task = self._spawn_poll_task()
             
             self._mark_connected()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
@@ -839,6 +839,54 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception:
                 pass
             self._bridge_log_fh = None
+
+    def _spawn_poll_task(self) -> "asyncio.Task":
+        """Create the poll task under supervision.
+
+        The 2026-08-15 incident: the poll task died silently while the rest of
+        the adapter stayed healthy — outbound sends kept working, /health kept
+        reporting connected, but nobody drained GET /messages for ~20h and 18
+        inbound messages were lost in the bridge's in-RAM queue. The class fix
+        is a done-callback supervisor: ANY termination of the poll task that
+        is not an orderly shutdown flips the adapter into the existing
+        fatal-retryable machinery, which tears it down and queues it for
+        background reconnection (gateway/run.py reconnect watcher).
+        """
+        task = asyncio.create_task(self._poll_messages())
+        task.add_done_callback(self._on_poll_task_done)
+        return task
+
+    def _on_poll_task_done(self, task: "asyncio.Task") -> None:
+        # Orderly paths: disconnect() cancels us / adapter is shutting down /
+        # a newer poll task has already replaced this one.
+        if getattr(self, "_shutting_down", False):
+            return
+        if task is not self._poll_task:
+            return
+        if self.has_fatal_error:
+            # _check_managed_bridge_exit already reported and queued reconnect.
+            return
+        exc: Optional[BaseException]
+        if task.cancelled():
+            exc = None
+            reason = "poll task cancelled outside shutdown"
+        else:
+            exc = task.exception()
+            reason = f"poll task exited unexpectedly ({exc!r})" if exc else "poll task returned"
+        message = f"WhatsApp inbound poller died: {reason}. Queueing reconnect."
+        # State first, logging second: the fatal flag must flip even if
+        # logging/name resolution throws (bare test adapters, teardown races).
+        self._set_fatal_error("whatsapp_poller_died", message, retryable=True)
+        try:
+            logger.error("[%s] %s", self.name, message)
+        except Exception:
+            logger.error("[whatsapp] %s", message)
+        # _notify_fatal_error is async; we are in a sync callback.
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._notify_fatal_error())
+        except RuntimeError:
+            pass  # loop already closed — process is going down anyway
 
     async def _check_managed_bridge_exit(self) -> Optional[str]:
         """Return a fatal error message if the managed bridge child exited."""
@@ -1324,16 +1372,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return {"name": chat_id, "type": "dm"}
     
     async def _poll_messages(self) -> None:
-        """Poll the bridge for incoming messages."""
+        """Poll the bridge for incoming messages.
+
+        Termination contract (enforced by _on_poll_task_done): returning or
+        raising outside an orderly shutdown flips the adapter into
+        fatal-retryable and queues a reconnect. Never swallow a dead-loop
+        condition with a bare ``break`` — that pattern caused a silent
+        ~20h inbound outage (adapter healthy, nobody draining /messages).
+        """
         import aiohttp
 
         while self._running:
             if not self._http_session:
-                break
+                raise RuntimeError("bridge HTTP session vanished while poller running")
             bridge_exit = await self._check_managed_bridge_exit()
             if bridge_exit:
+                # _check_managed_bridge_exit already set the retryable fatal
+                # error and notified; this return is the orderly path.
                 print(f"[{self.name}] {bridge_exit}")
-                break
+                return
             try:
                 async with self._http_session.get(
                     f"http://127.0.0.1:{self._bridge_port}/messages",
@@ -1353,12 +1410,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 else:
                                     await self.handle_message(event)
             except asyncio.CancelledError:
-                break
+                raise  # orderly cancellation from disconnect(); supervisor ignores it
             except Exception as e:
                 bridge_exit = await self._check_managed_bridge_exit()
                 if bridge_exit:
+                    # Fatal already set + reconnect queued by the check.
                     print(f"[{self.name}] {bridge_exit}")
-                    break
+                    return
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)
             

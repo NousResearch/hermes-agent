@@ -23772,6 +23772,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _up_timeout_state is not None:
                 _up_timeout_state.persistent.update_prompt_pending = False
 
+    def _update_target_platform_is_enabled(self, platform) -> bool:
+        """Whether ``platform`` can ever produce an adapter for this profile.
+
+        ``config.platforms`` is pre-seeded with disabled placeholders for the
+        whole platform catalog, so mere key presence proves nothing — the
+        ``enabled`` flag is the load-bearing part (same trap documented on
+        ``_scale_to_zero_active_messaging_platforms``).
+
+        Fails OPEN: any missing/failed config lookup returns True so an
+        unexpected shape keeps the existing retry behaviour and can never
+        discard a deliverable notification. Only a positive, readable
+        ``enabled=False`` is treated as "no adapter will ever connect".
+        """
+        config = getattr(self, "config", None)
+        if config is None:
+            return True
+        try:
+            platforms = config.platforms
+            if platform not in platforms:
+                # Not in the catalog at all: unknown rather than provably
+                # disabled. Defer instead of discarding.
+                return True
+            return bool(getattr(platforms[platform], "enabled", True))
+        except Exception:  # noqa: BLE001
+            return True
+
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
 
@@ -23829,14 +23855,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter = self.adapters.get(platform)
 
             if not adapter and chat_id:
-                # The update finished, but the target platform has not
-                # reconnected yet (common right after the restart that
-                # `hermes update` triggers). Treating "adapter missing" as a
-                # definitive skip would delete the markers and silently lose the
-                # completion notification — the user never learns whether the
-                # update succeeded or timed out. Preserve the markers instead so
-                # a later retry (the watcher poll loop, or the next gateway
-                # startup) can deliver the result once the adapter is back.
+                # The update finished, but the target platform has no adapter.
+                # Two very different cases hide behind that one condition.
+                #
+                # 1. The platform IS enabled for this profile and is simply
+                #    still reconnecting (common right after the restart that
+                #    `hermes update` triggers). Treating "adapter missing" as a
+                #    definitive skip would delete the markers and silently lose
+                #    the completion notification — the user never learns whether
+                #    the update succeeded or timed out. Preserve the markers so
+                #    a later retry (the watcher poll loop, or the next gateway
+                #    startup) delivers the result once the adapter is back.
+                #
+                # 2. The platform is NOT enabled for this profile at all. No
+                #    adapter will ever appear, so preserving the markers retries
+                #    forever: every poll re-reads the marker, logs, and rewrites
+                #    it. A stale marker naming a platform this profile does not
+                #    run (e.g. left behind by an earlier config, another
+                #    profile, or an interrupted update) therefore pins a
+                #    permanent 0.5 lines/sec log loop for the life of the
+                #    gateway. That is not a recoverable target — consume the
+                #    markers and record why.
+                if not self._update_target_platform_is_enabled(platform):
+                    logger.warning(
+                        "Update notification discarded: %s is not enabled for "
+                        "this profile, so no adapter will ever connect "
+                        "(stale marker for chat %s)",
+                        platform_str,
+                        chat_id,
+                    )
+                    return True
+
                 logger.info(
                     "Update notification deferred: %s adapter not connected yet",
                     platform_str,

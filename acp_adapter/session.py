@@ -613,7 +613,7 @@ class SessionManager:
             return self._agent_factory()
 
         from run_agent import AIAgent
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config, read_raw_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         config = load_config()
@@ -631,18 +631,31 @@ class SessionManager:
             for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
+        agent_cfg = config.get("agent") or {}
+        configured_toolsets = config.get("toolsets")
+        if not isinstance(configured_toolsets, list) or "toolsets" not in read_raw_config_readonly():
+            configured_toolsets = ["hermes-acp"]
+        try:
+            max_iterations = int(agent_cfg.get("max_turns"))
+        except (TypeError, ValueError):
+            max_iterations = None
+        if max_iterations is not None and max_iterations <= 0:
+            max_iterations = None
 
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
+                configured_toolsets,
                 mcp_server_names=configured_mcp_servers,
             ),
+            "disabled_toolsets": agent_cfg.get("disabled_toolsets") or None,
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,
         }
+        if max_iterations is not None:
+            kwargs["max_iterations"] = max_iterations
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

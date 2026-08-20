@@ -95,6 +95,7 @@ class TestCreateSession:
                 "mcp_servers": {},
             },
         )
+        monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", lambda: {})
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda requested=None: {
@@ -109,6 +110,62 @@ class TestCreateSession:
         state = SessionManager(db=None).create_session(cwd="/tmp/project")
 
         assert state.agent.session_cwd == "/tmp/project"
+        assert state.agent.kwargs["enabled_toolsets"] == ["hermes-acp"]
+
+    def test_make_agent_honors_profile_tools_and_turn_budget(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"default": "fake-model", "provider": "fake-provider"},
+                "toolsets": ["all"],
+                "agent": {"max_turns": 300, "disabled_toolsets": ["browser"]},
+                "mcp_servers": {},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config_readonly",
+            lambda: {"toolsets": ["all"]},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "chat_completions",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert captured["enabled_toolsets"] == ["all"]
+        assert captured["disabled_toolsets"] == ["browser"]
+        assert captured["max_iterations"] == 300
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"default": "fake-model", "provider": "fake-provider"},
+                "toolsets": ["hermes-cli"],
+                "agent": {"max_turns": None},
+                "mcp_servers": {},
+            },
+        )
+        captured.clear()
+        SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert captured["enabled_toolsets"] == ["hermes-cli"]
+        assert "max_iterations" not in captured
 
 
 

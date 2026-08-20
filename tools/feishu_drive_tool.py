@@ -81,7 +81,11 @@ def _do_request(client, method, uri, paths=None, queries=None, body=None):
         if isinstance(resp_data, dict):
             data = resp_data
         elif resp_data and hasattr(resp_data, "__dict__"):
-            data = vars(resp_data)
+            try:
+                data = vars(resp_data)
+            except (TypeError, AttributeError):
+                # Some objects have __dict__ attribute but vars() fails
+                data = {}
 
     return code, msg, data
 

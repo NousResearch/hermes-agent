@@ -35,7 +35,7 @@ def _sanitize_surrogates(text: str) -> str:
     Surrogates are invalid in UTF-8 and will crash ``json.dumps()`` inside the
     OpenAI SDK.  This is a fast no-op when the text contains no surrogates.
     """
-    if _SURROGATE_RE.search(text):
+    if not str.isascii(text) and _SURROGATE_RE.search(text):
         return _SURROGATE_RE.sub('\ufffd', text)
     return text
 
@@ -55,7 +55,7 @@ def _sanitize_structure_surrogates(payload: Any) -> bool:
         if isinstance(node, dict):
             for key, value in node.items():
                 if isinstance(value, str):
-                    if _SURROGATE_RE.search(value):
+                    if not str.isascii(value) and _SURROGATE_RE.search(value):
                         node[key] = _SURROGATE_RE.sub('\ufffd', value)
                         found = True
                 elif isinstance(value, (dict, list)):
@@ -63,7 +63,7 @@ def _sanitize_structure_surrogates(payload: Any) -> bool:
         elif isinstance(node, list):
             for idx, value in enumerate(node):
                 if isinstance(value, str):
-                    if _SURROGATE_RE.search(value):
+                    if not str.isascii(value) and _SURROGATE_RE.search(value):
                         node[idx] = _SURROGATE_RE.sub('\ufffd', value)
                         found = True
                 elif isinstance(value, (dict, list)):
@@ -90,18 +90,26 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
         if not isinstance(msg, dict):
             continue
         content = msg.get("content")
-        if isinstance(content, str) and _SURROGATE_RE.search(content):
+        if (
+            isinstance(content, str)
+            and not str.isascii(content)
+            and _SURROGATE_RE.search(content)
+        ):
             msg["content"] = _SURROGATE_RE.sub('\ufffd', content)
             found = True
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict):
                     text = part.get("text")
-                    if isinstance(text, str) and _SURROGATE_RE.search(text):
+                    if (
+                        isinstance(text, str)
+                        and not str.isascii(text)
+                        and _SURROGATE_RE.search(text)
+                    ):
                         part["text"] = _SURROGATE_RE.sub('\ufffd', text)
                         found = True
         name = msg.get("name")
-        if isinstance(name, str) and _SURROGATE_RE.search(name):
+        if isinstance(name, str) and not str.isascii(name) and _SURROGATE_RE.search(name):
             msg["name"] = _SURROGATE_RE.sub('\ufffd', name)
             found = True
         tool_calls = msg.get("tool_calls")
@@ -110,17 +118,29 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
                 if not isinstance(tc, dict):
                     continue
                 tc_id = tc.get("id")
-                if isinstance(tc_id, str) and _SURROGATE_RE.search(tc_id):
+                if (
+                    isinstance(tc_id, str)
+                    and not str.isascii(tc_id)
+                    and _SURROGATE_RE.search(tc_id)
+                ):
                     tc["id"] = _SURROGATE_RE.sub('\ufffd', tc_id)
                     found = True
                 fn = tc.get("function")
                 if isinstance(fn, dict):
                     fn_name = fn.get("name")
-                    if isinstance(fn_name, str) and _SURROGATE_RE.search(fn_name):
+                    if (
+                        isinstance(fn_name, str)
+                        and not str.isascii(fn_name)
+                        and _SURROGATE_RE.search(fn_name)
+                    ):
                         fn["name"] = _SURROGATE_RE.sub('\ufffd', fn_name)
                         found = True
                     fn_args = fn.get("arguments")
-                    if isinstance(fn_args, str) and _SURROGATE_RE.search(fn_args):
+                    if (
+                        isinstance(fn_args, str)
+                        and not str.isascii(fn_args)
+                        and _SURROGATE_RE.search(fn_args)
+                    ):
                         fn["arguments"] = _SURROGATE_RE.sub('\ufffd', fn_args)
                         found = True
         # Walk any additional string / nested fields (reasoning,
@@ -132,7 +152,7 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
             if key in {"content", "name", "tool_calls", "role"}:
                 continue
             if isinstance(value, str):
-                if _SURROGATE_RE.search(value):
+                if not str.isascii(value) and _SURROGATE_RE.search(value):
                     msg[key] = _SURROGATE_RE.sub('\ufffd', value)
                     found = True
             elif isinstance(value, (dict, list)):

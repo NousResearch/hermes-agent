@@ -629,7 +629,13 @@ def test_scan_provenance_requires_verified_official_origin():
         "official",
         "official/devops/demo",
         origin_verified=True,
+        origin_identity="git:NousResearch/hermes-agent@" + "a" * 40,
     ) == ("official", True)
+    assert _scan_provenance_for_source(
+        "official",
+        "official/devops/demo",
+        origin_verified=True,
+    ) == ("community", False)
 
 
 @pytest.mark.parametrize(

@@ -338,6 +338,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
             getattr(bundle, "identifier", "") or getattr(meta, "identifier", ""),
             ident,
             origin_verified=getattr(bundle, "origin_verified", False),
+            origin_identity=getattr(bundle, "origin_identity", ""),
         )
 
         q_path = None

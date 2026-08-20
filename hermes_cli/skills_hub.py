@@ -50,12 +50,15 @@ def _scan_provenance_for_source(
     fallback: str = "",
     *,
     origin_verified: bool = False,
+    origin_identity: str = "",
 ) -> tuple[str, bool]:
     """Return scan identity and whether reserved origin markers may elevate."""
     if source == "agent-created":
         return source, True
     if source == "official":
-        return ("official", True) if origin_verified else ("community", False)
+        if origin_verified and _audit_origin_identity_is_valid(origin_identity):
+            return "official", True
+        return "community", False
     return identifier or fallback or "community", False
 
 
@@ -840,6 +843,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         getattr(bundle, "identifier", "") or getattr(meta, "identifier", ""),
         identifier,
         origin_verified=getattr(bundle, "origin_verified", False),
+        origin_identity=getattr(bundle, "origin_identity", ""),
     )
     from tools.skills_hub import HUB_DIR, source_url_for_bundle
     result, scan_provenance = scan_skill_cached(

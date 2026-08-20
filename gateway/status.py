@@ -1074,6 +1074,7 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    payload["hermes_home"] = current_record["hermes_home"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:

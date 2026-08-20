@@ -6,169 +6,345 @@ import vm from 'node:vm'
 // #89834 — opening a local bot while a group owns the main workspace must
 // retire that group's registered main tab (and clear the selection atom)
 // BEFORE any async source prep / canonical open. Remote bots stay put.
+//
+// Behavioral seam (same style as profile-prewarm): render real BotRow /
+// ActiveNow open handlers and assert close-before-open ordering. Source
+// regex is not the load-bearing proof.
 
-const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
+const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
-function load() {
-  const values = new Map()
-  const atom = initial => {
-    const slot = {
-      get: () => values.get(slot),
-      set: value => values.set(slot, typeof value === 'function' ? value(values.get(slot)) : value)
-    }
-    values.set(slot, initial)
-    return slot
-  }
+function sourceBetween(start, end) {
+  const from = source.indexOf(start)
+  const to = source.indexOf(end, from)
 
-  const timeline = []
-  const context = {
-    atom,
-    setTimeout: fn => {
-      fn()
-      return 0
-    },
-    clearTimeout: () => undefined,
-    PALETTE_AREA: 'palette',
-    COMPOSER_AREAS: { middleware: 'middleware' },
-    document: {
-      getElementById: () => null,
-      createElement: () => ({}),
-      head: { appendChild: () => undefined }
-    },
-    host: {
-      request: async () => ({}),
-      state: {
-        profile: { get: () => 'default', listen: () => undefined },
-        gateway: { listen: () => undefined }
-      },
-      notify: payload => timeline.push({ type: 'notify', payload }),
-      notifyError: () => undefined,
-      openSession: async id => {
-        timeline.push({ type: 'openSession', id })
-      },
-      openWorkspace: undefined
-    }
-  }
+  assert.notEqual(from, -1, `missing ${start}`)
+  assert.notEqual(to, -1, `missing ${end}`)
 
-  const source = pluginSource
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
-    .replace(/^import .* from 'react'\r?\n/m, '')
-    .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
-    .replace('export default {', 'globalThis.plugin = {')
-    .concat(
-      '\nglobalThis.__handoff = {\n' +
-        '  openGroupChat,\n' +
-        '  closeGroupChatMainTab,\n' +
-        '  dismissGroupChatForLocalBotOpen,\n' +
-        '  $groupChatWorkspace,\n' +
-        '  $selectedBot,\n' +
-        '  groupChatMainTabs\n' +
-        '};\n'
-    )
-
-  vm.runInNewContext(source, context, { filename: 'plugin.js' })
-  context.plugin.register({
-    storage: { get: () => null, set: () => undefined },
-    register: () => undefined
-  })
-
-  return { ...context.__handoff, host: context.host, timeline }
+  return source.slice(from, to)
 }
 
-test('local handoff closes the registered group main tab before any canonical open', () => {
-  const runtime = load()
-  let closed = 0
+// ACTIVE_WINDOW_S through activeBots (includes botActivitySession + workerActiveAt).
+function activeBotsSource() {
+  return sourceBetween('const ACTIVE_WINDOW_S', '// ── bot row ─')
+}
 
-  runtime.host.openWorkspace = () => {
-    timelineCloseHook()
-    return () => {
+function handoffHelpersSource() {
+  return (
+    sourceBetween('function closeGroupChatMainTab(group) {', '/** Local-bot open handoff:') +
+    sourceBetween('function dismissGroupChatForLocalBotOpen() {', '/** Main-window wrapper:')
+  )
+}
+
+/** Extract `bot => { ... }` assigned to ActiveNowStrip's onOpen in BotsPane. */
+function activeNowOnOpenSource() {
+  const strip = source.indexOf('jsx(ActiveNowStrip, {')
+  assert.ok(strip >= 0, 'ActiveNowStrip mount must remain in BotsPane')
+
+  const key = source.indexOf('onOpen: bot => {', strip)
+  assert.ok(key > strip, 'ActiveNowStrip onOpen handler must remain inline')
+
+  const start = key + 'onOpen: '.length
+  assert.equal(source.slice(start, start + 'bot => {'.length), 'bot => {')
+
+  let i = start + 'bot => {'.length
+  let depth = 1
+
+  while (i < source.length && depth > 0) {
+    const ch = source[i]
+    if (ch === '{') depth += 1
+    else if (ch === '}') depth -= 1
+    i += 1
+  }
+
+  assert.equal(depth, 0, 'ActiveNowStrip onOpen braces must balance')
+  return source.slice(start, i)
+}
+
+function atom(initial) {
+  let value = initial
+  return {
+    get: () => value,
+    set: next => {
+      value = typeof next === 'function' ? next(value) : next
+    }
+  }
+}
+
+function node(type, props = {}) {
+  return { type, props }
+}
+
+function findButton(tree, predicate = () => true) {
+  const visit = value => {
+    if (value == null || typeof value !== 'object') return null
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        const found = visit(child)
+        if (found) return found
+      }
+      return null
+    }
+    if (value.type === 'button' && predicate(value)) return value
+    return visit(value.props?.children)
+  }
+  return visit(tree)
+}
+
+function loadCallers() {
+  const timeline = []
+  const notifications = []
+  const groupChatMainTabs = new Map()
+  const $groupChatWorkspace = atom(null)
+  const $selectedBot = atom('default')
+  const $botUnread = atom({})
+  const $botMeta = atom({})
+  const $focusedBotProfile = atom('default')
+  const $lastRoster = atom([])
+
+  const prepareSource = sourceBetween('async function prepareBotSource(', 'function displayName(')
+  const botRowSource = sourceBetween('function BotRow(', '// ── model picker')
+  const activeNowSource = sourceBetween(
+    'function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpen }) {',
+    '/** Assign a bot to a group-chat membership'
+  )
+
+  const context = {
+    BotFace: 'BotFace',
+    ContextMenu: 'ContextMenu',
+    ContextMenuContent: 'ContextMenuContent',
+    ContextMenuItem: 'ContextMenuItem',
+    ContextMenuSeparator: 'ContextMenuSeparator',
+    ContextMenuTrigger: 'ContextMenuTrigger',
+    ROSTER_KEY: ['hermes-bots', 'roster'],
+    groupChatMainTabs,
+    $groupChatWorkspace,
+    $selectedBot,
+    $botUnread,
+    $botMeta,
+    $focusedBotProfile,
+    $lastRoster,
+    botAppearance: () => ({ shape: 'round', color: '#000', image: null }),
+    botGroups: () => [],
+    botHandle: value => value,
+    botOpenGeneration: 0,
+    botRosterKey: bot => bot.name,
+    botRosterMeta: (bot, metaByName) => metaByName?.[bot.name] ?? null,
+    cn: (...values) => values.filter(Boolean).join(' '),
+    createCanonicalChat: async () => null,
+    displayName: (bot, _meta) => bot?.title || bot?.name || 'bot',
+    duplicateBot: async () => 'copy',
+    haptic: () => undefined,
+    isBackfilledFacePng: () => false,
+    previewKind: () => ({ fromBot: false, sender: null }),
+    generatedSessionTitle: () => null,
+    openBotCanonicalChat: async (...args) => {
+      timeline.push({ type: 'openBotCanonicalChat', args })
+      return 'stored-chat'
+    },
+    ACTIVE_WINDOW_S: 90,
+    A2A_PREFIX_RE: /^$/,
+    useEffect: () => undefined,
+    useState: initial => [typeof initial === 'function' ? initial() : initial, () => undefined],
+    host: {
+      state: { gateway: atom('open'), profile: atom('default') },
+      ensureAgent: async () => undefined,
+      activeConnectionId: () => 'local',
+      warmAgent: () => undefined,
+      warmProfile: () => undefined,
+      request: async () => ({ profiles: [], sessions: [] }),
+      notify: payload => notifications.push(payload),
+      notifyError: () => undefined,
+      newChat: () => timeline.push({ type: 'newChat' }),
+      navigate: () => timeline.push({ type: 'navigate' })
+    },
+    jsx: node,
+    jsxs: node,
+    onEdit: () => undefined,
+    queryClient: { invalidateQueries: () => undefined },
+    relativeTime: () => 'now',
+    saveBotMeta: () => undefined,
+    showsHandle: () => false,
+    stripPreviewMarkdown: text => String(text || ''),
+    useValue: store => store.get(),
+    allMeta: {},
+    timeline,
+    notifications
+  }
+
+  // Bind Map + atoms on the sandbox so helper source closes over the live bindings.
+  context.groupChatMainTabs = groupChatMainTabs
+  context.$groupChatWorkspace = $groupChatWorkspace
+
+  const code = [
+    activeBotsSource(),
+    handoffHelpersSource(),
+    prepareSource,
+    botRowSource,
+    activeNowSource,
+    'const openActiveNow = ' + activeNowOnOpenSource() + ';',
+    'globalThis.__callers = { BotRow, ActiveNowStrip, openActiveNow, dismissGroupChatForLocalBotOpen, closeGroupChatMainTab };'
+  ].join('\n')
+
+  vm.runInNewContext(code, context)
+
+  const registerGroupMainTab = group => {
+    let closed = 0
+    $groupChatWorkspace.set(group)
+    groupChatMainTabs.set(group, () => {
       closed += 1
-      runtime.timeline.push({ type: 'mainTabClose' })
+      timeline.push({ type: 'mainTabClose', group })
+    })
+    return {
+      closed: () => closed,
+      isRegistered: () => groupChatMainTabs.has(group)
     }
   }
 
-  // openWorkspace's closer is what host.openWorkspace returns; capture via openGroupChat.
-  function timelineCloseHook() {
-    /* placeholder so openWorkspace is feature-detected */
+  return {
+    ...context.__callers,
+    $groupChatWorkspace,
+    $selectedBot,
+    groupChatMainTabs,
+    timeline,
+    notifications,
+    registerGroupMainTab,
+    renderBotRow(bot) {
+      const tree = context.__callers.BotRow({ bot, onEdit: () => undefined })
+      const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
+      return row
+    },
+    renderActiveNowChip(bot, { gatewayState = 'open', activeProfile = 'other' } = {}) {
+      // Force the bot into the strip via a fresh last_session inside the window.
+      const rosterBot = {
+        ...bot,
+        last_session: bot.last_session || {
+          id: 'live',
+          last_active: Math.floor(Date.now() / 1000) - 5
+        }
+      }
+      const tree = context.__callers.ActiveNowStrip({
+        roster: [rosterBot],
+        activeProfile,
+        gatewayState,
+        metaByName: {},
+        onOpen: context.__callers.openActiveNow
+      })
+      const chip = findButton(tree, button => String(button.props?.title || '').includes(bot.name) ||
+        String(button.props?.title || '').includes(bot.title || ''))
+      assert.ok(chip, 'Active Now chip must render for the seeded bot')
+      return chip
+    }
   }
+}
 
-  runtime.openGroupChat('Core')
-  assert.equal(runtime.$groupChatWorkspace.get(), 'Core')
-  assert.equal(typeof runtime.groupChatMainTabs.get('Core'), 'function')
+test('BotRow local open closes the group main tab before canonical open', async () => {
+  const runtime = loadCallers()
+  const tab = runtime.registerGroupMainTab('Core')
+  const row = runtime.renderBotRow({ name: 'alpha', title: 'Alpha' })
 
-  // Shared boundary used by BotRow + Active Now for local bots only.
-  runtime.dismissGroupChatForLocalBotOpen()
+  await row.props.onClick()
 
-  assert.equal(closed, 1, 'registered main-tab closer must run')
+  assert.equal(tab.closed(), 1, 'registered main-tab closer must run')
   assert.equal(runtime.$groupChatWorkspace.get(), null, 'group selection atom must clear')
-  assert.equal(runtime.groupChatMainTabs.has('Core'), false, 'closer entry must be retired')
+  assert.equal(tab.isRegistered(), false, 'closer entry must be retired')
+  assert.ok(
+    runtime.timeline.some(entry => entry.type === 'openBotCanonicalChat'),
+    'local open must proceed to canonical chat'
+  )
+
+  const closeAt = runtime.timeline.findIndex(entry => entry.type === 'mainTabClose')
+  const openAt = runtime.timeline.findIndex(entry => entry.type === 'openBotCanonicalChat')
+  assert.ok(closeAt >= 0 && openAt >= 0 && closeAt < openAt, 'close must precede canonical open')
+})
+
+test('BotRow remote open leaves the group main tab open', async () => {
+  const runtime = loadCallers()
+  const tab = runtime.registerGroupMainTab('Core')
+  const row = runtime.renderBotRow({
+    name: 'research',
+    title: 'Research',
+    remoteSource: true,
+    sourceScoped: true,
+    connectionId: 'work',
+    connectionLabel: 'Work'
+  })
+
+  await row.props.onClick()
+
+  assert.equal(tab.closed(), 0, 'remote open must not dismiss the group tab')
+  assert.equal(runtime.$groupChatWorkspace.get(), 'Core')
+  assert.equal(tab.isRegistered(), true)
   assert.equal(
-    runtime.timeline.some(entry => entry.type === 'openSession'),
+    runtime.timeline.some(entry => entry.type === 'openBotCanonicalChat'),
     false,
-    'handoff itself must not open a canonical chat'
+    'remote open must not hop into a canonical chat'
   )
+  assert.ok(runtime.notifications.some(n => /Stay in this chat/.test(n.message || '')))
 })
 
-test('remote bots do not dismiss the selected group workspace', () => {
-  const runtime = load()
-  let closed = 0
+test('Active Now local open closes the group main tab before canonical open', async () => {
+  const runtime = loadCallers()
+  const tab = runtime.registerGroupMainTab('Ops')
+  const chip = runtime.renderActiveNowChip({ name: 'alpha', title: 'Alpha' })
 
-  runtime.host.openWorkspace = () => () => {
-    closed += 1
-  }
+  await chip.props.onClick()
+  // Active Now fires canonical open inside an async IIFE — drain microtasks.
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
 
-  runtime.openGroupChat('Core')
-  assert.equal(runtime.$groupChatWorkspace.get(), 'Core')
+  assert.equal(tab.closed(), 1, 'registered main-tab closer must run')
+  assert.equal(runtime.$groupChatWorkspace.get(), null)
+  assert.equal(tab.isRegistered(), false)
+  assert.ok(runtime.timeline.some(entry => entry.type === 'openBotCanonicalChat'))
 
-  // Remote path must leave the group tab alone (stay-and-@).
-  // The shared dismiss helper is local-only; callers skip it for remoteSource.
-  assert.equal(runtime.$groupChatWorkspace.get(), 'Core')
-  assert.equal(closed, 0)
-  assert.equal(runtime.groupChatMainTabs.has('Core'), true)
+  const closeAt = runtime.timeline.findIndex(entry => entry.type === 'mainTabClose')
+  const openAt = runtime.timeline.findIndex(entry => entry.type === 'openBotCanonicalChat')
+  assert.ok(closeAt >= 0 && openAt >= 0 && closeAt < openAt, 'close must precede canonical open')
 })
 
-test('local handoff with no main-tab registration still clears in-panel selection safely', () => {
-  const runtime = load()
-  // Older host: no openWorkspace → openGroupChat only sets the selection atom.
-  runtime.openGroupChat('Ops')
+test('Active Now remote open leaves the group main tab open', async () => {
+  const runtime = loadCallers()
+  const tab = runtime.registerGroupMainTab('Ops')
+  const chip = runtime.renderActiveNowChip({
+    name: 'research',
+    title: 'Research',
+    remoteSource: true,
+    sourceScoped: true,
+    connectionId: 'work',
+    connectionLabel: 'Work'
+  })
+
+  await chip.props.onClick()
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(tab.closed(), 0)
   assert.equal(runtime.$groupChatWorkspace.get(), 'Ops')
-  assert.equal(runtime.groupChatMainTabs.has('Ops'), false)
-
-  runtime.dismissGroupChatForLocalBotOpen()
-
-  assert.equal(runtime.$groupChatWorkspace.get(), null)
+  assert.equal(tab.isRegistered(), true)
+  assert.equal(
+    runtime.timeline.some(entry => entry.type === 'openBotCanonicalChat'),
+    false
+  )
+  assert.ok(runtime.notifications.some(n => /Stay in this chat/.test(n.message || '')))
 })
 
-test('local handoff with no group selected is a no-op', () => {
-  const runtime = load()
-  assert.equal(runtime.$groupChatWorkspace.get(), null)
+test('local BotRow open with no main-tab registration still clears in-panel selection', async () => {
+  const runtime = loadCallers()
+  runtime.$groupChatWorkspace.set('Legacy')
+  assert.equal(runtime.groupChatMainTabs.has('Legacy'), false)
 
-  assert.doesNotThrow(() => runtime.dismissGroupChatForLocalBotOpen())
+  const row = runtime.renderBotRow({ name: 'alpha', title: 'Alpha' })
+  await row.props.onClick()
+
   assert.equal(runtime.$groupChatWorkspace.get(), null)
+  assert.ok(runtime.timeline.some(entry => entry.type === 'openBotCanonicalChat'))
 })
 
-test('BotRow and Active Now both route local opens through the shared handoff', () => {
-  // Structural guard so the two call sites cannot drift apart again.
-  assert.match(pluginSource, /function dismissGroupChatForLocalBotOpen\s*\(/)
-  assert.match(
-    pluginSource,
-    /dismissGroupChatForLocalBotOpen\s*\(\s*\)[\s\S]*?openBotCanonicalChat/
-  )
+test('local BotRow open with no group selected is safe and still opens chat', async () => {
+  const runtime = loadCallers()
+  assert.equal(runtime.$groupChatWorkspace.get(), null)
 
-  const botRowOpen = pluginSource.slice(
-    pluginSource.indexOf('function BotRow('),
-    pluginSource.indexOf('function ActiveNowStrip(')
-  )
-  const activeNowOpen = pluginSource.slice(
-    pluginSource.indexOf('jsx(ActiveNowStrip,'),
-    pluginSource.indexOf('jsx(ActiveNowStrip,') + 2500
-  )
-
-  assert.match(botRowOpen, /dismissGroupChatForLocalBotOpen\s*\(/)
-  assert.match(activeNowOpen, /dismissGroupChatForLocalBotOpen\s*\(/)
-  // Remote path must not call the dismiss helper before the remote early-return.
-  assert.match(botRowOpen, /if\s*\(\s*bot\.remoteSource\s*\)/)
-  assert.match(activeNowOpen, /if\s*\(\s*bot\.remoteSource\s*\)/)
+  const row = runtime.renderBotRow({ name: 'alpha', title: 'Alpha' })
+  await assert.doesNotReject(async () => row.props.onClick())
+  assert.equal(runtime.$groupChatWorkspace.get(), null)
+  assert.ok(runtime.timeline.some(entry => entry.type === 'openBotCanonicalChat'))
 })

@@ -627,8 +627,9 @@ class TestBaseContextSummary:
 
         manager.get_prefetch_context.side_effect = get_context
         manager.set_context_result.side_effect = (
-            lambda session_key, result: cached.__setitem__(session_key, result)
+            lambda session_key, result, **kwargs: cached.__setitem__(session_key, result)
         )
+        manager.get_context_generation.return_value = 0
         manager.pop_context_result.side_effect = (
             lambda session_key: cached.pop(session_key, {})
         )
@@ -1315,3 +1316,143 @@ class TestGetSessionContextFallback:
         assert peer_id == "user-peer"
         assert target == "user-peer"
 
+
+
+
+# ---------------------------------------------------------------------------
+# Regression: set_peer_card evicts stale caches (PR #76351)
+# ---------------------------------------------------------------------------
+
+
+class TestSetPeerCardCacheEviction:
+    """Deterministic regression coverage for cache invalidation after
+    set_peer_card(), per review requests on PR #76351."""
+
+    def _make_manager_with_session(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from plugins.memory.honcho.session import HonchoSession, HonchoSessionManager
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True)
+        mgr = HonchoSessionManager.__new__(HonchoSessionManager)
+        mgr._cache = {}
+        mgr._sessions_cache = {}
+        mgr._peers_cache = {}
+        mgr._context_cache = {}
+        mgr._prefetch_cache_lock = __import__("threading").Lock()
+        mgr._cache_lock = __import__("threading").Lock()
+        mgr._context_generation = 0
+        mgr._card_update_callbacks = []
+        mgr._config = cfg
+        mgr._dialectic_reasoning_level = "low"
+        mgr._dialectic_dynamic = True
+        mgr._dialectic_max_chars = 10000
+        mgr._dialectic_max_input_chars = 10000
+        mgr._ai_observe_others = False
+        session = HonchoSession(
+            key="test", honcho_session_id="sid",
+            user_peer_id="user-peer", assistant_peer_id="ai-peer",
+        )
+        mgr._cache["test"] = session
+        return mgr
+
+    def test_set_peer_card_evicts_prefetch_cache(self):
+        from unittest.mock import MagicMock
+        mgr = self._make_manager_with_session()
+        mgr._context_cache["test"] = {"representation": "STALE", "card": "old"}
+        mock_peer = MagicMock()
+        mock_peer.set_card.return_value = ["corrected fact"]
+        mgr._get_or_create_peer = MagicMock(return_value=mock_peer)
+        mgr._resolve_observer_target = MagicMock(return_value=("user-peer", "user-peer"))
+        mgr.set_peer_card("test", ["corrected fact"])
+        assert "test" not in mgr._context_cache
+
+    def test_set_peer_card_evicts_peers_cache(self):
+        from unittest.mock import MagicMock
+        mgr = self._make_manager_with_session()
+        mgr._peers_cache["user-peer"] = MagicMock()
+        mock_peer = MagicMock()
+        mock_peer.set_card.return_value = ["new fact"]
+        mgr._get_or_create_peer = MagicMock(return_value=mock_peer)
+        mgr._resolve_observer_target = MagicMock(return_value=("user-peer", "user-peer"))
+        mgr.set_peer_card("test", ["new fact"])
+        assert "user-peer" not in mgr._peers_cache
+
+    def test_set_peer_card_increments_generation(self):
+        from unittest.mock import MagicMock
+        mgr = self._make_manager_with_session()
+        assert mgr._context_generation == 0
+        mock_peer = MagicMock()
+        mock_peer.set_card.return_value = ["fact"]
+        mgr._get_or_create_peer = MagicMock(return_value=mock_peer)
+        mgr._resolve_observer_target = MagicMock(return_value=("user-peer", "user-peer"))
+        mgr.set_peer_card("test", ["fact"])
+        assert mgr._context_generation == 1
+        mgr.set_peer_card("test", ["updated"])
+        assert mgr._context_generation == 2
+
+    def test_set_peer_card_fires_provider_callback(self):
+        from unittest.mock import MagicMock
+        mgr = self._make_manager_with_session()
+        fired = []
+        mgr.register_card_update_callback(lambda: fired.append(True))
+        mock_peer = MagicMock()
+        mock_peer.set_card.return_value = ["fact"]
+        mgr._get_or_create_peer = MagicMock(return_value=mock_peer)
+        mgr._resolve_observer_target = MagicMock(return_value=("user-peer", "user-peer"))
+        mgr.set_peer_card("test", ["fact"])
+        assert len(fired) == 1
+
+    def test_provider_callback_nulls_base_context_cache(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+        provider = HonchoMemoryProvider()
+        provider._base_context_cache = "stale"
+        provider._on_peer_card_updated()
+        assert provider._base_context_cache is None
+
+
+class TestSetContextResultGenerationGuard:
+    """Deterministic regression: in-flight prefetch after set_peer_card()
+    must not repopulate the cache with a stale result."""
+
+    def _make_manager(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True)
+        mgr = HonchoSessionManager.__new__(HonchoSessionManager)
+        mgr._cache = {}
+        mgr._sessions_cache = {}
+        mgr._peers_cache = {}
+        mgr._context_cache = {}
+        mgr._prefetch_cache_lock = __import__("threading").Lock()
+        mgr._cache_lock = __import__("threading").Lock()
+        mgr._context_generation = 0
+        mgr._card_update_callbacks = []
+        mgr._config = cfg
+        mgr._dialectic_reasoning_level = "low"
+        mgr._dialectic_dynamic = True
+        mgr._dialectic_max_chars = 10000
+        mgr._dialectic_max_input_chars = 10000
+        mgr._ai_observe_others = False
+        return mgr
+
+    def test_stale_prefetch_result_is_dropped(self):
+        mgr = self._make_manager()
+        old_gen = mgr.get_context_generation()
+        with mgr._prefetch_cache_lock:
+            mgr._context_generation = 1
+        mgr.set_context_result("test", {"representation": "STALE", "card": "old"}, generation=old_gen)
+        assert "test" not in mgr._context_cache
+
+    def test_current_generation_result_is_accepted(self):
+        mgr = self._make_manager()
+        gen = mgr.get_context_generation()
+        mgr.set_context_result("test", {"representation": "FRESH", "card": "new"}, generation=gen)
+        assert mgr._context_cache.get("test") == {"representation": "FRESH", "card": "new"}
+
+    def test_no_generation_kwarg_always_accepted(self):
+        mgr = self._make_manager()
+        with mgr._prefetch_cache_lock:
+            mgr._context_generation = 5
+        mgr.set_context_result("test", {"representation": "legacy", "card": ""})
+        assert mgr._context_cache.get("test") == {"representation": "legacy", "card": ""}

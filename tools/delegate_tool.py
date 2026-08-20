@@ -31,7 +31,7 @@ import weakref
 from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from toolsets import TOOLSETS
@@ -3530,6 +3530,267 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+_DEFAULT_BEST_OF_N_CRITERIA = (
+    "Evaluate correctness, completeness, robustness, and maintainability."
+)
+_MAX_BEST_OF_N_CRITERIA_LENGTH = 500
+_BEST_OF_N_JUDGE_SYSTEM_PROMPT = """You are an independent evaluator comparing
+anonymous candidate answers to the same task. Judge only the answer content.
+Return exactly one JSON object with this shape:
+{
+  "winner_index": 0,
+  "scores": [
+    {"candidate": "A", "score": 0}
+  ],
+  "reasoning": "brief explanation"
+}
+
+winner_index is the zero-based task index shown with each candidate. Include
+exactly one integer score from 0 to 100 for every candidate. The winner must
+have a highest score. Do not add markdown fences or any other text."""
+
+
+def _normalize_best_of_n_judge(
+    judge: Any,
+) -> tuple[Optional[str], Optional[str]]:
+    """Return normalized criteria or an actionable validation error.
+
+    The model-facing schema intentionally exposes a string to avoid provider
+    incompatibilities around boolean-or-string unions. Direct Python callers
+    may still use ``True`` for the default rubric and ``False`` to disable it.
+    """
+    if judge is None or judge is False:
+        return None, None
+    if judge is True:
+        return _DEFAULT_BEST_OF_N_CRITERIA, None
+    if not isinstance(judge, str):
+        return None, "judge must be a criteria string, true, false, or null."
+    criteria = judge.strip()
+    if not criteria:
+        return None, None
+    if criteria.lower() in {"default", "true"}:
+        return _DEFAULT_BEST_OF_N_CRITERIA, None
+    if len(criteria) > _MAX_BEST_OF_N_CRITERIA_LENGTH:
+        return None, (
+            "judge criteria must be at most "
+            f"{_MAX_BEST_OF_N_CRITERIA_LENGTH} characters."
+        )
+    return criteria, None
+
+
+def _best_of_n_candidate_label(index: int) -> str:
+    """Map a zero-based task index to a stable spreadsheet-style label."""
+    label = ""
+    value = index + 1
+    while value > 0:
+        value, remainder = divmod(value - 1, 26)
+        label = chr(ord("A") + remainder) + label
+    return label
+
+
+def _parse_best_of_n_judge_response(
+    raw: str,
+    candidates: List[Dict[str, Any]],
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Validate and normalize the judge's structured verdict."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None, "Judge returned an empty response."
+
+    from tools.delegation_output_schema import extract_json_candidate
+
+    try:
+        payload = json.loads(extract_json_candidate(raw))
+    except (TypeError, ValueError) as exc:
+        return None, f"Judge returned malformed JSON: {exc}"
+    if not isinstance(payload, dict):
+        return None, "Judge response must be a JSON object."
+
+    eligible_by_index = {candidate["task_index"]: candidate for candidate in candidates}
+    winner_index = payload.get("winner_index")
+    if type(winner_index) is not int or winner_index not in eligible_by_index:
+        return None, "Judge returned an invalid or ineligible winner_index."
+
+    scores = payload.get("scores")
+    if not isinstance(scores, list):
+        return None, "Judge response is missing a scores array."
+
+    expected_labels = {candidate["candidate"] for candidate in candidates}
+    scores_by_label: Dict[str, int] = {}
+    for item in scores:
+        if not isinstance(item, dict):
+            return None, "Each judge score must be an object."
+        label = item.get("candidate")
+        score = item.get("score")
+        if label not in expected_labels or label in scores_by_label:
+            return None, "Judge scores contain an unknown or duplicate candidate."
+        if type(score) is not int or not 0 <= score <= 100:
+            return None, "Judge scores must be integers from 0 to 100."
+        scores_by_label[label] = score
+    if set(scores_by_label) != expected_labels:
+        return None, "Judge scores must include every eligible candidate exactly once."
+
+    winner = eligible_by_index[winner_index]
+    winner_score = scores_by_label[winner["candidate"]]
+    if winner_score != max(scores_by_label.values()):
+        return None, "Judge winner_index does not identify a highest-scoring candidate."
+
+    reasoning = payload.get("reasoning")
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        return None, "Judge response is missing non-empty reasoning."
+
+    normalized_scores = [
+        {
+            "candidate": candidate["candidate"],
+            "task_index": candidate["task_index"],
+            "score": scores_by_label[candidate["candidate"]],
+        }
+        for candidate in candidates
+    ]
+    return (
+        {
+            "winner_index": winner_index,
+            "winner_candidate": winner["candidate"],
+            "scores": normalized_scores,
+            "reasoning": reasoning.strip(),
+        },
+        None,
+    )
+
+
+def _judge_best_of_n(
+    results: List[Dict[str, Any]],
+    task_list: List[Dict[str, Any]],
+    criteria: str,
+) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Compare successful anonymous candidates without risking their results."""
+    candidates: List[Dict[str, Any]] = []
+    for entry in results:
+        task_index = entry.get("task_index")
+        summary = entry.get("summary")
+        if (
+            type(task_index) is int
+            and entry.get("status") == "completed"
+            and isinstance(summary, str)
+            and summary.strip()
+        ):
+            candidates.append(
+                {
+                    "candidate": _best_of_n_candidate_label(task_index),
+                    "task_index": task_index,
+                    "summary": summary.strip(),
+                }
+            )
+    candidates.sort(key=lambda candidate: candidate["task_index"])
+
+    evaluation_base: Dict[str, Any] = {"criteria": criteria}
+    if not candidates:
+        return (
+            {
+                **evaluation_base,
+                "status": "skipped",
+                "reasoning": "No successful candidates were available to judge.",
+            },
+            None,
+        )
+    if len(candidates) == 1:
+        candidate = candidates[0]
+        winner = {
+            "task_index": candidate["task_index"],
+            "candidate": candidate["candidate"],
+        }
+        return (
+            {
+                **evaluation_base,
+                "status": "skipped",
+                "winner_index": candidate["task_index"],
+                "winner_candidate": candidate["candidate"],
+                "reasoning": (
+                    "Only one successful candidate was available; no comparative "
+                    "judge call was needed."
+                ),
+            },
+            winner,
+        )
+
+    fallback_candidate = candidates[0]
+    fallback_winner = {
+        "task_index": fallback_candidate["task_index"],
+        "candidate": fallback_candidate["candidate"],
+    }
+
+    original_task = str(task_list[0].get("goal", "")).strip()
+    candidate_blocks = []
+    for candidate in candidates:
+        candidate_blocks.append(
+            f"Candidate {candidate['candidate']} "
+            f"(task_index={candidate['task_index']}):\n{candidate['summary']}"
+        )
+    user_prompt = (
+        f"ORIGINAL TASK:\n{original_task}\n\n"
+        f"EVALUATION CRITERIA:\n{criteria}\n\n"
+        "ANONYMOUS CANDIDATES:\n\n"
+        + "\n\n".join(candidate_blocks)
+    )
+
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task="delegate_judge",
+            messages=[
+                {"role": "system", "content": _BEST_OF_N_JUDGE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+            max_tokens=2048,
+        )
+        raw = response.choices[0].message.content or ""
+    except Exception as exc:
+        logger.warning(
+            "delegate_task Best-of-N judge call failed; selecting the first "
+            "completed candidate (%s) as fallback: %s",
+            fallback_candidate["candidate"],
+            exc,
+        )
+        return (
+            {
+                **evaluation_base,
+                "status": "failed",
+                "error": f"Judge call failed: {type(exc).__name__}",
+                "fallback": "first_completed_candidate",
+                "winner_index": fallback_candidate["task_index"],
+                "winner_candidate": fallback_candidate["candidate"],
+            },
+            fallback_winner,
+        )
+
+    verdict, parse_error = _parse_best_of_n_judge_response(raw, candidates)
+    if verdict is None:
+        logger.warning(
+            "delegate_task Best-of-N judge response was invalid; selecting "
+            "the first completed candidate (%s) as fallback: %s",
+            fallback_candidate["candidate"],
+            parse_error or "unknown parse error",
+        )
+        return (
+            {
+                **evaluation_base,
+                "status": "failed",
+                "error": parse_error or "Judge returned an invalid response.",
+                "fallback": "first_completed_candidate",
+                "winner_index": fallback_candidate["task_index"],
+                "winner_candidate": fallback_candidate["candidate"],
+            },
+            fallback_winner,
+        )
+
+    winner = {
+        "task_index": verdict["winner_index"],
+        "candidate": verdict["winner_candidate"],
+    }
+    return {**evaluation_base, "status": "completed", **verdict}, winner
+
+
 # Placeholder shapes for batch goal validation: bare 'TODO', bare 'task N'
 # labels, or goals still carrying unexpanded template markers.
 #
@@ -3602,6 +3863,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
+    judge: Optional[Union[bool, str]] = None,
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
@@ -3643,6 +3905,10 @@ def delegate_task(
         return tool_error(
             f"Unknown action '{action}'. Use spawn (default), list, steer, or stop."
         )
+
+    judge_criteria, judge_error = _normalize_best_of_n_judge(judge)
+    if judge_error:
+        return tool_error(judge_error)
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
@@ -3758,6 +4024,15 @@ def delegate_task(
         batch_error = _validate_batch_tasks(task_list)
         if batch_error:
             return tool_error(batch_error)
+        if judge_criteria:
+            normalized_goals = {
+                " ".join(str(task.get("goal", "")).split()) for task in task_list
+            }
+            if len(normalized_goals) != 1:
+                return tool_error(
+                    "Best-of-N judge requires every batch candidate to use the "
+                    "same goal. Omit judge when delegating unrelated tasks."
+                )
 
     # T1-24: coerce/validate optional per-task output_schema up front so a
     # malformed schema fails the whole call loudly instead of spawning
@@ -4047,6 +4322,13 @@ def delegate_task(
         # Covers both the single-task and batch paths. See PR #9126.
         _finalize_child_results(results, task_list, children, parent_agent)
 
+        evaluation = None
+        winner = None
+        if judge_criteria:
+            evaluation, winner = _judge_best_of_n(
+                results, task_list, judge_criteria
+            )
+
         total_duration = round(time.monotonic() - overall_start, 2)
 
         # Close out the live transcripts: terminal marker per task + manifest
@@ -4075,6 +4357,10 @@ def delegate_task(
         }
         if live_paths:
             combined["live_transcripts"] = list(live_paths)
+        if evaluation is not None:
+            combined["evaluation"] = evaluation
+            if winner is not None:
+                combined["winner"] = winner
         return combined
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
@@ -4810,6 +5096,18 @@ DELEGATE_TASK_SCHEMA = {
                     "(same semantics as tasks[].output_schema)."
                 ),
             },
+            "judge": {
+                "type": "string",
+                "maxLength": _MAX_BEST_OF_N_CRITERIA_LENGTH,
+                "description": (
+                    "Optional Best-of-N evaluation criteria for batch tasks "
+                    "that share the same goal. Use 'default' for correctness, "
+                    "completeness, robustness, and maintainability. The judge "
+                    "compares anonymous Candidate A/B/C outputs, returns "
+                    "structured scores and a winner, and never discards "
+                    "successful child results if evaluation fails."
+                ),
+            },
             "background": {
                 "type": "boolean",
                 "description": (
@@ -4915,6 +5213,7 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
+        judge=args.get("judge"),
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),

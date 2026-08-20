@@ -22,6 +22,9 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
     _get_max_concurrent_children,
+    _judge_best_of_n,
+    _normalize_best_of_n_judge,
+    _parse_best_of_n_judge_response,
     _load_config,
     delegate_task,
     _build_child_agent,
@@ -65,6 +68,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
+        self.assertEqual(props["judge"]["type"], "string")
+        self.assertEqual(props["judge"]["maxLength"], 500)
         # toolsets is intentionally NOT exposed to the model — subagents always
         # inherit the parent's toolsets. Letting the model name toolsets was a
         # capability-selection surface the model should not control.
@@ -264,6 +269,300 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("depth limit", result["error"].lower())
 
 
+class TestBestOfNJudge(unittest.TestCase):
+    _GOAL = "Implement a robust cache invalidation strategy"
+
+    @staticmethod
+    def _response(payload):
+        response = MagicMock()
+        response.choices[0].message.content = (
+            payload if isinstance(payload, str) else json.dumps(payload)
+        )
+        return response
+
+    @staticmethod
+    def _result(task_index, summary, *, status="completed", **metadata):
+        return {
+            "task_index": task_index,
+            "status": status,
+            "summary": summary,
+            **metadata,
+        }
+
+    def test_normalizes_default_and_custom_criteria(self):
+        default, error = _normalize_best_of_n_judge(True)
+        self.assertIsNone(error)
+        self.assertIn("correctness", default.lower())
+        custom, error = _normalize_best_of_n_judge(" Prefer simpler code ")
+        self.assertIsNone(error)
+        self.assertEqual(custom, "Prefer simpler code")
+
+        max_length, error = _normalize_best_of_n_judge("x" * 500)
+        self.assertIsNone(error)
+        self.assertEqual(len(max_length), 500)
+
+        too_long, error = _normalize_best_of_n_judge("x" * 501)
+        self.assertIsNone(too_long)
+        self.assertIn("at most 500 characters", error)
+
+    def test_success_calls_judge_once_with_blind_stable_candidates(self):
+        results = [
+            self._result(2, "third answer", model="secret-model-c", provider="secret-c"),
+            self._result(0, "first answer", model="secret-model-a", provider="secret-a"),
+            self._result(1, "second answer", model="secret-model-b", provider="secret-b"),
+        ]
+        tasks = [{"goal": self._GOAL} for _ in results]
+        verdict = {
+            "winner_index": 1,
+            "scores": [
+                {"candidate": "A", "score": 70},
+                {"candidate": "B", "score": 95},
+                {"candidate": "C", "score": 80},
+            ],
+            "reasoning": "Candidate B is the most robust.",
+        }
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=self._response(verdict),
+        ) as call:
+            evaluation, winner = _judge_best_of_n(
+                results, tasks, "Prefer robust and maintainable code"
+            )
+
+        call.assert_called_once()
+        self.assertEqual(evaluation["status"], "completed")
+        self.assertEqual(evaluation["winner_index"], 1)
+        self.assertEqual(winner, {"task_index": 1, "candidate": "B"})
+        self.assertEqual(
+            [score["candidate"] for score in evaluation["scores"]],
+            ["A", "B", "C"],
+        )
+        request = call.call_args.kwargs
+        self.assertEqual(request["task"], "delegate_judge")
+        prompt = request["messages"][1]["content"]
+        self.assertIn(self._GOAL, prompt)
+        self.assertIn("Prefer robust and maintainable code", prompt)
+        self.assertLess(prompt.index("Candidate A"), prompt.index("Candidate B"))
+        self.assertLess(prompt.index("Candidate B"), prompt.index("Candidate C"))
+        self.assertNotIn("secret-model", prompt)
+        self.assertNotIn("secret-a", prompt)
+        self.assertNotIn("secret-b", prompt)
+        self.assertNotIn("secret-c", prompt)
+
+    def test_malformed_empty_and_out_of_range_verdicts_use_stable_fallback(self):
+        results = [self._result(0, "A"), self._result(1, "B")]
+        tasks = [{"goal": self._GOAL}, {"goal": self._GOAL}]
+        responses = (
+            "not json",
+            "",
+            {
+                "winner_index": 7,
+                "scores": [
+                    {"candidate": "A", "score": 50},
+                    {"candidate": "B", "score": 60},
+                ],
+                "reasoning": "invalid winner",
+            },
+        )
+        original = json.loads(json.dumps(results))
+        for response in responses:
+            with self.subTest(response=response):
+                with patch(
+                    "agent.auxiliary_client.call_llm",
+                    return_value=self._response(response),
+                ):
+                    evaluation, winner = _judge_best_of_n(
+                        results, tasks, "Select the best answer"
+                    )
+                self.assertEqual(evaluation["status"], "failed")
+                self.assertEqual(evaluation["fallback"], "first_completed_candidate")
+                self.assertEqual(evaluation["winner_index"], 0)
+                self.assertEqual(winner, {"task_index": 0, "candidate": "A"})
+                self.assertEqual(results, original)
+
+    def test_provider_error_preserves_results(self):
+        results = [self._result(0, "A"), self._result(1, "B")]
+        tasks = [{"goal": self._GOAL}, {"goal": self._GOAL}]
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            side_effect=TimeoutError("judge timeout"),
+        ):
+            evaluation, winner = _judge_best_of_n(
+                results, tasks, "Select the best answer"
+            )
+        self.assertEqual(evaluation["status"], "failed")
+        self.assertIn("TimeoutError", evaluation["error"])
+        self.assertEqual(evaluation["fallback"], "first_completed_candidate")
+        self.assertEqual(winner, {"task_index": 0, "candidate": "A"})
+        self.assertEqual([entry["summary"] for entry in results], ["A", "B"])
+
+    def test_failed_candidate_is_excluded_without_renumbering(self):
+        results = [
+            self._result(0, None, status="failed", model="failed-model"),
+            self._result(1, "second answer"),
+            self._result(2, "third answer"),
+        ]
+        tasks = [{"goal": self._GOAL} for _ in results]
+        verdict = {
+            "winner_index": 2,
+            "scores": [
+                {"candidate": "B", "score": 80},
+                {"candidate": "C", "score": 90},
+            ],
+            "reasoning": "Candidate C is stronger.",
+        }
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=self._response(verdict),
+        ) as call:
+            evaluation, winner = _judge_best_of_n(
+                results, tasks, "Select the best answer"
+            )
+        prompt = call.call_args.kwargs["messages"][1]["content"]
+        self.assertNotIn("Candidate A", prompt)
+        self.assertIn("Candidate B", prompt)
+        self.assertIn("Candidate C", prompt)
+        self.assertEqual(evaluation["winner_index"], 2)
+        self.assertEqual(winner["candidate"], "C")
+
+    def test_all_failed_skips_judge(self):
+        results = [
+            self._result(0, None, status="failed"),
+            self._result(1, None, status="error"),
+        ]
+        tasks = [{"goal": self._GOAL}, {"goal": self._GOAL}]
+        with patch("agent.auxiliary_client.call_llm") as call:
+            evaluation, winner = _judge_best_of_n(
+                results, tasks, "Select the best answer"
+            )
+        call.assert_not_called()
+        self.assertEqual(evaluation["status"], "skipped")
+        self.assertIsNone(winner)
+
+    def test_single_success_is_selected_without_judge_call(self):
+        results = [
+            self._result(0, None, status="failed"),
+            self._result(1, "only successful answer"),
+        ]
+        tasks = [{"goal": self._GOAL}, {"goal": self._GOAL}]
+        with patch("agent.auxiliary_client.call_llm") as call:
+            evaluation, winner = _judge_best_of_n(
+                results, tasks, "Select the best answer"
+            )
+        call.assert_not_called()
+        self.assertEqual(evaluation["status"], "skipped")
+        self.assertEqual(winner, {"task_index": 1, "candidate": "B"})
+
+    def test_parser_rejects_incomplete_or_inconsistent_scores(self):
+        candidates = [
+            {"candidate": "A", "task_index": 0, "summary": "A"},
+            {"candidate": "B", "task_index": 1, "summary": "B"},
+        ]
+        payloads = (
+            {
+                "winner_index": 1,
+                "scores": [{"candidate": "B", "score": 90}],
+                "reasoning": "missing A",
+            },
+            {
+                "winner_index": 0,
+                "scores": [
+                    {"candidate": "A", "score": 10},
+                    {"candidate": "B", "score": 90},
+                ],
+                "reasoning": "winner is not highest",
+            },
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                verdict, error = _parse_best_of_n_judge_response(
+                    json.dumps(payload), candidates
+                )
+                self.assertIsNone(verdict)
+                self.assertTrue(error)
+
+    def test_no_judge_keeps_legacy_result_shape(self):
+        parent = _make_mock_parent(depth=0)
+        result_entries = [
+            self._result(0, "first answer"),
+            self._result(1, "second answer"),
+        ]
+        with (
+            patch("tools.delegate_tool._run_single_child", side_effect=result_entries),
+            patch("tools.delegate_tool._judge_best_of_n") as judge_call,
+        ):
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": self._GOAL}, {"goal": self._GOAL}],
+                    parent_agent=parent,
+                )
+            )
+        judge_call.assert_not_called()
+        self.assertNotIn("evaluation", result)
+        self.assertNotIn("winner", result)
+
+    def test_background_batch_completion_contains_evaluation(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-session"
+        captured = {}
+
+        def fake_dispatch(**kwargs):
+            captured["completion"] = kwargs["runner"]()
+            return {"status": "dispatched", "delegation_id": "judge-batch"}
+
+        result_entries = [
+            self._result(0, "first answer"),
+            self._result(1, "second answer"),
+        ]
+        evaluation = {
+            "status": "completed",
+            "criteria": "Select the best answer",
+            "winner_index": 1,
+        }
+        with (
+            patch("tools.delegate_tool._run_single_child", side_effect=result_entries),
+            patch(
+                "tools.delegate_tool._judge_best_of_n",
+                return_value=(evaluation, {"task_index": 1, "candidate": "B"}),
+            ) as judge_call,
+            patch(
+                "tools.async_delegation.dispatch_async_delegation_batch",
+                side_effect=fake_dispatch,
+            ),
+            patch("gateway.session_context.async_delivery_supported", return_value=True),
+        ):
+            dispatch_result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": self._GOAL}, {"goal": self._GOAL}],
+                    judge="Select the best answer",
+                    background=True,
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertEqual(dispatch_result["status"], "dispatched")
+        judge_call.assert_called_once()
+        self.assertEqual(captured["completion"]["evaluation"], evaluation)
+        self.assertEqual(captured["completion"]["winner"]["task_index"], 1)
+
+    def test_judge_rejects_unrelated_batch_goals_before_spawn(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as agent:
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "Implement a robust cache invalidation strategy"},
+                        {"goal": "Write comprehensive database migration tests"},
+                    ],
+                    judge="Select the best answer",
+                    parent_agent=parent,
+                )
+            )
+        agent.assert_not_called()
+        self.assertIn("same goal", result["error"])
+
+
+class TestDelegateTaskRuntimeCredentials(unittest.TestCase):
     def test_child_inherits_runtime_credentials(self):
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://chatgpt.com/backend-api/codex"
@@ -1383,6 +1682,59 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertEqual(captured["goal"], "test")
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
+
+    def test_judge_is_forwarded_from_model_dispatch(self):
+        import run_agent
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "tasks": [
+                        {"goal": "Implement a robust cache invalidation strategy"},
+                        {"goal": "Implement a robust cache invalidation strategy"},
+                    ],
+                    "judge": "Prefer correctness and maintainability",
+                },
+            )
+
+        self.assertEqual(
+            captured["judge"], "Prefer correctness and maintainability"
+        )
+
+    def test_judge_is_forwarded_from_registry_fallback(self):
+        from tools.registry import registry
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        entry = registry.get_entry("delegate_task")
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            entry.handler(
+                {
+                    "tasks": [
+                        {"goal": "Implement a robust cache invalidation strategy"},
+                        {"goal": "Implement a robust cache invalidation strategy"},
+                    ],
+                    "judge": "Prefer correctness and maintainability",
+                },
+                parent_agent=parent,
+            )
+
+        self.assertEqual(
+            captured["judge"], "Prefer correctness and maintainability"
+        )
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""

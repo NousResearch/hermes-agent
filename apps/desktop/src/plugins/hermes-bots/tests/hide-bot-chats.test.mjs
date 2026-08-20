@@ -175,9 +175,11 @@ test('hideOwnedBotSessions chains the ownership sweep and survives its absence o
   assert.match(source, /return Promise\.all\(\[known, sweepBotProfileSessions\(\)\.catch\(\(\) => undefined\)\]\)/)
 })
 
-test('the Bots session browser lists with include_hidden', () => {
-  // The one session.list consumer that must see the always-hidden rows.
-  // (Canonical-chat recovery now goes through profiles.list
+test('the canonical-chat adoption scan lists with include_hidden', () => {
+  // The one session.list consumer that must see the always-hidden rows:
+  // findExistingCanonicalChat (adopt-before-mint) — canonical Bot Chats are
+  // born hidden, so a visible-only scan would miss the very row whose
+  // existence forbids minting. (Pin recovery goes through profiles.list
   // preferred_session_ids, whose resolver already sees hidden rows.)
-  assert.match(source, /session\.list', \{ profile: botName, limit: PROFILE_SESSION_LIST_LIMIT, include_hidden: true \}/)
+  assert.match(source, /include_hidden: true\s*\}\)\s*const rows = res\?\.sessions \?\? \[\]\s*return rows\.find\(row => isCanonicalBotChatHistory\(row\)\)/)
 })

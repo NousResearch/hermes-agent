@@ -195,3 +195,146 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+# ---------------------------------------------------------------------------
+# gmail reply/send MIME building (_build_reply_mime / _build_send_mime)
+# ---------------------------------------------------------------------------
+
+OWN_ADDRESS = "me@example.com"
+
+
+def _reply_headers(**overrides):
+    base = {
+        "from": "Support Desk <support@example.com>",
+        "to": f"Me <{OWN_ADDRESS}>",
+        "subject": "Order 1234",
+        "message-id": "<abc@mail.example.com>",
+    }
+    base.update(overrides)
+    return base
+
+
+def _send_args(api_module, **overrides):
+    base = dict(to="user@example.com", subject="Hi", body="Hello", html=False, cc="", from_header="")
+    base.update(overrides)
+    return api_module.argparse.Namespace(**base)
+
+
+def _unfolded_to_line(message):
+    wire = message.as_bytes().replace(b"\r\n ", b" ").replace(b"\r\n\t", b" ")
+    lines = [line for line in wire.split(b"\r\n") if line.lower().startswith(b"to:")]
+    assert lines, wire
+    return lines[0]
+
+
+def test_api_reply_targets_from_of_external_sender(api_module):
+    msg = api_module._build_reply_mime(_reply_headers(), "body", OWN_ADDRESS)
+    assert [a.addr_spec for a in msg["To"].addresses] == ["support@example.com"]
+
+
+def test_api_reply_to_own_sent_message_targets_original_recipients(api_module):
+    """Replying to your own sent message must address the counterparty, not yourself."""
+    msg = api_module._build_reply_mime(
+        _reply_headers(**{
+            "from": f"Me <{OWN_ADDRESS}>",
+            "to": "Support Desk <support@example.com>",
+        }),
+        "body",
+        OWN_ADDRESS,
+    )
+    assert [a.addr_spec for a in msg["To"].addresses] == ["support@example.com"]
+
+
+def test_api_reply_prefers_reply_to_header(api_module):
+    msg = api_module._build_reply_mime(
+        _reply_headers(**{"reply-to": "Case Desk <cases@example.com>"}), "body", OWN_ADDRESS
+    )
+    assert [a.addr_spec for a in msg["To"].addresses] == ["cases@example.com"]
+
+
+def test_api_reply_non_ascii_display_name_keeps_addr_spec_plain(api_module):
+    """Gmail rejects address headers where an RFC 2047 encoded-word spans the
+    whole value ("Invalid To header") — only the display name may be encoded."""
+    msg = api_module._build_reply_mime(
+        _reply_headers(**{"from": '"Jörg Müller" <jorg@example.de>'}), "body", OWN_ADDRESS
+    )
+    to_line = _unfolded_to_line(msg)
+    assert b"<jorg@example.de>" in to_line
+    assert msg["To"].addresses[0].display_name == "Jörg Müller"
+
+
+def test_api_reply_without_recipient_raises(api_module):
+    with pytest.raises(RuntimeError):
+        api_module._build_reply_mime(
+            _reply_headers(**{"from": "", "to": "", "reply-to": ""}), "body", OWN_ADDRESS
+        )
+
+
+def test_api_reply_subject_and_threading_headers(api_module):
+    msg = api_module._build_reply_mime(_reply_headers(), "body", OWN_ADDRESS)
+    assert str(msg["Subject"]) == "Re: Order 1234"
+    assert str(msg["In-Reply-To"]) == "<abc@mail.example.com>"
+    assert str(msg["References"]) == "<abc@mail.example.com>"
+
+    already = api_module._build_reply_mime(_reply_headers(subject="Re: x"), "body", OWN_ADDRESS)
+    assert str(already["Subject"]) == "Re: x"
+
+
+def test_api_send_non_ascii_display_name_keeps_addr_spec_plain(api_module):
+    msg = api_module._build_send_mime(_send_args(api_module, to='"Jörg Müller" <jorg@example.de>'))
+    to_line = _unfolded_to_line(msg)
+    assert b"<jorg@example.de>" in to_line
+    assert msg["To"].addresses[0].display_name == "Jörg Müller"
+
+
+def test_api_send_multiple_recipients_and_cc(api_module):
+    msg = api_module._build_send_mime(_send_args(
+        api_module,
+        to='a@example.com, "Bo Ärger" <b@example.de>',
+        cc="c@example.com",
+    ))
+    assert [a.addr_spec for a in msg["To"].addresses] == ["a@example.com", "b@example.de"]
+    assert [a.addr_spec for a in msg["Cc"].addresses] == ["c@example.com"]
+
+
+def test_api_send_html_subtype(api_module):
+    msg = api_module._build_send_mime(_send_args(api_module, body="<h1>x</h1>", html=True))
+    assert msg.get_content_type() == "text/html"
+
+
+def test_api_send_invalid_to_raises(api_module):
+    with pytest.raises(RuntimeError):
+        api_module._build_send_mime(_send_args(api_module, to="not-an-address"))
+
+
+def test_api_gmail_reply_dry_run_resolves_own_message(api_module, capsys):
+    """--dry-run resolves the recipient (via getProfile) and prints headers
+    without ever invoking messages.send."""
+
+    def fake_run_gws(parts, params=None, body=None):
+        if parts == ["gmail", "users", "messages", "get"]:
+            assert "To" in params["metadataHeaders"]
+            assert "Reply-To" in params["metadataHeaders"]
+            return {
+                "threadId": "t1",
+                "payload": {"headers": [
+                    {"name": "From", "value": f"Me <{OWN_ADDRESS}>"},
+                    {"name": "To", "value": "Shop <shop@example.com>"},
+                    {"name": "Subject", "value": "Order 1234"},
+                    {"name": "Message-ID", "value": "<x@example.com>"},
+                ]},
+            }
+        if parts == ["gmail", "users", "getProfile"]:
+            assert params == {"userId": "me"}
+            return {"emailAddress": OWN_ADDRESS}
+        raise AssertionError(f"unexpected gws call in dry-run: {parts}")
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(message_id="m1", body="ping", from_header="", dry_run=True)
+    api_module.gmail_reply(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "dry-run"
+    assert out["threadId"] == "t1"
+    assert out["headers"]["To"] == "Shop <shop@example.com>"

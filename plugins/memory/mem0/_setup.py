@@ -188,6 +188,22 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     return oss_config, env_writes
 
 
+def _env_line_safe(value) -> str:
+    """Neutralize characters that would break ``.env`` line structure.
+
+    ``.env`` is strictly line-oriented (one ``KEY=VALUE`` per line) and values
+    are interpolated straight into that line. A pasted secret with an embedded
+    CR/LF spills onto a new line and is re-parsed as a *separate* ``KEY=VALUE``
+    entry on the next read, so a value carrying ``\\nOPENAI_API_KEY=...``
+    silently overwrites an unrelated provider key. Strip every separator
+    ``str.splitlines()`` recognizes, plus NUL, so a value can only occupy its
+    own line. Mirrors ``hermes_cli.memory_setup``, the openviking writer and
+    ``config.save_env_value``.
+    """
+    text = value if isinstance(value, str) else str(value)
+    return "".join(text.replace("\x00", "").splitlines())
+
+
 def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     """Append or update env vars in .env file."""
     env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,13 +223,13 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     for line in existing_lines:
         key_match = line.split("=", 1)[0].strip() if "=" in line and not line.startswith("#") else None
         if key_match and key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
+            new_lines.append(f"{key_match}={_env_line_safe(env_writes[key_match])}")
             updated_keys.add(key_match)
         else:
             new_lines.append(line)
     for k, v in env_writes.items():
         if k not in updated_keys:
-            new_lines.append(f"{k}={v}")
+            new_lines.append(f"{k}={_env_line_safe(v)}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 

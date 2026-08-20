@@ -71,10 +71,13 @@ class NousProfile(ProviderProfile):
 
         Reasoning-mandatory routes answer ``reasoning: {enabled: false}``
         with HTTP 400 ("Reasoning is mandatory for this model"), so the
-        catalog's ``mandatory`` flag decides. Cache-only, and an unknown
-        model (catalog cold, unlisted, or unreachable) also answers True:
-        a cold first turn errs toward the old omit-everything behavior
-        rather than risking a 400.
+        catalog decides. Cache-only, and an unknown model (catalog cold,
+        unlisted, or unreachable) also answers True: a cold first turn errs
+        toward the old omit-everything behavior rather than risking a 400.
+
+        A route the catalog says takes no reasoning parameter at all is
+        treated the same way — sending it a disable is sending a parameter
+        the Portal has told us it doesn't accept.
         """
         try:
             from hermes_cli.models import (
@@ -87,6 +90,8 @@ class NousProfile(ProviderProfile):
                 warm_nous_reasoning_caps_async()
                 return True
         except Exception:
+            return True
+        if not caps.get("supports_reasoning"):
             return True
         return bool(caps.get("mandatory"))
 

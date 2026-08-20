@@ -16,15 +16,12 @@ import hermes_cli.models as models_mod
 def _patch_catalog(monkeypatch, caps_by_model, *, provider="nous"):
     """Point the Nous/OpenRouter catalog readers at a fixed capability map."""
     monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda model: False)
+    monkeypatch.setattr(models_mod, "warm_nous_reasoning_caps_async", lambda: None)
+    monkeypatch.setattr(models_mod, "warm_openrouter_reasoning_caps_async", lambda: None)
     monkeypatch.setattr(
-        models_mod, "warm_nous_reasoning_caps_async", lambda: None, raising=False
-    )
-    monkeypatch.setattr(
-        models_mod, "warm_openrouter_reasoning_caps_async", lambda: None, raising=False
-    )
-    reader = f"{provider}_model_reasoning_capabilities"
-    monkeypatch.setattr(
-        models_mod, reader, lambda model, **kw: caps_by_model.get(model), raising=False
+        models_mod,
+        f"{provider}_model_reasoning_capabilities",
+        lambda model, **kw: caps_by_model.get(model),
     )
 
 
@@ -60,6 +57,25 @@ def test_advertised_efforts_never_reach_the_picker(monkeypatch):
     inv._apply_capabilities(rows)
 
     assert "supported_efforts" not in rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
+
+
+def test_non_reasoning_route_offers_no_reasoning_controls(monkeypatch):
+    """The serving provider's catalog outranks the models.dev inference.
+
+    models.dev defaults an uncatalogued model to "has reasoning"; when the
+    aggregator actually serving the route says it takes no reasoning
+    parameter, that is the definitive answer and the picker shows no
+    reasoning controls at all — so there is no disable to describe either.
+    """
+    _patch_catalog(monkeypatch, {
+        "moonshotai/kimi-k3-instruct": {"supports_reasoning": False},
+    })
+    rows = [{"slug": "nous", "models": ["moonshotai/kimi-k3-instruct"]}]
+    inv._apply_capabilities(rows)
+
+    caps = rows[0]["capabilities"]["moonshotai/kimi-k3-instruct"]
+    assert caps["reasoning"] is False
+    assert "can_disable_reasoning" not in caps
 
 
 def test_reasoning_mandatory_route_cannot_disable(monkeypatch):
@@ -127,12 +143,12 @@ def test_openrouter_uses_its_own_catalog(monkeypatch):
 def test_catalog_failure_never_breaks_the_picker(monkeypatch):
     """A raising catalog reader degrades to "unknown", not to a broken payload."""
     monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda model: False)
-    monkeypatch.setattr(models_mod, "warm_nous_reasoning_caps_async", lambda: None, raising=False)
+    monkeypatch.setattr(models_mod, "warm_nous_reasoning_caps_async", lambda: None)
 
     def _boom(model, **kw):
         raise RuntimeError("catalog exploded")
 
-    monkeypatch.setattr(models_mod, "nous_model_reasoning_capabilities", _boom, raising=False)
+    monkeypatch.setattr(models_mod, "nous_model_reasoning_capabilities", _boom)
     rows = [{"slug": "nous", "models": ["deepseek/deepseek-v4-pro"]}]
     inv._apply_capabilities(rows)
 

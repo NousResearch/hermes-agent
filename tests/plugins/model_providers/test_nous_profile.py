@@ -49,6 +49,8 @@ def portal_catalog(monkeypatch):
             "supported_efforts": None,
             "mandatory": True,
         },
+        # Catalogued, and it takes no reasoning parameter at all.
+        "moonshotai/kimi-k3-instruct": {"supports_reasoning": False},
     })
 
 
@@ -80,6 +82,20 @@ class TestNousReasoningWireShape:
             reasoning_config={"enabled": False},
             supports_reasoning=True,
             model="private/unlisted-route",
+        )
+        assert "reasoning" not in extra_body
+
+    def test_disable_dropped_for_non_reasoning_route(self, nous_profile, portal_catalog):
+        """A route the catalog says takes no reasoning parameter gets none.
+
+        Hermes' own ``supports_reasoning`` can disagree with the Portal about a
+        given route; when it does, the catalog of the service actually serving
+        the model wins, and we don't send it a parameter it doesn't accept.
+        """
+        extra_body, _ = nous_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            supports_reasoning=True,
+            model="moonshotai/kimi-k3-instruct",
         )
         assert "reasoning" not in extra_body
 

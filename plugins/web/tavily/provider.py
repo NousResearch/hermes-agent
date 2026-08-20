@@ -52,11 +52,13 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
     base_url = get_provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
     payload = dict(payload)  # don't mutate caller's dict
-    payload["api_key"] = api_key
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
 
-    response = httpx.post(url, json=payload, timeout=60)
+    # Tavily deprecated the in-body ``api_key`` field; the key must now be
+    # sent as a Bearer token in the Authorization header.
+    headers = {"Authorization": f"Bearer {api_key}"}
+    response = httpx.post(url, json=payload, headers=headers, timeout=60)
     response.raise_for_status()
     return response.json()
 

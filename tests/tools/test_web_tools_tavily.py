@@ -29,8 +29,12 @@ class TestTavilyRequest:
             with pytest.raises(ValueError, match="TAVILY_API_KEY"):
                 _tavily_request("search", {"query": "test"})
 
-    def test_posts_with_api_key_in_body(self):
-        """api_key is injected into the JSON payload."""
+    def test_sends_api_key_as_bearer_header(self):
+        """The API key is sent as an Authorization: Bearer header.
+
+        Tavily deprecated the in-body ``api_key`` field — requests carrying
+        only the body field are rejected with 401.
+        """
         mock_response = MagicMock()
         mock_response.json.return_value = {"results": []}
         mock_response.raise_for_status = MagicMock()
@@ -43,7 +47,9 @@ class TestTavilyRequest:
                 mock_post.assert_called_once()
                 call_kwargs = mock_post.call_args
                 payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-                assert payload["api_key"] == "tvly-test-key"
+                headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers") or {}
+                assert headers.get("Authorization") == "Bearer tvly-test-key"
+                assert "api_key" not in payload
                 assert payload["query"] == "hello"
                 assert "api.tavily.com/search" in call_kwargs.args[0]
 

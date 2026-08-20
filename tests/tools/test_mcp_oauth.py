@@ -1112,3 +1112,34 @@ def test_humanize_non_registration_403_passthrough():
         )
         is None
     )
+
+
+def test_humanize_404_registration_error_guidance():
+    """A 404 on the registration endpoint surfaces pre-registered-client
+    guidance instead of the raw SDK traceback (GH#78190 — Google's hosted
+    Gmail/Drive MCP servers answer the SDK's guessed /register with 404)."""
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    msg = humanize_oauth_registration_error(
+        "gmail",
+        "Registration failed: 404 <html>Error 404 (Not Found)!!1</html>",
+        server_url="https://gmailmcp.googleapis.com/mcp/v1",
+    )
+    assert msg is not None
+    assert "does not support automatic client registration" in msg
+    assert "client_id" in msg
+    assert "hermes mcp login gmail" in msg
+
+
+def test_humanize_404_non_registration_passthrough():
+    """A 404 that has nothing to do with registration stays raw."""
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    assert (
+        humanize_oauth_registration_error(
+            "srv",
+            RuntimeError("HTTP 404: no such tool"),
+            server_url="https://example.com/mcp",
+        )
+        is None
+    )

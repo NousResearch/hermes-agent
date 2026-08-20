@@ -111,6 +111,7 @@ def _make_hermes_provider_class() -> Optional[type]:
     """
     try:
         from mcp.client.auth.oauth2 import OAuthClientProvider
+        from mcp.client.auth import OAuthRegistrationError
     except ImportError:  # pragma: no cover — SDK required in CI
         return None
 
@@ -501,6 +502,75 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
+        async def _maybe_reject_fabricated_registration(self, outgoing: Any) -> None:
+            """Refuse to send the SDK's *fabricated* dynamic client registration.
+
+            When the authorization server advertises no ``registration_endpoint``
+            (RFC 8414 ASM) and no ``client_metadata_url``, the MCP SDK's
+            ``create_client_registration_request`` guesses
+            ``POST {server_origin}/register`` (mcp/client/auth/utils.py). Providers
+            that don't support RFC 7591 DCR — Google's hosted Gmail/Drive MCP
+            servers, Atlassian, and similar — answer that guessed URL with an
+            opaque 404 (``OAuthRegistrationError: Registration failed: 404``), and
+            the gateway burns the reconnect ladder on an unrecoverable failure.
+
+            The supported path for such providers is a pre-registered client
+            (``oauth.client_id`` / ``oauth.client_secret`` in config.yaml) — the
+            same guidance the CLI login path already gives
+            (``hermes_cli/mcp_config.py``). Raise instead of sending the request
+            so the user sees the actionable message, not a 404 traceback.
+
+            Conservative by construction — fires ONLY when both hold:
+
+              * the outgoing request is a POST to the exact URL the SDK would
+                fabricate from the server origin (``urljoin(origin, "/register")``),
+                and
+              * the discovered ASM has no ``registration_endpoint``.
+
+            Servers that advertise a real RFC 7591 endpoint — even one hosted at
+            ``origin/register`` — pass through untouched.
+            """
+            import httpx  # local import: httpx is an MCP SDK dependency
+            from urllib.parse import urljoin
+
+            if not isinstance(outgoing, httpx.Request):
+                return
+            if outgoing.method != "POST":
+                return
+            meta = getattr(self.context, "oauth_metadata", None)
+            if meta is not None and getattr(meta, "registration_endpoint", None):
+                return
+            # Build the expected URL as an httpx.URL so component semantics
+            # (scheme/host/port/path, default-port handling) are identical on
+            # both sides of the comparison — a urlsplit() counterpart would
+            # diverge if httpx ever fills default ports. Fail-open if the SDK
+            # ever changes how it builds the URL: the old 404 behaviour
+            # simply returns.
+            expected = httpx.URL(
+                urljoin(
+                    self.context.get_authorization_base_url(self.context.server_url),
+                    "/register",
+                )
+            )
+            if (
+                outgoing.url.scheme != expected.scheme
+                or outgoing.url.host != expected.host
+                or outgoing.url.port != expected.port
+                or outgoing.url.path != expected.path
+            ):
+                return
+            raise OAuthRegistrationError(
+                f"MCP OAuth '{self._hermes_server_name}': this provider does not "
+                "support automatic client registration (its authorization server "
+                "advertises no registration_endpoint), so the SDK's fallback "
+                f"would POST {str(expected)} and fail (Google's hosted "
+                "Gmail/Drive MCP servers and similar providers return 404 for "
+                "it). Create an OAuth client for this provider and add it under "
+                "config.yaml mcp_servers.<name>.oauth (client_id, client_secret), "
+                "then run "
+                f"`hermes mcp login {self._hermes_server_name}`."
+            )
+
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with
@@ -534,6 +604,9 @@ def _make_hermes_provider_class() -> Optional[type]:
             try:
                 outgoing = await inner.__anext__()
                 while True:
+                    # Refuse the SDK's fabricated DCR request (ASM without a
+                    # registration_endpoint) before it hits the network.
+                    await self._maybe_reject_fabricated_registration(outgoing)
                     incoming = yield outgoing
                     # Sniff the response for a dead-client-registration signal
                     # before handing it back to the SDK (best-effort, GH#36767).

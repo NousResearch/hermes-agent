@@ -17,7 +17,9 @@ from tools.mcp_tool import (
     InvalidMcpUrlError,
     MCPServerTask,
     NonMcpEndpointError,
+    _auth_error_detail,
     _classify_mcp_failure,
+    _mcp_call_failed_message,
     _unwrap_exception_group,
 )
 
@@ -68,6 +70,52 @@ class TestClassifyMcpFailure:
         # Classification must apply to the UNWRAPPED root cause.
         g = _group(_group(FileNotFoundError("cmd not found")))
         assert _classify_mcp_failure(g) == "permanent"
+
+
+# ── _auth_error_detail / _mcp_call_failed_message ────────────────────────────
+
+class TestAuthErrorSurfacing:
+    def test_registration_detail_surfaces(self):
+        """The actionable registration guidance raised by the DCR guard must
+        reach the needs_reauth tool error (GH#78190)."""
+        pytest.importorskip("mcp.client.auth")
+        from mcp.client.auth import OAuthRegistrationError
+
+        exc = OAuthRegistrationError(
+            "MCP OAuth 'gmail': this provider does not support automatic "
+            "client registration ... add it under config.yaml "
+            "mcp_servers.<name>.oauth (client_id, client_secret), then run "
+            "`hermes mcp login gmail`."
+        )
+        detail = _auth_error_detail(exc)
+        assert detail.startswith(" ")
+        assert "config.yaml" in detail
+        assert "client_id" in detail
+
+    def test_registration_detail_unwraps_group(self):
+        """The transport raises the auth error inside a TaskGroup wrapper —
+        the detail must still be found."""
+        pytest.importorskip("mcp.client.auth")
+        from mcp.client.auth import OAuthRegistrationError
+
+        exc = OAuthRegistrationError("config.yaml guidance")
+        assert "config.yaml" in _auth_error_detail(_group(exc))
+
+    def test_non_registration_no_detail(self):
+        assert _auth_error_detail(ValueError("nope")) == ""
+        assert _auth_error_detail(_group(TimeoutError("t"))) == ""
+
+    def test_mcp_call_failed_message_unwraps_group(self):
+        """The generic error path must surface the group root cause instead
+        of the opaque TaskGroup wrapper text."""
+        pytest.importorskip("mcp.client.auth")
+        from mcp.client.auth import OAuthRegistrationError
+
+        exc = OAuthRegistrationError("registration guidance text")
+        msg = _mcp_call_failed_message(_group(exc))
+        assert "OAuthRegistrationError" in msg
+        assert "registration guidance text" in msg
+        assert "TaskGroup" not in msg
 
 
 # ── Keepalive failure log surfaces the root cause ────────────────────────────

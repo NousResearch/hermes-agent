@@ -223,7 +223,11 @@ def _open_mcp(binary: str) -> subprocess.Popen:
 
 def _mcp_rpc(proc: subprocess.Popen, msg_id: int, method: str, params: Any = None) -> Dict[str, Any]:
     """Write one JSON-RPC request and read one response line."""
-    assert proc.stdin is not None and proc.stdout is not None
+    if proc.stdin is None or proc.stdout is None:
+        raise RuntimeError(
+            "_mcp_rpc: subprocess stdin or stdout is None — "
+            "cannot communicate with MCP server"
+        )
     payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": msg_id, "method": method}
     if params is not None:
         payload["params"] = params

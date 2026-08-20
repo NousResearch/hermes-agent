@@ -1982,6 +1982,39 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
+    # 5. OAuth-token / cloud-SDK providers (Vertex AI, Bedrock) have NO API-key
+    # env var to detect in step 3 and mint short-lived tokens from ADC / a
+    # service account / the AWS SDK chain. The user "explicitly configures"
+    # them by writing non-secret routing settings into config.yaml
+    # (``vertex.project_id`` / a credentials path, ``bedrock.region``) rather
+    # than by pasting a key — so without this branch such a provider is only
+    # ever "explicitly configured" while it is the *current* provider, and it
+    # silently vanishes from explicit-only pickers (desktop chat model menu)
+    # otherwise. Treat the presence of that deliberate config as explicit.
+    #
+    # NOTE: this uses has_explicit_vertex_config(), NOT has_vertex_credentials()
+    # — the latter also counts an ambient GOOGLE_APPLICATION_CREDENTIALS path
+    # (commonly set globally for unrelated GCP work), which would mark Vertex
+    # explicit for users who never set Hermes up for it. Only Hermes-scoped
+    # signals (VERTEX_PROJECT_ID / vertex.project_id / VERTEX_CREDENTIALS_PATH)
+    # count here.
+    try:
+        if normalized in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+            from agent.vertex_adapter import has_explicit_vertex_config
+
+            if has_explicit_vertex_config():
+                return True
+        elif normalized == "bedrock":
+            from hermes_cli.config import load_config as _load_cfg
+
+            bedrock_cfg = _load_cfg().get("bedrock")
+            if isinstance(bedrock_cfg, dict) and str(
+                bedrock_cfg.get("region") or ""
+            ).strip():
+                return True
+    except Exception as exc:
+        logger.debug("Failed checking keyless provider explicit config for %s: %s", provider_id, exc)
+
     return False
 
 

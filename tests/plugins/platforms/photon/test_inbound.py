@@ -122,10 +122,12 @@ def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> None:
-    # If no node binary on PATH the adapter should refuse to start.
+    # With no node binary anywhere — PATH or the Hermes-managed tree — the
+    # adapter should refuse to start.
     from plugins.platforms.photon import adapter as adapter_mod
 
     monkeypatch.setattr(adapter_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(adapter_mod, "resolve_node_command", lambda _name: None)
     assert adapter_mod.check_requirements() is False
 
 

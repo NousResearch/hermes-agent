@@ -36,7 +36,7 @@ def test_regression_return_code_zero_on_success(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """_install_sidecar() must still return 0 on npm success."""
-    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "resolve_node_command", lambda _: "/usr/bin/npm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),
@@ -68,7 +68,7 @@ def test_regression_oserror_on_log_write_does_not_propagate(
         def exists(self):
             return False
 
-    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "resolve_node_command", lambda _: "/usr/bin/npm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr="npm ERR!"),
@@ -94,7 +94,7 @@ def test_regression_empty_stderr_does_not_write_log(
     """If npm fails but stderr is empty (some npm versions), _NPM_ERROR_LOG must
     NOT be written — an empty file would mislead check_requirements()."""
     error_log = tmp_path / ".photon-npm-error.log"
-    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "resolve_node_command", lambda _: "/usr/bin/npm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=""),
@@ -124,7 +124,7 @@ def test_regression_permissionerror_on_success_unlink_does_not_propagate(
         def unlink(self, *a, **kw):
             raise PermissionError("access denied")
 
-    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "resolve_node_command", lambda _: "/usr/bin/npm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),
@@ -144,7 +144,7 @@ def test_regression_long_stderr_truncated_before_write(
     error_log = tmp_path / ".photon-npm-error.log"
     huge_stderr = "npm ERR! " + ("x" * 10_000)
 
-    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "resolve_node_command", lambda _: "/usr/bin/npm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=huge_stderr),
@@ -162,7 +162,7 @@ def test_regression_none_stderr_does_not_crash(
 ) -> None:
     """On some platforms/configurations proc.stderr can be None even with
     stderr=PIPE (e.g. encoding errors).  _install_sidecar() must handle this."""
-    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "resolve_node_command", lambda _: "/usr/bin/npm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=None),
@@ -187,7 +187,7 @@ def test_regression_stale_log_not_surfaced_after_successful_reinstall(
     error_log.write_text("stale: npm ERR! old failure", encoding="utf-8")
 
     # Successful reinstall clears the log
-    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "resolve_node_command", lambda _: "/usr/bin/npm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),

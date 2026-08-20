@@ -2200,6 +2200,18 @@ class SecondaryPortBindingConfigError(MultiplexConfigError):
     """A secondary profile conflicts with the multiplexer's shared listener."""
 
 
+class HygieneTurnHoldExceeded(Exception):
+    """The hygiene-compression turn-hold budget elapsed while the summary
+    model was still streaming progress.
+
+    This is an availability boundary, not a failure: the compressor is
+    healthy, but the current user turn cannot wait any longer. It must NOT
+    be routed through the idle-timeout failure path (which stamps
+    AGENT_COMPRESSION_TIMEOUT, sends a "no output" message, and advances
+    the failure cooldown ladder).
+    """
+
+
 def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     """Return the authoritative profile set for one multiplex gateway config."""
     from hermes_cli.profiles import profiles_to_serve
@@ -20601,7 +20613,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                         _hyg_waited,
                                                         _hyg_max_turn_hold_seconds,
                                                     )
-                                                    raise
+                                                    raise HygieneTurnHoldExceeded(
+                                                        f"turn-hold budget {_hyg_max_turn_hold_seconds:.1f}s "
+                                                        f"elapsed after {_hyg_waited:.1f}s"
+                                                    )
                                                 if (
                                                     _idle < _hyg_timeout_seconds
                                                     and _hyg_waited < _hyg_total_ceiling_seconds
@@ -20617,6 +20632,72 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                     )
                                                     continue
                                                 raise
+                                    except HygieneTurnHoldExceeded:
+                                        # Turn-hold expiry is an availability boundary,
+                                        # not a failure. The compressor is healthy and
+                                        # still streaming; we simply cannot hold the
+                                        # current user turn any longer. Share the safe
+                                        # mechanics (fence, release, defer, proceed
+                                        # uncompressed) but with distinct provenance,
+                                        # user message, and NO failure-cooldown
+                                        # increment.
+                                        _cancelled = None
+                                        while _cancelled is None:
+                                            if _hyg_commit_fence.commit_in_flight:
+                                                _cancelled = False
+                                                break
+                                            _cancelled = (
+                                                _hyg_commit_fence.try_cancel_before_commit()
+                                            )
+                                            if _cancelled is None:
+                                                await asyncio.sleep(0.025)
+                                        if not _cancelled:
+                                            _compressed, _ = await _hyg_future
+                                        else:
+                                            _hyg_commit_fence.release_cancelled_compression_lock()
+                                            self._defer_agent_cleanup_until_future_done(
+                                                _hyg_future,
+                                                _hyg_agent,
+                                                context="session hygiene turn-hold",
+                                            )
+                                            _hyg_cleanup_deferred = True
+                                            from agent.session_activity import (
+                                                ActivityProvenance,
+                                            )
+                                            _stamp_hygiene_compression_provenance(
+                                                _hyg_agent,
+                                                "session hygiene compression turn-hold",
+                                                ActivityProvenance.AGENT_COMPRESSION_TURNHOLD,
+                                                "hygiene compression turn-hold "
+                                                "activity stamp failed",
+                                            )
+                                            logger.info(
+                                                "Session hygiene compression for session %s "
+                                                "exceeded turn-hold budget (%.1fs); "
+                                                "proceeding without compression this turn",
+                                                session_entry.session_id,
+                                                time.monotonic() - _hyg_wait_started,
+                                            )
+                                            _turnhold_msg = (
+                                                "ℹ️ Context compression deferred — "
+                                                "summary still streaming. "
+                                                "Continuing without compression this turn."
+                                            )
+                                            try:
+                                                _adapter = self._adapter_for_source(source)
+                                                if _adapter and source.chat_id:
+                                                    await _adapter.send(
+                                                        source.chat_id,
+                                                        _turnhold_msg,
+                                                        metadata=_hyg_meta,
+                                                    )
+                                            except Exception as _werr:
+                                                logger.warning(
+                                                    "Failed to deliver compression-turnhold "
+                                                    "notice to user: %s",
+                                                    _werr,
+                                                )
+                                            raise
                                     except asyncio.TimeoutError:
                                         _cancelled = None
                                         while _cancelled is None:

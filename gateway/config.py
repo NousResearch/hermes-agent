@@ -1509,8 +1509,11 @@ def load_gateway_config() -> GatewayConfig:
                     existing = platforms_data.get(plat_name, {})
                     if not isinstance(existing, dict):
                         existing = {}
-                    # Deep-merge extra dicts so gateway.json defaults survive
-                    merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    # Deep-merge extra dicts so gateway.json defaults survive.
+                    # Guard against ``extra:`` being explicitly null in YAML
+                    # (parses to None) — ``**None`` raises TypeError and aborts
+                    # the whole platform registration (api_server silently lost).
+                    merged_extra = {**(existing.get("extra") or {}), **(plat_block.get("extra") or {})}
                     if "enabled" in plat_block:
                         merged_extra["_enabled_explicit"] = True
                     merged = {**existing, **plat_block}
@@ -1680,11 +1683,13 @@ def load_gateway_config() -> GatewayConfig:
                 # ``extra:`` sub-key, not from the top level.
                 if plat in {Platform.WEBHOOK, Platform.MSGRAPH_WEBHOOK}:
                     for _bridge_key in ("port", "host", "secret"):
-                        if _bridge_key in platform_cfg and _bridge_key not in platform_cfg.get("extra", {}):
+                        _extra_ref = platform_cfg.get("extra") or {}
+                        if _bridge_key in platform_cfg and _bridge_key not in _extra_ref:
                             bridged[_bridge_key] = platform_cfg[_bridge_key]
                 if plat == Platform.API_SERVER:
                     for _bridge_key in ("port", "host"):
-                        if _bridge_key in platform_cfg and _bridge_key not in platform_cfg.get("extra", {}):
+                        _extra_ref = platform_cfg.get("extra") or {}
+                        if _bridge_key in platform_cfg and _bridge_key not in _extra_ref:
                             bridged[_bridge_key] = platform_cfg[_bridge_key]
                 has_channel_overrides = "channel_overrides" in platform_cfg
                 if has_channel_overrides:

@@ -58,6 +58,45 @@ class TestFilterAndSummarize:
             assert e["entity_id"].startswith("light.")
 
 
+    def test_search_matches_entity_id(self):
+        # "humidity" appears in sensor.humidity's entity_id only
+        result = _filter_and_summarize(SAMPLE_STATES, search="humidity")
+        assert result["count"] == 1
+        assert result["entities"][0]["entity_id"] == "sensor.humidity"
+
+    def test_search_matches_friendly_name(self):
+        # "thermostat" is only in the friendly name "Main Thermostat"
+        result = _filter_and_summarize(SAMPLE_STATES, search="thermostat")
+        assert result["count"] == 1
+        assert result["entities"][0]["entity_id"] == "climate.thermostat"
+
+    def test_search_is_case_insensitive(self):
+        lower = _filter_and_summarize(SAMPLE_STATES, search="bedroom")
+        upper = _filter_and_summarize(SAMPLE_STATES, search="BeDrOoM")
+        assert lower["count"] == upper["count"]
+        assert lower["count"] >= 2  # light.bedroom + sensor.humidity (Bedroom Humidity)
+
+    def test_search_composes_with_domain(self):
+        # Only sensor-domain entities whose id/name contains "temperature"
+        result = _filter_and_summarize(SAMPLE_STATES, domain="sensor", search="temperature")
+        assert result["count"] == 1
+        assert result["entities"][0]["entity_id"] == "sensor.temperature"
+        # light.bedroom (Bedroom Light) must NOT leak in despite no temp match anyway
+        for e in result["entities"]:
+            assert e["entity_id"].startswith("sensor.")
+
+    def test_search_no_match_returns_empty(self):
+        result = _filter_and_summarize(SAMPLE_STATES, search="nonexistent_xyz")
+        assert result["count"] == 0
+        assert result["entities"] == []
+
+    def test_search_missing_attributes_handled(self):
+        # entity with no attributes dict must not raise on friendly-name lookup
+        states = [{"entity_id": "light.x", "state": "on"}]
+        result = _filter_and_summarize(states, search="light")
+        assert result["count"] == 1
+
+
     def test_missing_attributes_handled(self):
         states = [{"entity_id": "light.x", "state": "on"}]
         result = _filter_and_summarize(states)

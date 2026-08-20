@@ -11810,6 +11810,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if canonical not in {"resume", "sessions"}:
             self._pending_resume_sessions = None
 
+        # Plugin hook: post_command — fires after every command handler completes.
+        # Excluded for quit/exit (those use on_quit instead).
+        _is_quit = (canonical in {"quit", "exit"})
+        if not _is_quit:
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("post_command"):
+                    invoke_hook(
+                        "post_command",
+                        command=canonical,
+                        raw=cmd_original,
+                        session_id=self.session_id,
+                        cli=self,
+                    )
+            except Exception:
+                pass
+
         if canonical in {"quit", "exit"}:
             # Parse --delete flag: /exit --delete also removes the current
             # session's transcripts + SQLite history. Ported from
@@ -11821,6 +11838,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             elif _args:
                 _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
                 return True
+            # Plugin hook: on_quit — fires before CLI exits so plugins
+            # can auto-title, compress conversation, or save state.
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("on_quit"):
+                    invoke_hook(
+                        "on_quit",
+                        command="quit",
+                        raw=cmd_original,
+                        session_id=self.session_id,
+                        cli=self,
+                    )
+            except Exception:
+                pass
             return False
         elif canonical == "help":
             _help_parts = cmd_original.split(None, 1)

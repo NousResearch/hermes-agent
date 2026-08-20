@@ -923,7 +923,7 @@ class HermesConsoleEngine:
             confirmation="Send this message?",
         )
 
-        portal_paths = [("info",), ("tools",)]
+        portal_paths = [("info",), ("tools",), ("usage",)]
         _register_command_family(
             self,
             root="portal",

@@ -9,6 +9,7 @@ import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } f
 import { __resetLinkTitleCache, fetchLinkTitle } from '../lib/externalLink.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME, LIGHT_THEME } from '../theme.js'
+import { patchUiState } from '../app/uiStore.js'
 
 afterEach(() => {
   __resetLinkTitleCache()
@@ -287,6 +288,21 @@ describe('Md link labels', () => {
 
     expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
     expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
+  })
+
+  it('keeps literal destinations copyable when explicit links are enabled', () => {
+    const url = 'https://github.com/NousResearch/hermes-agent/pull/77791'
+
+    patchUiState({ explicitLinks: true })
+    try {
+      const lines = renderPlain(
+        React.createElement(Box, { width: 120 }, React.createElement(Md, { t: DEFAULT_THEME, text: `[Hermes PR](${url})` }))
+      )
+
+      expect(lines.join('\n')).toContain(`Hermes PR <${url}>`)
+    } finally {
+      patchUiState({ explicitLinks: false })
+    }
   })
 
   it('keeps the authored markdown label even when a page title resolves', async () => {

@@ -477,7 +477,10 @@ from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
-from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.insights import (
+    build_insights_parser,
+    build_models_usage_parser,
+)
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
@@ -12189,6 +12192,26 @@ def cmd_insights(args):
                 pass
 
 
+def cmd_models_usage(args):
+    """Per-model usage with daily cost series (bar charts in terminal, JSON for scripts)."""
+    try:
+        from hermes_state import SessionDB
+        from agent.insights import InsightsEngine, format_model_usage_terminal
+
+        db = SessionDB()
+        engine = InsightsEngine(db)
+        report = engine.compute_model_usage(days=getattr(args, "days", 30), source=getattr(args, "source", None))
+        if getattr(args, "json", False):
+            import json as _json
+
+            print(_json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(format_model_usage_terminal(report, top=getattr(args, "top", 5)))
+        db.close()
+    except Exception as e:
+        print(f"Error generating per-model usage: {e}")
+
+
 def cmd_monitoring(args):
     """Gateway monitoring status: health & diagnostics export posture."""
     from hermes_cli.config import load_config
@@ -13760,6 +13783,7 @@ def main():
     # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
+    build_models_usage_parser(subparsers, cmd_models_usage=cmd_models_usage)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
 
     # =========================================================================

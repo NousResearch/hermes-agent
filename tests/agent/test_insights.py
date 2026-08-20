@@ -9,6 +9,7 @@ from agent.insights import (
     InsightsEngine,
     _estimate_cost,
     _bar_chart,
+    format_model_usage_terminal,
 )
 from agent.usage_pricing import (
     format_duration_compact as _format_duration,
@@ -292,6 +293,50 @@ class TestInsightsPopulated:
         assert models["deepseek-v4-pro"]["total_tokens"] == 48000
         assert models["claude-opus-4.8"]["total_tokens"] == 54000
 
+
+    def test_model_usage_breakdown_returns_totals_and_daily_series(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        result = engine.compute_model_usage(days=30)
+
+        assert result["days"] == 30
+        assert result["empty"] is False
+        models = {m["model"]: m for m in result["models"]}
+        # populated_db has claude-sonnet (s1 + s4), gpt-4o (s2), deepseek-chat (s3)
+        assert set(models) == {"claude-sonnet-4-20250514", "gpt-4o", "deepseek-chat"}
+        claude = models["claude-sonnet-4-20250514"]
+        assert claude["input_tokens"] == 60000
+        assert claude["output_tokens"] == 20000
+        assert claude["api_calls"] == 0
+        # Daily series entries carry YYYY-MM-DD local dates
+        assert all(len(d["date"]) == 10 for d in result["daily"])
+        claude_days = [d for d in result["daily"] if d["model"] == claude["model"]]
+        assert claude_days, "expected at least one daily entry for claude-sonnet"
+
+    def test_model_usage_respects_days_window(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        result = engine.compute_model_usage(days=3)
+        models = {m["model"] for m in result["models"]}
+        # s3 (deepseek-chat, 10 days ago) is outside the 3-day window
+        assert "deepseek-chat" not in models
+        assert "gpt-4o" not in models
+        assert "claude-sonnet-4-20250514" in models
+
+    def test_model_usage_terminal_format_shows_bars(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        result = engine.compute_model_usage(days=30)
+        text = format_model_usage_terminal(result, top=3)
+        assert "Models by estimated cost" in text
+        assert "Daily estimated cost" in text
+        assert "█" in text
+
+    def test_model_usage_json_shape(self, populated_db):
+        import json
+
+        engine = InsightsEngine(populated_db)
+        result = engine.compute_model_usage(days=30)
+        payload = json.dumps(result)
+        assert '"models"' in payload
+        assert '"daily"' in payload
 
     def test_overview_cost_matches_per_model_stored_cost(self, db):
         db.create_session(session_id="cost", source="cli", model="model-a")

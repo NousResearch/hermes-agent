@@ -1188,7 +1188,7 @@ class GatewaySlashCommandsMixin:
             origin_ok = (
                 bool(row_src) and bool(caller_src)
                 and str(row_src) == str(caller_src)
-                and row_thread == caller_thread
+                and (row_thread == caller_thread or not row_thread)
             )
             if not origin_ok:
                 return False

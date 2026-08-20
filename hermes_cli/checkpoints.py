@@ -76,8 +76,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             wd = p.get("workdir") or "(unknown)"
             if len(wd) > 60:
                 wd = "…" + wd[-59:]
-            exists = p.get("exists")
-            state = "live" if exists else "orphan"
+            state = p.get("state") or (
+                "live" if p.get("exists") else "unreachable"
+            )
             commits = p.get("commits", 0)
             last = _fmt_age(p.get("last_touch"))
             print(f"  {wd:<60}  {commits:>7}  {last:>12}  {state}")
@@ -115,11 +116,11 @@ def cmd_prune(args: argparse.Namespace) -> int:
         info = store_status()
         orphans = [
             p for p in info.get("projects", [])
-            if not p.get("exists")
+            if p.get("state") == "orphan"
         ]
         pre_v2_orphans = [
             p for p in info.get("pre_v2_projects", [])
-            if not p.get("exists")
+            if p.get("state") == "orphan"
         ]
         if orphans or pre_v2_orphans:
             print(f"This will permanently delete {len(orphans) + len(pre_v2_orphans)} "
@@ -163,6 +164,7 @@ def cmd_prune(args: argparse.Namespace) -> int:
     print(f"Scanned:         {result['scanned']}")
     print(f"Deleted orphan:  {result['deleted_orphan']}")
     print(f"Deleted stale:   {result['deleted_stale']}")
+    print(f"Protected unreachable: {result.get('protected_unreachable', 0)}")
     print(f"Errors:          {result['errors']}")
     print(f"Bytes reclaimed: {_fmt_bytes(result['bytes_freed'])}")
     return 0

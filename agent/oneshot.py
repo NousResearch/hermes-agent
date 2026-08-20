@@ -24,7 +24,11 @@ the live session's provider/model, otherwise the configured ``task`` (default
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+from agent.auxiliary_client import (
+    _effective_aux_timeout,
+    call_llm,
+    extract_content_or_reasoning,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +116,7 @@ def run_oneshot(
     task: str = "title_generation",
     max_tokens: int = 1024,
     temperature: Optional[float] = 0.3,
-    timeout: float = 60.0,
+    timeout: Optional[float] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Run a single stateless LLM request and return its text.
@@ -135,12 +139,18 @@ def run_oneshot(
         messages.append({"role": "system", "content": instructions})
     messages.append({"role": "user", "content": user_input or ""})
 
+    # Preserve the absent-timeout signal through the shared resolver so task
+    # policy (notably the compression floor) still applies.  The caller-specific
+    # fallback keeps the historical 60s oneshot deadline only when the selected
+    # task has no configured timeout.
+    effective_timeout = _effective_aux_timeout(task, timeout, default=60.0)
+
     response = call_llm(
         task=task,
         messages=messages,
         max_tokens=max_tokens,
         temperature=temperature,
-        timeout=timeout,
+        timeout=effective_timeout,
         main_runtime=main_runtime,
     )
 

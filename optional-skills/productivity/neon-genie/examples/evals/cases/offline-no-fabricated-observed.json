@@ -1,0 +1,15 @@
+{
+  "input": {
+    "research": {
+      "enabled": false,
+      "offline": true
+    },
+    "claim_source": "model_prior_only",
+    "claim_text": "Market is $12B in 2026"
+  },
+  "expected": {
+    "max_label": "SPECULATIVE",
+    "forbidden_label": "OBSERVED",
+    "gate": "N"
+  }
+}

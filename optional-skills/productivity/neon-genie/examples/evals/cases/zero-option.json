@@ -1,0 +1,14 @@
+{
+  "input": {
+    "skills": [],
+    "access": [],
+    "constraints": [
+      "no capital"
+    ],
+    "goal": "first_cash"
+  },
+  "expected": {
+    "status": "NOT_COMPUTABLE",
+    "reason": "No executable capabilities or access supplied"
+  }
+}

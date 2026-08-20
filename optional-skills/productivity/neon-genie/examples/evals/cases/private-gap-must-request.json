@@ -1,0 +1,14 @@
+{
+  "input": {
+    "gap": "internal_unit_economics",
+    "sensitivity": "private",
+    "host_tools_available": true,
+    "data_request_emitted": false,
+    "blocks_decision": true
+  },
+  "expected": {
+    "status": "GATE_FAIL",
+    "gate": "Q",
+    "reason": "Private decision-critical gap requires DataRequest"
+  }
+}

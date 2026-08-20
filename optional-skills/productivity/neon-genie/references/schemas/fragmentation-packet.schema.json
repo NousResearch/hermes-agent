@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Fragmentation Packet",
+  "type": "object",
+  "required": [
+    "target_outcome",
+    "scale",
+    "fragmentation_types",
+    "systems_involved",
+    "friction_events",
+    "coordination_gap",
+    "proposed_defragmentation_layer",
+    "scorecard",
+    "status"
+  ],
+  "properties": {
+    "target_outcome": {},
+    "scale": {},
+    "fragmentation_types": {},
+    "systems_involved": {},
+    "friction_events": {},
+    "coordination_gap": {},
+    "proposed_defragmentation_layer": {},
+    "scorecard": {},
+    "status": {}
+  },
+  "additionalProperties": true
+}

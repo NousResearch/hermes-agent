@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Run Receipt",
+  "type": "object",
+  "required": [
+    "status",
+    "profiles_loaded",
+    "claims_by_label",
+    "not_computable_fields",
+    "promotion_state",
+    "human_review_required"
+  ],
+  "properties": {
+    "status": {},
+    "profiles_loaded": {},
+    "claims_by_label": {},
+    "not_computable_fields": {},
+    "promotion_state": {},
+    "human_review_required": {},
+    "data_requests": { "type": "array" },
+    "open_blocking_requests": { "type": "array" },
+    "research_attempts": { "type": "array" },
+    "evidence_protocol": {
+      "type": "string",
+      "enum": ["find_request_not_computable"]
+    },
+    "privacy": { "$ref": "privacy-context.schema.json" },
+    "privacy_mode": { "enum": ["local_only", "external_research_allowed", "custom"] },
+    "external_actions": {
+      "type": "array",
+      "description": "Enumerated host egress actions; each requires provider, tool_class, destination, purpose, source_class, classification, decision, redaction_status, recorded_at"
+    },
+    "artifact_paths": { "type": "array" },
+    "telemetry_status": { "const": "disabled" },
+    "deletion_instructions": { "type": "string" },
+    "privacy_unknowns": {
+      "type": "object",
+      "properties": {
+        "host_providers": { "const": "NOT_COMPUTABLE" },
+        "provider_retention": { "const": "NOT_COMPUTABLE" },
+        "provider_processing": { "const": "NOT_COMPUTABLE" }
+      },
+      "additionalProperties": true
+    },
+    "learning_ledger_disclosure": { "type": "string" },
+    "retention_statement": { "type": "string" },
+    "privacy_warnings": { "type": "array", "items": { "type": "string" } },
+    "data_sources_used": { "type": "array" }
+  },
+  "additionalProperties": true
+}

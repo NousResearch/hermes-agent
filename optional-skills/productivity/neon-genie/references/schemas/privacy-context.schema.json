@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "neon-genie/privacy-context/1.0.0",
+  "title": "NeonGeniePrivacyContext",
+  "description": "Repository-owned privacy boundary. Host/provider retention is NOT_COMPUTABLE. No global privacy-disable switch.",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "mode",
+    "telemetry",
+    "training_use",
+    "retention",
+    "egress",
+    "redaction",
+    "data_sources_used",
+    "external_actions",
+    "privacy_warnings",
+    "deletion_instructions"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "Unsupported versions must raise NG-PRIVACY-011"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["local_only", "external_research_allowed", "custom"]
+    },
+    "telemetry": { "const": "disabled" },
+    "training_use": { "const": "none_by_neon_genie" },
+    "retention": {
+      "type": "object",
+      "required": ["artifact_path", "automatic_expiry"],
+      "properties": {
+        "artifact_path": { "type": "string" },
+        "automatic_expiry": { "type": ["string", "null"] },
+        "host_provider_retention": { "const": "NOT_COMPUTABLE" },
+        "repository_retention": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "egress": {
+      "type": "object",
+      "required": ["allowed", "approved_domains", "approved_tool_classes"],
+      "properties": {
+        "allowed": { "type": "boolean" },
+        "approved_domains": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "approved_tool_classes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "redaction": {
+      "type": "object",
+      "required": ["enabled", "blocked_categories"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "blocked_categories": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "consents": {
+      "type": "array",
+      "description": "Purpose-bound consent records only — never global disable",
+      "items": { "$ref": "#/$defs/consent_record" }
+    },
+    "data_sources_used": { "type": "array" },
+    "external_actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/external_action" }
+    },
+    "privacy_warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "deletion_instructions": { "type": "string" },
+    "unknowns": {
+      "type": "object",
+      "properties": {
+        "host_providers": { "const": "NOT_COMPUTABLE" },
+        "provider_retention": { "const": "NOT_COMPUTABLE" },
+        "provider_processing": { "const": "NOT_COMPUTABLE" }
+      },
+      "additionalProperties": true
+    },
+    "learning_ledger": {
+      "type": "object",
+      "properties": {
+        "location": { "type": "string" },
+        "default_path": { "type": "string" },
+        "auto_apply_forbidden": { "const": true },
+        "ships_with_skill": { "const": false },
+        "disclosure": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "consent_record": {
+      "type": "object",
+      "required": [
+        "consent_id",
+        "scope",
+        "purpose",
+        "categories_allowed",
+        "source_class",
+        "issued_at"
+      ],
+      "properties": {
+        "consent_id": { "type": "string", "minLength": 1 },
+        "scope": {
+          "type": "string",
+          "const": "purpose_bound",
+          "description": "Global disable scopes are rejected by the runtime"
+        },
+        "purpose": { "type": "string", "minLength": 1 },
+        "destinations": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "categories_allowed": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "categories_denied": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "source_class": { "type": "string" },
+        "issued_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        },
+        "expires_at": {
+          "type": ["string", "null"]
+        },
+        "revoked": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "external_action": {
+      "type": "object",
+      "required": [
+        "provider",
+        "tool_class",
+        "destination",
+        "purpose",
+        "source_class",
+        "classification",
+        "decision",
+        "redaction_status",
+        "recorded_at"
+      ],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "tool_class": { "type": "string", "minLength": 1 },
+        "destination": { "type": "string", "minLength": 1 },
+        "purpose": { "type": "string", "minLength": 1 },
+        "source_class": {
+          "type": "string",
+          "enum": [
+            "operator_supplied",
+            "workspace_context",
+            "public_research",
+            "model_prior",
+            "host_tool",
+            "derived",
+            "unknown"
+          ]
+        },
+        "classification": {
+          "type": "string",
+          "enum": ["public", "private", "credential", "secret", "mixed", "unknown"]
+        },
+        "decision": {
+          "type": "string",
+          "enum": ["ALLOW", "REDACT_THEN_ALLOW"]
+        },
+        "egress_decision": {
+          "type": "string",
+          "enum": ["ALLOW", "REDACT_THEN_ALLOW"]
+        },
+        "redaction_status": {
+          "type": "string",
+          "enum": ["none", "not_required", "applied", "blocked", "consent_required"]
+        },
+        "recorded_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        },
+        "safe_query": { "type": "string" },
+        "private_source_persisted": { "const": false }
+      },
+      "additionalProperties": true
+    }
+  }
+}

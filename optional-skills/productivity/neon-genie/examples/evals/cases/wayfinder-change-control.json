@@ -1,0 +1,5 @@
+{
+  "expected": {
+    "product_intent_changes_require_neon_genie_review": true
+  }
+}

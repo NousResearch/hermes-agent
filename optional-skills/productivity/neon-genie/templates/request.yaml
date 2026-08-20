@@ -1,0 +1,39 @@
+request_id: ""
+requested_outcome: ""
+target_user: ""
+current_state: ""
+desired_state: ""
+constraints: []
+# Optional seeds. Research still runs proactively via host tools unless disabled.
+canonical_sources: []
+preferred_profiles: []
+requested_outputs: []
+research:
+  enabled: true          # set false or offline: true to skip live fetches
+  offline: false
+  max_fetches: null      # null = host/default budget; integer caps tool calls
+  focus: []              # optional topic hints; empty = gap-driven
+# Privacy is fail-closed. Default mode is local_only even when research.enabled=true
+# (research is host-exposed; packaging does not auto-elevate egress).
+# There is no global privacy-disable switch — only purpose_bound consents.
+privacy:
+  mode: local_only       # local_only | external_research_allowed | custom
+  approved_domains: []   # optional allowlist when external_research_allowed
+  approved_tool_classes: []
+  # consents:            # purpose-bound only; never scope: global_disable
+  #   - consent_id: "consent_example"
+  #     scope: purpose_bound
+  #     purpose: "public market research for pricing band"
+  #     destinations: ["example.com"]
+  #     categories_allowed: ["public_query"]
+  #     categories_denied: ["credentials", "secrets", "private_customer_list"]
+  #     source_class: operator_explicit
+  #     issued_at: "2026-01-01T00:00:00Z"
+  #     revoked: false
+authority:
+  research: true
+  drafting: true
+  execution: false
+  spending: false
+  publishing: false
+human_review_required: true

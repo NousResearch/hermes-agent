@@ -681,6 +681,47 @@ class TestClassifyApiError:
 
 
 
+    @pytest.mark.parametrize(
+        ("provider", "code", "reason"),
+        [
+            ("openai", "SERVER_ERROR", FailoverReason.server_error),
+            ("openai-codex", "SERVER_ERROR", FailoverReason.server_error),
+            ("gemini", "UNAVAILABLE", FailoverReason.overloaded),
+            ("google", "DEADLINE_EXCEEDED", FailoverReason.timeout),
+            ("google-vertex", "INTERNAL", FailoverReason.server_error),
+            ("vertex", "INTERNAL", FailoverReason.server_error),
+            ("anthropic", "RATE_LIMIT_ERROR", FailoverReason.rate_limit),
+            ("anthropic", "API_ERROR", FailoverReason.server_error),
+        ],
+    )
+    def test_provider_code_only_error_classification(self, provider, code, reason):
+        result = classify_api_error(
+            MockAPIError("", body={"error": {"code": code}}), provider=provider
+        )
+
+        assert result.reason == reason
+        assert result.retryable is True
+        if reason == FailoverReason.rate_limit:
+            assert result.should_rotate_credential is True
+            assert result.should_fallback is True
+
+    @pytest.mark.parametrize(
+        ("provider", "code"),
+        [
+            ("anthropic", "SERVER_ERROR"),
+            ("openai", "API_ERROR"),
+            ("custom", "UNAVAILABLE"),
+        ],
+    )
+    def test_provider_code_only_error_does_not_cross_provider_boundaries(
+        self, provider, code
+    ):
+        result = classify_api_error(
+            MockAPIError("", body={"error": {"code": code}}), provider=provider
+        )
+
+        assert result.reason == FailoverReason.unknown
+
     def test_400_litellm_invalid_request_body_shape(self, caplog):
         """litellm/Bedrock proxy shape (errorMessage/errorCode) → format_error.
 

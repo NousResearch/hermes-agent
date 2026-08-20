@@ -81,25 +81,36 @@ class PlatformBackend(Mem0Backend):
 
 
 class SelfHostedBackend(Mem0Backend):
-    """Direct HTTP backend for a self-hosted Mem0 server (the FastAPI ``server/``).
+    """Direct HTTP backend for a self-hosted or cloud-hosted Mem0 server.
 
     mem0.MemoryClient can't be reused for self-hosted: it is hardwired to the
-    cloud API — ``Authorization: Token`` auth and a ``GET /v1/ping/`` validation
+    cloud API — ``Authorization: *** auth and a ``GET /v1/ping/`` validation
     call in ``__init__`` that the self-hosted server does not expose (it would
-    404 before any real request). This client talks to that server directly,
-    using its actual contract: ``X-API-Key`` auth and the ``/memories`` /
-    ``/search`` routes.
+    404 before any real request). This client talks to that server directly.
+
+    Two API formats are supported via ``api_format``:
+
+    - ``"selfhosted"`` (default): ``X-API-Key`` auth, bare routes
+      (``/search``, ``/memories``, ``/memories/{id}``). Used by the
+      Mem0 Docker dashboard server.
+
+    - ``"cloud"``: ``Authorization: Token`` auth, ``/v1/`` routes with
+      trailing slashes (``/v1/memories/search/``, ``/v1/memories/``,
+      ``/v1/memories/{id}/``). Used by managed Mem0 services pinned to
+      mem0ai 0.1.x compatibility (e.g. Volcengine).
     """
 
-    def __init__(self, api_key: str, host: str, transport=None):
+    def __init__(self, api_key: str, host: str, transport=None, api_format: str = "selfhosted"):
         import httpx
 
+        self._api_format = api_format
         headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["X-API-Key"] = api_key  # omitted only for AUTH_DISABLED servers
-        # Connect-level retries smooth over transient blips so a single
-        # dropped SYN doesn't count toward the provider failure breaker.
-        # ``transport`` is injectable for tests (httpx.MockTransport).
+        if api_format == "cloud":
+            if api_key:
+                headers["Authorization"] = f"Token {api_key}"
+        else:
+            if api_key:
+                headers["X-API-Key"] = api_key  # omitted only for AUTH_DISABLED servers
         if transport is None:
             transport = httpx.HTTPTransport(retries=2)
         self._client = httpx.Client(
@@ -113,11 +124,11 @@ class SelfHostedBackend(Mem0Backend):
         return resp.json() if resp.content else {}
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
-        # rerank is a platform-only feature; the self-hosted /search ignores it.
         body: dict[str, Any] = {"query": query, "top_k": top_k}
         if filters:
-            body["filters"] = filters  # user_id belongs in filters (top-level is deprecated)
-        return _unwrap_results(self._json("POST", "/search", json=body))
+            body["filters"] = filters
+        path = "/v1/memories/search/" if self._api_format == "cloud" else "/search"
+        return _unwrap_results(self._json("POST", path, json=body))
 
     def add(
         self,
@@ -134,16 +145,27 @@ class SelfHostedBackend(Mem0Backend):
             "agent_id": agent_id,
             "infer": infer,
         }
+        # Cloud-compatible services (e.g. Volcengine) reject infer=False
+        # without async_mode=False.
+        if self._api_format == "cloud" and not infer:
+            body["async_mode"] = False
         if metadata:
             body["metadata"] = metadata
-        return self._json("POST", "/memories", json=body)
+        path = "/v1/memories/" if self._api_format == "cloud" else "/memories"
+        return self._json("POST", path, json=body)
 
     def update(self, memory_id: str, text: str) -> dict:
-        self._json("PUT", f"/memories/{memory_id}", json={"text": text})
+        if self._api_format == "cloud":
+            self._json("PUT", f"/v1/memories/{memory_id}/", json={"text": text})
+        else:
+            self._json("PUT", f"/memories/{memory_id}", json={"text": text})
         return {"result": "Memory updated.", "memory_id": memory_id}
 
     def delete(self, memory_id: str) -> dict:
-        self._json("DELETE", f"/memories/{memory_id}")
+        if self._api_format == "cloud":
+            self._json("DELETE", f"/v1/memories/{memory_id}/")
+        else:
+            self._json("DELETE", f"/memories/{memory_id}")
         return {"result": "Memory deleted.", "memory_id": memory_id}
 
     def close(self) -> None:

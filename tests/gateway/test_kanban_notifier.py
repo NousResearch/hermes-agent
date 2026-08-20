@@ -1,6 +1,9 @@
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 
 from gateway.config import Platform
@@ -22,6 +25,97 @@ class RecordingAdapter:
 
     async def handle_message(self, event):
         self.handled.append(event)
+
+
+class ReceiptAdapter:
+    def __init__(self):
+        self.sent = []
+        self.handled = []
+
+    async def send(self, chat_id, text, metadata=None):
+        from gateway.platforms.base import SendResult
+
+        self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return SendResult(success=True, message_id="telegram-msg-321")
+
+    async def handle_message(self, event):
+        self.handled.append(event)
+
+
+class PartialBatchAdapter:
+    def __init__(self):
+        self.sent = []
+        self.calls = 0
+        self.failed_reasons = set()
+
+    async def send(self, chat_id, text, metadata=None):
+        from gateway.platforms.base import SendResult
+
+        self.calls += 1
+        self.sent.append(text)
+        if "second" in text and "second" not in self.failed_reasons:
+            self.failed_reasons.add("second")
+            return SendResult(success=False, error="later event failed")
+        return SendResult(success=True, message_id=f"msg-{self.calls}")
+
+
+class RetryingArtifactAdapter:
+    def __init__(self):
+        self.sent = []
+        self.documents = []
+
+    async def send(self, chat_id, text, metadata=None):
+        from gateway.platforms.base import SendResult
+
+        self.sent.append(text)
+        return SendResult(success=True, message_id="text-1")
+
+    async def send_document(self, chat_id, file_path, metadata=None, **kwargs):
+        from gateway.platforms.base import SendResult
+
+        self.documents.append(file_path)
+        if len(self.documents) == 1:
+            return SendResult(success=False, error="upload rejected")
+        return SendResult(success=True, message_id="document-2")
+
+
+class RetryingImageArtifactAdapter(RetryingArtifactAdapter):
+    def __init__(self):
+        super().__init__()
+        self.images = []
+
+    async def send_image_file(self, chat_id, image_path, metadata=None, **kwargs):
+        from gateway.platforms.base import SendResult
+
+        self.images.append(image_path)
+        if len(self.images) == 2:
+            return SendResult(success=False, error="second image rejected")
+        return SendResult(success=True, message_id=f"image-{len(self.images)}")
+
+
+class LegacyBatchOnlyImageAdapter(RetryingArtifactAdapter):
+    send_image_file = None
+
+    def __init__(self):
+        super().__init__()
+        self.image_batches = []
+
+    async def send_multiple_images(
+        self, chat_id, images, metadata=None, human_delay=0.0,
+    ):
+        self.image_batches.append(list(images))
+        # Legacy contract: successful completion returns None.
+        return None
+
+
+class InvalidArtifactResultAdapter(RetryingArtifactAdapter):
+    def __init__(self, invalid_result):
+        super().__init__()
+        self.invalid_result = invalid_result
+
+    async def send_document(self, chat_id, file_path, metadata=None, **kwargs):
+        self.documents.append(file_path)
+        return self.invalid_result
 
 
 class DisconnectedAdapters(dict):
@@ -166,6 +260,259 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     message = adapter.sent[0]["text"]
     assert tid in message
     assert "blocked" in message
+
+
+def test_notifier_persists_confirmed_platform_message_id(tmp_path, monkeypatch):
+    db_path = tmp_path / "delivery-receipt.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="auditable delivery", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="10010",
+        )
+        kb.block_task(conn, tid, reason="Human input", kind="needs_input")
+        event_id = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id = ?", (tid,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    adapter = ReceiptAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    conn = kb.connect()
+    try:
+        sub = kb.list_notify_subs(conn, tid)[0]
+    finally:
+        conn.close()
+    assert sub["last_delivery_event_id"] == event_id
+    assert sub["last_delivery_kind"] == "blocked"
+    assert sub["last_delivery_message_id"] == "telegram-msg-321"
+    assert isinstance(sub["last_delivered_at"], int)
+
+
+def test_partial_batch_retry_skips_already_confirmed_event(tmp_path, monkeypatch):
+    db_path = tmp_path / "partial-batch.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="partial batch", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(conn, tid, kind="blocked", payload={"reason": "first"})
+        kb._append_event(conn, tid, kind="blocked", payload={"reason": "second"})
+    finally:
+        conn.close()
+
+    adapter = PartialBatchAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert sum("first" in text for text in adapter.sent) == 1
+    assert sum("second" in text for text in adapter.sent) == 2
+
+
+def test_artifact_failure_rewinds_then_retries_without_duplicate_text(tmp_path, monkeypatch):
+    db_path = tmp_path / "artifact-retry.db"
+    artifact = tmp_path / "deliverable.txt"
+    artifact.write_text("payload", encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="artifact retry", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="deliver artifact")
+        event_id = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'completed'",
+            (tid,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps({"summary": "deliver artifact", "artifacts": [str(artifact)]}), event_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    adapter = RetryingArtifactAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    conn = kb.connect()
+    try:
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+        assert kb.has_notify_delivery(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            thread_id="",
+            event_id=event_id,
+            delivery_key="text",
+        )
+    finally:
+        conn.close()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert adapter.documents == [str(artifact), str(artifact)]
+    conn = kb.connect()
+    try:
+        # Current main keeps subscriptions through reversible ``done``; the
+        # durable ledger still prevents duplicate artifact parts on retry.
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+        rows = conn.execute(
+            "SELECT delivery_key, message_id FROM kanban_notify_deliveries "
+            "WHERE task_id = ? ORDER BY delivery_key",
+            (tid,),
+        ).fetchall()
+    finally:
+        conn.close()
+    receipts = {row["delivery_key"]: row["message_id"] for row in rows}
+    assert receipts["text"] == "text-1"
+    artifact_keys = [key for key in receipts if key.startswith("artifact:")]
+    assert len(artifact_keys) == 1
+    assert receipts[artifact_keys[0]] == "document-2"
+
+
+@pytest.mark.parametrize("invalid_result", [None, object()])
+def test_artifact_missing_or_malformed_send_result_is_not_receipted(
+    tmp_path, monkeypatch, invalid_result,
+):
+    db_path = tmp_path / "invalid-artifact-result.db"
+    artifact = tmp_path / "deliverable.txt"
+    artifact.write_text("payload", encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="invalid artifact result", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="deliver artifact")
+        event_id = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'completed'",
+            (tid,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps({"summary": "deliver artifact", "artifacts": [str(artifact)]}), event_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    adapter = InvalidArtifactResultAdapter(invalid_result)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert adapter.documents == [str(artifact), str(artifact)]
+    conn = kb.connect()
+    try:
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+        artifact_receipts = conn.execute(
+            "SELECT COUNT(*) FROM kanban_notify_deliveries "
+            "WHERE task_id = ? AND delivery_key LIKE 'artifact:%'",
+            (tid,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert artifact_receipts == 0
+
+
+def test_image_artifact_retry_skips_individually_confirmed_image(tmp_path, monkeypatch):
+    db_path = tmp_path / "image-artifact-retry.db"
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="image retry", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="deliver images")
+        event_id = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'completed'",
+            (tid,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps({"summary": "deliver images", "artifacts": [str(first), str(second)]}), event_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    adapter = RetryingImageArtifactAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == [adapter.sent[0]]
+    assert adapter.images == [str(first), str(second), str(second)]
+    conn = kb.connect()
+    try:
+        # ``done`` is reversible, so the subscription remains; receipts carry
+        # per-image retry deduplication independently of that lifecycle.
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+        receipts = conn.execute(
+            "SELECT delivery_key, message_id FROM kanban_notify_deliveries "
+            "WHERE task_id = ? ORDER BY delivery_key",
+            (tid,),
+        ).fetchall()
+    finally:
+        conn.close()
+    artifact_receipts = [row for row in receipts if row["delivery_key"].startswith("artifact:")]
+    assert sorted(row["message_id"] for row in artifact_receipts) == ["image-1", "image-3"]
+
+
+def test_image_artifact_uses_legacy_batch_fallback_when_per_file_send_missing(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "legacy-image-batch.db"
+    image = tmp_path / "legacy.png"
+    image.write_bytes(b"image")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy image", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="deliver legacy image")
+        event_id = conn.execute(
+            "SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'completed'",
+            (tid,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps({"summary": "deliver", "artifacts": [str(image)]}), event_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    adapter = LegacyBatchOnlyImageAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.image_batches == [[(image.as_uri(), "")]]
+    conn = kb.connect()
+    try:
+        artifact_receipts = conn.execute(
+            "SELECT COUNT(*) FROM kanban_notify_deliveries "
+            "WHERE task_id = ? AND delivery_key LIKE 'artifact:%'",
+            (tid,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert artifact_receipts == 1
 
 
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(

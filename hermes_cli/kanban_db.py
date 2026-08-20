@@ -1511,7 +1511,27 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     delivery_metadata TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
+    last_delivery_event_id INTEGER,
+    last_delivery_kind TEXT,
+    last_delivery_message_id TEXT,
+    last_delivered_at INTEGER,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+-- Durable, per-event delivery ledger. Unlike kanban_notify_subs this table is
+-- intentionally retained after terminal-task unsubscribe so delivery can be
+-- audited and already-confirmed sends can be skipped on partial-batch retry.
+CREATE TABLE IF NOT EXISTS kanban_notify_deliveries (
+    task_id       TEXT NOT NULL,
+    platform      TEXT NOT NULL,
+    chat_id       TEXT NOT NULL,
+    thread_id     TEXT NOT NULL DEFAULT '',
+    event_id      INTEGER NOT NULL,
+    event_kind    TEXT NOT NULL,
+    delivery_key TEXT NOT NULL DEFAULT 'text',
+    message_id    TEXT,
+    delivered_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, platform, chat_id, thread_id, event_id, delivery_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
@@ -1524,6 +1544,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_notify_delivery_task  ON kanban_notify_deliveries(task_id, event_id);
 """
 
 
@@ -2763,6 +2784,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "delivery_metadata", "delivery_metadata TEXT"
             )
+        for column, definition in (
+            ("last_delivery_event_id", "last_delivery_event_id INTEGER"),
+            ("last_delivery_kind", "last_delivery_kind TEXT"),
+            ("last_delivery_message_id", "last_delivery_message_id TEXT"),
+            ("last_delivered_at", "last_delivered_at INTEGER"),
+        ):
+            if column not in notify_cols:
+                _add_column_if_missing(conn, "kanban_notify_subs", column, definition)
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -2890,6 +2919,8 @@ _REBUILD_SPECS = {
         " notifier_profile TEXT, delivery_mode TEXT NOT NULL DEFAULT 'notify',"
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
+        " last_delivery_event_id INTEGER,"
+        " last_delivery_kind TEXT, last_delivery_message_id TEXT, last_delivered_at INTEGER,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),
@@ -11712,6 +11743,117 @@ def purge_stale_done_notify_subs(
             (cutoff,),
         )
     return int(cur.rowcount or 0)
+
+
+def purge_stale_notify_deliveries(
+    conn: sqlite3.Connection,
+    *,
+    max_age_days: int = 90,
+) -> int:
+    """Delete old receipts once their task is terminal or no longer exists.
+
+    Receipts stay durable across subscription removal so partial retries and
+    audits remain reliable. They do not need to live forever after a task is
+    ``done``/``archived`` (or deleted), though. Active-task receipts are retained
+    regardless of age because they may still suppress duplicate retry parts.
+
+    ``max_age_days <= 0`` disables the sweep. Returns deleted row count.
+    """
+    try:
+        days = int(max_age_days)
+    except (TypeError, ValueError):
+        days = 90
+    if days <= 0:
+        return 0
+    cutoff = int(time.time()) - days * 86400
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_notify_deliveries"
+            " WHERE delivered_at < ?"
+            " AND NOT EXISTS ("
+            "  SELECT 1 FROM tasks t"
+            "  WHERE t.id = kanban_notify_deliveries.task_id"
+            "  AND t.status NOT IN ('done', 'archived')"
+            " )",
+            (cutoff,),
+        )
+    return int(cur.rowcount or 0)
+
+
+def record_notify_delivery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+    event_kind: str,
+    message_id: Optional[str],
+    delivered_at: Optional[int] = None,
+    delivery_key: str = "text",
+) -> None:
+    """Persist a durable receipt and refresh ephemeral subscription telemetry.
+
+    ``last_event_id`` proves only that a watcher claimed an event. This receipt
+    is written after ``adapter.send()`` reports success and retains the platform
+    message id when the adapter provides one. The durable ledger write does not
+    depend on the subscription row still existing: terminal unsubscribe and a
+    concurrent receipt writer may race, but confirmed delivery remains auditable.
+    """
+    when = int(delivered_at if delivered_at is not None else time.time())
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO kanban_notify_deliveries (task_id, platform, chat_id, "
+            "thread_id, event_id, event_kind, delivery_key, message_id, delivered_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(task_id, platform, chat_id, thread_id, event_id, delivery_key) "
+            "DO UPDATE SET message_id = COALESCE(excluded.message_id, message_id), "
+            "delivered_at = MIN(delivered_at, excluded.delivered_at)",
+            (
+                task_id, platform, chat_id, thread_id or "", int(event_id),
+                str(event_kind), str(delivery_key),
+                str(message_id) if message_id is not None else None, when,
+            ),
+        )
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_delivery_event_id = ?, "
+            "last_delivery_kind = ?, last_delivery_message_id = ?, last_delivered_at = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND (last_delivery_event_id IS NULL OR last_delivery_event_id <= ?)",
+            (
+                int(event_id), str(event_kind),
+                str(message_id) if message_id is not None else None,
+                when, task_id, platform, chat_id, thread_id or "", int(event_id),
+            ),
+        )
+        # A zero-row update is expected when a later delivery already owns
+        # the convenience fields or terminal cleanup removed the subscription.
+        # The ledger insert above is the authoritative success criterion;
+        # SQLite exceptions are the only failure signal.
+
+
+def has_notify_delivery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+    delivery_key: str = "text",
+) -> bool:
+    """Return whether a durable receipt exists for one event delivery part."""
+    row = conn.execute(
+        "SELECT 1 FROM kanban_notify_deliveries WHERE task_id = ? AND platform = ? "
+        "AND chat_id = ? AND thread_id = ? AND event_id = ? AND delivery_key = ?",
+        (
+            task_id, platform, chat_id, thread_id or "", int(event_id),
+            str(delivery_key),
+        ),
+    ).fetchone()
+    return row is not None
+
 
 
 def unseen_events_for_sub(

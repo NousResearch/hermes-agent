@@ -2650,6 +2650,11 @@ DEFAULT_CONFIG = {
         # so stale rows don't accumulate and get scanned on every notifier
         # tick forever. Set 0 to disable the sweep.
         "done_sub_retention_days": 30,
+        # Durable per-event delivery receipts survive subscription removal for
+        # retry deduplication and auditability. Once their task is terminal or
+        # deleted, prune receipts older than this many days. Active-task
+        # receipts are retained regardless of age. Set 0 to disable.
+        "notify_delivery_retention_days": 90,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

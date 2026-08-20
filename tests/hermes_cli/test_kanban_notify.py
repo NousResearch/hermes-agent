@@ -566,6 +566,150 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
 
 
+def test_record_notify_delivery_persists_auditable_receipt(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="receipt", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+        )
+        kb.record_notify_delivery(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="10010",
+            event_id=123,
+            event_kind="blocked",
+            message_id="456",
+            delivered_at=789,
+        )
+        sub = kb.list_notify_subs(conn, tid)[0]
+    finally:
+        conn.close()
+
+    assert sub["last_delivery_event_id"] == 123
+    assert sub["last_delivery_kind"] == "blocked"
+    assert sub["last_delivery_message_id"] == "456"
+    assert sub["last_delivered_at"] == 789
+
+
+def test_record_notify_delivery_never_regresses_to_older_event(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="monotonic receipt", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+        )
+        kb.record_notify_delivery(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+            event_id=124, event_kind="completed", message_id="newer", delivered_at=800,
+        )
+        kb.record_notify_delivery(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+            event_id=123, event_kind="blocked", message_id="older", delivered_at=900,
+        )
+        sub = kb.list_notify_subs(conn, tid)[0]
+    finally:
+        conn.close()
+
+    assert sub["last_delivery_event_id"] == 124
+    assert sub["last_delivery_kind"] == "completed"
+    assert sub["last_delivery_message_id"] == "newer"
+    assert sub["last_delivered_at"] == 800
+
+
+def test_delivery_receipt_survives_terminal_unsubscribe(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="durable receipt", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+        )
+        kb.record_notify_delivery(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+            event_id=125, event_kind="completed", message_id="msg-125",
+        )
+        assert kb.remove_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+        )
+        assert kb.has_notify_delivery(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+            event_id=125,
+        )
+        row = conn.execute(
+            "SELECT message_id FROM kanban_notify_deliveries WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["message_id"] == "msg-125"
+
+
+def test_delivery_receipt_can_be_written_after_subscription_removed(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="receipt race", assignee="worker")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+        )
+        assert kb.remove_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+        )
+        kb.record_notify_delivery(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", thread_id="10010",
+            event_id=126, event_kind="completed", message_id="msg-126",
+        )
+        row = conn.execute(
+            "SELECT message_id FROM kanban_notify_deliveries WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row["message_id"] == "msg-126"
+
+
+def test_purge_stale_notify_deliveries_keeps_old_active_task_receipts(kanban_home):
+    conn = kb.connect()
+    try:
+        active_tid = kb.create_task(conn, title="active receipt", assignee="worker")
+        done_tid = kb.create_task(conn, title="done receipt", assignee="worker")
+        kb.complete_task(conn, done_tid, summary="done")
+        for task_id in (active_tid, done_tid):
+            kb.record_notify_delivery(
+                conn,
+                task_id=task_id,
+                platform="telegram",
+                chat_id="chat1",
+                thread_id="",
+                event_id=200,
+                event_kind="completed",
+                message_id=f"msg-{task_id}",
+                delivered_at=1,
+            )
+        conn.execute(
+            "INSERT INTO kanban_notify_deliveries "
+            "(task_id, platform, chat_id, thread_id, event_id, event_kind, "
+            "delivery_key, message_id, delivered_at) "
+            "VALUES ('deleted-task', 'telegram', 'chat1', '', 201, "
+            "'completed', 'text', 'msg-deleted', 1)"
+        )
+
+        assert kb.purge_stale_notify_deliveries(conn, max_age_days=1) == 2
+        remaining = {
+            row["task_id"]
+            for row in conn.execute(
+                "SELECT task_id FROM kanban_notify_deliveries"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert remaining == {active_tid}
+
+
 # ---------------------------------------------------------------------------
 # Regression: gateway watchers must not double-init the kanban DB.
 #
@@ -1069,6 +1213,8 @@ def test_gc_honors_configured_retention_days(kanban_home):
     # shipped default must exist and drive the sweep when passed through.
     default_days = DEFAULT_CONFIG["kanban"]["done_sub_retention_days"]
     assert isinstance(default_days, int) and default_days > 0
+    delivery_days = DEFAULT_CONFIG["kanban"]["notify_delivery_retention_days"]
+    assert isinstance(delivery_days, int) and delivery_days > default_days
 
     conn = kb.connect()
     try:

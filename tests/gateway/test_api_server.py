@@ -1055,6 +1055,133 @@ class TestChatCompletionsEndpoint:
 
 
     @pytest.mark.asyncio
+    async def test_session_chat_failed_result_returns_redacted_502(self, adapter):
+        secret = "sk-internal-failed-result-1234567890"
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            with (
+                patch.object(
+                    adapter,
+                    "_get_existing_session_or_404",
+                    return_value=({"id": "s1"}, None),
+                ),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(
+                    adapter,
+                    "_run_agent",
+                    new=AsyncMock(
+                        return_value=(
+                            {
+                                "final_response": f"internal assistant content {secret}",
+                                "messages": [{"role": "assistant", "content": secret}],
+                                "completed": False,
+                                "failed": True,
+                                "error": f"provider exception OPENAI_API_KEY={secret}",
+                            },
+                            {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
+                        )
+                    ),
+                ),
+            ):
+                resp = await cli.post("/api/sessions/s1/chat", json={"message": "hi"})
+                data = await resp.json()
+
+        assert resp.status == 502
+        assert data["error"]["type"] == "server_error"
+        assert data["error"]["code"] == "agent_incomplete"
+        assert data["error"]["message"] == "Agent run did not complete successfully."
+        assert data["error"]["hermes"] == {
+            "completed": False,
+            "partial": False,
+            "failed": True,
+        }
+        assert "message" not in data
+        assert secret not in json.dumps(data)
+
+
+    @pytest.mark.asyncio
+    async def test_session_chat_stream_failed_result_emits_error_then_done(self, adapter):
+        secret = "sk-internal-stream-failure-1234567890"
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            with (
+                patch.object(
+                    adapter,
+                    "_get_existing_session_or_404",
+                    return_value=({"id": "s1"}, None),
+                ),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(
+                    adapter,
+                    "_run_agent",
+                    new=AsyncMock(
+                        return_value=(
+                            {
+                                "final_response": f"internal assistant content {secret}",
+                                "messages": [{"role": "assistant", "content": secret}],
+                                "completed": False,
+                                "failed": True,
+                                "error": f"provider exception OPENAI_API_KEY={secret}",
+                            },
+                            {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
+                        )
+                    ),
+                ),
+            ):
+                resp = await cli.post(
+                    "/api/sessions/s1/chat/stream",
+                    json={"message": "hi"},
+                )
+                body = await resp.text()
+
+        assert resp.status == 200
+        assert "event: error" in body
+        assert "event: done" in body
+        assert body.index("event: error") < body.index("event: done")
+        assert "event: assistant.completed" not in body
+        assert "event: run.completed" not in body
+        assert '"messages"' not in body
+        assert secret not in body
+        assert "Agent run did not complete successfully." in body
+
+
+    @pytest.mark.asyncio
+    async def test_session_chat_success_still_returns_assistant_message(self, adapter):
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            with (
+                patch.object(
+                    adapter,
+                    "_get_existing_session_or_404",
+                    return_value=({"id": "s1"}, None),
+                ),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(
+                    adapter,
+                    "_run_agent",
+                    new=AsyncMock(
+                        return_value=(
+                            {
+                                "final_response": "ok",
+                                "messages": [{"role": "assistant", "content": "ok"}],
+                                "completed": True,
+                                "failed": False,
+                            },
+                            {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                        )
+                    ),
+                ),
+            ):
+                resp = await cli.post(
+                    "/api/sessions/s1/chat",
+                    json={"message": "hi"},
+                )
+                data = await resp.json()
+
+        assert resp.status == 200
+        assert data["object"] == "hermes.session.chat.completion"
+        assert data["session_id"] == "s1"
+        assert data["message"] == {"role": "assistant", "content": "ok"}
+
+
+    @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_chat_completions(self, adapter):
         """Regression guard for #24451: completion callback must signal SSE EOS."""
         app = _create_app(adapter)

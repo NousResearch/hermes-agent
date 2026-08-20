@@ -1100,6 +1100,9 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+_AGENT_INCOMPLETE_MESSAGE = "Agent run did not complete successfully."
+
+
 _api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(
     "api_agent_request_reservation", default=None
 )
@@ -3806,10 +3809,26 @@ class APIServerAdapter(BasePlatformAdapter):
             **agent_overrides,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
-        final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
         headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
+        if isinstance(result, dict) and result.get("failed"):
+            err_body = _openai_error(
+                _AGENT_INCOMPLETE_MESSAGE,
+                err_type="server_error",
+                code="agent_incomplete",
+            )
+            err_body["error"]["hermes"] = {
+                "completed": bool(result.get("completed", False)),
+                "partial": bool(result.get("partial", False)),
+                "failed": True,
+            }
+            headers["X-Hermes-Completed"] = "false"
+            headers["X-Hermes-Partial"] = (
+                "true" if result.get("partial") else "false"
+            )
+            return web.json_response(err_body, status=502, headers=headers)
+        final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
         runtime = {}
         if isinstance(result, dict):
             runtime = result.get("runtime") or {}
@@ -3978,6 +3997,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     confirmed_runtime_lock=lock_active,
                     **agent_overrides,
                 )
+                if isinstance(result, dict) and result.get("failed"):
+                    self._set_run_status(
+                        run_id,
+                        "failed",
+                        error=_AGENT_INCOMPLETE_MESSAGE,
+                        last_event="run.failed",
+                    )
+                    await queue.put(_event_payload(
+                        "error",
+                        {"message": _AGENT_INCOMPLETE_MESSAGE},
+                    ))
+                    return
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []

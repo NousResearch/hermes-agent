@@ -28,6 +28,28 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
   raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
 
+/** Default soft UI tick for ambient widgets (matches common quota countdown cadence). */
+export const DEFAULT_WIDGET_REFRESH_MS = 30_000
+
+/** Parse display.tui_widget_refresh_ms. 0 disables the host-suggested tick. */
+export const normalizeWidgetRefreshMs = (raw: unknown): number => {
+  if (raw === false || raw === null || raw === undefined || raw === '') {
+    return DEFAULT_WIDGET_REFRESH_MS
+  }
+
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : Number.NaN
+
+  if (!Number.isFinite(n) || n < 0) {
+    return DEFAULT_WIDGET_REFRESH_MS
+  }
+
+  if (n === 0) {
+    return 0
+  }
+
+  return Math.max(1_000, Math.floor(n))
+}
+
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
 // TUI defaults to `queue` even though the framework default
@@ -292,7 +314,8 @@ export const applyDisplay = (
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.
-    timestamps: d.timestamps === true
+    timestamps: d.timestamps === true,
+    widgetRefreshMs: normalizeWidgetRefreshMs(d.tui_widget_refresh_ms)
   })
 }
 

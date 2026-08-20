@@ -344,6 +344,8 @@ export interface UiState {
   status: string
   statusBar: StatusBarMode
   streaming: boolean
+  /** Host-suggested ambient widget soft UI-tick period (ms). 0 = off. */
+  widgetRefreshMs: number
   theme: Theme
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).

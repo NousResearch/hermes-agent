@@ -35,6 +35,7 @@ from agent.error_classifier import (
 )
 from agent.errors import EmptyStreamError
 from agent.turn_context import substitute_api_content
+from agent.anthropic_adapter import _model_name_is_kimi_family
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
@@ -1973,6 +1974,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         base_url_host_matches(agent.base_url, "api.kimi.com")
         or base_url_host_matches(agent.base_url, "moonshot.ai")
         or base_url_host_matches(agent.base_url, "moonshot.cn")
+        or _model_name_is_kimi_family(agent.model)
     )
     _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"

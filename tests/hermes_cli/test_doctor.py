@@ -1471,3 +1471,109 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+class TestDoctorNpmAuditMinReleaseAgeBand:
+    """npm 11.10-11.16 honor `min-release-age` but ignore
+    `min-release-age-exclude` (both set in .npmrc), so the `npm audit fix`
+    command doctor hints at ETARGETs on any exempted package (e.g.
+    brace-expansion) — see #83544. On that band, doctor must not hand out a
+    command it knows will fail."""
+
+    def _run(self, monkeypatch, tmp_path, npm_version, inject_workspace_vulns=False,
+             create_node_modules=True, version_calls=None):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(parents=True, exist_ok=True)
+        if create_node_modules:
+            (project / "node_modules").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.delenv("PREFIX", raising=False)
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        npm_bin = "/usr/bin/npm"
+
+        def fake_which(cmd, path=None):
+            if path is not None:
+                return None
+            return npm_bin if cmd == "npm" else None
+
+        monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
+
+        import json as _json
+        import subprocess as _subprocess
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == [npm_bin, "--version"]:
+                if version_calls is not None:
+                    version_calls.append(cmd)
+                return _subprocess.CompletedProcess(cmd, 0, f"{npm_version}\n", "")
+            if cmd[:3] == [npm_bin, "audit", "--json"]:
+                is_flagged_target = "--workspaces=false" in cmd or (
+                    inject_workspace_vulns and "--workspace" in cmd
+                )
+                vulns = (
+                    {"critical": 1, "high": 0, "moderate": 0}
+                    if is_flagged_target
+                    else {"critical": 0, "high": 0, "moderate": 0}
+                )
+                payload = {"metadata": {"vulnerabilities": vulns}}
+                return _subprocess.CompletedProcess(cmd, 0, _json.dumps(payload), "")
+            return _subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_bad_band_npm_does_not_hint_a_command_that_will_etarget(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, "11.12.1")
+        assert "npm audit fix --workspaces=false" not in out
+        assert "npm 11.12.1 honors min-release-age but ignores" in out
+        assert "npm install -g npm@latest" in out
+
+    def test_good_npm_still_gets_the_fix_command(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, "11.17.0")
+        assert "npm audit fix --workspaces=false" in out
+        assert "honors min-release-age" not in out
+
+    def test_bad_band_npm_workspace_advisory_keeps_arborist_message(self, monkeypatch, tmp_path):
+        """web/ui-tui workspace advisories can't be auto-fixed because of a
+        known arborist crash, unrelated to the min-release-age band. That
+        explanation must win even when npm also happens to be in the bad
+        band — see #83544 review."""
+        out = self._run(monkeypatch, tmp_path, "11.12.1", inject_workspace_vulns=True)
+        assert out.count("build-time tooling (not runtime)") == 2
+        # The min-release-age explanation still applies to the non-workspace
+        # (--workspaces=false) target, which has no unrelated arborist issue.
+        assert out.count("can't fix this here") == 1
+        assert "npm install -g npm@latest" in out
+
+    def test_no_node_modules_skips_the_version_probe(self, monkeypatch, tmp_path):
+        """No audit target has node_modules, so no audit can run either way —
+        `npm --version` must not be probed just to compute an unused band
+        check (see #83602 review)."""
+        version_calls = []
+        self._run(monkeypatch, tmp_path, "11.12.1", create_node_modules=False,
+                   version_calls=version_calls)
+        assert version_calls == []

@@ -47,12 +47,35 @@ __all__ = [
     "managed_npm_prefix",
     "upgrade_managed_npm",
     "maybe_repair_npm_engine",
+    "npm_ignores_min_release_age_exclude",
 ]
 
 # npm prints `npm error notsup Required: {...}` on npm >= 10 and
 # `npm ERR! notsup Required: {...}` on older releases.
 _REQUIRED_RE = re.compile(r"Required:\s*(\{.*?\})")
 _ACTUAL_RE = re.compile(r"Actual:\s*(\{.*?\})")
+
+# npm's own version string: "11.12.1", optionally with a pre-release suffix.
+_VERSION_RE = re.compile(r"^(\d+)\.(\d+)")
+
+
+def npm_ignores_min_release_age_exclude(version: str | None) -> bool:
+    """Return True when npm *version* is the 11.10.0-11.16.x "bad band".
+
+    That band honors ``min-release-age`` but ignores
+    ``min-release-age-exclude``, both of which the repo's ``.npmrc`` sets, so
+    it fails ``npm audit`` / ``npm audit fix`` with ``ETARGET`` on any package
+    we deliberately exempted (e.g. ``brace-expansion``) — see #83544. Mirrors
+    ``npm_supports_npmrc`` in ``scripts/install.sh``, which steers a fresh
+    install away from this band; this covers the audit path a system npm
+    still takes after install.
+    """
+    match = _VERSION_RE.match(str(version).strip()) if version else None
+    if not match:
+        return False
+    major, minor = int(match.group(1)), int(match.group(2))
+    return major == 11 and 10 <= minor <= 16
+
 
 # Wall-clock cap for the self-upgrade. The measured in-place upgrade of a
 # managed tree takes ~1s; this only has to cover a slow registry.

@@ -17,6 +17,7 @@ from hermes_cli.npm_engine import (
     is_ebadengine,
     managed_npm_prefix,
     maybe_repair_npm_engine,
+    npm_ignores_min_release_age_exclude,
     required_npm_range,
 )
 
@@ -386,3 +387,26 @@ class TestRepoRangeIsSatisfiable:
             + "\n"
         )
         assert required_npm_range(synthetic) == npm_range
+
+
+class TestNpmIgnoresMinReleaseAgeExclude:
+    """npm 11.10.0-11.16.x honor `min-release-age` but ignore
+    `min-release-age-exclude` — see #83544, where a user hit ETARGET on
+    brace-expansion (a package .npmrc explicitly exempts) via `npm audit
+    fix` on a version in this band."""
+
+    @pytest.mark.parametrize(
+        "version", ["11.10.0", "11.12.1", "11.16.0", "11.16.9"]
+    )
+    def test_bad_band_is_flagged(self, version):
+        assert npm_ignores_min_release_age_exclude(version)
+
+    @pytest.mark.parametrize(
+        "version", ["10.9.8", "11.9.9", "11.17.0", "12.0.2", "9.6.7"]
+    )
+    def test_versions_outside_the_band_are_not_flagged(self, version):
+        assert not npm_ignores_min_release_age_exclude(version)
+
+    @pytest.mark.parametrize("version", [None, "", "not-a-version"])
+    def test_unresolvable_version_is_not_flagged(self, version):
+        assert not npm_ignores_min_release_age_exclude(version)

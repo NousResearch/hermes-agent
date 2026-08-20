@@ -1,6 +1,6 @@
 ---
 name: session-librarian
-description: "Organize sessions by prompt: find, rename, archive, prune."
+description: "Organize sessions by prompt: group, find, rename, archive."
 version: 1.0.0
 author: Hermes Agent + Teknium
 license: MIT
@@ -29,6 +29,7 @@ always shows the plan before touching anything.
 - "What sessions do I have about X?" / "What did we decide about X?"
 - "Rename these sessions to something meaningful."
 - "Clean up my session library" / "archive the stale ones."
+- "Organize my sessions" / "group these sessions by project."
 - "Fork that session into a follow-up focused on Y."
 - "Split this into one session per ticket" (see Parallel workstreams below).
 
@@ -38,6 +39,9 @@ always shows the plan before touching anything.
 |---|---|
 | Find sessions by topic, read content, summarize decisions | `session_search` tool (FTS5 over the message store) |
 | List/filter by metadata (age, source, cost, tokens, workspace) | `hermes sessions list` / `stats` via terminal |
+| Create/list groups | `hermes sessions group create/list` |
+| Add/remove group members | `hermes sessions group add/remove <group> <session-id...>` |
+| Search inside a group | `session_search(query=..., group="Group name")` |
 | Rename | `hermes sessions rename <session_id> <title...>` |
 | Bulk soft-hide (reversible) | `hermes sessions archive <filters>` |
 | Delete (destructive) | `hermes sessions delete` / `hermes sessions prune <filters>` |
@@ -63,6 +67,18 @@ which are proposed for deletion and why (duplicate of which keeper, stale,
 empty). Wait for the user's go-ahead. Exception: a single rename the user
 explicitly dictated can be done directly.
 
+For **"organize/group my sessions"**, use titles plus the short previews from
+`hermes sessions list` and targeted `session_search` results — never dump every
+full transcript into context. Propose a table with group name, optional color,
+session links/IDs, and a separate **Unsorted** list for weak matches. Do not
+create groups or move sessions until the user confirms the plan. After
+confirmation, create only missing groups, then apply membership in batches:
+
+```bash
+hermes sessions group create "Startup" --color blue
+hermes sessions group add "Startup" <session-id> <session-id> ...
+```
+
 ④ **Act with the safest primitive.**
 - Prefer `archive` (reversible soft-hide) over `delete`/`prune`.
 - Always run destructive commands with `--dry-run` first and show the output,
@@ -73,6 +89,7 @@ explicitly dictated can be done directly.
 ⑤ **Report.** Renames applied, sessions archived (count + how to undo:
 archived sessions remain in the DB and are listed with `--include-archived`),
 anything exported, anything skipped and why.
+For grouping, report each group's member count and leave Unsorted untouched.
 
 ## Parallel Workstreams
 

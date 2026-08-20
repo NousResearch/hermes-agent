@@ -99,7 +99,7 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [*historical_prefix, "detail", "group"]
 
 
 class TestFormatTimestamp:
@@ -171,12 +171,94 @@ class TestBrowseShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_browse_can_be_scoped_to_a_session_group(self, db):
+        _seed_modpack_sessions(db)
+        db.create_session_group("Active Project")
+        db.assign_sessions_to_group("Active Project", ["s_middle"])
+
+        result = json.loads(session_search(db=db, group="active project"))
+
+        assert [row["session_id"] for row in result["results"]] == ["s_middle"]
+
+    def test_group_browse_filters_before_global_recency_limit(self, db):
+        db.create_session("grouped-old", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = 1, last_activity_at = 1 "
+            "WHERE id = 'grouped-old'"
+        )
+        db.create_session_group("Old Project")
+        db.assign_sessions_to_group("Old Project", ["grouped-old"])
+        for index in range(20):
+            session_id = f"newer-{index}"
+            db.create_session(session_id, source="cli")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = ?",
+                (100 + index, 100 + index, session_id),
+            )
+        db._conn.commit()
+
+        result = json.loads(session_search(db=db, group="Old Project", limit=3))
+
+        assert [row["session_id"] for row in result["results"]] == ["grouped-old"]
+
 
 # =========================================================================
 # Discovery shape (with query)
 # =========================================================================
 
 class TestDiscoveryShape:
+    def test_discovery_can_be_scoped_to_a_session_group(self, db):
+        _seed_modpack_sessions(db)
+        db.create_session_group("Quest Work")
+        db.assign_sessions_to_group("Quest Work", ["s_middle"])
+
+        result = json.loads(
+            session_search(query="modpack", limit=3, db=db, group="Quest Work")
+        )
+
+        assert result["success"] is True
+        assert [row["session_id"] for row in result["results"]] == ["s_middle"]
+
+    def test_group_discovery_filters_before_global_scan_limit(self, db):
+        db.create_session("grouped-old", source="cli")
+        db.append_message("grouped-old", role="user", content="needle")
+        db.create_session_group("Old Project")
+        db.assign_sessions_to_group("Old Project", ["grouped-old"])
+        for index in range(301):
+            session_id = f"newer-{index}"
+            db.create_session(session_id, source="cli")
+            db.append_message(session_id, role="user", content="needle")
+
+        result = json.loads(
+            session_search(
+                query="needle", sort="newest", db=db, group="Old Project", limit=3
+            )
+        )
+
+        assert [row["session_id"] for row in result["results"]] == ["grouped-old"]
+
+    def test_group_discovery_includes_matches_from_member_lineage(self, db):
+        db.create_session("grouped-root", source="cli")
+        db.create_session(
+            "continuation", source="cli", parent_session_id="grouped-root"
+        )
+        db.append_message("continuation", role="user", content="lineage needle")
+        db.create_session_group("Project")
+        db.assign_sessions_to_group("Project", ["grouped-root"])
+
+        result = json.loads(
+            session_search(query="lineage", db=db, group="Project", limit=3)
+        )
+
+        assert [row["session_id"] for row in result["results"]] == ["continuation"]
+        assert result["results"][0]["parent_session_id"] == "grouped-root"
+
+    def test_unknown_group_is_an_error(self, db):
+        result = json.loads(session_search(query="anything", db=db, group="missing"))
+
+        assert result["success"] is False
+        assert "session group not found" in result["error"]
+
     def test_discovery_field_plan_preserves_full_default_result(self, db, monkeypatch):
         _seed_modpack_sessions(db)
         original = db.search_messages

@@ -25,6 +25,7 @@ import os
 import queue
 import random
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -8663,6 +8664,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_pinned: bool = False,
         session_key: str = None,
         include_hidden: bool = False,
+        session_group_id: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -8717,6 +8719,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Pass ``session_key`` to restrict results to one stable gateway
         conversation scope (DM, group, channel, or thread, including the
         configured per-user isolation policy).
+
+        Pass ``session_group_id`` to restrict the SQL page to conversations
+        whose surfaced row or compression-chain continuation belongs to that
+        group. The predicate is applied before LIMIT/OFFSET.
         """
         # Rows carry token/cost totals — drain queued deltas first so
         # listings (sidebar, /resume, dashboards) show exact counters.
@@ -8847,6 +8853,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
                     id_params.append(_like_pattern(compact_needle))
                 filter_clauses.append(search_clause + "))")
+            if session_group_id:
+                filter_clauses.append(
+                    "EXISTS (SELECT 1 FROM chain gq"
+                    " JOIN session_group_members gm ON gm.session_id = gq.cur_id"
+                    " WHERE gq.root_id = s.id AND gm.group_id = ?)"
+                )
+                id_params.append(session_group_id)
             if filter_clauses:
                 combined = " AND ".join(filter_clauses)
                 outer_where = (
@@ -8894,6 +8907,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # only applies to the outer select.
             params = params + params + id_params + [limit, offset]
         else:
+            if session_group_id:
+                group_clause = (
+                    "s.id IN (SELECT session_id FROM session_group_members "
+                    "WHERE group_id = ?)"
+                )
+                where_sql = (
+                    f"{where_sql} AND {group_clause}"
+                    if where_sql
+                    else f"WHERE {group_clause}"
+                )
+                params.append(session_group_id)
             _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
                 SELECT {_sel}{prompt_select},
@@ -11037,6 +11061,143 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     ids,
                 )
             return len(ids)
+
+        return self._execute_write(_do)
+
+    # =========================================================================
+    # Session groups
+    # =========================================================================
+
+    def create_session_group(self, name: str, color: str = None) -> Dict[str, Any]:
+        """Create a named session group and return its persisted metadata."""
+        group_name = str(name or "").strip()
+        if not group_name:
+            raise ValueError("session group name must not be empty")
+        if len(group_name) > 80:
+            raise ValueError("session group name must be at most 80 characters")
+        group_color = str(color or "").strip() or None
+        group_id = "sg_" + secrets.token_hex(4)
+        created_at = time.time()
+
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO session_groups (id, name, color, created_at) VALUES (?, ?, ?, ?)",
+                (group_id, group_name, group_color, created_at),
+            )
+            return {
+                "id": group_id,
+                "name": group_name,
+                "color": group_color,
+                "created_at": created_at,
+                "session_count": 0,
+            }
+
+        try:
+            return self._execute_write(_do)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"session group already exists: {group_name}") from exc
+
+    def _resolve_session_group(self, conn, id_or_name: str):
+        key = str(id_or_name or "").strip()
+        if not key:
+            return None
+        return conn.execute(
+            "SELECT id, name, color, created_at FROM session_groups "
+            "WHERE id = ? OR name = ? COLLATE NOCASE",
+            (key, key),
+        ).fetchone()
+
+    def list_session_groups(self) -> List[Dict[str, Any]]:
+        """List groups with member counts, oldest groups first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT g.id, g.name, g.color, g.created_at, COUNT(m.session_id) AS session_count "
+                "FROM session_groups g LEFT JOIN session_group_members m ON m.group_id = g.id "
+                "GROUP BY g.id ORDER BY g.created_at ASC, g.name COLLATE NOCASE ASC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_session_group(self, id_or_name: str) -> Optional[Dict[str, Any]]:
+        """Return one group by id or case-insensitive name."""
+        with self._lock:
+            row = self._resolve_session_group(self._conn, id_or_name)
+        return dict(row) if row is not None else None
+
+    def session_ids_for_group(self, id_or_name: str) -> Optional[Set[str]]:
+        """Return member ids, or ``None`` when the requested group is unknown."""
+        with self._lock:
+            group = self._resolve_session_group(self._conn, id_or_name)
+            if group is None:
+                return None
+            rows = self._conn.execute(
+                "SELECT session_id FROM session_group_members WHERE group_id = ?",
+                (group["id"],),
+            ).fetchall()
+        return {str(row["session_id"]) for row in rows}
+
+    def assign_sessions_to_group(
+        self, id_or_name: str, session_ids: List[str]
+    ) -> int:
+        """Move existing sessions into one group. Returns assignments applied."""
+        unique_ids = list(dict.fromkeys(str(s).strip() for s in session_ids if str(s).strip()))
+        if not unique_ids:
+            return 0
+
+        def _do(conn):
+            group = self._resolve_session_group(conn, id_or_name)
+            if group is None:
+                raise ValueError(f"session group not found: {id_or_name}")
+            placeholders = ",".join("?" for _ in unique_ids)
+            existing = {
+                row["id"]
+                for row in conn.execute(
+                    f"SELECT id FROM sessions WHERE id IN ({placeholders})", unique_ids
+                ).fetchall()
+            }
+            missing = [sid for sid in unique_ids if sid not in existing]
+            if missing:
+                raise ValueError(f"session not found: {missing[0]}")
+            now = time.time()
+            conn.executemany(
+                "INSERT INTO session_group_members (session_id, group_id, added_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET "
+                "group_id = excluded.group_id, added_at = excluded.added_at",
+                [(sid, group["id"], now) for sid in unique_ids],
+            )
+            return len(unique_ids)
+
+        return self._execute_write(_do)
+
+    def remove_sessions_from_group(
+        self, id_or_name: str, session_ids: List[str]
+    ) -> int:
+        """Remove selected sessions from a group without deleting either."""
+        unique_ids = list(dict.fromkeys(str(s).strip() for s in session_ids if str(s).strip()))
+        if not unique_ids:
+            return 0
+
+        def _do(conn):
+            group = self._resolve_session_group(conn, id_or_name)
+            if group is None:
+                raise ValueError(f"session group not found: {id_or_name}")
+            placeholders = ",".join("?" for _ in unique_ids)
+            cur = conn.execute(
+                f"DELETE FROM session_group_members WHERE group_id = ? "
+                f"AND session_id IN ({placeholders})",
+                [group["id"], *unique_ids],
+            )
+            return cur.rowcount
+
+        return self._execute_write(_do)
+
+    def delete_session_group(self, id_or_name: str) -> bool:
+        """Delete a group while leaving all member sessions intact."""
+        def _do(conn):
+            group = self._resolve_session_group(conn, id_or_name)
+            if group is None:
+                return False
+            conn.execute("DELETE FROM session_group_members WHERE group_id = ?", (group["id"],))
+            return conn.execute("DELETE FROM session_groups WHERE id = ?", (group["id"],)).rowcount > 0
 
         return self._execute_write(_do)
 

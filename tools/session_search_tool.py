@@ -35,7 +35,7 @@ support.
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 from hermes_state_common import _RESET_END_REASONS
 
@@ -482,7 +482,14 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    link_profile: str = None,
+    group_session_ids: Optional[Set[str]] = None,
+    session_group_id: str = None,
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         # list_sessions_rich (include_children=False) already applies the
@@ -496,6 +503,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
             limit=limit + 15,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
+            session_group_id=session_group_id,
         )  # fetch extra so we can skip current / compression roots
 
         current_root, has_compression_hop = (
@@ -761,11 +769,18 @@ def _discover(
     detail: str,
     current_session_id: str = None,
     link_profile: str = None,
+    group_session_ids: Optional[Set[str]] = None,
+    session_group_id: str = None,
 ) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
+    if title_result and group_session_ids is not None:
+        title_sid = title_result.get("session_id")
+        title_root = title_result.get("_lineage_root")
+        if title_sid not in group_session_ids and title_root not in group_session_ids:
+            title_result = None
 
     try:
         raw_results = db.search_messages(
@@ -778,6 +793,7 @@ def _discover(
             offset=0,
             sort=sort,
             fields=_DISCOVER_SEARCH_FIELDS,
+            session_group_id=session_group_id,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -819,6 +835,12 @@ def _discover(
             break
         raw_sid = r["session_id"]
         resolved_sid, _ = _resolve_to_parent(db, raw_sid)
+        if (
+            group_session_ids is not None
+            and raw_sid not in group_session_ids
+            and resolved_sid not in group_session_ids
+        ):
+            continue
         # Skip the current session lineage — UNLESS the hit's transcript has
         # left live context. Three sub-cases:
         #
@@ -949,6 +971,7 @@ def _session_search_impl(
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
+    group: str = None,
     *,
     _owned_dbs: Optional[List[Any]] = None,
 ) -> str:
@@ -988,6 +1011,15 @@ def _session_search_impl(
             if _owned_dbs is not None:
                 _owned_dbs.append(profile_db)
             current_session_id = None
+
+    group_session_ids: Optional[Set[str]] = None
+    session_group_id: Optional[str] = None
+    if isinstance(group, str) and group.strip():
+        group_meta = db.get_session_group(group.strip())
+        if group_meta is None:
+            return tool_error(f"session group not found: {group.strip()}", success=False)
+        session_group_id = group_meta["id"]
+        group_session_ids = db.session_ids_for_group(session_group_id)
 
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
@@ -1030,7 +1062,14 @@ def _session_search_impl(
 
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+        return _list_recent_sessions(
+            db,
+            limit,
+            current_session_id,
+            link_profile=profile,
+            group_session_ids=group_session_ids,
+            session_group_id=session_group_id,
+        )
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -1059,6 +1098,8 @@ def _session_search_impl(
         detail=detail_norm,
         current_session_id=current_session_id,
         link_profile=profile,
+        group_session_ids=group_session_ids,
+        session_group_id=session_group_id,
     )
 
 
@@ -1078,6 +1119,7 @@ def session_search(
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
+    group: str = None,
 ) -> str:
     """Run session search and close databases opened by this invocation."""
     owned_dbs: List[Any] = []
@@ -1106,6 +1148,7 @@ def session_search(
             sort=sort,
             profile=profile,
             detail=detail,
+            group=group,
             _owned_dbs=owned_dbs,
         )
     finally:
@@ -1130,7 +1173,8 @@ SESSION_SEARCH_SCHEMA = {
     "description": (
         "Search past sessions stored in the local session DB, or scroll inside one. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
-        "shape returns actual messages from the DB.\n\n"
+        "shape returns actual messages from the DB. Discovery and browse can be "
+        "restricted to a named session group.\n\n"
         "SOURCE-FIRST LIMIT\n\n"
         "  This tool searches Hermes conversation history only. It is not evidence "
         "about the current contents of external sources. If the user provided a "
@@ -1290,6 +1334,13 @@ SESSION_SEARCH_SCHEMA = {
                     "Omit to use the current profile."
                 ),
             },
+            "group": {
+                "type": "string",
+                "description": (
+                    "Optional discovery/browse scope. Restrict results to sessions in "
+                    "this session-group name or ID."
+                ),
+            },
         },
         "required": [],
     },
@@ -1313,6 +1364,7 @@ registry.register(
         sort=args.get("sort"),
         detail=args.get("detail", "adaptive"),
         profile=args.get("profile"),
+        group=args.get("group"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
     ),

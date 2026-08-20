@@ -861,6 +861,51 @@ def cmd_sessions(args, sessions_parser=None):
                 exported += 1
         print(f"Exported {exported} session(s) to {output_dir}")
 
+    elif action == "group":
+        group_action = getattr(args, "group_action", None)
+        try:
+            if group_action == "create":
+                group = db.create_session_group(args.name, color=args.color)
+                print(f"Created session group '{group['name']}' ({group['id']}).")
+            elif group_action == "list":
+                groups = db.list_session_groups()
+                if not groups:
+                    print("No session groups found.")
+                else:
+                    print(f"{'Name':<30} {'Sessions':>8}  {'Color':<12} ID")
+                    print("─" * 78)
+                    for group in groups:
+                        print(
+                            f"{group['name'][:28]:<30} {group['session_count']:>8}  "
+                            f"{(group.get('color') or '—')[:10]:<12} {group['id']}"
+                        )
+            elif group_action in {"add", "remove"}:
+                resolved = []
+                for candidate in args.session_ids:
+                    session_id = db.resolve_session_id(candidate)
+                    if not session_id:
+                        raise ValueError(f"session not found: {candidate}")
+                    resolved.append(session_id)
+                if group_action == "add":
+                    count = db.assign_sessions_to_group(args.group, resolved)
+                    print(f"Added {count} session(s) to group '{args.group}'.")
+                else:
+                    count = db.remove_sessions_from_group(args.group, resolved)
+                    print(f"Removed {count} session(s) from group '{args.group}'.")
+            elif group_action == "delete":
+                if not args.yes and not _confirm_prompt(
+                    f"Delete session group '{args.group}'? Sessions will be kept. [y/N] "
+                ):
+                    print("Cancelled.")
+                elif db.delete_session_group(args.group):
+                    print(f"Deleted session group '{args.group}'. Sessions were kept.")
+                else:
+                    print(f"Session group '{args.group}' not found.")
+            else:
+                print("Use: hermes sessions group {create,list,add,remove,delete} ...")
+        except ValueError as exc:
+            print(f"Error: {exc}")
+
     elif action == "delete":
         resolved_session_id = db.resolve_session_id(args.session_id)
         if not resolved_session_id:

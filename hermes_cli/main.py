@@ -13194,7 +13194,7 @@ def main():
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
+        help="Manage session history (list, group, rename, export, prune, delete)",
         description="View and manage the SQLite session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -13596,6 +13596,34 @@ def main():
     )
 
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
+
+    sessions_group = sessions_subparsers.add_parser(
+        "group", help="Create groups and organize sessions into them"
+    )
+    sessions_group_subparsers = sessions_group.add_subparsers(dest="group_action")
+    sessions_group_create = sessions_group_subparsers.add_parser(
+        "create", help="Create a named session group"
+    )
+    sessions_group_create.add_argument("name", help="Group name")
+    sessions_group_create.add_argument("--color", help="Optional display color")
+    sessions_group_subparsers.add_parser("list", help="List session groups")
+    sessions_group_add = sessions_group_subparsers.add_parser(
+        "add", help="Move one or more sessions into a group"
+    )
+    sessions_group_add.add_argument("group", help="Group name or ID")
+    sessions_group_add.add_argument("session_ids", nargs="+", help="Session IDs or unique prefixes")
+    sessions_group_remove = sessions_group_subparsers.add_parser(
+        "remove", help="Remove one or more sessions from a group"
+    )
+    sessions_group_remove.add_argument("group", help="Group name or ID")
+    sessions_group_remove.add_argument("session_ids", nargs="+", help="Session IDs or unique prefixes")
+    sessions_group_delete = sessions_group_subparsers.add_parser(
+        "delete", help="Delete a group without deleting its sessions"
+    )
+    sessions_group_delete.add_argument("group", help="Group name or ID")
+    sessions_group_delete.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
 
     sessions_rename = sessions_subparsers.add_parser(
         "rename", help="Set or change a session's title"

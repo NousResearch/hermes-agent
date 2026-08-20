@@ -2402,6 +2402,12 @@ class MessageEvent:
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
+        # Some platform command pickers render argument-taking commands with a
+        # trailing Unicode ellipsis and submit that display token verbatim
+        # (for example ``/steer… message``).  The ellipsis is UI affordance,
+        # not part of the registered command name.
+        if raw:
+            raw = raw.removesuffix("\u2026") or None
         # Reject file paths: valid command names never contain /
         if raw and "/" in raw:
             return None

@@ -107,6 +107,11 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="/reset session")
         assert event.get_command() == "reset"
 
+    def test_command_menu_ellipsis_is_not_part_of_command_name(self):
+        event = MessageEvent(text="/steer… inspect the review routing")
+        assert event.get_command() == "steer"
+        assert event.get_command_args() == "inspect the review routing"
+
     def test_not_a_command(self):
         event = MessageEvent(text="hello")
         assert event.get_command() is None

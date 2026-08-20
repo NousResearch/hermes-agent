@@ -116,6 +116,11 @@ class HookRegistry:
                 if not events:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue
+                if isinstance(events, str):
+                    events = [events]
+                if not isinstance(events, list):
+                    print(f"[hooks] Skipping {hook_name}: 'events' must be a string or list", flush=True)
+                    continue
 
                 # Dynamically load the handler module.
                 # Register in sys.modules BEFORE exec_module so Pydantic /

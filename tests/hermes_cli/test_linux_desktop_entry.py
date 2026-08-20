@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -189,6 +190,38 @@ def test_refresh_reports_only_tools_that_succeeded(monkeypatch, tmp_path):
 
 def test_run_quiet_swallows_missing_binary(tmp_path):
     assert lde._run_quiet([str(tmp_path / "definitely-not-a-binary")]) is False
+
+
+def test_exec_pins_interpreter_for_python_shebang_script(tmp_path, xdg_home, monkeypatch):
+    """A ``#!/usr/bin/env python3`` script must not be Exec'd bare.
+
+    Desktop launchers resolve ``env python3`` to the system interpreter,
+    which lacks the venv packages. Pin the current interpreter instead.
+    """
+    root = _make_project(tmp_path)
+    script = tmp_path / "hermes"
+    script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(script))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{sys.executable} {script} desktop"
+
+
+def test_exec_leaves_non_python_script_bare(tmp_path, xdg_home, monkeypatch):
+    """Shell wrappers (``#!/usr/bin/env bash``) resolve fine anywhere."""
+    root = _make_project(tmp_path)
+    script = tmp_path / "hermes"
+    script.write_text("#!/usr/bin/env bash\nexec hermes \"$@\"\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(script))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{script} desktop"
 
 
 def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):

@@ -63,15 +63,45 @@ def resolve_exec_command() -> str:
     Prefer the real ``hermes`` executable (argv[0] or PATH). When Hermes
     runs as a module with no launcher installed, use the current
     interpreter, also absolute.
+
+    Desktop launchers start applications with a minimal environment: no
+    shell profile, no venv on PATH, no PYTHONPATH. A checkout's
+    ``./hermes`` script is a ``#!/usr/bin/env python3`` launcher whose
+    interpreter is resolved by ``env`` at exec time — under KDE/GNOME
+    that picks the system python, which lacks the venv packages, and the
+    entry silently dies. Pin the current (venv) interpreter in front of
+    any python-shebang script so the entry works from any launcher.
     """
     from hermes_cli.relaunch import resolve_hermes_bin
 
     bin_path = resolve_hermes_bin()
     if bin_path:
-        argv = [str(Path(bin_path).resolve()), "desktop"]
+        resolved = Path(bin_path).resolve()
+        argv = [str(resolved), "desktop"]
+        if _is_python_script(resolved):
+            # Keep sys.executable as-is: resolving the venv's python
+            # symlink to the base interpreter would skip pyvenv.cfg and
+            # the site-packages .pth files the editable install needs.
+            argv = [str(sys.executable), str(resolved), "desktop"]
     else:
-        argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
+        argv = [str(sys.executable), "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)
+
+
+def _is_python_script(path: Path) -> bool:
+    """True when ``path`` is a text script with a python shebang.
+
+    Such scripts resolve their interpreter through ``env`` at exec time,
+    so a desktop entry must not point at them bare.
+    """
+    try:
+        head = path.read_bytes()[:128]
+    except OSError:
+        return False
+    if not head.startswith(b"#!"):
+        return False
+    shebang = head.splitlines()[0].decode("utf-8", "replace")
+    return "python" in shebang.lower()
 
 
 def _quote_exec_arg(arg: str) -> str:

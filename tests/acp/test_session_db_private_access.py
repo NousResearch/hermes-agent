@@ -178,3 +178,46 @@ class TestPersistRoundTrip:
         assert row["model"] == "stored-model", (
             "COALESCE must preserve the existing model when new value is NULL"
         )
+
+    def test_named_custom_provider_identity_survives_persist(self, tmp_path):
+        """ACP must not persist the non-routable bare ``custom`` bucket."""
+        db = _tmp_db(tmp_path)
+        manager = SessionManager(agent_factory=_mock_agent, db=db)
+        state = manager.create_session()
+        state.model = "example-model"
+        state.agent.provider = "custom"
+        state.agent.base_url = "https://gateway.example.invalid/anthropic/v1"
+        state.agent.api_mode = "anthropic_messages"
+
+        with patch(
+            "hermes_cli.runtime_provider.canonical_custom_identity",
+            return_value="custom:example-gateway",
+        ) as canonicalize:
+            manager.save_session(state.session_id)
+
+        row = db.get_session(state.session_id)
+        metadata = json.loads(row["model_config"])
+        assert metadata["provider"] == "custom:example-gateway"
+        canonicalize.assert_called_once_with(
+            base_url=state.agent.base_url,
+            model="example-model",
+        )
+
+    def test_non_custom_provider_identity_is_unchanged(self, tmp_path):
+        """Built-in providers bypass custom identity recovery."""
+        db = _tmp_db(tmp_path)
+        manager = SessionManager(agent_factory=_mock_agent, db=db)
+        state = manager.create_session()
+        state.agent.provider = "anthropic"
+        state.agent.base_url = "https://api.anthropic.com"
+        state.agent.api_mode = "anthropic_messages"
+
+        with patch(
+            "hermes_cli.runtime_provider.canonical_custom_identity",
+        ) as canonicalize:
+            manager.save_session(state.session_id)
+
+        row = db.get_session(state.session_id)
+        metadata = json.loads(row["model_config"])
+        assert metadata["provider"] == "anthropic"
+        canonicalize.assert_not_called()

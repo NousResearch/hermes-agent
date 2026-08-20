@@ -3092,6 +3092,29 @@ def terminal_tool(
                         session_key=session_key,
                     )
 
+                if (
+                    getattr(proc_session, "exited", False)
+                    and getattr(proc_session, "completion_reason", "") == "failed_start"
+                ):
+                    # The process died during spawn. Reporting "started" here
+                    # hands the agent a session id it can never poll, so fail
+                    # loudly instead — and redact, because the captured output
+                    # can echo credentials that were on the command line.
+                    from agent.redact import redact_terminal_output
+
+                    failed_output = redact_terminal_output(
+                        getattr(proc_session, "output_buffer", "") or "",
+                        command,
+                        force=True,
+                    )
+                    failed_exit = getattr(proc_session, "exit_code", -1)
+                    return json.dumps({
+                        "output": failed_output,
+                        "exit_code": -1 if failed_exit is None else failed_exit,
+                        "error": "Failed to start background process",
+                        "status": "error",
+                    }, ensure_ascii=False)
+
                 result_data = {
                     "output": "Background process started",
                     "session_id": proc_session.id,

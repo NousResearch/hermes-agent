@@ -917,6 +917,113 @@ def test_prepared_aggregator_preserves_reasoning_config(monkeypatch):
     assert captured["reasoning_config"] == expected_reasoning
 
 
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("copilot", "https://api.githubcopilot.com"),
+        ("github-copilot", "https://models.github.ai/inference"),
+    ],
+)
+def test_prepared_copilot_aggregator_marks_only_first_call_user_initiated(
+    monkeypatch, provider, base_url
+):
+    from agent import moa_loop
+
+    calls = []
+    agent = SimpleNamespace(_is_user_initiated_turn=True)
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {
+            "provider": slot["provider"],
+            "model": slot["model"],
+            "base_url": base_url,
+        },
+    )
+    monkeypatch.setattr(
+        moa_loop,
+        "call_llm",
+        lambda **kwargs: calls.append(kwargs) or _response("aggregator acted"),
+    )
+
+    facade = moa_loop.MoAChatCompletions("review", agent=agent)
+    prepared = {
+        "messages": [{"role": "user", "content": "question"}],
+        "aggregator": {"provider": provider, "model": "claude-sonnet-4.6"},
+        "aggregator_temperature": None,
+    }
+    request_headers = {"x-trace-id": "keep", "x-initiator": "agent"}
+
+    facade._call_prepared_aggregator(
+        prepared,
+        {"extra_headers": request_headers},
+    )
+    facade._call_prepared_aggregator(
+        prepared,
+        {"extra_headers": request_headers},
+    )
+
+    assert calls[0]["extra_headers"] == {
+        "x-trace-id": "keep",
+        "x-initiator": "user",
+    }
+    assert calls[1]["extra_headers"] == request_headers
+    assert request_headers == {"x-trace-id": "keep", "x-initiator": "agent"}
+    assert agent._is_user_initiated_turn is False
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        ("openrouter", "https://openrouter.ai/api/v1"),
+        ("custom:copilot", "https://custom.example/v1"),
+        ("custom:github-copilot", "https://custom.example/v1"),
+        ("copilot", "https://custom.example/v1"),
+        ("github-copilot", "https://custom.example/v1"),
+        ("copilot-acp", ""),
+        ("github-copilot-acp", ""),
+        ("copilot-acp-agent", ""),
+    ],
+)
+def test_prepared_non_http_copilot_aggregator_preserves_request_headers(
+    monkeypatch, provider, base_url
+):
+    from agent import moa_loop
+
+    captured = {}
+    agent = SimpleNamespace(_is_user_initiated_turn=True)
+    request_headers = {"x-trace-id": "keep"}
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {
+            "provider": slot["provider"],
+            "model": slot["model"],
+            "base_url": base_url,
+        },
+    )
+    monkeypatch.setattr(
+        moa_loop,
+        "call_llm",
+        lambda **kwargs: captured.update(kwargs) or _response("aggregator acted"),
+    )
+
+    facade = moa_loop.MoAChatCompletions("review", agent=agent)
+    facade._call_prepared_aggregator(
+        {
+            "messages": [{"role": "user", "content": "question"}],
+            "aggregator": {"provider": provider, "model": "aggregator"},
+            "aggregator_temperature": None,
+        },
+        {"extra_headers": request_headers},
+    )
+
+    assert captured["extra_headers"] == request_headers
+    assert agent._is_user_initiated_turn is True
+
+
 
 
 

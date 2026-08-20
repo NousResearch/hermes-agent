@@ -198,6 +198,25 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
 
 
+def test_restore_backups_excluded_from_skill_discovery(tmp_path):
+    """Backup snapshots under .restore-backups must not shadow live skills."""
+    skill_dir = tmp_path / "software-development" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: my-skill\n---\n", encoding="utf-8"
+    )
+
+    backup = tmp_path / ".restore-backups" / "reconcile-20260808" / "software-development" / "my-skill"
+    backup.mkdir(parents=True)
+    (backup / "SKILL.md").write_text(
+        "---\nname: my-skill\n---\n", encoding="utf-8"
+    )
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+    assert found == [skill_dir / "SKILL.md"]
+    assert is_excluded_skill_path(backup / "SKILL.md") is True
+
+
 def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monkeypatch):
     discovery_root = tmp_path / "site-packages" / "skills"
     umbrella = discovery_root / "category" / "umbrella"

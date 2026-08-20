@@ -12,7 +12,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isLiteralCtrl, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
@@ -608,17 +608,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (isCtrl(key, ch, 'x') && handleInputSelectionClipboard(getInputSelection(), 'cut')) {
+    if (isLiteralCtrl(key, ch, 'x') && handleInputSelectionClipboard(getInputSelection(), 'cut')) {
       return
     }
 
-    if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
+    if (isLiteralCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
       cActions.removeQueue(cState.queueEditIdx)
 
       return cActions.clearIn()
     }
 
-    if (isCtrl(key, ch, 'x')) {
+    if (isLiteralCtrl(key, ch, 'x')) {
       return patchOverlayState({ sessions: true })
     }
 

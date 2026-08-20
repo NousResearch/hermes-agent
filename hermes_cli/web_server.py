@@ -1844,6 +1844,9 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     for path in (f"{base}/health/detailed", f"{base}/health"):
         try:
             req = urllib.request.Request(path, method="GET")
+            key = os.getenv("API_SERVER_KEY", "") or ""
+            if key:
+                req.add_header("Authorization", f"Bearer {key}")
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
                     body = json.loads(resp.read())

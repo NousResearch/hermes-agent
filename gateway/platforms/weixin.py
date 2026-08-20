@@ -157,6 +157,9 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     if not AIOHTTP_AVAILABLE:
         return None
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    # Tencent's CDN (novac2c.cdn.weixin.qq.com) rejects OpenSSL 3.2+ default
+    # SECLEVEL=2 ClientHello with SSLV3_ALERT_HANDSHAKE_FAILURE.
+    ssl_ctx.set_ciphers("DEFAULT@SECLEVEL=1")
     return aiohttp.TCPConnector(
         ssl=ssl_ctx,
         # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451, #69089).

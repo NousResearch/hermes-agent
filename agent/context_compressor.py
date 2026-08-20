@@ -1443,6 +1443,13 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     to begin with — some model backends use non-JSON tool arguments — the
     original string is returned unchanged rather than replaced with
     something neither we nor the backend can parse.
+
+    Long string leaves are cut at ``head_chars`` with NO truncation marker
+    appended. The compacted arguments are history context, not the executed
+    call, and a marker inside the JSON is copyable content: a model that
+    re-emits a truncated patch (e.g. after a retry) pastes the marker into
+    the written file, corrupting it with literal ``...[truncated]`` text
+    (issue #83714).
     """
     try:
         parsed = json.loads(args)
@@ -1452,7 +1459,7 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
             if len(obj) > head_chars:
-                return obj[:head_chars] + "...[truncated]"
+                return obj[:head_chars]
             return obj
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}

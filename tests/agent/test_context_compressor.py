@@ -2106,9 +2106,32 @@ class TestTruncateToolCallArgsJson:
         shrunk = shrink(original)
         parsed = _json.loads(shrunk)  # must not raise
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        # No copyable truncation marker (#83714) — just a silent head cut.
+        assert "...[truncated]" not in shrunk
+        assert len(parsed["content"]) == 200  # capped at head_chars=200
         assert len(shrunk) < len(original)
 
+
+
+
+    def test_no_copyable_marker_in_shrunken_args(self):
+        """Issue #83714: shrunken patch args must not contain a literal
+        ``...[truncated]`` marker — models copy it into the written file
+        when they re-emit a truncated patch from compacted history."""
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({
+            "path": "/tmp/example.py",
+            "old_string": "def old():",
+            "new_string": "def new():\n    return " + "x" * 400,
+        })
+        shrunk = shrink(payload)
+        assert "...[truncated]" not in shrunk
+        assert "…[truncated]" not in shrunk
+        parsed = _json.loads(shrunk)  # still valid JSON
+        assert parsed["path"] == "/tmp/example.py"
+        assert parsed["old_string"] == "def old():"
+        assert len(parsed["new_string"]) == 200  # head cut, no marker
 
 
 
@@ -2127,7 +2150,8 @@ class TestTruncateToolCallArgsJson:
         assert parsed["enabled"] is True
         assert parsed["timeout"] is None
         assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].endswith("...[truncated]")
+        assert parsed["note"] == "z" * 200  # capped at head_chars, no marker
+        assert "...[truncated]" not in _json.dumps(parsed)
 
 
 
@@ -2165,7 +2189,9 @@ class TestTruncateToolCallArgsJson:
         # Must parse — otherwise downstream provider returns 400
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        # No copyable truncation marker (#83714) — silent head cut only.
+        assert "...[truncated]" not in shrunk
+        assert len(parsed["content"]) == 200
 
 
 class TestLazyContextResolution:

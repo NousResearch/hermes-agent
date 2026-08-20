@@ -996,6 +996,27 @@ class HermesACPAgent(acp.Agent):
         return target_provider, new_model
 
     @staticmethod
+    def _resolve_session_model_kwarg(kwargs: dict) -> tuple[str | None, str | None]:
+        """Resolve an optional client-supplied ``model`` from ACP request kwargs.
+
+        The vendored ACP request schemas (``NewSessionRequest`` /
+        ``LoadSessionRequest``) do not declare a ``model`` field, so clients
+        convey it through the reserved ``_meta`` extension, which the router
+        merges into the handler's ``**kwargs``.  Both snake_case (``model``)
+        and camelCase (``modelId`` / ``model_id``) spellings are accepted.
+
+        Returns ``(requested_provider, resolved_model)``, or ``(None, None)``
+        when the client did not request a specific model.
+        """
+        raw = kwargs.get("model") or kwargs.get("modelId") or kwargs.get("model_id")
+        if not raw or not str(raw).strip():
+            return None, None
+        requested_provider, resolved_model = HermesACPAgent._resolve_model_selection(
+            str(raw).strip(), "openrouter"
+        )
+        return requested_provider, resolved_model
+
+    @staticmethod
     def _build_usage_update(state: SessionState) -> UsageUpdate | None:
         """Build ACP native context-usage data for clients like Zed.
 
@@ -1594,7 +1615,12 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        state = self.session_manager.create_session(cwd=cwd)
+        requested_provider, resolved_model = self._resolve_session_model_kwarg(kwargs)
+        state = self.session_manager.create_session(
+            cwd=cwd,
+            model=resolved_model,
+            requested_provider=requested_provider,
+        )
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
@@ -1620,6 +1646,41 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None
+        requested_provider, resolved_model = self._resolve_session_model_kwarg(kwargs)
+        if resolved_model:
+            # Client requested a specific model on load — apply it the same
+            # way ``set_session_model`` does (resolve → rebuild → persist) so
+            # no separate model-switch round-trip is required after load.
+            current_provider = getattr(state.agent, "provider", None)
+            provider_changed = bool(
+                current_provider and requested_provider != current_provider
+            )
+            current_base_url = (
+                None
+                if provider_changed
+                else getattr(state.agent, "base_url", None)
+            )
+            current_api_mode = (
+                None
+                if provider_changed
+                else getattr(state.agent, "api_mode", None)
+            )
+            state.model = resolved_model
+            state.agent = self.session_manager._make_agent(
+                session_id=session_id,
+                cwd=state.cwd,
+                model=resolved_model,
+                requested_provider=requested_provider,
+                base_url=current_base_url,
+                api_mode=current_api_mode,
+            )
+            self.session_manager.save_session(session_id)
+            logger.info(
+                "Session %s: model applied on load -> %s via provider %s",
+                session_id,
+                resolved_model,
+                requested_provider,
+            )
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("Loaded session %s", session_id)

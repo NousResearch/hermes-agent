@@ -207,13 +207,29 @@ class SessionManager:
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
-        """Create a new session with a unique ID and a fresh AIAgent."""
+    def create_session(
+        self,
+        cwd: str = ".",
+        model: str | None = None,
+        requested_provider: str | None = None,
+    ) -> SessionState:
+        """Create a new session with a unique ID and a fresh AIAgent.
+
+        ``model`` / ``requested_provider`` are optional: when supplied they are
+        forwarded to ``_make_agent`` so a client can request a specific model
+        at ``session/new`` time instead of forcing an extra
+        ``set_session_model`` round-trip.
+        """
         import threading
 
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
+        agent = self._make_agent(
+            session_id=session_id,
+            cwd=cwd,
+            model=model,
+            requested_provider=requested_provider,
+        )
         state = SessionState(
             session_id=session_id,
             agent=agent,

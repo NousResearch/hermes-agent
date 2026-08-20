@@ -286,6 +286,68 @@ class TestSessionOps:
         resp = await agent.load_session(cwd="/tmp", session_id="bogus")
         assert resp is None
 
+    @pytest.mark.asyncio
+    async def test_new_session_forwards_model_kwarg_to_agent(self):
+        """session/new must honor an optional model kwarg (via _meta) instead of
+        forcing a separate set_session_model round-trip (#80150)."""
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="default-model",
+                provider="openrouter",
+                base_url=None,
+                api_mode=None,
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        manager._make_agent = MagicMock(wraps=manager._make_agent)
+
+        resp = await acp_agent.new_session(
+            cwd="/tmp", model="openai-codex:gpt-5.4"
+        )
+
+        assert resp.session_id
+        manager._make_agent.assert_called_once()
+        call_kwargs = manager._make_agent.call_args.kwargs
+        assert call_kwargs["session_id"] == resp.session_id
+        assert call_kwargs["model"] == "gpt-5.4"
+        assert call_kwargs["requested_provider"] == "openai-codex"
+
+    @pytest.mark.asyncio
+    async def test_load_session_applies_model_kwarg_to_rebuilt_agent(
+        self, agent, mock_manager
+    ):
+        """session/load must apply an optional model kwarg by rebuilding the
+        agent, matching set_session_model (#80150)."""
+        created = mock_manager.create_session(cwd="/tmp")
+        mock_manager._make_agent = MagicMock(wraps=mock_manager._make_agent)
+
+        resp = await agent.load_session(
+            cwd="/tmp", session_id=created.session_id, model="openai-codex:gpt-5.4"
+        )
+
+        assert isinstance(resp, LoadSessionResponse)
+        state = mock_manager.get_session(created.session_id)
+        assert state.model == "gpt-5.4"
+        mock_manager._make_agent.assert_called_once()
+        call_kwargs = mock_manager._make_agent.call_args.kwargs
+        assert call_kwargs["session_id"] == created.session_id
+        assert call_kwargs["model"] == "gpt-5.4"
+        assert call_kwargs["requested_provider"] == "openai-codex"
+
+    @pytest.mark.asyncio
+    async def test_load_session_without_model_kwarg_keeps_agent(self, agent, mock_manager):
+        """session/load with no model kwarg must not rebuild the agent."""
+        created = mock_manager.create_session(cwd="/tmp")
+        original_agent = created.agent
+        mock_manager._make_agent = MagicMock(wraps=mock_manager._make_agent)
+
+        resp = await agent.load_session(cwd="/tmp", session_id=created.session_id)
+
+        assert isinstance(resp, LoadSessionResponse)
+        state = mock_manager.get_session(created.session_id)
+        assert state.agent is original_agent
+        mock_manager._make_agent.assert_not_called()
+
 
 
 

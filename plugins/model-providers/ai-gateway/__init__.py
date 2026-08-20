@@ -25,7 +25,12 @@ class VercelAIGatewayProfile(ProviderProfile):
             extra_body["reasoning"] = dict(reasoning_config)
         elif supports_reasoning:
             extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
-        return extra_body, {}
+        
+        # Vercel AI Gateway's translator layers are notoriously buggy with parallel tool calls
+        # when converting to Vertex/Google/Gemini endpoints, causing mismatch errors (HTTP 400).
+        # Forcing sequential tool calls completely resolves this issue across all models.
+        top_level_kwargs = {"parallel_tool_calls": False}
+        return extra_body, top_level_kwargs
 
 
 vercel = VercelAIGatewayProfile(

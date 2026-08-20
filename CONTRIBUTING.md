@@ -54,6 +54,20 @@ This is the most common question for new contributors. The answer is almost alwa
 - It handles binary data, streaming, or real-time events that can't go through the terminal
 - Examples: browser automation (Browserbase session management), TTS (audio encoding + platform delivery), vision analysis (base64 image handling)
 
+### One tool, many actions — don't add a tool per verb
+
+When a capability needs several related operations on the same resource
+(create/read/update/delete, or a handful of sibling queries), prefer a
+single tool with an `action` parameter, optionally paired with a resource
+selector, that dispatches internally, rather than registering a separate
+tool per verb. `memory` (`action: add | replace | remove` selects the verb,
+`target: memory | user` selects the store) and `cronjob` follow this pattern
+already — it keeps the tool list (and the token cost of every tool's
+schema/description in every request) from growing linearly with the
+number of operations a feature needs. Reach for multiple tools only when
+the operations genuinely have different input/output shapes, not just
+different verbs on the same resource.
+
 ### Should the Skill be bundled?
 
 Bundled skills (in `skills/`) ship with every Hermes install. They should be **broadly useful to most users**:

@@ -335,7 +335,9 @@ def _get_extract_backend() -> str:
     """Determine which backend to use for web_extract specifically.
 
     Selection priority:
-    1. ``web.extract_backend`` (per-capability override)
+    1. ``web.extract_backend`` (per-capability override). The special values
+       ``disabled``, ``off`` and ``false`` are a hard off-switch and never
+       fall back to another backend.
     2. ``web.backend`` (shared fallback — existing behavior)
     3. Auto-detect from env vars
     """
@@ -353,10 +355,26 @@ def _get_capability_backend(capability: str) -> str:
     per-capability override is stored.
     """
     cfg = _load_web_config()
-    specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
+    specific_raw = cfg.get(f"{capability}_backend")
+    if capability == "extract" and _is_web_extract_disabled(specific_raw):
+        return "disabled"
+    specific = (specific_raw or "").lower().strip()
     if specific:
         return specific
     return _get_backend()
+
+
+def _is_web_extract_disabled(value: Any | None = None) -> bool:
+    """Return True when config explicitly disables ``web_extract``.
+
+    ``web.extract_backend`` is normally a provider selector. Users may set it
+    to ``disabled`` (or common boolean/off synonyms) to mean "do not expose or
+    run URL extraction at all". ``none`` is intentionally not treated as a
+    disable synonym because it can also mean an unrecognized provider selector.
+    """
+    if value is None:
+        value = _load_web_config().get("extract_backend")
+    return str(value or "").lower().strip() in {"disabled", "off", "false"}
 
 
 def _tavily_explicitly_configured() -> bool:
@@ -950,6 +968,14 @@ async def web_extract_tool(
             results = []
         else:
             backend = _get_extract_backend()
+            if backend == "disabled":
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "web_extract disabled by config: web.extract_backend=disabled",
+                    },
+                    ensure_ascii=False,
+                )
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
             # tavily, firecrawl) now live as plugins. The dispatcher is a
@@ -1170,6 +1196,23 @@ async def web_extract_tool(
 
 
 # Convenience function to check Firecrawl credentials
+def check_web_search_api_key() -> bool:
+    """Check whether ``web_search`` has an available backend."""
+    return check_web_api_key()
+
+
+def check_web_extract_api_key() -> bool:
+    """Check whether ``web_extract`` has an available extract backend.
+
+    Unlike the shared legacy check, an explicit ``web.extract_backend`` disable
+    must hide the extract tool even when search or managed Firecrawl is
+    otherwise available.
+    """
+    if _is_web_extract_disabled():
+        return False
+    return check_web_api_key()
+
+
 def _provider_is_ready(provider) -> bool:
     """Return True when *provider* reports readiness without raising.
 
@@ -1382,7 +1425,7 @@ registry.register(
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
-    check_fn=check_web_api_key,
+    check_fn=check_web_search_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",
     max_result_size_chars=100_000,
@@ -1396,7 +1439,7 @@ registry.register(
         "markdown",
         char_limit=args.get("char_limit"),
     ),
-    check_fn=check_web_api_key,
+    check_fn=check_web_extract_api_key,
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",

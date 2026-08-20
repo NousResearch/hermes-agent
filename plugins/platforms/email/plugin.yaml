@@ -37,3 +37,15 @@ optional_env:
     description: "Default address for cron / notification delivery"
     prompt: "Home address"
     password: false
+  - name: EMAIL_DISPLAY_NAME
+    description: "Friendly display name for the outbound From header (e.g. Alex Assistant)"
+    prompt: "From display name"
+    password: false
+  - name: EMAIL_DEFAULT_SUBJECT
+    description: "Fallback subject for outbound mail (default: Hermes Agent)"
+    prompt: "Default subject"
+    password: false
+  - name: EMAIL_SIGNATURE
+    description: "Signature appended to outbound mail below an RFC '-- ' delimiter (\\n for newlines)"
+    prompt: "Email signature"
+    password: false

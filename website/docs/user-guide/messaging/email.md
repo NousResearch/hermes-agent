@@ -122,6 +122,33 @@ Replies are sent via SMTP with proper email threading:
 - **Message-ID** generated with the agent's domain
 - Responses are sent as plain text (UTF-8)
 
+### Outbound Customization
+
+Three optional variables shape how outbound mail looks:
+
+- **`EMAIL_DISPLAY_NAME`** — friendly display name for the `From` header. SMTP providers (including Gmail) don't stamp the account's display name on client-submitted mail, so without this recipients see only the bare address.
+- **`EMAIL_DEFAULT_SUBJECT`** — subject used when no thread subject is available (default: `Hermes Agent`). In the standalone send path, a message whose first line is `Subject: ...` has that line lifted into the real Subject header instead.
+- **`EMAIL_SIGNATURE`** — signature appended to every outbound body below an RFC 3676 `-- ` delimiter. Use literal `\n` for line breaks. Skipped automatically if the signature text is already present in the body.
+
+```bash
+EMAIL_DISPLAY_NAME=Alex Assistant
+EMAIL_DEFAULT_SUBJECT=Note from Alex
+EMAIL_SIGNATURE=Best,\nAlex
+```
+
+With that configuration, an outbound email arrives as:
+
+```text
+From: Alex Assistant <assistant@example.com>
+Subject: Note from Alex
+
+Here's the summary you asked for.
+
+-- 
+Best,
+Alex
+```
+
 ### File Attachments
 
 The agent can send file attachments in replies. Include `MEDIA:/path/to/file` in the response and the file is attached to the outgoing email.
@@ -196,3 +223,6 @@ Email access is stricter by default than chat-style platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_DISPLAY_NAME` | No | — | Display name for the outbound `From` header |
+| `EMAIL_DEFAULT_SUBJECT` | No | `Hermes Agent` | Fallback subject for outbound mail |
+| `EMAIL_SIGNATURE` | No | — | Signature appended below an RFC `-- ` delimiter (`\n` for newlines) |

@@ -834,6 +834,139 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(send_call["From"], "hermes@test.com")
 
 
+class TestOutboundCustomization(unittest.TestCase):
+    """EMAIL_DISPLAY_NAME / EMAIL_DEFAULT_SUBJECT / EMAIL_SIGNATURE and the
+    standalone Subject-line lift."""
+
+    OUTBOUND_VARS = ("EMAIL_DISPLAY_NAME", "EMAIL_DEFAULT_SUBJECT", "EMAIL_SIGNATURE")
+
+    def setUp(self):
+        # Ensure a clean slate: individual tests opt into specific vars.
+        self._saved = {var: os.environ.pop(var, None) for var in self.OUTBOUND_VARS}
+
+    def tearDown(self):
+        for var, val in self._saved.items():
+            if val is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = val
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def _send(self, adapter, body="Hello there."):
+        """Run adapter._send_email against a mocked SMTP; return the sent message."""
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email("user@test.com", body, None)
+            return mock_server.send_message.call_args[0][0]
+
+    @staticmethod
+    def _body_of(sent_msg):
+        return sent_msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
+
+    # ── From display name ────────────────────────────────────────────────
+
+    def test_from_header_includes_display_name(self):
+        adapter = self._make_adapter()
+        with patch.dict(os.environ, {"EMAIL_DISPLAY_NAME": "Alex Assistant"}):
+            sent = self._send(adapter)
+        self.assertEqual(sent["From"], "Alex Assistant <hermes@test.com>")
+
+    def test_from_header_bare_address_by_default(self):
+        adapter = self._make_adapter()
+        sent = self._send(adapter)
+        self.assertEqual(sent["From"], "hermes@test.com")
+
+    # ── Default subject ──────────────────────────────────────────────────
+
+    def test_default_subject_env_override(self):
+        adapter = self._make_adapter()
+        with patch.dict(os.environ, {"EMAIL_DEFAULT_SUBJECT": "Note from Alex"}):
+            sent = self._send(adapter)
+        self.assertEqual(sent["Subject"], "Re: Note from Alex")
+
+    def test_default_subject_fallback(self):
+        adapter = self._make_adapter()
+        sent = self._send(adapter)
+        self.assertEqual(sent["Subject"], "Re: Hermes Agent")
+
+    # ── Signature ────────────────────────────────────────────────────────
+
+    def test_signature_appended_with_delimiter(self):
+        adapter = self._make_adapter()
+        with patch.dict(os.environ, {"EMAIL_SIGNATURE": "Best, Alex"}):
+            sent = self._send(adapter, "Here is the answer.")
+        self.assertEqual(self._body_of(sent), "Here is the answer.\n\n-- \nBest, Alex\n")
+
+    def test_signature_not_duplicated(self):
+        from plugins.platforms.email.adapter import _apply_signature
+        with patch.dict(os.environ, {"EMAIL_SIGNATURE": "Best, Alex"}):
+            once = _apply_signature("Hello.")
+            twice = _apply_signature(once)
+        self.assertEqual(once, twice)
+        self.assertEqual(once.count("Best, Alex"), 1)
+
+    def test_signature_literal_newlines_expanded(self):
+        from plugins.platforms.email.adapter import _apply_signature
+        with patch.dict(os.environ, {"EMAIL_SIGNATURE": "Best,\\nAlex"}):
+            result = _apply_signature("Hello.")
+        self.assertEqual(result, "Hello.\n\n-- \nBest,\nAlex\n")
+
+    def test_signature_unset_body_unchanged(self):
+        from plugins.platforms.email.adapter import _apply_signature
+        self.assertEqual(_apply_signature("Hello."), "Hello.")
+
+    # ── Subject-line lift (standalone send) ──────────────────────────────
+
+    def _standalone(self, message):
+        import asyncio
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _standalone_send
+        env = {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": "587",
+        }
+        with patch.dict(os.environ, env), patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            result = asyncio.run(
+                _standalone_send(
+                    SimpleNamespace(token=None, api_key=None, extra={}),
+                    "user@test.com",
+                    message,
+                )
+            )
+            self.assertTrue(result["success"])
+            return mock_server.send_message.call_args[0][0]
+
+    def test_standalone_send_lifts_subject_line(self):
+        sent = self._standalone("Subject: Quarterly numbers\n\nHere they are.")
+        self.assertEqual(sent["Subject"], "Quarterly numbers")
+        self.assertEqual(
+            sent.get_payload(decode=True).decode("utf-8"), "Here they are."
+        )
+
+    def test_standalone_send_without_subject_line_uses_default(self):
+        sent = self._standalone("Just a plain message.")
+        self.assertEqual(sent["Subject"], "Hermes Agent")
+        self.assertEqual(
+            sent.get_payload(decode=True).decode("utf-8"), "Just a plain message."
+        )
+
+
 class TestSmtpConnectionCleanup(unittest.TestCase):
     """Verify SMTP connections are closed even when send_message raises."""
 

@@ -13,6 +13,9 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+    EMAIL_DISPLAY_NAME  — Friendly display name for the outbound From header
+    EMAIL_DEFAULT_SUBJECT — Fallback subject for outbound mail (default: "Hermes Agent")
+    EMAIL_SIGNATURE     — Signature appended to outbound bodies below an RFC "-- " delimiter
 """
 
 import asyncio
@@ -33,7 +36,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formataddr, formatdate
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -524,6 +527,55 @@ def _extract_attachments(
             })
 
     return attachments
+
+
+def _default_subject() -> str:
+    """Fallback Subject for outbound mail (EMAIL_DEFAULT_SUBJECT, default "Hermes Agent")."""
+    return os.getenv("EMAIL_DEFAULT_SUBJECT") or "Hermes Agent"
+
+
+def _from_header(address: str) -> str:
+    """From header with an optional friendly display name (EMAIL_DISPLAY_NAME).
+
+    SMTP providers (e.g. Gmail) don't stamp the account display name on
+    client-submitted mail — the client must send an RFC 5322 name-addr
+    itself. Unset → the bare address, unchanged behavior.
+    """
+    display_name = os.getenv("EMAIL_DISPLAY_NAME", "").strip()
+    return formataddr((display_name, address)) if display_name else address
+
+
+def _apply_signature(body: str) -> str:
+    """Append EMAIL_SIGNATURE to an outbound body below an RFC 3676 "-- " delimiter.
+
+    The env value may contain literal ``\\n`` escapes for multi-line
+    signatures. No-op when unset or when the signature text already appears
+    in the body (e.g. the model copied it in).
+    """
+    sig = os.getenv("EMAIL_SIGNATURE", "")
+    if not sig:
+        return body
+    sig = sig.replace("\\n", "\n").strip()
+    if not sig or sig in body:
+        return body
+    return body.rstrip() + "\n\n-- \n" + sig + "\n"
+
+
+def _lift_subject(message: str) -> Tuple[Optional[str], str]:
+    """Split a leading ``Subject: ...`` line off an outbound message.
+
+    Models naturally write "Subject: ..." as the first line of a composed
+    email; without this it lands inside the body under a hardcoded header.
+    Returns ``(subject, remainder)`` when the first non-empty line is a
+    Subject: line, else ``(None, message)`` unchanged.
+    """
+    stripped = message.lstrip()
+    if stripped.lower().startswith("subject:"):
+        first_line, _, rest = stripped.partition("\n")
+        candidate = first_line.split(":", 1)[1].strip()
+        if candidate:
+            return candidate, rest.lstrip("\n")
+    return None, message
 
 
 class EmailAdapter(BasePlatformAdapter):
@@ -1162,13 +1214,14 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to_msg_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        body = _apply_signature(body)
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = _from_header(self._address)
         msg["To"] = to_addr
 
         # Thread context for reply
         ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        subject = ctx.get("subject") or _default_subject()
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
@@ -1277,12 +1330,13 @@ class EmailAdapter(BasePlatformAdapter):
         file_paths: List[str],
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
+        body = _apply_signature(body)
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = _from_header(self._address)
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        subject = ctx.get("subject") or _default_subject()
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
@@ -1357,12 +1411,13 @@ class EmailAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
+        body = _apply_signature(body)
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = _from_header(self._address)
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        subject = ctx.get("subject") or _default_subject()
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
@@ -1452,11 +1507,16 @@ async def _standalone_send(
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
+    # Models naturally write "Subject: ..." as the first line of a composed
+    # email — lift it into the real header instead of leaving it in the body.
+    subject, body = _lift_subject(message)
+    body = _apply_signature(body)
+
     try:
-        msg = MIMEText(message, "plain", "utf-8")
-        msg["From"] = address
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["From"] = _from_header(address)
         msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
+        msg["Subject"] = subject or _default_subject()
         msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)

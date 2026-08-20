@@ -754,8 +754,11 @@ def test_extra_args_proxy_override_refuses_under_egress(monkeypatch):
         _make_dummy_env(extra_args=["-e", "HTTPS_PROXY="])
 
 
-def test_reuse_rejects_container_when_runtime_fingerprint_drifts(monkeypatch):
-    """Changing immutable docker-run config must not reattach to the old box."""
+@pytest.mark.parametrize("stored_fingerprint", ["stale-fingerprint", "<no value>"])
+def test_reuse_rejects_container_when_runtime_fingerprint_drifts(
+    monkeypatch, stored_fingerprint,
+):
+    """Drifted and legacy unlabeled containers must not be reattached."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
     docker_env._cgroup_limits_ok = True
@@ -772,7 +775,13 @@ def test_reuse_rejects_container_when_runtime_fingerprint_drifts(monkeypatch):
                     cmd, 0, stdout="reused-cid\trunning\t<no value>\n", stderr="",
                 )
             if sub == "inspect":
-                return subprocess.CompletedProcess(cmd, 0, stdout="stale-fingerprint\n", stderr="")
+                format_arg = cmd[cmd.index("--format") + 1]
+                assert format_arg == (
+                    '{{index .Config.Labels "hermes-runtime-fingerprint"}}'
+                )
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{stored_fingerprint}\n", stderr="",
+                )
             if sub == "rm":
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub == "run":

@@ -9189,6 +9189,10 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     Called early on every hermes invocation. The .old files are unlocked once
     their owning process exited, so deletion succeeds the next run. Silent
     no-op when nothing's there or on file-locked / permission errors.
+
+    Also sweeps orphaned ``PendingFileRenameOperations`` entries left by
+    ``_schedule_replace_on_reboot`` calls whose recovery install then failed —
+    see :func:`_cleanup_pending_file_rename_operations`.
     """
     if not _is_windows():
         return
@@ -9205,6 +9209,178 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
                 pass  # still locked or in use — try again next run
     except OSError:
         pass
+    _cleanup_pending_file_rename_operations()
+
+
+# Registry path for the Windows Session Manager's pending-rename queue.
+# ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)`` writes pairs of strings here
+# (source, target) that the kernel applies before any user-mode code runs on
+# the next boot.  ``_schedule_replace_on_reboot`` uses this to rename locked
+# ``hermes*.exe`` shims aside so uv can write fresh copies — but neither success
+# nor failure of the subsequent install removes the queued entries (#85839).
+_PENDING_RENAME_KEY = (
+    r"SYSTEM\CurrentControlSet\Control\Session Manager"
+)
+_PENDING_RENAME_VALUE = "PendingFileRenameOperations"
+
+
+def _cleanup_pending_file_rename_operations() -> None:
+    """Remove orphaned/armed hermes-shim entries from ``PendingFileRenameOperations``.
+
+    ``_schedule_replace_on_reboot`` queues ``MoveFileExW`` pairs into the
+    Session Manager registry so a locked ``hermes.exe`` can be renamed aside
+    on next boot.  Three problems arise:
+
+    1. Nothing removes the queued entries — not on install success, not on
+       failure.  They survive indefinitely.
+    2. Across repeated failed boot-recoveries each attempt queues another pair,
+       so entries accumulate one-per-failed-boot.
+    3. On the next reboot the Session Manager applies entry #1, renaming the
+       **current, healthy** ``hermes.exe`` → ``hermes.exe.old.<ts>`` because
+       the source path still matches.  The shim vanishes after a reboot that
+       was supposed to fix things (#85839).
+
+    This function scans ``PendingFileRenameOperations`` and removes hermes-shim
+    pairs when:
+
+    - the source file no longer exists (the shim was successfully rewritten by
+      a later install — the pending rename is now a booby trap), OR
+    - the source still exists but the target ``.old.`` backup no longer exists
+      (stale pair from a failed cycle), OR
+    - the source is a **current healthy shim** (``hermes*.exe`` without
+      ``.old.``) and the target is a ``.old.`` backup — this is the "armed"
+      rename-away that will destroy the healthy shim on next boot.  Once the
+      install is known-good (we're running), this pending rename is a trap.
+
+    Pairs for other applications are left untouched.  Never raises — registry
+    access failures are silently ignored.  Uses a read-first pattern to avoid
+    requesting KEY_WRITE on every launch for non-elevated users.
+    """
+    if not _is_windows():
+        return
+    try:
+        import winreg
+    except ImportError:
+        return
+
+    # Read-first: open with KEY_READ, only re-open with KEY_WRITE if we have changes.
+    try:
+        key_read = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            _PENDING_RENAME_KEY,
+            0,
+            winreg.KEY_READ,
+        )
+    except OSError:
+        return  # key missing, no pending operations, or access denied
+
+    try:
+        try:
+            raw, reg_type = winreg.QueryValueEx(key_read, _PENDING_RENAME_VALUE)
+        except FileNotFoundError:
+            return  # value doesn't exist — nothing to clean
+
+        if reg_type != winreg.REG_MULTI_SZ:
+            return  # unexpected type — don't touch it
+
+        # ``REG_MULTI_SZ`` is a list of null-terminated strings; the value
+        # ends with an extra null terminator (empty string at the end).  The
+        # entries come in pairs: (source, target) where ``\\??\\`` or ``\\\\?\\``
+        # prefixes are NT path prefixes we strip for comparison.
+        entries = list(raw)
+        # Drop the trailing empty string if present.
+        if entries and entries[-1] == "":
+            entries = entries[:-1]
+
+        if len(entries) % 2 != 0:
+            return  # malformed — don't risk corrupting it
+
+        kept: list[str] = []
+        removed = 0
+        for i in range(0, len(entries), 2):
+            src = entries[i]
+            tgt = entries[i + 1] if i + 1 < len(entries) else ""
+            # Strip NT path prefixes for filesystem comparison.
+            src_clean = src.replace("\\??\\", "").replace("\\\\?\\", "")
+            tgt_clean = tgt.replace("\\??\\", "").replace("\\\\?\\", "")
+
+            # Only touch entries that target a hermes shim name.
+            src_name = Path(src_clean).name.lower() if src_clean else ""
+            if not src_name or not src_name.startswith("hermes") or ".exe" not in src_name:
+                kept.extend([src, tgt])
+                continue
+
+            # Classify the pair.
+            src_is_healthy_shim = src_name.startswith("hermes") and ".exe" in src_name and ".old." not in src_name
+            tgt_is_old_backup = ".old." in tgt_clean.lower()
+
+            # Remove the pair if any of:
+            #   - source no longer exists (shim rewritten; pending rename would
+            #     destroy the NEW healthy shim on next boot)
+            #   - target is a .old. backup that no longer exists (stale pair
+            #     from a failed cycle whose quarantine file was already swept)
+            #   - source IS the current healthy shim AND target is .old. backup
+            #     (armed rename-away — once we're running the install is good,
+            #     disarm it regardless of whether the .old. file exists)
+            try:
+                src_exists = Path(src_clean).exists()
+            except OSError:
+                src_exists = True  # can't verify — keep to be safe
+            try:
+                tgt_exists = Path(tgt_clean).exists()
+            except OSError:
+                tgt_exists = True
+
+            armed = src_is_healthy_shim and tgt_is_old_backup
+            if not src_exists or (tgt_is_old_backup and not tgt_exists) or armed:
+                removed += 1
+                continue
+
+            kept.extend([src, tgt])
+
+        if removed == 0:
+            return  # nothing changed
+
+        # Re-open with KEY_WRITE only now that we know we have changes.
+        try:
+            key_write = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                _PENDING_RENAME_KEY,
+                0,
+                winreg.KEY_WRITE,
+            )
+        except OSError:
+            return  # access denied writing — next launch will try again
+
+        try:
+            # Re-add the trailing null-terminated pair list.
+            kept.append("")
+
+            winreg.SetValueEx(
+                key_write,
+                _PENDING_RENAME_VALUE,
+                0,
+                winreg.REG_MULTI_SZ,
+                kept,
+            )
+            logger.info(
+                "Cleaned %d orphaned/armed hermes shim entr%s from "
+                "PendingFileRenameOperations.",
+                removed,
+                "y" if removed == 1 else "ies",
+            )
+        except OSError:
+            pass  # access denied writing — next launch will try again
+        finally:
+            try:
+                winreg.CloseKey(key_write)
+            except OSError:
+                pass
+    finally:
+        try:
+            winreg.CloseKey(key_read)
+        except OSError:
+            pass
 
 
 # Import probes for venv corruption after a failed lazy ``uv pip install``.

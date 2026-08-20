@@ -34,6 +34,14 @@ export const isMacActionFallback = (
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
 
+/** Exit chord. The key table documents `Ctrl+D` = Exit, but on macOS the
+ * action modifier is Cmd, so a binding gated on `isAction` alone never fired
+ * for the documented keystroke there (#24377). Accept the raw Ctrl bit on
+ * every platform — Ctrl+D is EOF muscle memory — while `isAction` keeps
+ * Cmd+D working on macOS. */
+export const isExitShortcut = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string): boolean =>
+  (key.ctrl && ch.toLowerCase() === 'd') || isAction(key, ch, 'd')
+
 export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
 

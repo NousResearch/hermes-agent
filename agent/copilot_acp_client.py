@@ -188,6 +188,68 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
     }
 
 
+# ACP option kinds we are willing to pick, most durable first. Kinds are defined
+# by the protocol; agents also send `reject_once` / `reject_always`, which we
+# never select automatically.
+_AUTO_APPROVE_OPTION_KINDS = ("allow_always", "allow_once")
+
+
+def _auto_approve_enabled() -> bool:
+    """True when the operator has opted into answering permission prompts.
+
+    Off by default, so interactive behaviour is unchanged: a human is present to
+    see the prompt, and cancelling is the safe answer.
+
+    It matters for unattended runs (cron, headless agents). There is nobody to
+    answer, so an unconditional cancel means every write-shaped tool call is
+    aborted. The agent still narrates what it intended to do, which makes the
+    failure look like a model that chose not to act rather than a client that
+    refused it.
+    """
+    raw = os.getenv("HERMES_COPILOT_ACP_AUTO_APPROVE", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _permission_response(message_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Answer `session/request_permission`.
+
+    Auto-approval is not a hole in Hermes' file policy: it decides only whether
+    the agent may *ask*. The actual enforcement happens when the request comes
+    back as `fs/write_text_file`, which still goes through
+    `_ensure_path_within_cwd` and `get_write_denied_error`, exactly as it does
+    for prompts a human approved by hand.
+
+    Falls back to cancelling whenever the agent offers no option we recognise,
+    so a malformed or reject-only prompt is never silently treated as consent.
+    """
+    if not _auto_approve_enabled():
+        return _permission_denied(message_id)
+
+    options = params.get("options")
+    if not isinstance(options, list):
+        return _permission_denied(message_id)
+
+    for kind in _AUTO_APPROVE_OPTION_KINDS:
+        for option in options:
+            if not isinstance(option, dict) or option.get("kind") != kind:
+                continue
+            option_id = str(option.get("optionId") or "").strip()
+            if not option_id:
+                continue
+            return {
+                "jsonrpc": "2.0",
+                "id": message_id,
+                "result": {
+                    "outcome": {
+                        "outcome": "selected",
+                        "optionId": option_id,
+                    }
+                },
+            }
+
+    return _permission_denied(message_id)
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -776,7 +838,7 @@ class CopilotACPClient:
         params = msg.get("params") or {}
 
         if method == "session/request_permission":
-            response = _permission_denied(message_id)
+            response = _permission_response(message_id, params)
         elif method == "fs/read_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)

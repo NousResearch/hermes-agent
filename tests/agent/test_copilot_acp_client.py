@@ -160,6 +160,96 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertIn("HERMES_WRITE_SAFE_ROOT", str(response["error"]))
         self.assertFalse(outside.exists())
 
+    def _request_permission(self, options: object) -> dict:
+        return self._dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "session/request_permission",
+                "params": {"sessionId": "s1", "options": options},
+            },
+            cwd="/tmp",
+        )
+
+    _ALLOW_ALWAYS = {"kind": "allow_always", "name": "Always Allow", "optionId": "allow_always"}
+    _ALLOW_ONCE = {"kind": "allow_once", "name": "Allow", "optionId": "allow"}
+    _REJECT_ONCE = {"kind": "reject_once", "name": "Reject", "optionId": "reject"}
+
+    def test_permission_is_cancelled_by_default(self) -> None:
+        """Unset env must keep the historical behaviour, so interactive runs
+        still surface the prompt to the human rather than self-approving."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_COPILOT_ACP_AUTO_APPROVE", None)
+            response = self._request_permission([self._ALLOW_ALWAYS, self._REJECT_ONCE])
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_permission_prefers_allow_always_when_auto_approve_enabled(self) -> None:
+        with patch.dict(os.environ, {"HERMES_COPILOT_ACP_AUTO_APPROVE": "1"}):
+            response = self._request_permission(
+                [self._REJECT_ONCE, self._ALLOW_ONCE, self._ALLOW_ALWAYS]
+            )
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "selected", "optionId": "allow_always"},
+        )
+
+    def test_permission_falls_back_to_allow_once(self) -> None:
+        with patch.dict(os.environ, {"HERMES_COPILOT_ACP_AUTO_APPROVE": "true"}):
+            response = self._request_permission([self._ALLOW_ONCE, self._REJECT_ONCE])
+        self.assertEqual(
+            response["result"]["outcome"],
+            {"outcome": "selected", "optionId": "allow"},
+        )
+
+    def test_permission_cancels_when_only_reject_offered(self) -> None:
+        """A reject-only prompt must never be read as consent."""
+        with patch.dict(os.environ, {"HERMES_COPILOT_ACP_AUTO_APPROVE": "1"}):
+            response = self._request_permission([self._REJECT_ONCE])
+        self.assertEqual(response["result"]["outcome"], {"outcome": "cancelled"})
+
+    def test_permission_cancels_on_malformed_options(self) -> None:
+        with patch.dict(os.environ, {"HERMES_COPILOT_ACP_AUTO_APPROVE": "1"}):
+            self.assertEqual(
+                self._request_permission("nonsense")["result"]["outcome"],
+                {"outcome": "cancelled"},
+            )
+            self.assertEqual(
+                self._request_permission([{"kind": "allow_always", "optionId": ""}])[
+                    "result"
+                ]["outcome"],
+                {"outcome": "cancelled"},
+            )
+
+    def test_auto_approve_does_not_bypass_write_safety(self) -> None:
+        """Approving the prompt only lets the agent ask. The write itself is
+        still refused by the safe-root check, which is where policy lives."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "root"
+            root.mkdir()
+            outside = Path(tmpdir) / "outside.txt"
+            with patch.dict(
+                os.environ,
+                {
+                    "HERMES_COPILOT_ACP_AUTO_APPROVE": "1",
+                    "HERMES_WRITE_SAFE_ROOT": str(root),
+                },
+            ):
+                self.assertEqual(
+                    self._request_permission([self._ALLOW_ALWAYS])["result"]["outcome"],
+                    {"outcome": "selected", "optionId": "allow_always"},
+                )
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 8,
+                        "method": "fs/write_text_file",
+                        "params": {"path": str(outside), "content": "nope"},
+                    },
+                    cwd=str(root),
+                )
+            self.assertIn("error", response)
+            self.assertFalse(outside.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

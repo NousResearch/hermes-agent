@@ -365,6 +365,7 @@ Use the `#` prefix in interactive mode to quickly add to memory: `# Always use 2
 | Command | Purpose |
 |---------|---------|
 | `/help` | Show all commands (including custom and MCP commands) |
+| `/goal [objective]` | Set the session goal for longer interactive work |
 | `/compact [focus]` | Compress context to save tokens; CLAUDE.md survives compaction. E.g., `/compact focus on auth logic` |
 | `/clear` | Wipe conversation history for a fresh start |
 | `/context` | Visualize context usage as a colored grid with optimization tips |

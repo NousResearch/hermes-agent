@@ -1,0 +1,35 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: browserless
+description: Automate browsers, scrape, search, crawl, and export with Browserless.
+source: https://docs.browserless.io/mcp/browserless-mcp-server/setup
+
+# Browserless hosts a Streamable HTTP MCP server with native OAuth 2.1 and
+# Dynamic Client Registration. Hermes handles discovery, PKCE, token exchange,
+# refresh, and secure token storage; no local package or API token is required.
+transport:
+  type: http
+  url: https://mcp.browserless.io/mcp
+
+auth:
+  type: oauth
+
+# Browserless currently exposes a compact tool surface covering interactive
+# browser control, site recipes, scraping, search, crawl/map, export,
+# performance, custom functions, and authenticated profiles. Leave
+# default_enabled unset so the install-time checklist reflects the live server
+# and starts with every tool selected. Users can prune it at any time with
+# `hermes mcp configure browserless`.
+
+post_install: |
+  Complete Browserless sign-in with:
+    hermes mcp login browserless
+
+  Then verify the connection:
+    hermes mcp test browserless
+
+  Start a new Hermes session after authentication so the Browserless tools are
+  loaded. Re-run the tool checklist any time with:
+    hermes mcp configure browserless

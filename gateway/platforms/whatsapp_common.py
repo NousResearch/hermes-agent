@@ -35,10 +35,42 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def has_valid_whatsapp_creds(creds_path: Path) -> bool:
+    """Return True only when ``creds.json`` is real, usable pairing state.
+
+    Existence alone is not enough: in ``--pair-only`` mode the bridge writes
+    ``creds.json`` *after* emitting the ``connected`` event and then exits on
+    its own, so a supervisor that kills the bridge on ``connected`` can leave a
+    0-byte (or half-written) ``creds.json`` behind. That truncated file still
+    passes ``Path.exists()``, so a pairing that was actually lost is reported
+    as paired and the reader proceeds on unusable credentials. Validate that
+    the file is non-empty, parses as JSON, and carries the Baileys identity
+    keys that a genuine pairing always contains.
+
+    Single source of truth for every reader of pairing state: the gateway
+    adapter (``plugins/platforms/whatsapp/adapter.py``) and the pairing wizard
+    (``hermes_cli/main.py``) both validate through this helper so the wizard
+    can never report a truncated ``creds.json`` as paired that the gateway then
+    rejects — the exact "enabled but not paired" restart loop this guards.
+    """
+    try:
+        if creds_path.stat().st_size == 0:
+            return False
+        data = json.loads(creds_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return bool(
+        isinstance(data, dict)
+        and data.get("noiseKey")
+        and data.get("signedIdentityKey")
+    )
 
 
 def _get_wsecret(name, default=None):

@@ -284,7 +284,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import (
+    WhatsAppBehaviorMixin,
+    has_valid_whatsapp_creds as _has_valid_creds,
+)
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -539,11 +542,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # clear pairing message instead of the watcher
         # silently hammering an unconfigured platform.
         creds_path = self._session_path / "creds.json"
-        if not creds_path.exists():
+        if not _has_valid_creds(creds_path):
             logger.warning(
-                "[%s] WhatsApp is enabled but not paired (no creds.json at %s). "
-                "Pair from the dashboard or run `hermes whatsapp`; remove "
-                "WHATSAPP_ENABLED from your .env to disable.",
+                "[%s] WhatsApp is enabled but not paired (no valid creds.json "
+                "at %s — missing, empty, or truncated). Pair from the dashboard "
+                "or run `hermes whatsapp`; remove WHATSAPP_ENABLED from your "
+                ".env to disable.",
                 self.name, creds_path,
             )
             self._set_fatal_error(

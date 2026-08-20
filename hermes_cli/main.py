@@ -3255,6 +3255,23 @@ def cmd_proxy(args):
         raise SystemExit(rc)
 
 
+def _whatsapp_session_path() -> Path:
+    """Resolve the WhatsApp session directory the same way every reader does.
+
+    The gateway adapter (``plugins/platforms/whatsapp/adapter.py``) and the
+    dashboard (``hermes_cli/web_server.py``) both resolve the session dir via
+    ``get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")``. The
+    pairing wizard MUST use the same resolver — hard-coding the legacy
+    ``whatsapp/session`` path pairs into a directory the gateway may not read
+    (they diverge the moment the empty legacy stub stops shadowing the
+    consolidated ``platforms/whatsapp/session`` path), leaving the user in a
+    restart loop against an unsatisfiable "enabled but not paired" state.
+    """
+    from hermes_constants import get_hermes_dir
+
+    return get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -3403,10 +3420,22 @@ def cmd_whatsapp(args):
         print("✓ Bridge dependencies already installed")
 
     # ── Step 5: Check for existing session ───────────────────────────────
-    session_dir = get_hermes_home() / "whatsapp" / "session"
+    # Resolve via the shared helper so the wizard writes exactly where the
+    # gateway/dashboard read (see _whatsapp_session_path). Hard-coding the
+    # legacy path here silently diverged from the reader once the empty
+    # legacy stub stopped shadowing the consolidated location.
+    session_dir = _whatsapp_session_path()
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    if (session_dir / "creds.json").exists():
+    # Validate creds *content*, not mere existence, through the same helper the
+    # gateway adapter uses. A 0-byte / truncated ``creds.json`` (the bridge
+    # writes it after emitting ``connected`` in --pair-only mode, so a
+    # supervisor can leave it half-written) otherwise passes ``exists()`` here
+    # and gets reported as paired while the gateway then rejects it — the exact
+    # "enabled but not paired" restart loop this PR guards against.
+    from gateway.platforms.whatsapp_common import has_valid_whatsapp_creds
+
+    if has_valid_whatsapp_creds(session_dir / "creds.json"):
         print("✓ Existing WhatsApp session found")
         try:
             response = input(
@@ -3459,9 +3488,10 @@ def cmd_whatsapp(args):
 
     # ── Step 7: Post-pairing ─────────────────────────────────────────────
     print()
-    if (session_dir / "creds.json").exists():
-        # Only enable WhatsApp now that pairing actually succeeded.  If the
-        # user Ctrl+C'd at any earlier step, WHATSAPP_ENABLED stays unset
+    if has_valid_whatsapp_creds(session_dir / "creds.json"):
+        # Only enable WhatsApp now that pairing actually succeeded — and left
+        # *valid* creds behind, not a truncated file the bridge wrote then lost.
+        # If the user Ctrl+C'd at any earlier step, WHATSAPP_ENABLED stays unset
         # and `hermes gateway` skips it cleanly instead of paying a 30s
         # bridge timeout + queueing the platform for indefinite retries.
         save_env_value("WHATSAPP_ENABLED", "true")

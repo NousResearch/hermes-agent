@@ -14,6 +14,7 @@ succeeds (creds.json exists).  Aborted setup leaves no enabled state.
 from __future__ import annotations
 
 import io
+import json
 import os
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -40,7 +41,7 @@ def _env_value(hermes_home: Path, key: str) -> str | None:
     env_file = hermes_home / ".env"
     if not env_file.exists():
         return None
-    for line in env_file.read_text().splitlines():
+    for line in env_file.read_text(encoding="utf-8").splitlines():
         if "=" not in line:
             continue
         k, _, v = line.partition("=")
@@ -92,10 +93,21 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
     """
     from hermes_cli.main import cmd_whatsapp
 
-    # Pre-create a paired session WITHOUT WHATSAPP_ENABLED in .env.
+    # Pre-create a paired session WITHOUT WHATSAPP_ENABLED in .env.  The
+    # wizard now validates creds *content* (has_valid_whatsapp_creds), not
+    # mere existence, so a placeholder ``{}`` no longer counts as paired —
+    # write a genuine Baileys identity so this still models a real pairing.
     session = isolated_home / "whatsapp" / "session"
     session.mkdir(parents=True)
-    (session / "creds.json").write_text("{}")
+    (session / "creds.json").write_text(
+        json.dumps(
+            {
+                "noiseKey": {"private": "x", "public": "y"},
+                "signedIdentityKey": {"private": "a", "public": "b"},
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("WHATSAPP_MODE", "bot")
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
 

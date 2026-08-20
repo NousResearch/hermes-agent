@@ -968,6 +968,29 @@ class CheckpointManager:
                 results.append(entry)
         return results
 
+    def list_all_checkpoints(self) -> List[Dict]:
+        """List checkpoints across every registered project (most recent first).
+
+        Surgical reapply of PR #10633 by @nightq (#10505) onto the v2
+        single-store layout: iterate ``projects/<hash>.json`` metadata via
+        ``_list_projects`` instead of the pre-v2 per-shadow-dir scan. Each
+        entry carries the extra ``workdir`` key so callers can label which
+        project a checkpoint belongs to.
+        """
+        store = _store_path(CHECKPOINT_BASE)
+        if not (store / "HEAD").exists():
+            return []
+        results: List[Dict] = []
+        for meta in _list_projects(store):
+            workdir = meta.get("workdir") or ""
+            if not workdir:
+                continue
+            for entry in self.list_checkpoints(workdir):
+                entry["workdir"] = workdir
+                results.append(entry)
+        results.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        return results
+
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: Dict) -> None:
         """Parse git --shortstat output into entry dict."""
@@ -1563,7 +1586,16 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
         else:
             stat = ""
 
-        lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
+        # Label per-project entries when showing the cross-project view
+        # (workdir key only present on list_all_checkpoints results).
+        workdir = cp.get("workdir", "")
+        if workdir and directory == "all directories":
+            workdir_short = Path(workdir).name or workdir
+            lines.append(
+                f"  {i}. {cp['short_hash']}  {ts}  [{workdir_short}]  {cp['reason']}{stat}"
+            )
+        else:
+            lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
 
     lines.append("\n  /rollback <N>             restore to checkpoint N")
     lines.append("  /rollback diff <N>        preview changes since checkpoint N")

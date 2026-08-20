@@ -755,6 +755,13 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
         "cwd": cwd,
         "extra": extras,
     }
+    # pre_llm_call advertises user-facing fields at the top level per the
+    # wire-protocol docstring.  Lift them out of extras so hook authors
+    # can read them directly rather than fishing through payload["extra"].
+    if event == "pre_llm_call":
+        for _key in ("user_message", "turn_id", "is_first_turn"):
+            if _key in extras:
+                payload[_key] = extras.pop(_key)
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 

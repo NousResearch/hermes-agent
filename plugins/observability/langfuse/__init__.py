@@ -84,6 +84,7 @@ _LANGFUSE_CLIENT_LOCK = threading.Lock()
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
+_API_ERROR_SUMMARY_MAX_CHARS = 512
 
 # Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
 # the prefix is baked into the server-side issuance flow, not a UI hint).
@@ -450,6 +451,23 @@ def _truncate_text(value: str, max_chars: int) -> Any:
     if len(value) <= max_chars:
         return value
     return value[:max_chars] + f"... [truncated {len(value) - max_chars} chars]"
+
+
+def _redact_api_error_text(value: Any, *, limit: int = _API_ERROR_SUMMARY_MAX_CHARS) -> str:
+    if value is None:
+        return ""
+    try:
+        text = (
+            json.dumps(value, sort_keys=True, default=str)
+            if isinstance(value, (dict, list))
+            else str(value)
+        )
+    except Exception:
+        text = repr(value)
+    text = _redact_secrets(text)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"... [truncated {len(text) - limit} chars]"
 
 
 def _maybe_parse_json_string(value: str) -> Any:
@@ -964,7 +982,8 @@ def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, 
 
 
 def _end_observation(observation: Any, *, output: Any = None, metadata: Optional[dict] = None,
-                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None) -> None:
+                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None,
+                     level: Optional[str] = None, status_message: Optional[str] = None) -> None:
     if observation is None:
         return
     try:
@@ -977,6 +996,10 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
             update_kwargs["usage_details"] = usage_details
         if cost_details:
             update_kwargs["cost_details"] = cost_details
+        if level:
+            update_kwargs["level"] = level
+        if status_message:
+            update_kwargs["status_message"] = status_message
         if update_kwargs:
             observation.update(**update_kwargs)
         observation.end()
@@ -1613,15 +1636,39 @@ def on_api_request_error(*, task_id: str = "", session_id: str = "", provider: s
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
-        generation = state.generations.pop(req_key, None) if state else None
+        if state is not None:
+            state.last_updated_at = time.time()
+            generation = state.generations.pop(req_key, None)
+        else:
+            generation = None
     if state is None:
         return
 
-    error_type = ""
-    error_message = ""
+    error_type: Optional[str] = None
+    error_message: Any = None
     if isinstance(error, dict):
-        error_type = str(error.get("type") or "")
-        error_message = str(error.get("message") or "")
+        raw_type = error.get("type")
+        if raw_type is not None:
+            error_type = str(raw_type)
+        error_message = error.get("message") or error.get("error") or error.get("detail")
+    elif error is not None:
+        error_type = type(error).__name__
+        error_message = str(error)
+
+    summary_parts: list[str] = []
+    if status_code is not None:
+        summary_parts.append(f"HTTP {status_code}")
+    if reason:
+        summary_parts.append(str(reason))
+    if error_type and error_message:
+        summary_parts.append(f"{error_type}: {error_message}")
+    elif error_type:
+        summary_parts.append(error_type)
+    elif error_message:
+        summary_parts.append(str(error_message))
+    status_message = _redact_api_error_text(
+        " | ".join(summary_parts) or "API request failed"
+    )
 
     error_metadata: Dict[str, Any] = {
         "error": True,
@@ -1629,8 +1676,9 @@ def on_api_request_error(*, task_id: str = "", session_id: str = "", provider: s
         # Error messages can embed request fragments (URLs w/ keys, prompt
         # echoes) — run them through the capture pipeline like content.
         "error_message": _capture_content(error_message),
+        "error_summary": status_message,
     }
-    if status_code is not None:
+    if status_code:
         error_metadata["status_code"] = status_code
     if retry_count is not None:
         error_metadata["retry_count"] = retry_count
@@ -1639,19 +1687,28 @@ def on_api_request_error(*, task_id: str = "", session_id: str = "", provider: s
     if retryable is not None:
         error_metadata["retryable"] = retryable
     if reason:
-        error_metadata["reason"] = str(reason)
-    if api_duration and api_duration > 0:
-        error_metadata["api_duration_s"] = round(api_duration, 3)
+        error_metadata["reason"] = _redact_api_error_text(reason)
+    try:
+        duration_s = round(float(api_duration), 3)
+    except (TypeError, ValueError):
+        duration_s = None
+    if duration_s and duration_s > 0:
+        error_metadata["api_duration_s"] = duration_s
+    error_metadata = {
+        key: value for key, value in error_metadata.items() if value is not None
+    }
 
     if generation is not None:
+        _end_observation(
+            generation,
+            metadata=error_metadata,
+            level="ERROR",
+            status_message=status_message,
+        )
         try:
-            generation.update(
-                level="ERROR",
-                status_message=(error_type or "api_request_error")[:200],
-            )
-        except Exception as exc:  # pragma: no cover - fail-open
-            _debug(f"error-level update failed: {exc}")
-        _end_observation(generation, metadata=error_metadata)
+            client.flush()
+        except Exception:
+            pass
 
     # A retryable failure will be followed by another pre_api_request on the
     # same trace; keep the turn open. A terminal failure ends the turn.
@@ -1661,7 +1718,8 @@ def on_api_request_error(*, task_id: str = "", session_id: str = "", provider: s
         state.last_updated_at = time.time()
 
 
-def on_session_finalize(*, session_id: str = "", reason: str = "", **_: Any) -> None:
+def on_session_finalize(*, session_id: str = "", old_session_id: str = "",
+                        reason: str = "", **_: Any) -> None:
     """True session-end boundary: close any traces still open and flush.
 
     A turn that ended on a tool-only or empty final response never reaches
@@ -1679,12 +1737,13 @@ def on_session_finalize(*, session_id: str = "", reason: str = "", **_: Any) -> 
     # the session as either "session:<id>" (no task) or "task:<id>" (gateway
     # sets task_id == session_id), plus the legacy bare-task_id shape — match
     # on the id in any segment.
-    if session_id:
-        fragments = (f"session:{session_id}", f"task:{session_id}")
+    session_key = str(session_id or old_session_id or "")
+    if session_key:
+        fragments = (f"session:{session_key}", f"task:{session_key}")
         with _STATE_LOCK:
             keys = [
                 k for k in _TRACE_STATE
-                if k == session_id or any(f in k for f in fragments)
+                if k == session_key or any(f in k for f in fragments)
             ]
     else:
         with _STATE_LOCK:

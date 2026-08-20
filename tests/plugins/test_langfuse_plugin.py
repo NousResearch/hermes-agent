@@ -1262,17 +1262,33 @@ class TestApiRequestErrorHook:
             def __init__(self):
                 self.updates = []
                 self.ended = False
+
             def update(self, **kw):
                 self.updates.append(kw)
+
             def end(self, **kw):
                 self.ended = True
 
         class _Root:
             def __init__(self):
                 self.ended = False
-            def update(self, **kw): pass
-            def end(self, **kw): self.ended = True
-            def set_trace_io(self, **kw): pass
+                self.updates = []
+                self.trace_updates = []
+
+            def update(self, **kw):
+                self.updates.append(kw)
+
+            def update_trace(self, **kw):
+                self.trace_updates.append(kw)
+
+            def end(self, **kw):
+                self.ended = True
+
+            def set_trace_io(self, **kw):
+                pass
+
+            def start_observation(self, **kw):
+                return _Gen()
 
         gen = _Gen()
         root = _Root()
@@ -1283,27 +1299,102 @@ class TestApiRequestErrorHook:
 
     def test_retryable_error_closes_generation_keeps_turn(self, monkeypatch):
         mod = self._fresh_plugin()
-        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        class _Client:
+            def __init__(self):
+                self.flush_count = 0
+
+            def flush(self):
+                self.flush_count += 1
+
+        client = _Client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
         mod._TRACE_STATE.clear()
         turn_id = "s:t:turn1"
         task_key = mod._trace_key("t", "s", turn_id=turn_id)
         gen, root = self._seed_state(mod, task_key)
+        secret = "sk-" + "a" * 32
 
         mod.on_api_request_error(
             task_id="t", session_id="s", api_call_count=1,
             turn_id=turn_id,
             status_code=429, retryable=True, retry_count=1, max_retries=3,
-            error={"type": "RateLimitError", "message": "slow down"},
+            reason="rate_limit",
+            error={"type": "RateLimitError", "message": f"slow down {secret}"},
         )
 
         assert gen.ended is True
-        assert any(u.get("level") == "ERROR" for u in gen.updates)
+        error_updates = [u for u in gen.updates if u.get("level") == "ERROR"]
+        assert error_updates
+        assert "HTTP 429" in error_updates[0]["status_message"]
+        assert "rate_limit" in error_updates[0]["status_message"]
+        assert secret not in error_updates[0]["status_message"]
         # error metadata landed
         meta = [u["metadata"] for u in gen.updates if "metadata" in u]
         assert meta and meta[0]["status_code"] == 429
+        assert meta[0]["error_summary"] == error_updates[0]["status_message"]
         # turn stays open for the retry
         assert task_key in mod._TRACE_STATE
         assert root.ended is False
+        assert client.flush_count == 1
+
+    def test_retryable_error_then_success_finishes_healthy_trace(self, monkeypatch):
+        mod = self._fresh_plugin()
+
+        class _Client:
+            def __init__(self):
+                self.flush_count = 0
+
+            def flush(self):
+                self.flush_count += 1
+
+        client = _Client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "_usage_and_cost", lambda *a, **k: ({}, {}))
+        mod._TRACE_STATE.clear()
+        turn_id = "s:t:turn-retry"
+        task_key = mod._trace_key("t", "s", turn_id=turn_id)
+        failed_gen, root = self._seed_state(mod, task_key)
+
+        mod.on_api_request_error(
+            task_id="t", session_id="s", api_call_count=1,
+            turn_id=turn_id, status_code=429, retryable=True,
+            retry_count=1, max_retries=3,
+            error={"type": "RateLimitError", "message": "slow down"},
+        )
+        assert failed_gen.ended is True
+        assert task_key in mod._TRACE_STATE
+
+        success_gen = root.start_observation()
+        mod._TRACE_STATE[task_key].generations[mod._request_key(1)] = success_gen
+        mod.on_post_llm_call(
+            task_id="t", session_id="s", api_call_count=1,
+            turn_id=turn_id, response={"model": "m"},
+            usage={"input_tokens": 3, "output_tokens": 2},
+            assistant_content_chars=5,
+            assistant_tool_call_count=0,
+        )
+
+        assert success_gen.ended is True
+        assert any("output" in update for update in root.trace_updates)
+        assert root.ended is True
+        assert task_key not in mod._TRACE_STATE
+
+    def test_status_code_zero_is_not_recorded(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        mod._TRACE_STATE.clear()
+        turn_id = "s:t:turn-zero-status"
+        task_key = mod._trace_key("t", "s", turn_id=turn_id)
+        gen, _root = self._seed_state(mod, task_key)
+
+        mod.on_api_request_error(
+            task_id="t", session_id="s", api_call_count=1, turn_id=turn_id,
+            status_code=0, retryable=True,
+            error={"type": "APIConnectionError", "message": "connection reset"},
+        )
+
+        meta = [u["metadata"] for u in gen.updates if "metadata" in u][0]
+        assert "status_code" not in meta
 
     def test_terminal_error_finishes_turn(self, monkeypatch):
         mod = self._fresh_plugin()
@@ -1342,15 +1433,18 @@ class TestApiRequestErrorHook:
         turn_id = "s:t:turn3"
         task_key = mod._trace_key("t", "s", turn_id=turn_id)
         gen, _root = self._seed_state(mod, task_key)
+        secret = "sk-" + "b" * 32
 
         mod.on_api_request_error(
             task_id="t", session_id="s", api_call_count=1, turn_id=turn_id,
             retryable=True,
-            error={"type": "APIError", "message": "secret prompt echo sk-abc"},
+            error={"type": "APIError", "message": f"secret prompt echo {secret}"},
         )
         meta = [u["metadata"] for u in gen.updates if "metadata" in u][0]
+        error_update = [u for u in gen.updates if u.get("level") == "ERROR"][0]
         assert isinstance(meta["error_message"], dict)
         assert meta["error_message"]["omitted"] is True
+        assert secret not in error_update["status_message"]
 
 
 # ---------------------------------------------------------------------------
@@ -1398,6 +1492,43 @@ class TestSessionFinalizeHook:
         assert r1.ended is True
         assert r2.ended is False
         assert flushes  # flushed at least once
+
+    def test_finalize_after_turn_end_is_noop_for_closed_trace(self, monkeypatch):
+        mod = self._fresh_plugin()
+        flushes = []
+        client = self._client(flushes)
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", client)
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        mod._TRACE_STATE.clear()
+
+        state, root = self._state(mod)
+        mod._TRACE_STATE["session:sess-a:turn:1"] = state
+        mod._finish_trace("session:sess-a:turn:1")
+        assert root.ended is True
+        flush_count_after_finish = len(flushes)
+
+        mod.on_session_finalize(session_id="sess-a")
+
+        assert "session:sess-a:turn:1" not in mod._TRACE_STATE
+        assert root.ended is True
+        assert len(flushes) == flush_count_after_finish + 1
+
+    def test_finalize_accepts_old_session_id(self, monkeypatch):
+        mod = self._fresh_plugin()
+        flushes = []
+        client = self._client(flushes)
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", client)
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        mod._TRACE_STATE.clear()
+
+        s1, r1 = self._state(mod)
+        mod._TRACE_STATE["session:sess-old:turn:1"] = s1
+
+        mod.on_session_finalize(old_session_id="sess-old")
+
+        assert "session:sess-old:turn:1" not in mod._TRACE_STATE
+        assert r1.ended is True
+        assert flushes
 
     def test_finalize_without_session_closes_all(self, monkeypatch):
         mod = self._fresh_plugin()

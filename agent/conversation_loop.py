@@ -1399,6 +1399,35 @@ def _content_policy_blocked_result(
     }
 
 
+def _emit_terminal_turn_end_hook(
+    agent: Any,
+    *,
+    effective_task_id: str,
+    turn_id: str,
+    api_request_id: str = "",
+    turn_exit_reason: str,
+) -> None:
+    """Emit the per-turn lifecycle hook for direct terminal returns."""
+    try:
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+
+        _invoke_hook(
+            "on_session_end",
+            session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+            completed=False,
+            failed=True,
+            interrupted=False,
+            turn_exit_reason=turn_exit_reason,
+            model=agent.model,
+            platform=getattr(agent, "platform", None) or "",
+        )
+    except Exception as exc:
+        logger.warning("on_session_end hook failed: %s", exc)
+
+
 def _compression_deferred_result(
     agent,
     messages: List[Dict],
@@ -5249,6 +5278,15 @@ def run_conversation(
                         "(compression.enabled: false). Run /compress to compact manually, "
                         "/new to start fresh, or switch to a larger-context model."
                     )
+                    _emit_terminal_turn_end_hook(
+                        agent,
+                        effective_task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        turn_exit_reason=(
+                            f"api_error_compaction_disabled({classified.reason.value})"
+                        ),
+                    )
                     return {
                         "final_response": _final_response,
                         "messages": messages,
@@ -6213,6 +6251,15 @@ def run_conversation(
                         )
                     else:
                         agent._persist_session(messages, conversation_history)
+                    _emit_terminal_turn_end_hook(
+                        agent,
+                        effective_task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        turn_exit_reason=(
+                            f"non_retryable_client_error({classified.reason.value})"
+                        ),
+                    )
                     if classified.reason == FailoverReason.content_policy_blocked:
                         _policy_response = (
                             "⚠️  The model provider's safety filter blocked this request "
@@ -6451,6 +6498,15 @@ def run_conversation(
                             "execute_code with Python's open() for large "
                             "files, or to write in smaller sections."
                         )
+                    _emit_terminal_turn_end_hook(
+                        agent,
+                        effective_task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        turn_exit_reason=(
+                            f"max_retries_exhausted({classified.reason.value})"
+                        ),
+                    )
                     return {
                         "final_response": _final_response,
                         "messages": messages,

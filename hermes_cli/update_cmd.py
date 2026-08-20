@@ -3641,21 +3641,36 @@ def _detect_self_loaded_native_modules() -> list[str]:
 
 
 def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
-    """Defer (exit 2) when THIS process holds a native module the sync must replace.
+    """Defer the venv rewrite when THIS process holds something it must replace.
 
     Runs at the last moment before the venv rewrite — after the code swap —
     so the on-disk pyproject reflects the update target and a deferral
-    leaves the user on NEW code with only the dependency install pending
-    (completed by the next launch's marker recovery).  No-op when nothing
-    at-risk is loaded.
+    leaves the user on NEW code with only the dependency install pending.
+    No-op when nothing at-risk is held.
+
+    Two hazards, both "this process holds a file the sync must replace", and
+    they end differently because their recoveries differ:
+
+    - A mapped native extension (``.pyd``).  Exit 2 and let the next launch's
+      marker recovery finish the install: that launch runs the install before
+      importing anything heavy, so it maps nothing and the swap succeeds.
+
+    - The ``hermes.exe`` console shim we were launched from (#88838, #89599).
+      The marker cannot help here — every future ``hermes`` launch is also the
+      shim, so deferring to the next launch defers forever.  Hand the install
+      to a child under the venv interpreter and exit, releasing the shim.
     """
     locked = _m()._detect_self_loaded_native_modules()
-    if not locked:
-        return
-    _m()._defer_update_for_self_lock(locked)
-    if gateway_resume is not None:
-        _m()._resume_windows_gateways_after_update(gateway_resume)
-    sys.exit(2)
+    if locked:
+        _m()._defer_update_for_self_lock(locked)
+        if gateway_resume is not None:
+            _m()._resume_windows_gateways_after_update(gateway_resume)
+        sys.exit(2)
+
+    if _m()._reexec_dependency_sync_off_windows_shim():
+        if gateway_resume is not None:
+            _m()._resume_windows_gateways_after_update(gateway_resume)
+        sys.exit(0)
 
 
 def _defer_update_for_self_lock(loaded: list[str]) -> None:
@@ -5130,10 +5145,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # otherwise "Already up to date!" gaslights the user while their
             # install stays bricked.
             healthy, detail = _venv_core_imports_healthy()
-            if not healthy:
+            # The Windows shim hand-off spawns this child precisely to run a
+            # sync its parent could not. The parent already pulled, so the
+            # checkout is current BY DESIGN and venv health is not the
+            # question — the pending sync is. Without this the child prints
+            # "Already up to date!" and exits without doing the one job it
+            # was spawned for.
+            handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
+            if handed_off_sync:
+                print("→ Finishing the dependency install handed off by hermes.exe...")
+            elif not healthy:
                 print("⚠ Checkout is current, but the venv is unhealthy:")
                 print(f"  {detail}")
                 print("→ Repairing Python dependencies...")
+            if handed_off_sync or not healthy:
                 # Self-lock deferral (#86735): the repair rewrites the venv
                 # too — same mapped-extension hazard as the update sync.
                 _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)

@@ -8809,31 +8809,47 @@ def _windows_running_hermes_launcher_locked() -> bool:
 _UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
 
 
-def _reexec_update_off_windows_shim() -> bool:
-    """Hand this update to the venv interpreter, off the console shim.
+def _reexec_dependency_sync_off_windows_shim() -> bool:
+    """Hand the dependency sync to the venv interpreter, off the console shim.
 
-    Returns True when a child was spawned and the caller must return at once,
-    so this process exits and releases the shim before the child reaches
-    ``pip install -e .``. Returns False to continue in-process.
+    Returns True when a child was spawned and the caller must exit at once,
+    releasing the shim before the child reaches ``pip install -e .``. Returns
+    False to continue the sync in-process.
 
-    The child is spawned, not waited on — this process exiting IS the fix, so
-    the shell sees the spawn's status rather than the update's. The update
-    prints its own result, and ``--gateway`` writes the true exit code to
-    ``.update_exit_code`` for the gateway watcher before restarting.
+    Called at the dependency-sync boundary, NOT at the top of the command —
+    the same placement rule as the native-module deferral beside it, and for
+    the same reason (#86735): a hand-off that fires before the fetch detaches
+    every run, including the ``Already up to date!`` no-op that never touches
+    the venv at all, and it takes the interactive prompts with it. By the time
+    we reach here the code swap is done and every question — stash, branch
+    switch, config migration — has already been asked and answered in the
+    user's own console. Only the venv rewrite is left, and that is the single
+    step that genuinely cannot run from inside the shim.
 
-    It also runs unattended, with stdin closed. The child inherits the
-    console, so left alone ``sys.stdin.isatty()`` still reports a terminal and
-    the update asks its local-changes question — but this process has already
-    exited and the shell has taken the console back, so the prompt cannot be
-    answered and the update hangs forever. Closing stdin makes the update take
-    the same path it takes for the gateway and Desktop: honour
-    ``updates.non_interactive_local_changes`` (stash by default, nothing lost)
-    and keep going.
+    ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with
+    the shim as its script and holds it open without ``FILE_SHARE_DELETE`` for
+    the whole command, so the quarantine rename is refused and uv fails to
+    replace it with os error 32 (#88838, #89599).
 
-    Anything that stops the hand-off (no venv python, spawn refused) falls
-    through to the old in-process behaviour with the manual command printed,
-    so a broken venv still gets whatever the update can do rather than a
-    dead end.
+    A child is required, and waiting on it cannot work: this process holds the
+    handle the child needs released, so a parent that waits deadlocks against
+    the work it is waiting for. Windows has no exec to escape with either.
+    The shell therefore returns while the install runs on; the child keeps the
+    console and prints its own result, and ``--gateway`` writes the true exit
+    code to ``.update_exit_code`` for the gateway watcher.
+
+    The child re-runs ``hermes update``, so the whole remaining flow — the
+    dependency sync and the node/web/lazy-refresh tail behind it — still
+    happens exactly once. ``_UPDATE_REEXEC_ENV`` marks it so it cannot spawn
+    another child, and so the "already up to date" early return does not
+    swallow the sync it was spawned to perform (the checkout is current by
+    now; that is the point).
+
+    The caller has already written ``.update-incomplete``, so a child that
+    dies mid-install is finished by the next launch's recovery instead of
+    leaving a half-synced venv. Anything that stops the hand-off (no venv
+    python, spawn refused) returns False and syncs in-process, where the
+    pre-existing os-error-32 path and its marker recovery still apply.
     """
     if os.environ.get(_UPDATE_REEXEC_ENV) == "1":
         return False
@@ -8854,18 +8870,18 @@ def _reexec_update_off_windows_shim() -> bool:
             )
             print(
                 f"→ Windows: {shim.name} cannot replace itself while it runs; "
-                "continuing the update under the venv Python."
+                "finishing the dependency install under the venv Python."
             )
             print(
-                "  It runs unattended from here — progress prints below and "
-                "this shell returns right away."
+                "  The code update is already applied. The install continues "
+                "below and this shell returns right away."
             )
             return True
         except OSError as exc:
-            logger.debug("Update re-exec via %s failed: %s", python_exe, exc)
-    print(f"  ⚠ Could not re-run the update off {shim.name}. If the install")
-    print("    fails to replace it, run this from a fresh shell instead:")
-    print(f"    {subprocess.list2cmdline(cmd)}")
+            logger.debug("Dependency-sync hand-off via %s failed: %s", python_exe, exc)
+        print(f"  ⚠ Could not hand the dependency install off {shim.name}.")
+        print("    Continuing in-process; if it cannot replace the shim, run:")
+        print(f"    {subprocess.list2cmdline(cmd)}")
     return False
 
 
@@ -8988,7 +9004,7 @@ def _quarantine_running_hermes_exe(
 
     The updater's own launcher is no longer one of those culprits: an update
     started from ``hermes.exe`` re-runs itself under the venv Python before
-    reaching here (``_reexec_update_off_windows_shim``).
+    reaching here (``_reexec_dependency_sync_off_windows_shim``).
 
     Returns the list of (original, quarantined) pairs so the caller can roll
     back if the install itself fails before uv writes a replacement.
@@ -10081,14 +10097,6 @@ def cmd_update(args):
             branch=branch,
             branch_explicit=bool(getattr(args, "branch", None)),
         )
-        return
-
-    # Windows: an update launched through venv\Scripts\hermes.exe holds that
-    # shim open for its whole run, and the dependency sync has to replace it.
-    # Hand off to the venv interpreter before anything else — in particular
-    # before the update lock, so the child claims the marker itself instead of
-    # adopting one this process is about to release.
-    if _reexec_update_off_windows_shim():
         return
 
     gateway_mode = getattr(args, "gateway", False)

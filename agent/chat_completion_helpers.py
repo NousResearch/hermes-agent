@@ -2180,7 +2180,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # when disabled. (#19798)
     if isinstance(_san_content, str) and _san_content:
         from agent.redact import redact_sensitive_text
-        _san_content = redact_sensitive_text(_san_content)
+        _san_content = redact_sensitive_text(_san_content, redact_phone_numbers=False)
 
     # NOTE (empty-content class fix): textless assistant turns are NOT padded
     # here.  The single owner for "never send a turn strict wire validation

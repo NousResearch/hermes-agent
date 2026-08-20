@@ -602,6 +602,29 @@ class TestFormBodyRedaction:
         assert "first=1" in redact_sensitive_text(text)
 
 
+class TestPhoneNumberRedaction:
+    def test_e164_numbers_redact_by_default(self):
+        text = "Call +15551234567 now"
+        result = redact_sensitive_text(text, force=True)
+
+        assert "+15551234567" not in result
+        assert "+155****4567" in result
+
+    def test_e164_numbers_can_be_preserved_for_user_visible_replies(self):
+        text = "Call +15551234567 or use [Call +15551234567](tel:+15551234567)."
+        result = redact_sensitive_text(text, force=True, redact_phone_numbers=False)
+
+        assert result == text
+
+    def test_disabling_phone_redaction_does_not_disable_secret_redaction(self):
+        token = "sk-ABCDEF0123456789abcdef0123"
+        text = f"Call +15551234567 with token {token}"
+        result = redact_sensitive_text(text, force=True, redact_phone_numbers=False)
+
+        assert "+15551234567" in result
+        assert token not in result
+
+
 class TestLowercaseDottedConfigKeys:
     """Issue #16413 — config-file passwords in lowercase/dotted/colon keys
     must be redacted. The uppercase _ENV_ASSIGN_RE missed these, leaking

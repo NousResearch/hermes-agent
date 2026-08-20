@@ -632,7 +632,11 @@ def _gateway_loop_exception_handler(
     loop.default_exception_handler(context)
 
 
-def _redact_gateway_user_facing_secrets(text: str) -> str:
+def _redact_gateway_user_facing_secrets(
+    text: str,
+    *,
+    redact_phone_numbers: bool = True,
+) -> str:
     """Secret redaction before text can leave the gateway.
 
     Delegates to the authoritative ``agent.redact.redact_sensitive_text`` — the
@@ -651,7 +655,11 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     try:
         from agent.redact import redact_sensitive_text
 
-        redacted = redact_sensitive_text(redacted, force=True)
+        redacted = redact_sensitive_text(
+            redacted,
+            force=True,
+            redact_phone_numbers=redact_phone_numbers,
+        )
     except Exception:
         # Fail-soft: fall back to the local pattern pass below rather than
         # letting a redactor import/error leak the raw text to chat.
@@ -810,7 +818,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _redact_gateway_user_facing_secrets(str(text), redact_phone_numbers=False)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted

@@ -307,6 +307,18 @@ def test_telegram_final_response_keeps_normal_answers():
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
 
 
+def test_telegram_final_response_preserves_phone_links_but_redacts_secrets():
+    """Final assistant replies may intentionally contain callable phone links."""
+    token = "sk-ABCDEF0123456789abcdef0123"
+    answer = f"Call [support +15551234567](tel:+15551234567), not {token}."
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, answer)
+
+    assert "+15551234567" in sanitized
+    assert "tel:+15551234567" in sanitized
+    assert token not in sanitized
+
+
 # Synthetic credential shapes from #23810. Bodies are placeholder gibberish —
 # never real tokens — but they match the canonical redaction patterns. The
 # outbound gateway redactor previously used a narrow local pattern subset that

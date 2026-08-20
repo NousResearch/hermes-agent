@@ -778,6 +778,7 @@ def redact_sensitive_text(
     code_file: bool = False,
     file_read: bool = False,
     redact_url_credentials: bool = False,
+    redact_phone_numbers: bool = True,
 ) -> str:
     """Apply all redaction patterns to a block of text.
 
@@ -790,6 +791,11 @@ def redact_sensitive_text(
     additionally redact credential-named query parameters and ``user:pass@``
     URL userinfo. The default remains False because actionable OAuth callback,
     magic-link, and pre-signed URLs must survive ordinary tool flows unchanged.
+
+    Set redact_phone_numbers=False at final assistant-response boundaries where
+    public or user-requested E.164 phone numbers and ``tel:`` links must remain
+    callable. The default remains True for logs, tool output, internal platform
+    identifiers, and other diagnostic surfaces.
 
     Set code_file=True to skip the ENV-assignment and JSON-field regex
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
@@ -998,7 +1004,7 @@ def redact_sensitive_text(
         text = _redact_form_body(text)
 
     # E.164 phone numbers (Signal, WhatsApp)
-    if "+" in text:
+    if redact_phone_numbers and "+" in text:
         def _redact_phone(m):
             phone = m.group(1)
             if len(phone) <= 8:

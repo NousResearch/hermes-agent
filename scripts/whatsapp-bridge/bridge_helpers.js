@@ -157,7 +157,7 @@ export function pollUpdateForAggregation({
   return null;
 }
 
-export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
+export function buildTextSendPayload(text, { replyTo, messageStore, mentions } = {}) {
   const content = { text };
   const options = {};
   const quoted = messageStore?.get(replyTo);
@@ -166,6 +166,9 @@ export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
     // message content payload. Keeping this split avoids silently sending a
     // literal/ignored `quoted` field instead of a native WhatsApp reply.
     options.quoted = quoted;
+  }
+  if (Array.isArray(mentions) && mentions.length > 0) {
+    options.mentions = mentions.map(jid => normalizeWhatsAppId(String(jid))).filter(Boolean);
   }
   return { content, options };
 }
@@ -310,6 +313,7 @@ export async function extractBridgeEvent({
   const messageContent = getMessageContent(msg);
   const contextInfo = getContextInfo(messageContent);
   const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
+  const mentioned = botIds && botIds.length > 0 && mentionedIds.some(id => botIds.includes(id));
   const quotedMessageId = contextInfo?.stanzaId || null;
   const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
   const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
@@ -477,6 +481,7 @@ export async function extractBridgeEvent({
     nativeMetadata,
     mediaUrls,
     mentionedIds,
+    mentioned,
     quotedMessageId,
     quotedParticipant,
     quotedRemoteJid,

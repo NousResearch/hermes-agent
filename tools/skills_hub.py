@@ -26,6 +26,7 @@ import tarfile
 import tempfile
 import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -47,6 +48,53 @@ from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _exclusive_file_lock(path: Path, timeout: float = 30.0):
+    """Cross-process advisory lock used for install and lockfile updates."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    acquired = False
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for lock: {path}")
+                time.sleep(0.02)
+        yield
+    finally:
+        if acquired:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                logger.warning("Could not release lock %s", path, exc_info=True)
+        handle.close()
 
 
 # ---------------------------------------------------------------------------
@@ -4380,17 +4428,44 @@ class HubLockFile:
     def __init__(self, path: Optional[Path] = None):
         self.path = path if path is not None else _lock_file()
 
-    def load(self) -> dict:
+    @property
+    def mutex_path(self) -> Path:
+        return self.path.with_name(f".{self.path.name}.lock")
+
+    def _load_unlocked(self) -> dict:
         if not self.path.exists():
             return {"version": 1, "installed": {}}
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {"version": 1, "installed": {}}
+        if not isinstance(data, dict) or not isinstance(data.get("installed"), dict):
+            return {"version": 1, "installed": {}}
+        return data
+
+    def load(self) -> dict:
+        return self._load_unlocked()
+
+    def _save_unlocked(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, raw_tmp = tempfile.mkstemp(
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
+            dir=self.path.parent,
+        )
+        tmp_path = Path(raw_tmp)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, self.path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def save(self, data: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        with _exclusive_file_lock(self.mutex_path):
+            self._save_unlocked(data)
 
     def record_install(
         self,
@@ -4412,27 +4487,29 @@ class HubLockFile:
         # write time so the file never carries the bad state.
         safe_name = _validate_skill_name(name)
         safe_install_path = _normalize_lock_install_path(install_path, safe_name)
-        data = self.load()
-        data["installed"][safe_name] = {
-            "source": source,
-            "identifier": identifier,
-            "trust_level": trust_level,
-            "scan_verdict": scan_verdict,
-            "content_hash": skill_hash,
-            "install_path": safe_install_path,
-            "files": files,
-            "metadata": metadata or {},
-            "scan_provenance": scan_provenance or {},
-            "install_attestation": install_attestation or {},
-            "installed_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self.save(data)
+        with _exclusive_file_lock(self.mutex_path):
+            data = self._load_unlocked()
+            data["installed"][safe_name] = {
+                "source": source,
+                "identifier": identifier,
+                "trust_level": trust_level,
+                "scan_verdict": scan_verdict,
+                "content_hash": skill_hash,
+                "install_path": safe_install_path,
+                "files": files,
+                "metadata": metadata or {},
+                "scan_provenance": scan_provenance or {},
+                "install_attestation": install_attestation or {},
+                "installed_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._save_unlocked(data)
 
     def record_uninstall(self, name: str) -> None:
-        data = self.load()
-        data["installed"].pop(name, None)
-        self.save(data)
+        with _exclusive_file_lock(self.mutex_path):
+            data = self._load_unlocked()
+            data["installed"].pop(name, None)
+            self._save_unlocked(data)
 
     def get_installed(self, name: str) -> Optional[dict]:
         data = self.load()
@@ -4667,7 +4744,9 @@ def install_from_quarantine(
                     f"{', '.join(sorted(skill_dirs_in))}. "
                     f"Use a different --name or install into a subcategory."
                 )
-        shutil.rmtree(install_dir)
+        # Replacement is deferred until every scan/staging check has passed.
+        # The publish transaction below renames the old install to a private
+        # backup and restores it on any failure.
 
     # Warn (but don't block) if SKILL.md is very large
     skill_md = quarantine_path / "SKILL.md"
@@ -4719,45 +4798,112 @@ def install_from_quarantine(
             raise ValueError("Verified install staging differs from security scan")
         shutil.rmtree(scanned_path, ignore_errors=True)
 
-    final_install_dir = _resolve_lock_install_path(
-        install_rel_path,
-        safe_skill_name,
-    )
-    if final_install_dir != install_dir:
-        raise ValueError("Install destination changed during verification")
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
+    target_lock_name = hashlib.sha256(install_rel_path.encode("utf-8")).hexdigest()
+    target_lock_path = _hub_dir() / "install-locks" / f"{target_lock_name}.lock"
+    backup_dir: Optional[Path] = None
+    published = False
+    with _exclusive_file_lock(target_lock_path):
+        final_install_dir = _resolve_lock_install_path(
+            install_rel_path,
+            safe_skill_name,
+        )
+        if final_install_dir != install_dir:
+            raise ValueError("Install destination changed during verification")
 
-    if expected_scan_hash and full_content_hash(install_dir) != expected_scan_hash:
-        shutil.rmtree(install_dir, ignore_errors=True)
-        raise ValueError("Installed content changed after security scan")
+        # Re-check all destructive destination assumptions while holding the
+        # per-target lock. Earlier checks are advisory only because another
+        # installer may have completed while this bundle was being scanned.
+        ancestor = final_install_dir.parent
+        while ancestor != skills_root and ancestor.is_relative_to(skills_root):
+            if (ancestor / "SKILL.md").is_file():
+                raise ValueError(
+                    f"Refusing to install into '{ancestor.name}': it is an "
+                    "existing skill directory, not a category. Choose a "
+                    "different category."
+                )
+            ancestor = ancestor.parent
+        if final_install_dir.exists():
+            if not final_install_dir.is_dir():
+                raise ValueError(
+                    f"Refusing to install: '{final_install_dir.name}' already "
+                    "exists and is not a directory. Remove it or choose a "
+                    "different skill name."
+                )
+            if not (final_install_dir / "SKILL.md").exists():
+                nested = _category_skill_dirs(final_install_dir)
+                if nested:
+                    raise ValueError(
+                        f"Refusing to overwrite category directory "
+                        f"'{final_install_dir}' which contains {len(nested)} "
+                        f"skill(s): {', '.join(sorted(nested))}."
+                    )
 
-    # Record in lock file
-    lock = HubLockFile()
-    lock.record_install(
-        name=safe_skill_name,
-        source=bundle.source,
-        identifier=bundle.identifier,
-        trust_level=bundle.trust_level,
-        scan_verdict=scan_result.verdict,
-        skill_hash=content_hash(install_dir),
-        install_path=install_dir.resolve().relative_to(_skills_dir().resolve()).as_posix(),
-        files=list(bundle.files.keys()),
-        metadata=bundle.metadata,
-        scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
-        install_attestation=build_install_attestation(
-            install_dir,
-            source=bundle.source,
-            identifier=bundle.identifier,
-            trust_level=scan_result.trust_level,
-            origin_identity=getattr(bundle, "origin_identity", ""),
-        ),
-    )
+        final_install_dir.parent.mkdir(parents=True, exist_ok=True)
+        rebound_install_dir = _resolve_lock_install_path(
+            install_rel_path,
+            safe_skill_name,
+        )
+        if rebound_install_dir != final_install_dir:
+            raise ValueError("Install destination changed before publish")
+
+        if final_install_dir.exists():
+            backup_dir = final_install_dir.with_name(
+                f".{safe_skill_name}.previous-{os.getpid()}-{time.time_ns()}"
+            )
+            os.replace(final_install_dir, backup_dir)
+        try:
+            os.replace(quarantine_path, final_install_dir)
+            published = True
+            if (
+                expected_scan_hash
+                and full_content_hash(final_install_dir) != expected_scan_hash
+            ):
+                raise ValueError("Installed content changed after security scan")
+
+            installed_content_hash = content_hash(final_install_dir)
+            lock = HubLockFile()
+            lock.record_install(
+                name=safe_skill_name,
+                source=bundle.source,
+                identifier=bundle.identifier,
+                trust_level=bundle.trust_level,
+                scan_verdict=scan_result.verdict,
+                skill_hash=installed_content_hash,
+                install_path=(
+                    final_install_dir.resolve()
+                    .relative_to(_skills_dir().resolve())
+                    .as_posix()
+                ),
+                files=list(bundle.files.keys()),
+                metadata=bundle.metadata,
+                scan_provenance=(
+                    scan_provenance
+                    or getattr(scan_result, "scan_provenance", None)
+                ),
+                install_attestation=build_install_attestation(
+                    final_install_dir,
+                    source=bundle.source,
+                    identifier=bundle.identifier,
+                    trust_level=scan_result.trust_level,
+                    origin_identity=getattr(bundle, "origin_identity", ""),
+                ),
+            )
+        except Exception:
+            if published and final_install_dir.exists():
+                shutil.rmtree(final_install_dir, ignore_errors=True)
+            if backup_dir is not None and backup_dir.exists():
+                os.replace(backup_dir, final_install_dir)
+            raise
+        else:
+            if backup_dir is not None:
+                shutil.rmtree(backup_dir, ignore_errors=True)
+
+    install_dir = final_install_dir
 
     append_audit_log(
         "INSTALL", safe_skill_name, bundle.source,
         bundle.trust_level, scan_result.verdict,
-        content_hash(install_dir),
+        installed_content_hash,
     )
 
     try:

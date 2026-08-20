@@ -1,7 +1,9 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
+import concurrent.futures
 import json
 import time
+from pathlib import Path
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
 
@@ -1452,6 +1454,134 @@ def test_install_rejects_quarantine_changed_after_scan(tmp_path):
             )
 
     assert not (skills_dir / "demo").exists()
+
+
+def test_reinstall_preserves_existing_skill_when_late_scan_check_fails(
+    monkeypatch, tmp_path
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    existing = skills_dir / "demo"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text("# Existing\n")
+    quarantine_root = skills_dir / ".hub" / "quarantine"
+    q_dir = quarantine_root / "demo"
+    q_dir.mkdir(parents=True)
+    (q_dir / "SKILL.md").write_text("# Scanned safe\n")
+    expected_hash = guard.full_content_hash(q_dir)
+    bundle = hub.SkillBundle(
+        name="demo",
+        files={"SKILL.md": "# Scanned safe\n"},
+        source="community",
+        identifier="owner/repo/demo",
+        trust_level="community",
+    )
+    result = guard.ScanResult(
+        skill_name="demo",
+        source="community",
+        trust_level="community",
+        verdict="safe",
+    )
+    original_hash = hub.full_content_hash
+    q_hash_calls = 0
+
+    def _mutate_before_late_hash(path):
+        nonlocal q_hash_calls
+        if Path(path) == q_dir:
+            q_hash_calls += 1
+            if q_hash_calls == 2:
+                (q_dir / "SKILL.md").write_text("# Changed late\n")
+        return original_hash(path)
+
+    monkeypatch.setattr(hub, "full_content_hash", _mutate_before_late_hash)
+    with patch.object(hub, "SKILLS_DIR", skills_dir), \
+            patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+        with pytest.raises(ValueError, match="changed after security scan"):
+            hub.install_from_quarantine(
+                q_dir,
+                "demo",
+                "",
+                bundle,
+                result,
+                {"bundle_hash": expected_hash},
+            )
+
+    assert (existing / "SKILL.md").read_text() == "# Existing\n"
+
+
+def test_lockfile_keeps_all_concurrent_install_records(tmp_path):
+    lock_path = tmp_path / "lock.json"
+    names = [f"skill-{index}" for index in range(24)]
+
+    def _record(name):
+        HubLockFile(path=lock_path).record_install(
+            name=name,
+            source="community",
+            identifier=f"owner/repo/{name}",
+            trust_level="community",
+            scan_verdict="safe",
+            skill_hash=name,
+            install_path=name,
+            files=["SKILL.md"],
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(names)) as pool:
+        list(pool.map(_record, names))
+
+    assert set(HubLockFile(path=lock_path).load()["installed"]) == set(names)
+
+
+def test_parallel_reinstalls_are_serialized_and_leave_complete_skill(tmp_path):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    existing = skills_dir / "demo"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text("# Existing\n")
+    hub_dir = skills_dir / ".hub"
+    quarantine_root = hub_dir / "quarantine"
+    versions = [f"# Version {index}\n" for index in range(8)]
+    inputs = []
+    for index, content in enumerate(versions):
+        q_dir = quarantine_root / f"demo-{index}"
+        q_dir.mkdir(parents=True)
+        (q_dir / "SKILL.md").write_text(content)
+        bundle = hub.SkillBundle(
+            name="demo",
+            files={"SKILL.md": content},
+            source="community",
+            identifier=f"owner/repo/demo-{index}",
+            trust_level="community",
+        )
+        inputs.append((q_dir, bundle))
+    result = guard.ScanResult(
+        skill_name="demo",
+        source="community",
+        trust_level="community",
+        verdict="safe",
+    )
+
+    def _install(item):
+        q_dir, bundle = item
+        return hub.install_from_quarantine(q_dir, "demo", "", bundle, result)
+
+    with patch.object(hub, "SKILLS_DIR", skills_dir), \
+            patch.object(hub, "HUB_DIR", hub_dir), \
+            patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+            patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+            patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(inputs)) as pool:
+            installed = list(pool.map(_install, inputs))
+
+    assert installed == [existing] * len(inputs)
+    assert (existing / "SKILL.md").read_text() in versions
+    assert not list(skills_dir.glob(".demo.previous-*"))
+    entry = HubLockFile(path=hub_dir / "lock.json").get_installed("demo")
+    assert entry is not None
+    assert entry["content_hash"] == hub.content_hash(existing)
 
 
 def test_install_does_not_follow_parent_swapped_after_resolution(

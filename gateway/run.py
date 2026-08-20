@@ -11353,6 +11353,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # inherits the gateway marker, `hermes gateway restart` refuses to
             # run as a self-restart loop guard and the gateway stays stopped.
             watcher_env.pop("_HERMES_GATEWAY", None)
+            watcher_env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
             project_root = Path(__file__).resolve().parent.parent
             # The watcher runs sys.executable (console python) under the
             # CREATE_NO_WINDOW detach kwargs below: it owns one hidden
@@ -11440,6 +11441,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from tools.environments.local import build_subprocess_env
         watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
         watcher_env.pop("_HERMES_GATEWAY", None)
+        watcher_env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
             subprocess.Popen(
@@ -30136,6 +30138,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+    # This call is the gateway role boundary, not merely a module import. A
+    # gateway is a long-lived owner process and must not retain delegate_task
+    # lineage from the shell, terminal snapshot, or restart helper that
+    # launched it. Ordinary delegated subprocesses intentionally keep the
+    # marker for their full lifetime so repeated security checks stay closed.
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    os.environ.pop(DELEGATED_CHILD_ENV_MARKER, None)
+
     # Enable interactive exec approval for dangerous commands on messaging
     # platforms. Set here (not at module import) so incidental imports of
     # gateway.run from CLI/tool code do not poison HERMES_EXEC_ASK.

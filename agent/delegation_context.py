@@ -122,7 +122,14 @@ def exit_non_dispatcher_owned_context(token: Token[bool]) -> None:
 
 
 def is_delegated_child_process_context() -> bool:
-    """Return True in this process or a subprocess spawned by a child."""
+    """Return True in this process or a subprocess spawned by a child.
+
+    The environment marker is durable lineage for a real subprocess: unlike
+    the ContextVar, it must remain true for the subprocess's whole lifetime so
+    repeated guards cannot become fail-open. Long-lived managed roles that
+    deliberately leave that lineage (gateway and dispatcher workers) clear the
+    marker at their explicit startup/spawn boundaries.
+    """
     import os
 
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(

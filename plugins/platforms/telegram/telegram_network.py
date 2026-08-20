@@ -67,8 +67,21 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     # on its own (#63311).
     _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
+    # Minimum spacing between exhaustion-triggered DoH re-discovery runs. The
+    # reconnect ladder above this transport backs off 5-60s between attempts,
+    # so one refresh a minute keeps the list fresh without hammering DoH.
+    _REDISCOVER_MIN_INTERVAL = 60.0
+
+    # Upper bound on the fallback rotation. Rotating DoH answers across a long
+    # outage must not grow the candidate list without limit -- every dead entry
+    # left in the rotation costs one connect timeout per request cycle. The cap
+    # trims discovered IPs only; seed endpoints are never trimmed.
+    _MAX_FALLBACK_IPS = 8
+
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
+        self._rediscover_task: Optional[asyncio.Task] = None
+        self._rediscover_at = 0.0
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
@@ -193,9 +206,71 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
+        # Every path — primary DNS and all captured IPs — just failed. The
+        # list was frozen at connect time, so a DNS blip combined with a
+        # rotated captured IP is otherwise unrecoverable for the life of the
+        # adapter (#75416). Kick off a throttled background re-discovery so a
+        # later attempt can pick up fresh endpoints; never block or mask the
+        # error we are about to raise.
+        self._schedule_rediscovery()
         raise last_error
 
+    def _schedule_rediscovery(self) -> None:
+        now = asyncio.get_running_loop().time()
+        if now < self._rediscover_at:
+            return
+        if self._rediscover_task is not None and not self._rediscover_task.done():
+            return
+        self._rediscover_at = now + self._REDISCOVER_MIN_INTERVAL
+        self._rediscover_task = asyncio.get_running_loop().create_task(
+            self._rediscover(), name="telegram-fallback-rediscover"
+        )
+
+    async def _rediscover(self) -> None:
+        try:
+            fresh = await discover_fallback_ips()
+        except Exception as exc:  # DoH itself may be down mid-outage — retry next window
+            logger.debug("[Telegram] Fallback IP re-discovery failed: %s", exc)
+            return
+        refreshed = list(dict.fromkeys(_normalize_fallback_ips(fresh)))
+        if not refreshed:
+            return
+        # Replace, do not append: the previous generation of captured IPs is
+        # exactly what just exhausted, so carrying it forward only adds a
+        # connect timeout per dead IP to every later cycle.
+        # discover_fallback_ips() keeps the seed endpoints as the tail, so a
+        # replacement can never drop the last-resort seeds. Cap the result so
+        # rotating DoH answers across a long outage cannot grow the rotation
+        # unboundedly; the cap trims discovered IPs, never seeds.
+        if len(refreshed) > self._MAX_FALLBACK_IPS:
+            seeds = {ip for ip in _SEED_FALLBACK_IPS if ip in refreshed}
+            budget = self._MAX_FALLBACK_IPS - len(seeds)
+            trimmed: list[str] = []
+            for ip in refreshed:
+                if ip in seeds:
+                    trimmed.append(ip)
+                elif budget > 0:
+                    trimmed.append(ip)
+                    budget -= 1
+            refreshed = trimmed
+        if refreshed == self._fallback_ips:
+            return
+        # Rebind rather than mutate: an in-flight retry loop iterating the old
+        # list keeps its own snapshot.
+        self._fallback_ips = refreshed
+        logger.warning(
+            "[Telegram] Fallback IPs refreshed after exhaustion (now %s)",
+            ", ".join(refreshed),
+        )
+
     async def aclose(self) -> None:
+        task = self._rediscover_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         async with self._primary_lock:
             self._primary_closed = True
             primary = self._primary
@@ -317,7 +392,13 @@ async def discover_fallback_ips() -> list[str]:
 
     if validated:
         logger.debug("Discovered Telegram fallback IPs via DoH: %s", ", ".join(validated))
-        return validated
+        # DoH answers are typically a single A record, so on their own they
+        # leave the transport with one escape hatch. If primary DNS later
+        # breaks while that captured IP has rotated or become unreachable,
+        # every request fails even though other Bot API endpoints are fine.
+        # Always keep the stable seed endpoints as a tail so the fallback
+        # list can never collapse to a single point of failure (#75416).
+        return validated + [ip for ip in _SEED_FALLBACK_IPS if ip not in validated]
 
     logger.info(
         "DoH discovery yielded no usable IPs (system DNS: %s); using seed fallback IPs %s",

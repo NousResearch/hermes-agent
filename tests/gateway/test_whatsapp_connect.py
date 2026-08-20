@@ -491,3 +491,60 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+# ---------------------------------------------------------------------------
+# Bridge capability-token (loopback auth for state-changing endpoints)
+# ---------------------------------------------------------------------------
+
+class TestBridgeCapabilityToken:
+    """The bridge requires X-Hermes-Bridge-Token on send/edit/media/react so a
+    co-resident local process (incl. the agent's own shell) cannot POST an
+    arbitrary chatId and impersonate the user. These tests exercise the real
+    token generation / persistence / header-injection path on the adapter.
+    """
+
+    def _adapter_with_session(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
+        adapter.platform = Platform.WHATSAPP
+        adapter._session_path = Path(tmp_path) / "session"
+        adapter._bridge_token = None
+        return adapter
+
+    def test_generates_and_persists_token_0600(self, tmp_path):
+        adapter = self._adapter_with_session(tmp_path)
+        token = adapter._load_or_create_bridge_token()
+        assert token, "token must be non-empty"
+        token_file = adapter._session_path / "bridge-token"
+        assert token_file.exists()
+        assert token_file.read_text(encoding="utf-8").strip() == token
+        mode = token_file.stat().st_mode & 0o777
+        assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+    def test_token_is_stable_across_calls_and_reloads(self, tmp_path):
+        adapter = self._adapter_with_session(tmp_path)
+        first = adapter._load_or_create_bridge_token()
+        assert adapter._load_or_create_bridge_token() == first
+        adapter2 = self._adapter_with_session(tmp_path)
+        assert adapter2._load_or_create_bridge_token() == first
+
+    def test_auth_headers_carry_token(self, tmp_path):
+        adapter = self._adapter_with_session(tmp_path)
+        token = adapter._load_or_create_bridge_token()
+        headers = adapter._bridge_auth_headers()
+        assert headers.get("X-Hermes-Bridge-Token") == token
+
+    def test_token_blocklisted_from_agent_shell(self):
+        from tools.environments.local import (
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+            _sanitize_subprocess_env,
+        )
+
+        assert "WHATSAPP_BRIDGE_TOKEN" in _HERMES_PROVIDER_ENV_BLOCKLIST
+        out = _sanitize_subprocess_env(
+            {"WHATSAPP_BRIDGE_TOKEN": "secret", "PATH": "/usr/bin"}
+        )
+        assert "WHATSAPP_BRIDGE_TOKEN" not in out
+        assert out.get("PATH") == "/usr/bin"

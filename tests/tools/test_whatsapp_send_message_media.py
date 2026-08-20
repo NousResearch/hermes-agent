@@ -155,3 +155,94 @@ def test_missing_captioned_file_falls_back_to_text():
     assert len(calls) == 1
     assert calls[0][0].endswith("/send")
     assert calls[0][1]["message"] == "floor plan"
+
+
+def test_media_upload_error_propagates():
+    img = _tmpfile(".png")
+    try:
+        session_ctx, _ = _session_with(
+            [
+                _resp(200, {"messageId": "t1"}),
+                _resp(500, text_data="boom"),
+            ]
+        )
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(
+                _standalone_send(
+                    _pconfig(), "12345", "hi", media_files=[(img, False)]
+                )
+            )
+        assert "error" in res
+        assert "500" in res["error"]
+    finally:
+        os.unlink(img)
+
+
+def test_text_only_unchanged_behavior():
+    session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(_standalone_send(_pconfig(), "12345", "just text"))
+    assert res == {
+        "success": True,
+        "platform": "whatsapp",
+        "chat_id": calls[0][1]["chatId"],
+        "message_id": "t1",
+    }
+    assert len(calls) == 1 and calls[0][0].endswith("/send")
+
+
+# ---------------------------------------------------------------------------
+# Bridge capability-token auth on standalone (cron-detached) sends.
+#
+# The bridge gates every state-changing endpoint (/send, /send-media) behind
+# X-Hermes-Bridge-Token when the live adapter started it with tokenAuth
+# enabled. _standalone_send runs OUTSIDE the live adapter (a detached cron
+# tick), so it must independently load and present that same token — it must
+# NOT mint its own (the bridge would reject a mismatched token anyway).
+# Regression for the "WhatsApp bridge error (401): missing or invalid bridge
+# token" cron delivery failure.
+# ---------------------------------------------------------------------------
+
+
+def test_standalone_send_attaches_persisted_bridge_token(tmp_path):
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "bridge-token").write_text("s3cr3t-token", encoding="utf-8")
+    pconfig = SimpleNamespace(
+        token="", extra={"bridge_port": 3000, "session_path": str(session_dir)}
+    )
+
+    session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
+    captured_session_kwargs = {}
+
+    def _client_session(*args, **kwargs):
+        captured_session_kwargs.update(kwargs)
+        return session_ctx
+
+    with patch("aiohttp.ClientSession", side_effect=_client_session):
+        res = asyncio.run(_standalone_send(pconfig, "12345", "hi"))
+
+    assert res["success"] is True
+    assert captured_session_kwargs.get("headers") == {
+        "X-Hermes-Bridge-Token": "s3cr3t-token"
+    }
+
+
+def test_standalone_send_sends_no_auth_header_when_token_file_absent(tmp_path):
+    session_dir = tmp_path / "session-never-started"
+    pconfig = SimpleNamespace(
+        token="", extra={"bridge_port": 3000, "session_path": str(session_dir)}
+    )
+
+    session_ctx, _ = _session_with([_resp(200, {"messageId": "t1"})])
+    captured_session_kwargs = {}
+
+    def _client_session(*args, **kwargs):
+        captured_session_kwargs.update(kwargs)
+        return session_ctx
+
+    with patch("aiohttp.ClientSession", side_effect=_client_session):
+        res = asyncio.run(_standalone_send(pconfig, "12345", "hi"))
+
+    assert res["success"] is True
+    assert captured_session_kwargs.get("headers") == {}

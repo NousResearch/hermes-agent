@@ -20,6 +20,7 @@ import logging
 import os
 import platform
 import re
+import secrets
 import signal
 import subprocess
 
@@ -461,6 +462,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        # Per-spawn loopback capability token for the bridge's state-changing
+        # endpoints. Generated/loaded in _load_or_create_bridge_token() and
+        # passed to the bridge via WHATSAPP_BRIDGE_TOKEN; the adapter echoes it
+        # back in the X-Hermes-Bridge-Token header on every send. Persisted
+        # 0600 in the session dir so a bridge reused across gateway restarts
+        # (the scriptHash handshake) keeps the same token.
+        self._bridge_token: Optional[str] = None
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -505,6 +513,55 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not math.isfinite(parsed) or parsed < 0:
             return float(default)
         return parsed
+
+    def _load_or_create_bridge_token(self) -> str:
+        """Return the loopback capability token for the bridge, creating and
+        persisting one if needed.
+
+        Persisted 0600 in the session dir as ``bridge-token`` so a bridge that
+        survives a gateway restart (reused via the scriptHash handshake) keeps
+        the same token the new adapter will present.  Regenerated only if the
+        file is missing/empty/unreadable.
+        """
+        cached = getattr(self, "_bridge_token", None)
+        if cached:
+            return cached
+        token_path = self._session_path / "bridge-token"
+        try:
+            existing = token_path.read_text(encoding="utf-8").strip()
+            if existing:
+                self._bridge_token = existing
+                return existing
+        except (OSError, ValueError):
+            pass
+        token = secrets.token_urlsafe(32)
+        try:
+            self._session_path.mkdir(parents=True, exist_ok=True)
+            # Write 0600 BEFORE content so the secret is never briefly world-readable.
+            fd = os.open(str(token_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, token.encode("utf-8"))
+            finally:
+                os.close(fd)
+        except OSError as e:
+            # Non-fatal: fall back to an in-memory token. A bridge reused across
+            # a restart would then 401 until it is recycled (scriptHash/tokenAuth
+            # handshake), which is the safe direction (fail closed, then heal).
+            logger.warning("[%s] Could not persist bridge token: %s", self.name, e)
+        self._bridge_token = token
+        return token
+
+    def _bridge_auth_headers(self) -> Dict[str, str]:
+        """Header dict carrying the capability token, or empty if none."""
+        token = self._bridge_token or self._load_or_create_bridge_token()
+        return {"X-Hermes-Bridge-Token": token} if token else {}
+
+    def _new_bridge_http_session(self) -> "aiohttp.ClientSession":
+        """Create the adapter->bridge aiohttp session with the capability
+        token pre-set as a default header, so EVERY send/edit/media/typing
+        call is authenticated without per-call-site changes."""
+        import aiohttp
+        return aiohttp.ClientSession(headers=self._bridge_auth_headers())
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
@@ -649,23 +706,36 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 disk_hash = _file_content_hash(bridge_path)
                                 running_read_receipts = bool(data.get("sendReadReceipts", False))
                                 config_matches = running_read_receipts == self._send_read_receipts
+                                # Reuse only if the running bridge ALSO enforces
+                                # token auth (tokenAuth:true). A pre-token bridge
+                                # is treated as stale so it gets recycled with a
+                                # fresh token instead of serving unauthenticated
+                                # forever — this is what makes enforce-from-start
+                                # safe with zero send outage.
+                                running_token_auth = bool(data.get("tokenAuth"))
                                 if (
                                     running_hash
                                     and disk_hash
                                     and running_hash == disk_hash
                                     and config_matches
+                                    and running_token_auth
                                 ):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                                    # Load the token THIS bridge was started with
+                                    # (persisted 0600 in the session dir) so our
+                                    # send headers match what it will accept.
+                                    self._load_or_create_bridge_token()
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
-                                    self._http_session = aiohttp.ClientSession()
+                                    self._http_session = self._new_bridge_http_session()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
                                     return True
-                                stale_reason = (
-                                    f"running={running_hash or 'unversioned'}, disk={disk_hash}"
-                                    if running_hash != disk_hash
-                                    else "send_read_receipts config changed"
-                                )
+                                if running_hash != disk_hash:
+                                    stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}"
+                                elif not config_matches:
+                                    stale_reason = "send_read_receipts config changed"
+                                else:
+                                    stale_reason = "no token auth (pre-token bridge)"
                                 print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
@@ -719,6 +789,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 _v = _wenv(_key)
                 if _v:
                     bridge_env[_key] = _v
+            # Loopback capability token: the bridge requires it on every
+            # state-changing endpoint (X-Hermes-Bridge-Token). Generated/loaded
+            # 0600 in the session dir; passed via env here. The terminal /
+            # execute_code subprocess sanitizer blocklists WHATSAPP_BRIDGE_TOKEN
+            # so the agent's own shell can't read it and hand-roll an
+            # unauthenticated bridge POST (the cross-recipient leak vector).
+            bridge_env["WHATSAPP_BRIDGE_TOKEN"] = self._load_or_create_bridge_token()
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges
@@ -812,8 +889,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
             
-            # Create a persistent HTTP session for all bridge communication
-            self._http_session = aiohttp.ClientSession()
+            # Create a persistent HTTP session for all bridge communication.
+            # Pre-set the capability token as a default header so every send
+            # path is authenticated without per-call-site changes.
+            self._http_session = self._new_bridge_http_session()
 
             # Start message polling task
             self._poll_task = asyncio.create_task(self._poll_messages())
@@ -1692,6 +1771,32 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document"
 
 
+def _load_standalone_bridge_token(extra: Dict[str, Any]) -> Optional[str]:
+    """Read the persisted bridge capability token for standalone sends.
+
+    Mirrors ``WhatsAppAdapter._load_or_create_bridge_token``'s session_path
+    resolution, but only READS the file — never creates it. The live adapter
+    is the sole writer/rotator: it generates the token, persists it 0600 in
+    the session dir, and launches the bridge process with it in
+    ``WHATSAPP_BRIDGE_TOKEN`` env. A standalone caller (cron running detached
+    from the gateway) just needs to present that same already-persisted
+    secret back to the bridge's ``X-Hermes-Bridge-Token`` gate. If the file
+    isn't there yet (bridge never started by a live adapter), there is no
+    token to send — the bridge will 401 the request, which is correct
+    fail-closed behavior rather than fabricating a token that won't match.
+    """
+    session_path = Path(extra.get(
+        "session_path",
+        get_hermes_dir("platforms/whatsapp/session", "whatsapp/session"),
+    ))
+    token_path = session_path / "bridge-token"
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+        return token or None
+    except OSError:
+        return None
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -1727,7 +1832,18 @@ async def _standalone_send(
         # a caption is never silently repeated across a multi-file send.
         media_caption = caption if (caption and len(media) == 1) else None
         last_message_id = None
-        async with aiohttp.ClientSession() as session:
+        # The bridge's state-changing endpoints (/send, /send-media) are
+        # gated behind the X-Hermes-Bridge-Token capability token when the
+        # live adapter started it with tokenAuth enabled (the default since
+        # the bridge's capability-token hardening). Without this header every
+        # standalone (cron-detached) delivery 401s — this was firing silently
+        # on any cron job whose delivery took this fallback path instead of
+        # the live-adapter path in _deliver_result (#jellyfin-cron-401).
+        headers = {}
+        bridge_token = _load_standalone_bridge_token(extra)
+        if bridge_token:
+            headers["X-Hermes-Bridge-Token"] = bridge_token
+        async with aiohttp.ClientSession(headers=headers) as session:
             # 1) Text first (skip the /send call when this chunk is media-only
             #    or when the text is delivered as the media caption instead).
             if text.strip() and not media_caption:

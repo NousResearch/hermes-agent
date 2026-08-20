@@ -268,7 +268,21 @@ export function useSessionStateCache({
       // state anyway). The plain busy heartbeat stays RAF-batched: that
       // coalescing exists only to keep periodic `session.info` updates from
       // churning `$messages` and jerking the scroll position while reading.
-      const isCriticalTransition = !state.busy || state.needsInput
+      //
+      // A session SWITCH is a third case, distinct from a same-session
+      // heartbeat: `viewSessionIdRef` names whichever session's transcript is
+      // currently painted into `$messages`, so `sessionId !== viewSessionIdRef`
+      // means this is the FIRST paint after switching onto a still-busy
+      // session (clicking back into a running session, resuming a warm-cached
+      // busy session, etc.). That first paint must not be RAF-batched with the
+      // rest — if it lands on a throttled tick, the transcript stays blank
+      // indefinitely even though the backend keeps streaming, because nothing
+      // else forces a flush until the turn finishes ("clicked back into a
+      // running session and it looks blank" bug). Only a repeat update to a
+      // session that's already on screen should get the scroll-jank-avoiding
+      // RAF coalescing.
+      const isSessionSwitch = sessionId !== viewSessionIdRef.current
+      const isCriticalTransition = !state.busy || state.needsInput || isSessionSwitch
 
       if (isCriticalTransition) {
         if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {

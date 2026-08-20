@@ -520,3 +520,85 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     expect(cache.getRuntimeIdForStoredSession('stored-A')).toBeNull()
   })
 })
+
+describe('useSessionStateCache — first paint on a still-busy session is never RAF-throttled', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $messages.set([])
+  })
+
+  it('flushes synchronously when switching onto a session that differs from the on-screen one, even when rAF never fires', () => {
+    // Simulate a throttled/backgrounded window: requestAnimationFrame is
+    // scheduled but its callback never runs (Chromium clamps rAF while the
+    // window is backgrounded/occluded). If the first paint after a session
+    // switch relied on this callback, the transcript would stay blank
+    // forever even though the cached state already has the answer.
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1 as unknown as number)
+
+    $messages.set([])
+    let cache!: Cache
+    const { rerender } = render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
+
+    act(() => {
+      cache.updateSessionState(
+        'thread-A',
+        state => ({ ...state, busy: false, messages: [userMessage('user-a', 'first session')] }),
+        'stored-A'
+      )
+    })
+    expect($messages.get().map(m => m.id)).toEqual(['user-a'])
+
+    // Switch onto thread B, which is still busy (a live, in-flight turn).
+    // This is the FIRST paint after the switch and must not depend on rAF
+    // ever firing — the cached transcript must appear immediately.
+    rerender(<ViewHarness activeSessionId="thread-B" onReady={c => (cache = c)} />)
+    act(() => {
+      cache.updateSessionState(
+        'thread-B',
+        state => ({
+          ...state,
+          busy: true,
+          messages: [userMessage('user-b', 'second session'), assistantText('assistant-b-partial', 'streaming...')]
+        }),
+        'stored-B'
+      )
+    })
+
+    expect($messages.get().map(m => m.id)).toEqual(['user-b', 'assistant-b-partial'])
+  })
+
+  it('still RAF-coalesces a repeat busy heartbeat to the session already on screen', () => {
+    // A session already on screen should keep the RAF-batched path for
+    // routine busy heartbeats -- only the first paint after a SWITCH must
+    // bypass it. Stub rAF to never fire and confirm a same-session busy
+    // update is NOT forced through synchronously.
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1 as unknown as number)
+
+    $messages.set([])
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
+
+    act(() => {
+      cache.updateSessionState(
+        'thread-A',
+        state => ({ ...state, busy: false, messages: [userMessage('user-a', 'first message')] }),
+        'stored-A'
+      )
+    })
+    expect($messages.get().map(m => m.id)).toEqual(['user-a'])
+
+    // A routine busy heartbeat on the SAME (already-on-screen) session.
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({
+        ...state,
+        busy: true,
+        messages: [userMessage('user-a', 'first message'), assistantText('assistant-a-partial', 'thinking...')]
+      }))
+    })
+
+    // Since rAF never fires and this isn't a session switch, the coalesced
+    // update should NOT have reached $messages yet.
+    expect($messages.get().map(m => m.id)).toEqual(['user-a'])
+  })
+})

@@ -1911,6 +1911,91 @@ export const en: Translations = {
       WHATSAPP_ALLOWED_USERS: {
         label: 'Allowed WhatsApp users',
         help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
+      },
+      ZULIP_SITE_URL: {
+        label: 'Site URL',
+        help: 'Your Zulip organization URL, cloud or self-hosted.',
+        placeholder: 'https://example.zulipchat.com'
+      },
+      ZULIP_BOT_EMAIL: {
+        label: 'Bot email',
+        help: 'The bot email from Zulip Settings → Bots.',
+        placeholder: 'bot@example.com'
+      },
+      ZULIP_API_KEY: {
+        label: 'API key',
+        help: 'The bot API key from Zulip Settings → Bots.',
+        placeholder: 'Paste Zulip API key'
+      },
+      ZULIP_ALLOWED_USERS: {
+        label: 'Allowed user emails',
+        help: 'Recommended. Comma-separated Zulip emails allowed to DM the bot.',
+        placeholder: 'alice@example.com, bob@example.com'
+      },
+      ZULIP_ALLOW_ALL_USERS: {
+        label: 'Allow all users',
+        help: 'Development only. When true, anyone can DM the bot without an allowlist.',
+        placeholder: 'true'
+      },
+      ZULIP_DEFAULT_STREAM: {
+        label: 'Default stream',
+        help: 'Stream used for outbound messages when none is specified.',
+        placeholder: 'general'
+      },
+      ZULIP_HOME_TOPIC: {
+        label: 'Home topic',
+        help: 'Default topic for cron and notification delivery.',
+        placeholder: 'Hermes'
+      },
+      ZULIP_HOME_CHANNEL: {
+        label: 'Home channel',
+        help: 'Home stream, or stream:topic, for cron and notification delivery.',
+        placeholder: 'general:Hermes'
+      },
+      ZULIP_HOME_CHANNEL_NAME: {
+        label: 'Home channel name',
+        help: 'Display name for the Zulip home channel in logs and status.',
+        placeholder: 'Home'
+      },
+      ZULIP_CERT_BUNDLE: {
+        label: 'CA bundle',
+        help: 'Path to a CA bundle for self-hosted Zulip TLS.',
+        placeholder: '/etc/ssl/certs/ca-certificates.crt'
+      },
+      ZULIP_ALLOW_INSECURE: {
+        label: 'Allow insecure TLS',
+        help: 'Disable TLS verification. Development-only self-hosted Zulip.',
+        placeholder: 'false'
+      },
+      ZULIP_REQUIRE_MENTION: {
+        label: 'Require mention',
+        help: 'Require @mention in streams. Default true.',
+        placeholder: 'true'
+      },
+      ZULIP_FREE_RESPONSE_STREAMS: {
+        label: 'Free-response streams',
+        help: 'Comma-separated stream names or IDs that do not require @mention.',
+        placeholder: 'general, 42'
+      },
+      ZULIP_CONTEXT_DEPTH: {
+        label: 'Context depth',
+        help: 'Number of prior topic messages to inject as context on @mention.',
+        placeholder: '10'
+      },
+      ZULIP_CATCHUP: {
+        label: 'Catch-up',
+        help: 'Replay missed stream messages after reconnect. Default false.',
+        placeholder: 'false'
+      },
+      ZULIP_CATCHUP_MAX_MESSAGES: {
+        label: 'Catch-up max messages',
+        help: 'Maximum missed messages replayed per stream on reconnect.',
+        placeholder: '100'
+      },
+      ZULIP_CONVERT_MATH: {
+        label: 'Convert math',
+        help: 'Rewrite LaTeX delimiters to Zulip KaTeX before send. Default true.',
+        placeholder: 'true'
       }
     },
     platformIntro: {}

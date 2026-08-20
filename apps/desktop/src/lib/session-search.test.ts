@@ -64,6 +64,7 @@ describe('sessionMatchesSearch', () => {
     expect(sessionMatchesSearch(makeSession({ source: 'whatsapp' }), 'wa')).toBe(true)
     expect(sessionMatchesSearch(makeSession({ source: 'slack' }), 'slack')).toBe(true)
     expect(sessionMatchesSearch(makeSession({ source: 'bluebubbles' }), 'imessage')).toBe(true)
+    expect(sessionMatchesSearch(makeSession({ source: 'zulip' }), 'Zulip')).toBe(true)
   })
 
   it('does not match unrelated queries', () => {

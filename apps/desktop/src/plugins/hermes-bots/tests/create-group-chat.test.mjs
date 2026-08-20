@@ -4,14 +4,14 @@ import test from 'node:test'
 
 const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
-// Discord-style creation flow: the header "+" is a dropdown (New Agent /
+// Discord-style creation flow: the header "+" is a dropdown (New Bot /
 // New Group Chat), and New Group Chat opens a checkbox-picker modal with
 // search, a name input, and a Create button. Source-contract style, like
 // the other roster affordance tests.
 
 test('source contract: header + is a dropdown offering agent and group chat', () => {
   assert.match(pluginSource, /DropdownMenuTrigger/)
-  assert.match(pluginSource, /'New Agent'/)
+  assert.match(pluginSource, /'New Bot'/)
   assert.match(pluginSource, /'New Group Chat'/)
 })
 

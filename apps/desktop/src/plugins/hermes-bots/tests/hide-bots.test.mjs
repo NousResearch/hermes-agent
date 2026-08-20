@@ -3,12 +3,9 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
 
-// Per-bot Hide/Unhide: right-click → Hide Bot persists `hidden: true` in bot
-// meta (local ctx.storage + server ui_meta via saveBotMeta), hidden bots drop
-// out of the roster list, and a header eye toggle — rendered only while at
-// least one bot is hidden — reveals them dimmed for right-click → Unhide.
-// Hiding is a roster-DISPLAY concern only: mentions, group chats, and the
-// name-collision check keep the full roster.
+// Hide and Pin are Desktop roster preferences. They are source-qualified,
+// never mutate gateway profile metadata, and never change the active chat.
+// Hidden bots keep working and remain available to mentions and group chats.
 
 const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
@@ -33,7 +30,7 @@ function load({ toastsOn = false } = {}) {
       },
       request: (method, params) => {
         requests.push({ method, params })
-        return Promise.resolve({ applied: { ui_meta: true } })
+        return Promise.resolve({})
       },
       notify: params => notifications.push(params)
     },
@@ -48,17 +45,17 @@ function load({ toastsOn = false } = {}) {
     .replace('export default {', 'globalThis.plugin = {')
     .concat(`
 globalThis.__hide = {
+  botRosterKey,
   isBotHidden,
-  fallbackSelectionAfterHide,
-  mergeServerMeta,
-  saveBotMeta,
+  isBotPinned,
+  saveRosterPreference,
   trackInboundActivity,
-  $botMeta,
-  $botUnread,
-  $selectedBot,
-  $lastRoster,
-  $showHiddenBots,
   $activityToasts,
+  $botMeta,
+  $botRosterPrefs,
+  $botUnread,
+  $lastRoster,
+  $selectedBot,
   setPluginCtx: value => { pluginCtx = value }
 };
 `)
@@ -69,152 +66,94 @@ globalThis.__hide = {
   return { ...context.__hide, notifications, requests }
 }
 
-test('hide: saveBotMeta persists hidden:true locally and ships it in server ui_meta', async () => {
+test('hide persists a source-qualified Desktop preference without mutating a gateway', () => {
   const t = load()
   const writes = []
   t.setPluginCtx({ storage: { set: (key, value) => writes.push({ key, value }) } })
+  const bot = { connectionId: 'local', name: 'researcher' }
 
-  await t.saveBotMeta('default', { hidden: true })
+  t.saveRosterPreference(bot, 'hidden', true)
 
-  assert.equal(t.$botMeta.get().default.hidden, true)
-  assert.equal(writes.at(-1).key, 'bot-meta')
-  assert.equal(writes.at(-1).value.default.hidden, true)
-  const configure = t.requests.find(r => r.method === 'profiles.configure')
-  assert.equal(configure.params.ui_meta['hermes-bots'].hidden, true)
+  assert.equal(t.isBotHidden(bot, {}), true)
+  assert.equal(writes.at(-1).key, 'bot-roster-preferences-v1')
+  assert.equal(writes.at(-1).value['local::researcher'].hidden, true)
+  assert.equal(t.requests.length, 0, 'a display preference must not call profiles.configure')
 })
 
-test('roster: hidden bots are filtered out; remote-source rows of the same name stay visible', () => {
+test('same-named profiles on different gateways have independent Hide and Pin state', () => {
   const t = load()
-  t.$botMeta.set({ ghost: { hidden: true } })
-  const roster = [
-    { name: 'default' },
-    { name: 'ghost' },
-    { name: 'ghost', remoteSource: true, connectionId: 'mini' }
-  ]
-  const meta = t.$botMeta.get()
-  const visible = roster.filter(bot => !t.isBotHidden(bot, meta))
+  const local = { connectionId: 'local', name: 'default' }
+  const remote = { connectionId: 'studio', name: 'default', remoteSource: true }
 
-  assert.equal(JSON.stringify(visible.map(b => `${b.remoteSource ? 'r:' : ''}${b.name}`)), JSON.stringify(['default', 'r:ghost']))
+  t.saveRosterPreference(remote, 'hidden', true)
+  t.saveRosterPreference(local, 'pinned', true)
+
+  assert.equal(t.isBotHidden(local, {}), false)
+  assert.equal(t.isBotHidden(remote, {}), true)
+  assert.equal(t.isBotPinned(local, {}), true)
+  assert.equal(t.isBotPinned(remote, {}), false)
+  assert.equal(t.botRosterKey(local), 'local::default')
+  assert.equal(t.botRosterKey(remote), 'studio::default')
 })
 
-test('unhide: hidden:false clears locally AND survives a mergeServerMeta round-trip', async () => {
+test('unhide writes an explicit false and keeps the current selection', () => {
   const t = load()
-  const writes = []
-  t.setPluginCtx({ storage: { set: (key, value) => writes.push({ key, value }) } })
-  t.$botMeta.set({ ghost: { hidden: true, title: 'Ghost' } })
-
-  await t.saveBotMeta('ghost', { hidden: false })
-  assert.equal(t.$botMeta.get().ghost.hidden, false, 'local merge must clear the flag')
-  const configure = t.requests.find(r => r.method === 'profiles.configure')
-  assert.equal(configure.params.ui_meta['hermes-bots'].hidden, false, 'server copy carries the literal false')
-
-  // Machine B: its stale local copy still says hidden:true; the server
-  // overlay (which merges OVER local) must win with the false.
-  t.$botMeta.set({ ghost: { hidden: true, title: 'Ghost' } })
-  t.mergeServerMeta([{ name: 'ghost', ui_meta: { 'hermes-bots': { hidden: false, title: 'Ghost' } } }])
-  assert.equal(t.$botMeta.get().ghost.hidden, false, 'server false must beat stale local true')
-})
-
-test('cross-machine: a hide done elsewhere lands via mergeServerMeta and persists to storage', () => {
-  const t = load()
-  const writes = []
-  t.setPluginCtx({ storage: { set: (key, value) => writes.push({ key, value }) } })
-  t.$botMeta.set({ ghost: { title: 'Ghost' } })
-
-  t.mergeServerMeta([{ name: 'ghost', ui_meta: { 'hermes-bots': { hidden: true, title: 'Ghost' } } }])
-
-  assert.equal(t.$botMeta.get().ghost.hidden, true)
-  assert.equal(writes.at(-1).value.ghost.hidden, true)
-})
-
-test('selection: hiding the selected bot falls back to the first visible bot', () => {
-  const t = load()
-  t.$selectedBot.set('ghost')
-  t.$botMeta.set({ ghost: { hidden: true } })
-  t.$lastRoster.set([{ name: 'ghost' }, { name: 'scribe' }, { name: 'default' }])
-
-  t.fallbackSelectionAfterHide('ghost')
-
-  assert.equal(t.$selectedBot.get(), 'scribe')
-})
-
-test('selection: falls back to default when nothing else is visible', () => {
-  const t = load()
-  t.$selectedBot.set('ghost')
-  t.$botMeta.set({ ghost: { hidden: true } })
-  t.$lastRoster.set([{ name: 'ghost' }])
-
-  t.fallbackSelectionAfterHide('ghost')
-
-  assert.equal(t.$selectedBot.get(), 'default')
-})
-
-test('selection: hiding default with nothing else visible keeps the selection (Routines must not chase a ghost)', () => {
-  const t = load()
+  const bot = { connectionId: 'work', name: 'writer', remoteSource: true }
   t.$selectedBot.set('default')
-  t.$botMeta.set({ default: { hidden: true } })
-  t.$lastRoster.set([{ name: 'default' }])
 
-  t.fallbackSelectionAfterHide('default')
+  t.saveRosterPreference(bot, 'hidden', true)
+  t.saveRosterPreference(bot, 'hidden', false)
 
-  assert.equal(t.$selectedBot.get(), 'default')
+  assert.equal(t.isBotHidden(bot, {}), false)
+  assert.equal(t.$botRosterPrefs.get()['work::writer'].hidden, false)
+  assert.equal(t.$selectedBot.get(), 'default', 'Hide is not a routing or focus action')
 })
 
-test('selection: hiding an unselected bot never moves the selection', () => {
+test('legacy profile metadata remains a compatibility fallback until locally overridden', () => {
   const t = load()
-  t.$selectedBot.set('scribe')
-  t.$botMeta.set({ ghost: { hidden: true } })
-  t.$lastRoster.set([{ name: 'ghost' }, { name: 'scribe' }])
+  const bot = { connectionId: 'local', name: 'legacy' }
+  const metadata = { legacy: { hidden: true, pinned: true } }
 
-  t.fallbackSelectionAfterHide('ghost')
+  assert.equal(t.isBotHidden(bot, metadata), true)
+  assert.equal(t.isBotPinned(bot, metadata), true)
 
-  assert.equal(t.$selectedBot.get(), 'scribe')
+  t.saveRosterPreference(bot, 'hidden', false)
+  assert.equal(t.isBotHidden(bot, metadata), false)
+  assert.equal(t.isBotPinned(bot, metadata), true)
 })
 
-test('activity: a hidden bot accumulates unread silently but never toasts, even with toasts on', () => {
+test('hidden activity still accumulates unread but never emits an activity toast', () => {
   const t = load({ toastsOn: true })
-  t.$botMeta.set({ ghost: { hidden: true } })
+  const bot = { connectionId: 'local', name: 'writer' }
+  t.saveRosterPreference(bot, 'hidden', true)
   t.$selectedBot.set('default')
 
-  const rosterAt = ts => [{ name: 'ghost', last_session: { last_active: ts, preview: 'Message from writer: hi' } }]
-  t.trackInboundActivity(rosterAt(100)) // seeding poll
-  t.trackInboundActivity(rosterAt(200)) // activity past the watermark
+  const rosterAt = ts => [
+    { ...bot, last_session: { last_active: ts, preview: 'Message from editor: hi' } }
+  ]
+  t.trackInboundActivity(rosterAt(100))
+  t.trackInboundActivity(rosterAt(200))
 
-  assert.equal(t.$botUnread.get().ghost, true, 'unread must accumulate while hidden')
-  assert.equal(t.notifications.length, 0, 'hidden bots never toast')
+  assert.equal(t.$botUnread.get().writer, true)
+  assert.equal(t.notifications.length, 0)
 })
 
-// ── source shape ─────────────────────────────────────────────────────────────
-
-test('shape: roster list filters through isBotHidden unless the show-hidden toggle is on', () => {
-  assert.match(
-    pluginSource,
-    /const visibleRoster = showHidden \? roster : roster\.filter\(bot => !isBotHidden\(bot, allMeta\)\)/
-  )
-  assert.match(pluginSource, /const filteredRoster = filterBots\(visibleRoster, allMeta, query\)/)
-})
-
-test('shape: header eye toggle renders only when at least one bot is hidden', () => {
-  assert.match(pluginSource, /hiddenBots\.length\s*\n?\s*\? jsx\(Tip, \{/)
-  assert.match(pluginSource, /onClick: \(\) => \$showHiddenBots\.set\(!showHidden\)/)
-})
-
-test('shape: revealed hidden rows are dimmed and flagged with the eye-closed glyph', () => {
-  const botRow = pluginSource.slice(pluginSource.indexOf('function BotRow('), pluginSource.indexOf('// ── model picker'))
-  assert.match(botRow, /meta\?\.hidden && 'opacity-60'/)
-  assert.match(botRow, /name: 'eye-closed'/)
-  assert.match(botRow, /children: meta\?\.hidden \? 'Unhide Bot' : 'Hide Bot'/)
-  assert.match(botRow, /saveBotMeta\(bot\.name, \{ hidden: !hidden \}\)/)
-})
-
-test('shape: hiding never filters mentions, group flows, or the meta/activity sweeps', () => {
-  // The full-roster consumers keep the FULL roster: mergeServerMeta,
-  // avatar pulls, and activity tracking all run on activeSourceRoster —
-  // which is derived from the unfiltered roster, not visibleRoster.
+test('shape: visible and hidden display lists are derived without shrinking the live roster', () => {
+  assert.match(pluginSource, /const hiddenBots = roster\.filter\(bot => isBotHidden\(bot, allMeta\)\)/)
+  assert.match(pluginSource, /const visibleRoster = roster\.filter\(bot => !isBotHidden\(bot, allMeta\)\)/)
   assert.match(pluginSource, /const activeSourceRoster = roster\.filter\(bot => !bot\.remoteSource\)/)
-  assert.match(pluginSource, /mergeServerMeta\(activeSourceRoster, data\?\.fetchedAt \|\| 0\)/)
   assert.match(pluginSource, /trackInboundActivity\(activeSourceRoster\)/)
-  // Mention resolution never consults the hidden flag.
+})
+
+test('shape: hidden bots recover from a folded section instead of a global reveal mode', () => {
+  assert.match(pluginSource, /children: 'Hidden'/)
+  assert.match(pluginSource, /'aria-expanded': hiddenExpanded/)
+  assert.match(pluginSource, /onClick: \(\) => \$showHiddenBots\.set\(!hiddenExpanded\)/)
+  assert.match(pluginSource, /children: hidden \? 'Unhide' : 'Hide'/)
+  assert.doesNotMatch(pluginSource, /fallbackSelectionAfterHide/)
+})
+
+test('shape: mention resolution remains independent from roster visibility', () => {
   const mentions = pluginSource.slice(
     pluginSource.indexOf('function resolveRosterMentions('),
     pluginSource.indexOf('/** Source-qualified identity for a roster row')

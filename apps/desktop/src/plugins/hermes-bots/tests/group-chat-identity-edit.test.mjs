@@ -40,8 +40,11 @@ test('source contract: room picture persists and hydrates with the room record',
 })
 
 test('source contract: room picture shows in the roster row and room header', () => {
-  // Roster row: picture wins over the fanned member faces when set.
-  assert.match(pluginSource, /children: room\.image\s*\n\s*\? jsx\('img', \{/)
+  // Roster row: one room picture wins over a generic room icon when set.
+  const rowSource = pluginSource.slice(pluginSource.indexOf('function GroupRow('), pluginSource.indexOf('function RosterSectionHeader('))
+  assert.match(rowSource, /room\.image\s*\n\s*\? jsx\('img', \{/)
+  assert.match(rowSource, /name: 'organization'/)
+  assert.doesNotMatch(rowSource, /members\.slice\([^)]*\)\.map/)
   // Header: picture leads the title.
   assert.match(pluginSource, /Room picture \(set via Group settings\) leads the title when present/)
 })

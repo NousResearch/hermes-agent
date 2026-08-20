@@ -39,11 +39,13 @@ function renderBotRow(input = 'alpha') {
   const node = (type, props = {}) => ({ type, props })
   const context = {
     BotFace: 'BotFace',
+    Codicon: 'Codicon',
     ContextMenu: 'ContextMenu',
     ContextMenuContent: 'ContextMenuContent',
     ContextMenuItem: 'ContextMenuItem',
     ContextMenuSeparator: 'ContextMenuSeparator',
     ContextMenuTrigger: 'ContextMenuTrigger',
+    Tip: 'Tip',
     ROSTER_KEY: ['hermes-bots', 'roster'],
     $botMeta: atom({}),
     $botUnread: atom({}),
@@ -55,6 +57,7 @@ function renderBotRow(input = 'alpha') {
     botGroups: () => [],
     botHandle: value => value,
     botOpenGeneration: 0,
+    botSourceStatus: () => ({ available: true, key: 'ready', label: 'Ready' }),
     botRosterMeta: (_bot, metaByName) => metaByName?.[_bot.name] ?? null,
     cn: (...values) => values.filter(Boolean).join(' '),
     createCanonicalChat: async () => null,
@@ -64,6 +67,8 @@ function renderBotRow(input = 'alpha') {
     // #49 session-aware-row helpers referenced inside BotRow.
     previewKind: () => ({ fromBot: false, sender: null }),
     generatedSessionTitle: () => null,
+    isBotHidden: () => false,
+    isBotPinned: () => false,
     openBotCanonicalChat: async (...args) => {
       opened.push(args)
       return 'stored-chat'
@@ -94,6 +99,7 @@ function renderBotRow(input = 'alpha') {
     queryClient: { invalidateQueries: () => undefined },
     relativeTime: () => 'now',
     saveBotMeta: () => undefined,
+    saveRosterPreference: () => undefined,
     showsHandle: () => false,
     stripPreviewMarkdown: text => String(text || ''),
     useValue: store => store.get()
@@ -168,11 +174,13 @@ test('behavior: remote default does not open this-device chat when the source di
   const node = (type, props = {}) => ({ type, props })
   const context = {
     BotFace: 'BotFace',
+    Codicon: 'Codicon',
     ContextMenu: 'ContextMenu',
     ContextMenuContent: 'ContextMenuContent',
     ContextMenuItem: 'ContextMenuItem',
     ContextMenuSeparator: 'ContextMenuSeparator',
     ContextMenuTrigger: 'ContextMenuTrigger',
+    Tip: 'Tip',
     ROSTER_KEY: ['hermes-bots', 'roster'],
     $botMeta: atom({ default: { chat: 'this-device-chat' } }),
     $botUnread: atom({}),
@@ -184,6 +192,7 @@ test('behavior: remote default does not open this-device chat when the source di
     botGroups: () => [],
     botHandle: value => value,
     botOpenGeneration: 0,
+    botSourceStatus: () => ({ available: true, key: 'ready', label: 'Ready' }),
     botRosterMeta: () => null,
     cn: (...values) => values.filter(Boolean).join(' '),
     createCanonicalChat: async () => null,
@@ -192,6 +201,8 @@ test('behavior: remote default does not open this-device chat when the source di
     haptic: () => undefined,
     previewKind: () => ({ fromBot: false, sender: null }),
     generatedSessionTitle: () => null,
+    isBotHidden: () => false,
+    isBotPinned: () => false,
     openBotCanonicalChat: async (...args) => {
       opened.push(args)
       return 'this-device-chat'
@@ -216,6 +227,7 @@ test('behavior: remote default does not open this-device chat when the source di
     queryClient: { invalidateQueries: () => undefined },
     relativeTime: () => 'now',
     saveBotMeta: () => undefined,
+    saveRosterPreference: () => undefined,
     showsHandle: () => false,
     stripPreviewMarkdown: text => String(text || ''),
     useValue: store => store.get()

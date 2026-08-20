@@ -4,7 +4,7 @@
  * Left pane "Bots": one row per Hermes profile (a bot = an agent profile) with
  * a customizable avatar (shape + color + eyes, image, or pet). Click opens that
  * bot's chat; right-click → Edit Profile (avatar, title, description).
- * "New Agent" creates a profile — Name / Title / Description with an
+ * "New Bot" creates a profile — Name / Title / Description with an
  * "Advanced" disclosure for full profile config.
  *
  * Right tile "Routines": scheduled tasks (Hermes cron jobs) scoped to the
@@ -39,6 +39,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
   EmptyState,
   GlyphSpinner,
@@ -92,6 +93,12 @@ let pluginCtx = null
 
 /** Live roster snapshot for imperative handlers (context menus). */
 const $lastRoster = atom([])
+
+/** Last source inventory returned by the desktop-wide agent roster. */
+const $lastSources = atom([])
+
+/** Desktop-only display preferences keyed by `connectionId::profile`. */
+const $botRosterPrefs = atom({})
 
 /** Bots with chat activity the user hasn't seen yet (name -> true).
  *  Fed by the roster poll's activity watermark, so it catches EVERY
@@ -148,7 +155,7 @@ function trackInboundActivity(roster) {
 
     // Roster-hidden bots stay quiet: the unread flag above accumulates
     // silently (unhiding reveals the badge) but a hidden bot never toasts.
-    if ($botMeta.get()[bot.name]?.hidden) {
+    if (isBotHidden(bot, $botMeta.get())) {
       continue
     }
 
@@ -1230,48 +1237,46 @@ async function saveBotMeta(name, patch) {
 }
 
 // ── hidden bots (right-click → Hide Bot) ────────────────────────────────────
-// Hiding is a ROSTER-DISPLAY concern only: a hidden bot keeps working —
-// @mentions still resolve, group-chat membership is untouched, its name
-// still counts as taken, and an open chat stays open. The flag lives in bot
-// meta (`hidden: true`), so it rides the same local-storage + server
-// ui_meta pipeline as pins/titles and follows the profile across machines.
-// Unhide writes `hidden: false` (never null): a null key survives the local
-// `{ ...prev, ...patch }` merge while the server DELETES None keys, and
-// that asymmetry lets mergeServerMeta resurrect a stale truthy copy. A
-// literal false round-trips identically through both stores.
+// Hiding is a DESKTOP-ROSTER concern only: a hidden bot keeps working,
+// remains mentionable, keeps group membership, and any open chat stays open.
+// Preferences are keyed by exact source-qualified identity so two gateways
+// exposing the same profile name never hide or pin each other's rows.
 
 /** Session-only view toggle: reveal hidden bots (dimmed) in the roster. */
 const $showHiddenBots = atom(false)
 
-/** Hidden flag for a roster row. Thin remote-source rows never read local
- *  meta (botRosterMeta returns null for them), so hide is by NAME on the
- *  active source; remote rows of the same name stay visible. */
-function isBotHidden(bot, metaByName) {
-  return Boolean(botRosterMeta(bot, metaByName)?.hidden)
+/** Read a source-qualified desktop preference, with legacy profile metadata
+ *  as a compatibility fallback for people who hid or pinned bots earlier. */
+function rosterPreference(bot, metaByName, field) {
+  const scoped = $botRosterPrefs.get()[botRosterKey(bot)]
+
+  if (scoped && Object.prototype.hasOwnProperty.call(scoped, field)) {
+    return Boolean(scoped[field])
+  }
+
+  return Boolean(botRosterMeta(bot, metaByName)?.[field])
 }
 
-/** Hiding the selected bot re-homes the selection (the Routines pane
- *  follows it): first visible bot wins, then 'default' — unless default is
- *  itself hidden with nothing else visible, in which case the selection
- *  stays put rather than pointing somewhere even less real. */
-function fallbackSelectionAfterHide(name) {
-  if ($selectedBot.get() !== name) {
-    return
-  }
+function saveRosterPreference(bot, field, enabled) {
+  const key = botRosterKey(bot)
+  const previous = $botRosterPrefs.get()
+  const next = { ...previous, [key]: { ...(previous[key] || {}), [field]: Boolean(enabled) } }
 
-  const meta = $botMeta.get()
-  const visible = $lastRoster
-    .get()
-    .filter(bot => !bot.remoteSource && bot.name !== name && !meta[bot.name]?.hidden)
+  $botRosterPrefs.set(next)
 
-  if (visible.length) {
-    $selectedBot.set(visible[0].name)
-    return
+  try {
+    Promise.resolve(pluginCtx?.storage?.set?.('bot-roster-preferences-v1', next)).catch(() => undefined)
+  } catch {
+    /* storage unavailable — preference holds for this window only */
   }
+}
 
-  if (name !== 'default' && !meta.default?.hidden) {
-    $selectedBot.set('default')
-  }
+function isBotHidden(bot, metaByName) {
+  return rosterPreference(bot, metaByName, 'hidden')
+}
+
+function isBotPinned(bot, metaByName) {
+  return rosterPreference(bot, metaByName, 'pinned')
 }
 
 /** One-time reconciliation: Bot Mode sessions are always hidden, but rooms
@@ -2594,7 +2599,7 @@ async function mcpSetupSupported() {
 
 function McpSetupButton({ profile, entry, onDone, ensureProfile }) {
   // entry: { name, requires:[env keys], auth?, fromCatalog, installed }
-  // profile may be null at first (New Agent: the profile isn't created yet).
+  // profile may be null at first (New Bot: the profile isn't created yet).
   // ensureProfile() lazily creates it on the first setup action and returns the
   // slug, so OAuth / API-key setup works DURING creation, not only in Edit.
   const [phase, setPhase] = useState('idle') // idle | keys | oauth | busy | done | error
@@ -2610,7 +2615,7 @@ function McpSetupButton({ profile, entry, onDone, ensureProfile }) {
     }
   }, [profile])
 
-  // Resolve the target profile, creating it on demand for the New Agent flow.
+  // Resolve the target profile, creating it on demand for the New Bot flow.
   const resolveProfile = async () => {
     if (profileRef.current) {
       return profileRef.current
@@ -3018,7 +3023,7 @@ async function generateAvatarImage(bot, title, description) {
   return res.image_data || res.image
 }
 
-/** Shape grid + color swatches, shared by Edit Profile and New Agent.
+/** Shape grid + color swatches, shared by Edit Profile and New Bot.
  *  Layout uses inline grid styles — arbitrary Tailwind classes like
  *  `grid-cols-7` are NOT in the app's precompiled CSS, which collapsed
  *  this into a single vertical column. */
@@ -3656,6 +3661,7 @@ function cachedUnionRoster() {
 function mergeMultiSourceRoster(local, union, activeConnectionId, previous = []) {
   const localProfiles = Array.isArray(local?.profiles) ? local.profiles : []
   const agents = Array.isArray(union?.agents) ? union.agents : []
+  const sources = Array.isArray(union?.sources) ? union.sources : []
   // A live id of null/'' means the window is on the unscoped local backend
   // (legacy hosts reported null for mode:'local'; the SDK now reports
   // 'local'). Do NOT fall back to registry primary when the third argument
@@ -3802,7 +3808,7 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
     }
   }
 
-  return { ...local, profiles }
+  return { ...local, profiles: profiles.map(row => annotateBotSource(row, sources)), sources }
 }
 
 /** The @handle users tag a bot with. Multi-source rosters precompute the
@@ -3966,6 +3972,66 @@ function resolveRosterMentions(text, roster, active = {}) {
  *  on every poll repaint (the Aug 2026 dupe-bots smear). */
 function botRosterKey(bot) {
   return `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`
+}
+
+function sourceByConnection(sources) {
+  return new Map(
+    (Array.isArray(sources) ? sources : [])
+      .filter(source => source?.connectionId)
+      .map(source => [String(source.connectionId), source])
+  )
+}
+
+/** Copy current source health onto a row without changing its owner. */
+function annotateBotSource(bot, sources) {
+  const id = String(bot?.connectionId || '').trim()
+
+  if (!id) {
+    return bot
+  }
+
+  const list = Array.isArray(sources) ? sources : []
+  const source = sourceByConnection(list).get(id)
+
+  if (!source) {
+    return list.length && bot?.sourceScoped ? { ...bot, sourceMissing: true, sourceReachable: false } : bot
+  }
+
+  return {
+    ...bot,
+    connectionKind: bot.connectionKind || source.kind,
+    connectionLabel: bot.connectionLabel || source.label,
+    sourceError: source.error || null,
+    sourceMissing: false,
+    sourceReachable: source.reachable
+  }
+}
+
+function botSourceStatus(bot) {
+  const error = String(bot?.sourceError || '').trim()
+  const lower = error.toLowerCase()
+
+  if (bot?.sourceMissing) {
+    return { available: false, key: 'missing', label: 'Gateway removed', tone: 'bad' }
+  }
+
+  if (error === 'connect-on-demand') {
+    return { available: true, key: 'on-demand', label: 'On demand', tone: 'muted' }
+  }
+
+  if (error || bot?.sourceReachable === false) {
+    if (/auth|login|sign.?in|token|unauthor|forbidden|401|403/.test(lower)) {
+      return { available: false, key: 'auth', label: 'Sign-in required', tone: 'warn' }
+    }
+
+    return { available: false, key: 'unavailable', label: 'Unavailable', tone: 'warn' }
+  }
+
+  if (bot?.sourceReachable === true) {
+    return { available: true, key: 'ready', label: 'Ready', tone: 'good' }
+  }
+
+  return { available: true, key: 'unknown', label: 'Status unknown', tone: 'muted' }
 }
 
 // ── cross-connection routing ─────────────────────────────────────────────────
@@ -4247,15 +4313,6 @@ async function prepareBotSource(bot) {
 }
 
 function displayName(bot, meta) {
-  // Only THIN rows from another source trade the friendly name for their
-  // connection label — the active gateway's own default must keep reading
-  // "Hermes". Annotated active rows carry sourceScoped too, and keying this
-  // off sourceScoped renamed the user's main agent to an IP-derived label
-  // (community report, Aug 17 2026).
-  if (bot?.remoteSource && (bot.name || '').trim().toLowerCase() === 'default' && bot.connectionLabel) {
-    return bot.connectionLabel
-  }
-
   if (meta?.title?.trim()) {
     return meta.title.trim()
   }
@@ -4289,16 +4346,156 @@ function filterBots(roster, metaByName, query) {
   }
 
   return roster.filter(bot => {
-    const display = displayName(bot, botRosterMeta(bot, metaByName)).toLowerCase()
+    const meta = botRosterMeta(bot, metaByName)
+    const display = displayName(bot, meta).toLowerCase()
     const profile = (bot.name || '').toLowerCase()
     const handle = botHandle(bot.name, bot).toLowerCase()
     // Multi-source rows also match on their device name ("homelab" finds
     // every bot living on the Homelab connection).
     const sourceLabel = (bot.connectionLabel || '').toLowerCase()
+    const role = `${meta?.description || ''} ${bot.description || ''}`.toLowerCase()
+    const preview = String(botActivitySession(bot)?.preview || '').toLowerCase()
     return (
-      display.includes(needle) || profile.includes(needle) || handle.includes(needle) || sourceLabel.includes(needle)
+      display.includes(needle) ||
+      profile.includes(needle) ||
+      handle.includes(needle) ||
+      sourceLabel.includes(needle) ||
+      role.includes(needle) ||
+      preview.includes(needle)
     )
   })
+}
+
+function filterBotsByGateway(roster, connectionId) {
+  if (!connectionId || connectionId === 'all') {
+    return roster
+  }
+
+  return (roster || []).filter(bot => String(bot?.connectionId || '') === connectionId)
+}
+
+function botNeedsHandleLabel(bot, roster, metaByName) {
+  const identity = displayName(bot, botRosterMeta(bot, metaByName)).trim().toLowerCase()
+  const connectionId = String(bot?.connectionId || '')
+
+  return (roster || []).some(
+    candidate =>
+      botRosterKey(candidate) !== botRosterKey(bot) &&
+      String(candidate?.connectionId || '') === connectionId &&
+      displayName(candidate, botRosterMeta(candidate, metaByName)).trim().toLowerCase() === identity &&
+      botHandle(candidate.name, candidate) !== botHandle(bot.name, bot)
+  )
+}
+
+function groupMatchesRosterFilters(name, members, metaByName, query, connectionId) {
+  const inGateway = filterBotsByGateway(members, connectionId)
+
+  if (connectionId && connectionId !== 'all' && inGateway.length === 0) {
+    return false
+  }
+
+  const needle = String(query || '').trim().toLowerCase().replace(/^@/, '')
+
+  return !needle || String(name || '').toLowerCase().includes(needle) || filterBots(inGateway, metaByName, needle).length > 0
+}
+
+function rosterGatewayOptions(sources, roster) {
+  const byId = new Map()
+
+  for (const source of Array.isArray(sources) ? sources : []) {
+    const id = String(source?.connectionId || '').trim()
+
+    if (id) {
+      byId.set(id, { ...source, connectionId: id, count: 0 })
+    }
+  }
+
+  for (const bot of roster || []) {
+    const id = String(bot?.connectionId || '').trim()
+
+    if (!id) {
+      continue
+    }
+
+    const source = byId.get(id) || {
+      connectionId: id,
+      kind: bot.connectionKind,
+      label: bot.connectionLabel || id,
+      reachable: bot.sourceReachable,
+      error: bot.sourceError,
+      count: 0
+    }
+    source.count += 1
+    byId.set(id, source)
+  }
+
+  return [...byId.values()].sort((a, b) =>
+    String(a.label || a.connectionId).localeCompare(String(b.label || b.connectionId), undefined, {
+      sensitivity: 'base'
+    })
+  )
+}
+
+function rosterGatewaySections(botRows, gatewayOptions, gatewayFilter = 'all') {
+  const rows = Array.isArray(botRows) ? botRows : []
+  const options = Array.isArray(gatewayOptions) ? gatewayOptions : []
+
+  if (gatewayFilter !== 'all' || options.length <= 1) {
+    return { sectioned: false, sections: [{ id: 'all', option: null, rows }] }
+  }
+
+  const byId = new Map()
+
+  for (const row of rows) {
+    const bot = row?.bot || row
+    const id = String(bot?.connectionId || 'legacy').trim() || 'legacy'
+    const bucket = byId.get(id) || []
+    bucket.push(row)
+    byId.set(id, bucket)
+  }
+
+  const known = new Set()
+  const sections = []
+
+  for (const option of options) {
+    const id = String(option?.connectionId || '').trim()
+    const sectionRows = byId.get(id)
+
+    if (!id || !sectionRows?.length) {
+      continue
+    }
+
+    known.add(id)
+    sections.push({ id, option, rows: sectionRows })
+  }
+
+  for (const [id, sectionRows] of byId) {
+    if (known.has(id)) {
+      continue
+    }
+
+    const bot = sectionRows[0]?.bot || sectionRows[0]
+    sections.push({
+      id,
+      option: {
+        connectionId: id,
+        kind: bot?.connectionKind || 'remote',
+        label: bot?.connectionLabel || (id === 'legacy' ? 'Current gateway' : id),
+        reachable: bot?.sourceReachable,
+        error: bot?.sourceError
+      },
+      rows: sectionRows
+    })
+  }
+
+  return { sectioned: true, sections }
+}
+
+function gatewayKindIcon(kind) {
+  if (kind === 'local') return 'device-desktop'
+  if (kind === 'cloud') return 'cloud'
+  if (kind === 'ssh') return 'terminal'
+  return 'remote-explorer'
 }
 
 function slugify(value) {
@@ -5876,6 +6073,8 @@ function generatedSessionTitle(session, preview) {
 /** Roster liveness window: a bot whose last message landed within this many
  *  seconds is treated as "active now" (pulsing dot in its row). */
 const ACTIVE_WINDOW_S = 90
+const RECENT_ACTIVITY_WINDOW_S = 7 * 24 * 60 * 60
+const BOT_ROSTER_SEARCH_THRESHOLD = 8
 
 /** The session whose activity best represents this bot — the FRESHER of the
  *  canonical Bot Chat (canonical_session, the profile's "Bot Chat" registry
@@ -5929,13 +6128,32 @@ function activeBots(roster, activeProfile, gatewayState, now = Date.now()) {
   })
 }
 
+function rosterActivityMatches(row, filter, now = Date.now()) {
+  if (!filter || filter === 'all') {
+    return true
+  }
+
+  if (filter === 'active') {
+    return Boolean(row?.active)
+  }
+
+  const activity = Number(row?.activity || 0)
+  const recent = Boolean(activity && now - activity <= RECENT_ACTIVITY_WINDOW_S * 1000)
+
+  return filter === 'recent' ? recent : !recent
+}
+
 // ── bot row ──────────────────────────────────────────────────────────────────
 
-function BotRow({ bot, onDelete, onEdit, onGroup }) {
+function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
   const activeProfile = useValue(host.state.profile)
   const focusedProfile = useValue($focusedBotProfile)
   const activeGroup = useValue($groupChatWorkspace)
-  const meta = botRosterMeta(bot, useValue($botMeta))
+  const allMeta = useValue($botMeta)
+  const meta = botRosterMeta(bot, allMeta)
+  const hidden = isBotHidden(bot, allMeta)
+  const pinned = isBotPinned(bot, allMeta)
+  const sourceStatus = botSourceStatus(bot)
   const groups = botGroups(meta)
   const last = bot.last_session
   // Highlight follows the chat on screen (focused session's owner), not the
@@ -5958,19 +6176,13 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   // last_session alone shows "6d ago" on a bot you just messaged.
   const previewSession = bot.canonical_session || last
   const activitySession = botActivitySession(bot)
-  // A live kanban/tool worker counts as activity (#90268): pulse + fresh
-  // age while it runs, falling back to chat activity when it ends.
+  // A live kanban/tool worker counts as activity (#90268): fresh age while it
+  // runs, falling back to chat activity when it ends.
   const workerActive = workerActiveAt(bot)
-  const activeNow =
-    workerActive ||
-    Boolean(activitySession?.last_active && Date.now() / 1000 - activitySession.last_active < ACTIVE_WINDOW_S)
   const rowAgeTs = workerActive
     ? Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
     : activitySession?.last_active || 0
-  // Work pose only when this bot is actually doing something: the active
-  // profile while the gateway is busy, or a bot that wrote within the
-  // liveness window. Not every bot whenever the gateway is busy.
-  const botMood = (isGatewayHome && gatewayState === 'busy') || activeNow ? 'work' : 'idle'
+  const botMood = workerActive || (isGatewayHome && gatewayState === 'busy') ? 'work' : 'idle'
   // Subscribe on every render. A source switch turns the same keyed row from
   // thin to rich; conditionally calling useValue here breaks React hook order.
   const unreadByName = useValue($botUnread)
@@ -5982,8 +6194,14 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const displayPreview = stripPreviewMarkdown(
     fromBot
       ? (previewSession?.preview || '').replace(A2A_PREFIX_RE, '').trim() || '…'
-      : previewSession?.preview || bot.description || 'No conversations yet — say hi'
+      : previewSession?.preview || ''
   )
+  const handle = botHandle(bot.name, bot)
+  const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? 'This device' : '')
+  const showDetailsRow = Boolean(showHandle || displayPreview || fromBot)
+  const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
+    .filter(Boolean)
+    .join(' · ')
 
   const warm = () => {
     // Multi-source row: pre-dial the agent's OWN source (feature-detected).
@@ -6080,15 +6298,36 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     className: cn(
       'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
       'hover:bg-(--chrome-action-hover)',
-      isActive && 'bg-(--chrome-action-hover)',
-      // Hidden bots only render while the header eye toggle is on — dimmed,
-      // so the temporary reveal reads as a different state from the roster.
-      meta?.hidden && 'opacity-60'
+      isActive && 'bg-(--ui-row-active-background)'
     ),
+    'aria-label': rowTooltip,
     children: [
-      jsx('div', {
-        className: 'shrink-0',
-        children: jsx(BotFace, { shape, color, image: photo ? image : null, size: 34, name: bot.name, mood: botMood })
+      jsxs('div', {
+        className: 'relative shrink-0',
+        children: [
+          jsx('div', {
+            className: cn(!sourceStatus.available && 'grayscale opacity-60'),
+            children: jsx(BotFace, {
+              shape,
+              color,
+              image: photo ? image : null,
+              size: 34,
+              name: bot.name,
+              mood: botMood
+            })
+          }),
+          !sourceStatus.available
+            ? jsx(Tip, {
+                label: `${gatewayLabel || 'Gateway'} · ${sourceStatus.label}`,
+                children: jsx('span', {
+                  className:
+                    'absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary,#111) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-secondary) dark:text-amber-300',
+                  'aria-label': `${gatewayLabel || 'Gateway'}: ${sourceStatus.label}`,
+                  children: jsx(Codicon, { name: sourceStatus.key === 'auth' ? 'key' : 'debug-disconnect' })
+                })
+              })
+            : null
+        ]
       }),
       jsxs('div', {
         className: 'min-w-0 flex-1',
@@ -6097,55 +6336,39 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
             className: 'flex items-baseline justify-between gap-2',
             children: [
               jsxs('div', {
-                className: 'flex min-w-0 items-baseline gap-1.5 truncate',
+                className: 'flex min-w-0 items-center gap-1.5',
                 children: [
-                  meta?.pinned
-                    ? jsx('span', {
-                        className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
-                        title: 'Pinned',
-                        children: '📌'
+                  pinned
+                    ? jsx(Tip, {
+                        label: 'Pinned',
+                        children: jsx(Codicon, {
+                          name: 'pinned',
+                          className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)'
+                        })
                       })
                     : null,
-                  meta?.hidden
-                    ? jsx(Codicon, {
-                        name: 'eye-closed',
-                        className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
-                        title: 'Hidden from the roster'
+                  hidden
+                    ? jsx(Tip, {
+                        label: 'Hidden from the roster',
+                        children: jsx(Codicon, {
+                          name: 'eye-closed',
+                          className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)'
+                        })
                       })
                     : null,
-                  jsx('span', {
-                    className: cn(
-                      'truncate text-[0.8125rem] font-medium',
-                      bot.remoteSource && 'max-w-[42%] shrink-0'
-                    ),
-                    children: displayName(bot, meta)
+                  jsx(Tip, {
+                    label: rowTooltip,
+                    children: jsx('span', {
+                      className: 'min-w-0 truncate text-[0.8125rem] font-medium',
+                      children: displayName(bot, meta)
+                    })
                   }),
-                  showsHandle(bot.name, meta, bot)
-                    ? jsx('span', {
-                        className: 'min-w-0 truncate font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
-                        children: `@${botHandle(bot.name, bot)}`
-                      })
-                    : null,
-                  bot.remoteSource
-                    ? jsx('span', {
-                        className:
-                          'max-w-[28%] shrink-0 truncate rounded bg-(--chrome-action-hover) px-1 font-mono text-[0.625rem] text-(--ui-text-tertiary)',
-                        title: `Lives on ${bot.connectionLabel}`,
-                        children: bot.connectionLabel
-                      })
-                    : null
                 ]
               }),
               unread
                 ? jsx('span', {
                     className: 'size-2 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)',
                     'aria-label': 'unread'
-                  })
-                : null,
-              activeNow
-                ? jsx('span', {
-                    className: 'hermes-bots-pulse size-1.5 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)',
-                    title: workerActive ? 'Working on a task right now' : 'Active in the last 90s'
                   })
                 : null,
               rowAgeTs
@@ -6156,37 +6379,32 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
                 : null
             ]
           }),
-          jsxs('div', {
-            className: 'flex min-w-0 items-center gap-1',
-            children: [
-              jsx('div', {
-                className: fromBot
-                  ? 'min-w-0 truncate text-xs italic text-(--ui-accent,#4f9cf9)'
-                  : 'min-w-0 truncate text-xs text-(--ui-text-tertiary)',
-                children: displayPreview
-              }),
-              fromBot
-                ? jsxs('span', {
-                    className:
-                      'flex shrink-0 items-center gap-1 rounded-full bg-(--chrome-action-hover) px-1.5 py-px text-[0.625rem] font-medium text-(--ui-accent,#4f9cf9)',
-                    title: `Last message came from @${fromBot} (bot-to-bot)`,
-                    children: ['🤖', `@${fromBot}`]
-                  })
-                : null
-            ]
-          })
+          showDetailsRow
+            ? jsxs('div', {
+                className: 'flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
+                children: [
+                  showHandle
+                    ? jsx('span', {
+                        className: 'shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
+                        children: `@${handle}`
+                      })
+                    : null,
+                  showHandle && displayPreview
+                    ? jsx('span', { className: 'shrink-0 text-(--ui-text-quaternary)', children: '·' })
+                    : null,
+                  displayPreview
+                    ? jsx('span', {
+                        className: cn('min-w-0 truncate', fromBot && 'italic'),
+                        children: displayPreview
+                      })
+                    : null
+                ]
+              })
+            : null
         ]
       })
     ]
   })
-
-  // Thin rows from another source are navigation targets only. Their profile
-  // metadata is not loaded yet, so edit/delete/pin/group actions would mutate
-  // whichever backend happens to be active. A normal click activates the
-  // owner; the refreshed rich row then exposes the full context menu.
-  if (bot.remoteSource) {
-    return row
-  }
 
   return jsxs(ContextMenu, {
     children: [
@@ -6195,68 +6413,68 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
         children: [
           jsx(ContextMenuItem, {
             onSelect: () => {
-              const pinned = Boolean($botMeta.get()[bot.name]?.pinned)
-              saveBotMeta(bot.name, { pinned: !pinned })
+              saveRosterPreference(bot, 'pinned', !pinned)
               host.notify({
                 kind: 'info',
                 message: `${displayName(bot, meta)} ${pinned ? 'unpinned' : 'pinned to top'}`
               })
             },
-            children: meta?.pinned ? 'Unpin' : 'Pin to top'
+            children: pinned ? 'Unpin' : 'Pin to top'
           }),
           jsx(ContextMenuItem, {
             onSelect: () => {
-              const hidden = Boolean($botMeta.get()[bot.name]?.hidden)
-              // `hidden: false` (not null) so unhide round-trips through the
-              // server ui_meta merge the same way the local merge sees it.
-              saveBotMeta(bot.name, { hidden: !hidden })
-
-              if (!hidden) {
-                fallbackSelectionAfterHide(bot.name)
-              }
-
+              saveRosterPreference(bot, 'hidden', !hidden)
               host.notify({
                 kind: 'info',
                 message: hidden
                   ? `${displayName(bot, meta)} is back in the roster`
-                  : `${displayName(bot, meta)} hidden — use the eye button in the Bots header to see hidden bots`
+                  : `${displayName(bot, meta)} hidden — expand Hidden at the bottom of the roster to restore it`
               })
             },
-            children: meta?.hidden ? 'Unhide Bot' : 'Hide Bot'
+            children: hidden ? 'Unhide' : 'Hide'
           }),
           jsx(ContextMenuSeparator, {}),
-          jsx(ContextMenuItem, { onSelect: () => onEdit(bot), children: 'Edit Profile' }),
+          bot.remoteSource
+            ? jsx(ContextMenuItem, {
+                disabled: true,
+                children: `${gatewayLabel || 'Remote gateway'} · ${sourceStatus.label}`
+              })
+            : jsx(ContextMenuItem, { onSelect: () => onEdit(bot), children: 'Edit Bot' }),
           !bot.remoteSource
             ? jsx(ContextMenuItem, {
                 onSelect: () => onGroup(bot),
                 children: groups.length ? `Groups: ${groups.join(', ')}…` : 'Manage groups…'
               })
             : null,
-          jsx(ContextMenuItem, {
-            onSelect: () => {
-              host.notify({ kind: 'info', message: `Duplicating ${displayName(bot, meta)}…` })
-              duplicateBot(bot, $lastRoster.get().filter(candidate => !candidate.remoteSource))
-                .then(name => {
-                  queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
-                  host.notify({ kind: 'success', message: `Created ${name} — full copy of ${bot.name}` })
-                })
-                .catch(err => host.notifyError(err, 'Duplicate failed'))
-            },
-            children: 'Duplicate'
-          }),
-          jsx(ContextMenuSeparator, {}),
-          jsx(ContextMenuItem, {
-            onSelect: () => {
-              $selectedBot.set(bot.name)
+          bot.remoteSource
+            ? null
+            : jsx(ContextMenuItem, {
+                onSelect: () => {
+                  host.notify({ kind: 'info', message: `Duplicating ${displayName(bot, meta)}…` })
+                  duplicateBot(bot, $lastRoster.get().filter(candidate => !candidate.remoteSource))
+                    .then(name => {
+                      queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
+                      host.notify({ kind: 'success', message: `Created ${name} — full copy of ${bot.name}` })
+                    })
+                    .catch(err => host.notifyError(err, 'Duplicate failed'))
+                },
+                children: 'Duplicate'
+              }),
+          bot.remoteSource ? null : jsx(ContextMenuSeparator, {}),
+          bot.remoteSource
+            ? null
+            : jsx(ContextMenuItem, {
+                onSelect: () => {
+                  $selectedBot.set(bot.name)
 
-              if (typeof host.newChat === 'function') {
-                host.newChat(bot.name)
-              }
-            },
-            children: 'New chat with this agent'
-          }),
-          bot.is_default ? null : jsx(ContextMenuSeparator, {}),
-          bot.is_default
+                  if (typeof host.newChat === 'function') {
+                    host.newChat(bot.name)
+                  }
+                },
+                children: 'New chat with this bot'
+              }),
+          bot.remoteSource || bot.is_default ? null : jsx(ContextMenuSeparator, {}),
+          bot.remoteSource || bot.is_default
             ? null
             : jsx(ContextMenuItem, {
                 onSelect: () => onDelete(bot),
@@ -6437,7 +6655,7 @@ function ModelPicker({ value, onChange, placeholderModel = 'gateway default' }) 
 
 // ── advanced profile config (skills / toolsets / model / SOUL) ──────────────
 //
-// Shared by Edit Profile and New Agent (edit mode only for skills/toolsets —
+// Shared by Edit Profile and New Bot (edit mode only for skills/toolsets —
 // a not-yet-created profile has nothing installed to toggle). Backed by
 // profiles.describe / profiles.configure; feature-detects older gateways.
 
@@ -7648,7 +7866,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
       children: [
         jsxs(DialogHeader, {
           children: [
-            jsx(DialogTitle, { children: 'New Agent' }),
+            jsx(DialogTitle, { children: 'New Bot' }),
             jsx(DialogDescription, {
               children: 'A named teammate with its own memory, skills, and chat. It can message your other agents.'
             })
@@ -8967,29 +9185,36 @@ function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpe
         const photo = Boolean(image && !isBackfilledFacePng(image))
         const label = displayName(bot, meta)
 
-        return jsx('button', {
-          type: 'button',
-          title: `Open ${label}'s chat`,
-          className: cn(
-            'flex items-center gap-1.5 rounded-md bg-(--chrome-action-hover) px-1.5 py-1 text-left transition-colors',
-            'hover:bg-(--chrome-action-hover) hover:text-foreground'
-          ),
-          onClick: () => onOpen(bot),
-          children: [
-            jsx(BotFace, {
-              shape,
-              color,
-              image: photo ? image : null,
-              size: 24,
-              name: bot.name,
-              mood: 'work'
-            }),
-            jsx('span', {
-              className: 'max-w-28 truncate text-xs font-medium',
-              children: label
+        return jsx(
+          Tip,
+          {
+            label: `Open ${label}'s chat`,
+            children: jsx('button', {
+              type: 'button',
+              'aria-label': `Open ${label}'s chat`,
+              className: cn(
+                'flex items-center gap-1.5 rounded-md bg-(--chrome-action-hover) px-1.5 py-1 text-left transition-colors',
+                'hover:bg-(--chrome-action-hover) hover:text-foreground'
+              ),
+              onClick: () => onOpen(bot),
+              children: [
+                jsx(BotFace, {
+                  shape,
+                  color,
+                  image: photo ? image : null,
+                  size: 24,
+                  name: bot.name,
+                  mood: 'work'
+                }),
+                jsx('span', {
+                  className: 'max-w-28 truncate text-xs font-medium',
+                  children: label
+                })
+              ]
             })
-          ]
-        }, botRosterKey(bot))
+          },
+          botRosterKey(bot)
+        )
       })
     ]
   })
@@ -10003,6 +10228,9 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   const roomClarifies = Object.values(clarifyAll || {})
     .filter(entry => entry?.group === group)
     .sort((a, b) => (a.at || 0) - (b.at || 0))
+  const availableMembers = members.filter(member => botSourceStatus(member).available).length
+  const availabilityLabel = `${availableMembers} of ${members.length} available`
+  const memberNames = members.map(b => displayName(b, botRosterMeta(b, allMeta))).join(', ') || 'No bots in this group chat'
 
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
@@ -10018,48 +10246,49 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
         ? jsx('img', {
             src: room.image,
             alt: '',
-            className: 'size-6 shrink-0 rounded-full object-cover ring-1 ring-(--ui-stroke-secondary)'
+            className: 'size-6 shrink-0 rounded-md object-cover ring-1 ring-(--ui-stroke-secondary)'
           })
-        : null,
+        : jsx('span', {
+            className:
+              'flex size-6 shrink-0 items-center justify-center rounded-md bg-(--chrome-action-hover) text-(--ui-text-tertiary)',
+            children: jsx(Codicon, { name: 'organization' })
+          }),
       jsx('div', {
         className: 'min-w-0 flex-1 truncate text-sm font-semibold',
-        children: `${group} — group chat`
+        children: group
       }),
-      // Member faces: the room's roster at a glance, matching each bot's
-      // avatar in the sidebar. Falls back to the count for the title tooltip.
-      jsx('div', {
-        className: 'flex shrink-0 items-center -space-x-1.5',
-        title: members.map(b => displayName(b, botRosterMeta(b, allMeta))).join(', '),
-        children: members.slice(0, 6).map(b => {
-          const bMeta = botRosterMeta(b, allMeta)
-          const { shape, color, image } = botAppearance(b.name, bMeta)
-          const photo = Boolean(image && !isBackfilledFacePng(image))
-
-          return jsx('div', {
-            className: 'rounded-full ring-2 ring-(--ui-bg-primary,#111)',
-            children: jsx(BotFace, { shape, color, image: photo ? image : null, size: 20, name: b.name })
-          }, botRosterKey(b))
+      jsx(Tip, {
+        label: memberNames,
+        children: jsx('span', {
+          className: cn(
+            'shrink-0 text-[0.65rem] text-(--ui-text-quaternary)',
+            members.length > 0 && availableMembers < members.length && 'text-amber-600 dark:text-amber-300'
+          ),
+          'aria-label': availabilityLabel,
+          children: members.length > 0 && availableMembers < members.length ? availabilityLabel : `${members.length} bots`
         })
       }),
-      jsx('span', {
-        className: 'shrink-0 text-[0.65rem] text-(--ui-text-quaternary)',
-        children: `${members.length} bots`
+      jsx(Tip, {
+        label: `Group settings — rename ${group} or set a room picture`,
+        children: jsx(Button, {
+          variant: 'ghost',
+          size: 'sm',
+          className: 'shrink-0 text-(--ui-text-tertiary) hover:text-foreground',
+          'aria-label': `Group settings for ${group}`,
+          onClick: () => setSettingsOpen(true),
+          children: jsx(Codicon, { name: 'gear' })
+        })
       }),
-      jsx(Button, {
-        variant: 'ghost',
-        size: 'sm',
-        className: 'shrink-0 text-(--ui-text-tertiary) hover:text-foreground',
-        title: `Group settings — rename ${group} or set a room picture`,
-        onClick: () => setSettingsOpen(true),
-        children: jsx(Codicon, { name: 'gear' })
-      }),
-      jsx(Button, {
-        variant: 'ghost',
-        size: 'sm',
-        className: 'shrink-0 text-(--ui-text-tertiary) hover:text-destructive',
-        title: `Disband the ${group} group chat`,
-        onClick: () => setConfirmDisband(true),
-        children: jsx(Codicon, { name: 'trash' })
+      jsx(Tip, {
+        label: `Disband the ${group} group chat`,
+        children: jsx(Button, {
+          variant: 'ghost',
+          size: 'sm',
+          className: 'shrink-0 text-(--ui-text-tertiary) hover:text-destructive',
+          'aria-label': `Disband ${group}`,
+          onClick: () => setConfirmDisband(true),
+          children: jsx(Codicon, { name: 'trash' })
+        })
       })
     ]
   })
@@ -10731,14 +10960,11 @@ function openGroupChat(group) {
   $groupChatWorkspace.set(group)
 }
 
-/** One group chat as ONE roster row — the Discord shape: stacked member
- *  avatars, group name, member count, the newest room line as the preview
- *  (markdown flattened), relative time of the last activity, and the
- *  needs-you badge on the row itself. Sorts into the same recency ordering
- *  as bot rows; clicking opens the room in the main chat window. */
+/** One group chat as one quiet roster row. The room owns one visual identity;
+ *  member details stay in its tooltip and workspace instead of competing
+ *  with bot avatars in the narrow sidebar. */
 function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
   const rooms = useValue($groupChats)
-  const allMeta = useValue($botMeta)
   const room = rooms[group] || { log: [] }
   const log = Array.isArray(room.log) ? room.log : []
   const last = log.length ? log[log.length - 1] : null
@@ -10749,8 +10975,9 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
   const lastHandle = botHandle(lastFrom || 'bot', members.find(member => member?.name === lastFrom))
   const preview = last
     ? `${last.from?.kind === 'user' ? 'You' : `@${lastHandle}`}: ${stripPreviewMarkdown(last.text) || '…'}`
-    : 'No messages yet — say hi to the room'
-  const faces = members.slice(0, 3)
+    : `${members.length} bots`
+  const availableMembers = members.filter(member => botSourceStatus(member).available).length
+  const availabilityLabel = `${availableMembers} of ${members.length} available`
 
   const row = jsxs('button', {
     type: 'button',
@@ -10763,43 +10990,39 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
       'hover:bg-(--chrome-action-hover)',
       active && 'bg-(--ui-row-active-background)'
     ),
+    'aria-label': `${group}, ${members.length} bots, ${availabilityLabel}`,
     children: [
-      // Room picture when the user set one; else a composite avatar of up to
-      // three member faces fanned like Discord's group-DM icon; a bare glyph
-      // when the room has no seated members.
-      jsx('div', {
-        className: 'flex w-[34px] shrink-0 items-center justify-center',
-        children: room.image
-          ? jsx('img', {
-              src: room.image,
-              alt: '',
-              className: 'size-7 rounded-full object-cover ring-2 ring-(--ui-bg-primary,#111)'
-            })
-          : faces.length
-          ? jsx('div', {
-              className: 'flex items-center -space-x-2.5',
-              children: faces.map(member => {
-                const meta = member.remoteSource ? null : allMeta[member.name]
-                const { shape, color, image } = botAppearance(member.name, meta)
-
-                return jsx(
-                  'div',
-                  {
-                    className: 'rounded-full ring-2 ring-(--ui-bg-primary,#111)',
-                    children: jsx(BotFace, {
-                      shape,
-                      color,
-                      image: image && !isBackfilledFacePng(image) ? image : null,
-                      size: 20,
-                      name: member.name,
-                      mood: 'idle'
-                    })
-                  },
-                  botRosterKey(member)
+      jsxs('div', {
+        className: 'relative flex w-[34px] shrink-0 items-center justify-center',
+        children: [
+          room.image
+            ? jsx('img', {
+                src: room.image,
+                alt: '',
+                className: cn(
+                  'size-8 rounded-md object-cover ring-1 ring-(--ui-stroke-secondary)',
+                  availableMembers === 0 && 'grayscale opacity-60'
                 )
               })
-            })
-          : jsx(Codicon, { name: 'organization', className: 'text-(--ui-text-tertiary)' })
+            : jsx('span', {
+                className: cn(
+                  'flex size-8 items-center justify-center rounded-md bg-(--chrome-action-hover) text-(--ui-text-tertiary)',
+                  availableMembers === 0 && 'opacity-60'
+                ),
+                children: jsx(Codicon, { name: 'organization' })
+              }),
+          members.length > 0 && availableMembers < members.length
+            ? jsx(Tip, {
+                label: availabilityLabel,
+                children: jsx('span', {
+                  className:
+                    'absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary,#111) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-secondary) dark:text-amber-300',
+                  'aria-label': availabilityLabel,
+                  children: jsx(Codicon, { name: 'debug-disconnect' })
+                })
+              })
+            : null
+        ]
       }),
       jsxs('div', {
         className: 'min-w-0 flex-1',
@@ -10807,22 +11030,18 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
           jsxs('div', {
             className: 'flex items-baseline justify-between gap-2',
             children: [
-              jsxs('div', {
-                className: 'flex min-w-0 items-baseline gap-1.5 truncate',
-                children: [
-                  jsx('span', { className: 'truncate text-[0.8125rem] font-medium', children: group }),
-                  jsx('span', {
-                    className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
-                    children: `${members.length} bots`
-                  })
-                ]
+              jsx('span', {
+                className: 'min-w-0 flex-1 truncate text-[0.8125rem] font-medium',
+                children: group
               }),
               needsYou
-                ? jsx('span', {
-                    className:
-                      'shrink-0 rounded-full bg-(--ui-accent,#4f9cf9) px-1.5 text-[0.6rem] font-semibold text-white',
-                    title: 'A bot in this room needs your input',
-                    children: 'needs you'
+                ? jsx(Tip, {
+                    label: 'A bot in this group chat needs your input',
+                    children: jsx(Codicon, {
+                      name: 'question',
+                      className: 'shrink-0 text-(--ui-accent,#4f9cf9)',
+                      'aria-label': 'Needs your input'
+                    })
                   })
                 : null,
               lastAt
@@ -10863,6 +11082,51 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
   })
 }
 
+/** Foldable roster heading. It organizes rows visually but never supplies or
+ * reconstructs ownership; every action still receives the full bot row. */
+function RosterSectionHeader({ collapsed, count, icon, label, onToggle, status, tip }) {
+  const button = jsxs('button', {
+    type: 'button',
+    'aria-expanded': !collapsed,
+    className:
+      'mt-1 flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary)',
+    onClick: onToggle,
+    children: [
+      jsx(Codicon, { name: collapsed ? 'chevron-right' : 'chevron-down', className: 'shrink-0' }),
+      jsx(Codicon, { name: icon, className: 'shrink-0' }),
+      jsx('span', { className: 'min-w-0 flex-1 truncate', children: label }),
+      jsx('span', {
+        className: 'shrink-0 font-normal tabular-nums text-(--ui-text-quaternary)',
+        children: count
+      }),
+      status && !status.available
+        ? jsx(Codicon, {
+            name: status.key === 'auth' ? 'key' : 'debug-disconnect',
+            className: 'shrink-0 text-amber-600 dark:text-amber-300'
+          })
+        : null
+    ]
+  })
+
+  return tip ? jsx(Tip, { label: tip, children: button }) : button
+}
+
+function GatewaySectionHeading({ collapsed, count, onToggle, option }) {
+  const status = botSourceStatus({ sourceError: option?.error, sourceReachable: option?.reachable })
+  const label = option?.label || option?.connectionId || 'Current gateway'
+  const kind = option?.kind || 'remote'
+
+  return jsx(RosterSectionHeader, {
+    collapsed,
+    count,
+    icon: gatewayKindIcon(kind),
+    label,
+    onToggle,
+    status,
+    tip: `${label} · ${kind} · ${status.label}`
+  })
+}
+
 function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
   const gatewayState = useValue(host.state.gateway)
@@ -10875,6 +11139,11 @@ function BotsPane() {
   const [deletingGroup, setDeletingGroup] = useState(null)
   const [grouping, setGrouping] = useState(null)
   const [query, setQuery] = useState('')
+  const [rowKindFilter, setRowKindFilter] = useState('all')
+  const [activityFilter, setActivityFilter] = useState('all')
+  const [gatewayFilter, setGatewayFilter] = useState('all')
+  const [collapsedRosterSections, setCollapsedRosterSections] = useState(() => new Set())
+  const hiddenSectionRef = useRef(null)
   const activityToasts = useValue($activityToasts)
   const groupChatName = useValue($groupChatWorkspace)
   // Main-tab ownership is a module Map; this rev subscription makes the
@@ -10884,6 +11153,8 @@ function BotsPane() {
   useValue($groupMainTabsRev)
   const groupNeedsYou = useValue($groupNeedsYou)
   const groupRooms = useValue($groupChats)
+  const rememberedSources = useValue($lastSources)
+  useValue($botRosterPrefs)
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
@@ -10903,10 +11174,8 @@ function BotsPane() {
 
     return Math.max(created, lastMsg)
   }
-  // Pinned bots (right-click → Pin) float to the top as a group; within the
-  // pinned group and within the unpinned group, recency still rules. A
-  // plain boolean flag in bot-meta (rides ui_meta to every machine).
-  const isPinned = bot => Boolean(botRosterMeta(bot, allMeta)?.pinned)
+  // Pin is a source-qualified Desktop preference, not gateway profile state.
+  const isPinned = bot => isBotPinned(bot, allMeta)
   // Resilience (@wesleysimplicio, #13): a failed refresh must not erase a
   // roster the user already had — mixed local+cloud gateways and remotes
   // waking from sleep fail transiently. Render the last good snapshot with
@@ -10923,34 +11192,69 @@ function BotsPane() {
 
     return activityOf(b) - activityOf(a)
   })
+  // React Query can briefly report neither loading nor data while the plugin
+  // and the persisted connection registry hydrate. Keep that transition in a
+  // neutral loading state instead of flashing the first-run "No bots" copy.
+  const initialRosterLoading = !data && !error && roster.length === 0
+  const activeRosterKeys = new Set(activeBots(roster, activeProfile, gatewayState).map(botRosterKey))
+  const sourceSnapshot = Array.isArray(data?.sources) ? data.sources : rememberedSources
+  const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)
+  const selectedGateway = gatewayOptions.find(option => option.connectionId === gatewayFilter)
+  const gatewayFilterExists = gatewayFilter === 'all' || Boolean(selectedGateway)
+
+  useEffect(() => {
+    if (!gatewayFilterExists) {
+      setGatewayFilter('all')
+    }
+  }, [gatewayFilterExists])
+
   const activeSourceRoster = roster.filter(bot => !bot.remoteSource)
-  // Hidden bots (right-click → Hide Bot) drop out of the roster list unless
-  // the header eye toggle reveals them. Display-only: every other consumer
-  // (mentions, group chats, name-collision checks, merge/avatar/activity
-  // sweeps) keeps the FULL roster.
-  const showHidden = useValue($showHiddenBots)
-  const unreadByName = useValue($botUnread)
+  // Hidden rows remain fully alive and recoverable at the bottom. Every
+  // non-display consumer continues to receive the complete roster.
+  const hiddenExpanded = useValue($showHiddenBots)
   const hiddenBots = roster.filter(bot => isBotHidden(bot, allMeta))
-  const hiddenUnread = hiddenBots.some(bot => !bot.remoteSource && unreadByName[bot.name])
-  const visibleRoster = showHidden ? roster : roster.filter(bot => !isBotHidden(bot, allMeta))
-  const filteredRoster = filterBots(visibleRoster, allMeta, query)
-  // Group chats are first-class roster rows (Discord-style): one standalone
-  // row per room, competing in the SAME recency ordering as bot rows — a
-  // group's activity is its newest room-log line. Pinned bots still lead;
-  // groups and unpinned bots interleave by recency below them.
-  const needle = query.trim().toLowerCase()
-  const groupRows = groupChatNames(allMeta, groupRooms)
-    .filter(name => !needle || name.toLowerCase().includes(needle))
-    .map(name => ({
+  const visibleRoster = roster.filter(bot => !isBotHidden(bot, allMeta))
+  const gatewayRoster = filterBotsByGateway(visibleRoster, gatewayFilter)
+  const filteredRoster = filterBots(gatewayRoster, allMeta, query).filter(bot =>
+    rosterActivityMatches(
+      { activity: activityOf(bot), active: activeRosterKeys.has(botRosterKey(bot)) },
+      activityFilter
+    )
+  )
+  const filteredHiddenBots = filterBots(filterBotsByGateway(hiddenBots, gatewayFilter), allMeta, query).filter(bot =>
+    rosterActivityMatches(
+      { activity: activityOf(bot), active: activeRosterKeys.has(botRosterKey(bot)) },
+      activityFilter
+    )
+  )
+  const groupNames = groupChatNames(allMeta, groupRooms)
+  const groupRows = groupNames
+    .map(name => ({ name, members: groupChatMemberBots(name, roster, allMeta) }))
+    .filter(row => groupMatchesRosterFilters(row.name, row.members, allMeta, query, gatewayFilter))
+    .map(row => ({
       kind: 'group',
-      name,
-      members: groupChatMemberBots(name, roster, allMeta),
-      activity: groupLastActivity(groupRooms[name])
+      name: row.name,
+      members: row.members,
+      pinned: Boolean(groupRooms[row.name]?.pinned),
+      activity: groupLastActivity(groupRooms[row.name]),
+      active:
+        Boolean(
+          groupLastActivity(groupRooms[row.name]) &&
+          Date.now() - groupLastActivity(groupRooms[row.name]) <= ACTIVE_WINDOW_S * 1000
+        ) || row.members.some(member => activeRosterKeys.has(botRosterKey(member)))
     }))
-  const rosterRows = [
-    ...filteredRoster.map(bot => ({ kind: 'bot', bot, pinned: isPinned(bot), activity: activityOf(bot) })),
-    ...groupRows
-  ].sort((a, b) => {
+    .filter(row => rowKindFilter !== 'bots' && rosterActivityMatches(row, activityFilter))
+  const botRows =
+    rowKindFilter === 'groups'
+      ? []
+      : filteredRoster.map(bot => ({
+          kind: 'bot',
+          bot,
+          pinned: isPinned(bot),
+          activity: activityOf(bot),
+          active: activeRosterKeys.has(botRosterKey(bot))
+        }))
+  const sortRosterRows = rows => rows.slice().sort((a, b) => {
     const pa = a.pinned ? 1 : 0
     const pb = b.pinned ? 1 : 0
 
@@ -10960,9 +11264,64 @@ function BotsPane() {
 
     return b.activity - a.activity
   })
+  const rosterRows = sortRosterRows([...botRows, ...groupRows])
+  const sortedGroupRows = sortRosterRows(groupRows)
+  const gatewaySections = rosterGatewaySections(botRows, gatewayOptions, gatewayFilter)
+  const showGatewaySections = gatewaySections.sectioned && botRows.length > 0
+  const activeFilterCount =
+    (rowKindFilter === 'all' ? 0 : 1) +
+    (activityFilter === 'all' ? 0 : 1) +
+    (gatewayFilter === 'all' ? 0 : 1)
+  const hasRosterConstraint = Boolean(query.trim()) || activeFilterCount > 0
+  const matchingHiddenBots = rowKindFilter === 'groups' ? [] : filteredHiddenBots
+  const showHiddenSection = hiddenBots.length > 0 && (!hasRosterConstraint || matchingHiddenBots.length > 0)
+  const showHiddenRows = hiddenExpanded || hasRosterConstraint
+  const rosterItemCount = roster.length + groupNames.length
+  const allBotsHidden =
+    !hasRosterConstraint && visibleRoster.length === 0 && groupNames.length === 0 && hiddenBots.length > 0
+  const showRosterSearch = rosterItemCount >= BOT_ROSTER_SEARCH_THRESHOLD || Boolean(query.trim())
+  const showRosterFilters =
+    gatewayOptions.length > 1 ||
+    groupNames.length > 0 ||
+    rosterItemCount >= BOT_ROSTER_SEARCH_THRESHOLD ||
+    activeFilterCount > 0
+  const showRosterTools = showRosterSearch || showRosterFilters
+  const rosterSectionCollapsed = id => !hasRosterConstraint && collapsedRosterSections.has(id)
+  const hiddenGatewaySections = rosterGatewaySections(
+    matchingHiddenBots.map(bot => ({ kind: 'bot', bot })),
+    gatewayOptions,
+    gatewayFilter
+  )
+
+  const toggleRosterSection = id => {
+    setCollapsedRosterSections(previous => {
+      const next = new Set(previous)
+
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+
+      return next
+    })
+  }
+
+  useEffect(() => {
+    if (!hiddenExpanded || hasRosterConstraint) {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => hiddenSectionRef.current?.scrollIntoView({ block: 'nearest' }))
+
+    return () => cancelAnimationFrame(frame)
+  }, [hiddenExpanded, hasRosterConstraint])
 
   if (live) {
     $lastRoster.set(roster)
+    if (Array.isArray(data?.sources)) {
+      $lastSources.set(data.sources)
+    }
     mergeServerMeta(activeSourceRoster, data?.fetchedAt || 0)
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(activeSourceRoster)
@@ -10978,6 +11337,113 @@ function BotsPane() {
   if (shouldRenderGroupChatInPane(groupChatName) && groupChatMembers.length) {
     return jsx(GroupChatWorkspace, { group: groupChatName, members: groupChatMembers })
   }
+
+  const renderBotRow = (bot, keyPrefix = '') =>
+    jsx(
+      BotRow,
+      {
+        bot,
+        onDelete: setDeleting,
+        onEdit: setEditing,
+        onGroup: setGrouping,
+        showHandle: botNeedsHandleLabel(bot, roster, allMeta)
+      },
+      `${keyPrefix}${botRosterKey(bot)}`
+    )
+
+  const renderGroupRow = row =>
+    jsx(
+      GroupRow,
+      {
+        active: groupChatName === row.name,
+        group: row.name,
+        members: row.members,
+        needsYou: Boolean(groupNeedsYou[row.name]),
+        onOpen: openGroupChat,
+        onDisband: setDeletingGroup
+      },
+      `group:${row.name}`
+    )
+
+  const renderGatewaySection = section => {
+    const sectionId = `gateway:${section.id}`
+    const collapsed = rosterSectionCollapsed(sectionId)
+
+    return jsxs(
+      'div',
+      {
+        className: 'min-w-0',
+        children: [
+          jsx(GatewaySectionHeading, {
+            collapsed,
+            count: section.rows.length,
+            onToggle: () => toggleRosterSection(sectionId),
+            option: section.option
+          }),
+          collapsed
+            ? null
+            : jsx('div', {
+                className: 'grid min-w-0 gap-0.5',
+                children: section.rows.map(row => renderBotRow(row.bot, `${section.id}:`))
+              })
+        ]
+      },
+      sectionId
+    )
+  }
+
+  const renderGroupChatSection = () => {
+    const sectionId = 'group-chats'
+    const collapsed = rosterSectionCollapsed(sectionId)
+
+    return jsxs(
+      'div',
+      {
+        className: 'min-w-0',
+        children: [
+          jsx(RosterSectionHeader, {
+            collapsed,
+            count: sortedGroupRows.length,
+            icon: 'organization',
+            label: 'Group chats',
+            onToggle: () => toggleRosterSection(sectionId),
+            tip: `${sortedGroupRows.length} global group chat${sortedGroupRows.length === 1 ? '' : 's'}`
+          }),
+          collapsed
+            ? null
+            : jsx('div', {
+                className: 'grid min-w-0 gap-0.5',
+                children: sortedGroupRows.map(renderGroupRow)
+              })
+        ]
+      },
+      sectionId
+    )
+  }
+
+  const renderHiddenGatewaySection = section =>
+    jsxs(
+      'div',
+      {
+        className: 'min-w-0',
+        children: [
+          jsx('div', {
+            className:
+              'flex min-w-0 items-center gap-1.5 px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)',
+            children: [
+              jsx(Codicon, { name: gatewayKindIcon(section.option?.kind), className: 'shrink-0' }),
+              jsx('span', {
+                className: 'min-w-0 flex-1 truncate',
+                children: section.option?.label || section.option?.connectionId || 'Current gateway'
+              }),
+              jsx('span', { className: 'shrink-0 font-normal tabular-nums', children: section.rows.length })
+            ]
+          }),
+          ...section.rows.map(row => renderBotRow(row.bot, `hidden:${section.id}:`))
+        ]
+      },
+      `hidden-gateway:${section.id}`
+    )
 
   return jsxs('div', {
     className: 'flex h-full flex-col',
@@ -11002,35 +11468,6 @@ function BotsPane() {
                   children: jsx(Codicon, { name: activityToasts ? 'bell' : 'bell-slash' })
                 })
               }),
-              // Eye toggle appears only once something is hidden — zero
-              // hidden bots means zero extra chrome. It stays visible while
-              // hidden rows are revealed, so Unhide is always reachable.
-              hiddenBots.length
-                ? jsx(Tip, {
-                    label: showHidden
-                      ? 'Hide hidden bots again'
-                      : `Show ${hiddenBots.length} hidden bot${hiddenBots.length === 1 ? '' : 's'}`,
-                    children: jsxs('button', {
-                      type: 'button',
-                      'aria-label': showHidden ? 'Hide hidden bots' : 'Show hidden bots',
-                      className: cn(
-                        'relative flex size-6 items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-                        showHidden ? 'text-foreground' : 'text-(--ui-text-tertiary)'
-                      ),
-                      onClick: () => $showHiddenBots.set(!showHidden),
-                      children: [
-                        jsx(Codicon, { name: showHidden ? 'eye' : 'eye-closed' }),
-                        hiddenUnread && !showHidden
-                          ? jsx('span', {
-                              className:
-                                'absolute right-0.5 top-0.5 size-1.5 rounded-full bg-(--ui-accent,#4f9cf9)',
-                              'aria-label': 'a hidden bot has unread activity'
-                            })
-                          : null
-                      ]
-                    })
-                  })
-                : null,
               jsxs(DropdownMenu, {
                 children: [
                   jsx(Tip, {
@@ -11039,7 +11476,7 @@ function BotsPane() {
                       asChild: true,
                       children: jsx('button', {
                         type: 'button',
-                        'aria-label': 'New agent or group chat',
+                        'aria-label': 'New bot or group chat',
                         className:
                           'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
                         children: jsx(Codicon, { name: 'add' })
@@ -11051,7 +11488,7 @@ function BotsPane() {
                     children: [
                       jsxs(DropdownMenuItem, {
                         onSelect: () => setCreateOpen(true),
-                        children: [jsx(Codicon, { name: 'hubot', className: 'mr-1.5' }), 'New Agent']
+                        children: [jsx(Codicon, { name: 'hubot', className: 'mr-1.5' }), 'New Bot']
                       }),
                       jsxs(DropdownMenuItem, {
                         disabled: activeSourceRoster.length < 2,
@@ -11131,17 +11568,140 @@ function BotsPane() {
           })()
         }
       }),
-      roster.length
+      showRosterTools
         ? jsx('div', {
-            className: 'px-2.5 pb-1.5',
-            children: jsx(SearchField, {
-              'aria-label': 'Search bots',
-              containerClassName: 'w-full',
-              inputClassName: 'w-full',
-              placeholder: 'Search bots…',
-              value: query,
-              onChange: setQuery
-            })
+            className: 'flex min-w-0 items-center gap-1 px-2.5 pb-1.5',
+            children: [
+              showRosterSearch
+                ? jsx(SearchField, {
+                    'aria-label': 'Search bots and group chats',
+                    containerClassName: 'min-w-0 flex-1',
+                    inputClassName:
+                      'w-full text-[0.75rem] placeholder:text-(--ui-text-tertiary)',
+                    placeholder: 'Search bots and group chats…',
+                    value: query,
+                    onChange: setQuery
+                  })
+                : jsx('span', { className: 'min-w-0 flex-1' }),
+              showRosterFilters
+                ? jsxs(DropdownMenu, {
+                    children: [
+                      jsx(Tip, {
+                        label: activeFilterCount ? `Filters (${activeFilterCount} active)` : 'Filter roster',
+                        children: jsx(DropdownMenuTrigger, {
+                          asChild: true,
+                          children: jsx('button', {
+                            type: 'button',
+                            'aria-label': activeFilterCount ? `Filter roster, ${activeFilterCount} active` : 'Filter roster',
+                            className: cn(
+                              'flex size-7 shrink-0 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+                              activeFilterCount && 'text-(--ui-accent,#4f9cf9)'
+                            ),
+                            children: jsx(Codicon, { name: 'filter' })
+                          })
+                        })
+                      }),
+                      jsxs(DropdownMenuContent, {
+                        align: 'end',
+                        children: [
+                          ...[
+                            ['all', 'Bots and group chats'],
+                            ['bots', 'Bots only'],
+                            ['groups', 'Group chats only']
+                          ].map(([value, label]) =>
+                            jsxs(
+                              DropdownMenuItem,
+                              {
+                                onSelect: () => setRowKindFilter(value),
+                                children: [
+                                  jsx('span', { className: 'min-w-0 flex-1', children: label }),
+                                  rowKindFilter === value ? jsx(Codicon, { name: 'check' }) : null
+                                ]
+                              },
+                              `kind:${value}`
+                            )
+                          ),
+                          jsx(DropdownMenuSeparator, {}),
+                          ...[
+                            ['all', 'Any activity'],
+                            ['active', 'Active now'],
+                            ['recent', 'Recently active'],
+                            ['older', 'Older']
+                          ].map(([value, label]) =>
+                            jsxs(
+                              DropdownMenuItem,
+                              {
+                                onSelect: () => setActivityFilter(value),
+                                children: [
+                                  jsx('span', { className: 'min-w-0 flex-1', children: label }),
+                                  activityFilter === value ? jsx(Codicon, { name: 'check' }) : null
+                                ]
+                              },
+                              `activity:${value}`
+                            )
+                          ),
+                          gatewayOptions.length > 1 ? jsx(DropdownMenuSeparator, {}) : null,
+                          gatewayOptions.length > 1
+                            ? jsxs(DropdownMenuItem, {
+                                onSelect: () => setGatewayFilter('all'),
+                                children: [
+                                  jsx(Codicon, { name: 'globe', className: 'mr-1.5' }),
+                                  jsx('span', { className: 'min-w-0 flex-1', children: 'All gateways' }),
+                                  gatewayFilter === 'all' ? jsx(Codicon, { name: 'check' }) : null
+                                ]
+                              })
+                            : null,
+                          ...(gatewayOptions.length > 1
+                            ? gatewayOptions.map(option => {
+                                const status = botSourceStatus({
+                                  sourceError: option.error,
+                                  sourceReachable: option.reachable
+                                })
+
+                                return jsxs(
+                                  DropdownMenuItem,
+                                  {
+                                    onSelect: () => setGatewayFilter(option.connectionId),
+                                    children: [
+                                      jsx(Codicon, {
+                                        name: gatewayKindIcon(option.kind),
+                                        className: cn(
+                                          'mr-1.5',
+                                          !status.available && 'text-amber-600 dark:text-amber-300'
+                                        )
+                                      }),
+                                      jsx('span', {
+                                        className: 'min-w-0 flex-1 truncate',
+                                        children: option.label || option.connectionId
+                                      }),
+                                      jsx('span', {
+                                        className: 'text-[0.625rem] tabular-nums text-(--ui-text-quaternary)',
+                                        children: option.count
+                                      }),
+                                      gatewayFilter === option.connectionId ? jsx(Codicon, { name: 'check' }) : null
+                                    ]
+                                  },
+                                  option.connectionId
+                                )
+                              })
+                            : []),
+                          activeFilterCount ? jsx(DropdownMenuSeparator, {}) : null,
+                          activeFilterCount
+                            ? jsx(DropdownMenuItem, {
+                                onSelect: () => {
+                                  setRowKindFilter('all')
+                                  setActivityFilter('all')
+                                  setGatewayFilter('all')
+                                },
+                                children: 'Clear filters'
+                              })
+                            : null
+                        ]
+                      })
+                    ]
+                  })
+                : null
+            ]
           })
         : null,
       staleNotice
@@ -11150,7 +11710,7 @@ function BotsPane() {
             children: staleNotice
           })
         : null,
-      isLoading && !roster.length
+      (isLoading || initialRosterLoading) && !roster.length
         ? jsx('div', {
             className: 'flex flex-1 items-center justify-center',
             children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
@@ -11176,56 +11736,104 @@ function BotsPane() {
           : roster.length === 0
             ? jsx(EmptyState, {
                 icon: 'hubot',
-                title: 'No agents yet',
-                description: 'Create your first teammate.'
+                title: 'No bots yet',
+                description: 'Create your first bot.'
               })
-            : filteredRoster.length === 0 && rosterRows.length === 0
-              ? jsx('div', {
-                  'aria-live': 'polite',
-                  className:
-                    'flex flex-1 items-center justify-center px-4 text-center text-xs text-(--ui-text-tertiary)',
-                  role: 'status',
-                  children: query.trim()
-                    ? `No bots match “${query.trim()}”`
-                    : 'All bots are hidden — use the eye button above to show them.'
+            : allBotsHidden && !hiddenExpanded
+              ? jsxs('div', {
+                  className: 'grid content-start gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)',
+                  children: [
+                    jsxs('div', {
+                      className: 'flex items-center gap-1.5 font-medium text-(--ui-text-secondary)',
+                      children: [
+                        jsx(Codicon, { name: 'eye-closed', className: 'text-(--ui-text-quaternary)' }),
+                        'All bots are hidden'
+                      ]
+                    }),
+                    jsx('p', { className: 'leading-relaxed', children: 'They keep working and retain their history.' }),
+                    jsx(Button, {
+                      variant: 'secondary',
+                      size: 'sm',
+                      className: 'justify-self-start',
+                      onClick: () => $showHiddenBots.set(true),
+                      children: 'Show hidden bots'
+                    })
+                  ]
                 })
-              : jsx(ScrollArea, {
-                  className: 'hermes-bots-roster min-h-0 flex-1',
-                  children: jsx('div', {
-                    className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
-                    // Flat, Discord-style list: bot rows and group rows
-                    // interleaved by recency — no section headers.
-                    children: rosterRows.map(row =>
-                      row.kind === 'group'
-                        ? jsx(
-                            GroupRow,
-                            {
-                              active: groupChatName === row.name,
-                              group: row.name,
-                              members: row.members,
-                              needsYou: Boolean(groupNeedsYou[row.name]),
-                              onOpen: openGroupChat,
-                              onDisband: setDeletingGroup
-                            },
-                            `group:${row.name}`
-                          )
-                        : jsx(
-                            BotRow,
-                            { bot: row.bot, onDelete: setDeleting, onEdit: setEditing, onGroup: setGrouping },
-                            botRosterKey(row.bot)
-                          )
-                    )
+              : rosterRows.length === 0 && matchingHiddenBots.length === 0
+                ? jsx('div', {
+                    'aria-live': 'polite',
+                    className:
+                      'flex flex-1 items-center justify-center px-4 text-center text-xs text-(--ui-text-tertiary)',
+                    role: 'status',
+                    children: query.trim()
+                      ? `No bots or group chats match “${query.trim()}”${selectedGateway ? ` on ${selectedGateway.label}` : ''}`
+                      : selectedGateway
+                        ? `No bots or group chats match these filters on ${selectedGateway.label}`
+                        : 'No bots or group chats match these filters.'
                   })
-                }),
-      jsx('div', {
-        className: 'border-t border-(--ui-stroke-secondary) p-2',
-        children: jsxs(Button, {
-          className: 'w-full justify-center gap-1.5',
-          variant: 'secondary',
-          onClick: () => setCreateOpen(true),
-          children: [jsx(Codicon, { name: 'add' }), 'New Agent']
-        })
-      }),
+                : jsx(ScrollArea, {
+                    className: 'hermes-bots-roster min-h-0 flex-1',
+                    children: jsx('div', {
+                      className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
+                      children: [
+                        ...(showGatewaySections
+                          ? [
+                              sortedGroupRows.length ? renderGroupChatSection() : null,
+                              ...gatewaySections.sections.map(renderGatewaySection)
+                            ].filter(Boolean)
+                          : rosterRows.map(row =>
+                              row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot)
+                            )),
+                        showHiddenSection
+                          ? jsxs('div', {
+                              ref: hiddenSectionRef,
+                              className: 'mt-1 border-t border-(--ui-stroke-secondary) pt-1',
+                              children: [
+                                hasRosterConstraint
+                                  ? jsxs('div', {
+                                      className:
+                                        'flex w-full items-center gap-1 px-2 py-1.5 text-[0.6875rem] font-medium text-(--ui-text-tertiary)',
+                                      children: [
+                                        jsx(Codicon, { name: 'eye-closed' }),
+                                        jsx('span', { children: 'Hidden' }),
+                                        jsx('span', {
+                                          className: 'text-(--ui-text-quaternary)',
+                                          children: matchingHiddenBots.length
+                                        })
+                                      ]
+                                    })
+                                  : jsxs('button', {
+                                      type: 'button',
+                                      'aria-expanded': hiddenExpanded,
+                                      className:
+                                        'flex w-full items-center gap-1 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-medium text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+                                      onClick: () => $showHiddenBots.set(!hiddenExpanded),
+                                      children: [
+                                        jsx(Codicon, { name: hiddenExpanded ? 'chevron-down' : 'chevron-right' }),
+                                        jsx('span', { children: 'Hidden' }),
+                                        jsx('span', {
+                                          className: 'text-(--ui-text-quaternary)',
+                                          children: hiddenBots.length
+                                        })
+                                      ]
+                                    }),
+                                showHiddenRows
+                                  ? matchingHiddenBots.length
+                                    ? hiddenGatewaySections.sectioned
+                                      ? hiddenGatewaySections.sections.map(renderHiddenGatewaySection)
+                                      : matchingHiddenBots.map(bot => renderBotRow(bot, 'hidden:'))
+                                    : jsx('div', {
+                                        className: 'px-2 py-2 text-xs text-(--ui-text-quaternary)',
+                                        children: 'No hidden bots match these filters.'
+                                      })
+                                  : null
+                              ]
+                            })
+                          : null
+                      ]
+                    })
+                  }),
       jsx(CreateAgentDialog, {
         open: createOpen,
         onClose: () => {
@@ -11405,6 +12013,21 @@ export default {
         .catch(() => undefined)
     } catch {
       /* no storage on this shell — defaults stay */
+    }
+
+    // Display-only roster preferences are local to this Desktop install and
+    // keyed by `connectionId::profile`. They never mutate a gateway or switch
+    // the active connection merely because a remote row was hidden/pinned.
+    try {
+      Promise.resolve(ctx.storage?.get?.('bot-roster-preferences-v1'))
+        .then(value => {
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            $botRosterPrefs.set(value)
+          }
+        })
+        .catch(() => undefined)
+    } catch {
+      /* no storage — display preferences last for this window only */
     }
 
     // Bot Mode sessions are always hidden now — the old "hide Bot Chats"
@@ -11594,10 +12217,10 @@ export default {
       area: PALETTE_AREA,
       data: {
         id: `${ID}.new-agent`,
-        label: 'New Agent…',
+        label: 'New Bot…',
         keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
         run: () => {
-          host.notify({ kind: 'info', message: 'Open the Bots pane and hit “New Agent”.' })
+          host.notify({ kind: 'info', message: 'Open the Bots pane and hit “New Bot”.' })
         }
       }
     })

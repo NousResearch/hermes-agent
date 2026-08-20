@@ -32,7 +32,8 @@ function loadTracker(toastsEnabled) {
       let value = {}
       return { get: () => value, set: next => { value = next } }
     })(),
-    displayName: bot => bot.name
+    displayName: bot => bot.name,
+    isBotHidden: () => false
   }
   const section = source
     .slice(helperStart, helperEnd)

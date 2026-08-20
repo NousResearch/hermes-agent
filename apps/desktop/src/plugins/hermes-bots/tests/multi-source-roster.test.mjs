@@ -32,7 +32,7 @@ function runtime() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;\nglobalThis.__resolveRosterMentions = resolveRosterMentions;'
+      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;\nglobalThis.__filterBotsByGateway = filterBotsByGateway;\nglobalThis.__botSourceStatus = botSourceStatus;\nglobalThis.__rosterGatewayOptions = rosterGatewayOptions;\nglobalThis.__rosterGatewaySections = rosterGatewaySections;\nglobalThis.__rosterActivityMatches = rosterActivityMatches;\nglobalThis.__resolveRosterMentions = resolveRosterMentions;'
     )
   vm.runInNewContext(code, context)
   return context
@@ -226,20 +226,21 @@ test('merge: repeated refreshes stay idempotent and do not mutate gateway rows',
   assert.equal(rich.connectionId, undefined)
 })
 
-test('default rows use source identity without borrowing another source title', () => {
+test('default rows keep bot identity without borrowing another source title', () => {
   const { __botRosterKey: key, __botRosterMeta: metaFor, __displayName: name } = runtime()
   const remote = {
     name: 'default',
     connectionId: 'personal',
     connectionLabel: 'Personal',
+    display_name: 'Personal Assistant',
     remoteSource: true,
     sourceScoped: true
   }
-  const active = { ...remote, remoteSource: undefined }
+  const active = { ...remote, remoteSource: undefined, display_name: undefined }
   const metadata = { default: { title: 'Active workspace' } }
 
   assert.equal(metaFor(remote, metadata), null)
-  assert.equal(name(remote, metaFor(remote, metadata)), 'Personal')
+  assert.equal(name(remote, metaFor(remote, metadata)), 'Personal Assistant')
   assert.equal(key(remote), 'personal::default')
 
   // The ACTIVE gateway's own default is the user's main agent — annotation
@@ -473,7 +474,7 @@ test('merge: previous remotes from a removed connection do not resurrect', () =>
   assert.equal(out.profiles.find(p => p.connectionId === 'gone'), undefined)
 })
 
-test('displayName: local default stays Hermes; remote default uses the device label', () => {
+test('displayName: default stays a bot identity on local and remote gateways', () => {
   const { __displayName: name } = runtime()
 
   assert.equal(
@@ -499,7 +500,7 @@ test('displayName: local default stays Hermes; remote default uses the device la
       },
       null
     ),
-    'Spark'
+    'Hermes'
   )
 })
 
@@ -581,6 +582,69 @@ test('botRosterKey: same name on two sources yields distinct React keys', () => 
   assert.notEqual(activeRow, remoteRow)
   // Single-source desktops (no connection ids anywhere) keep a stable key.
   assert.equal(legacyRow, 'legacy::default')
+})
+
+test('source health stays descriptive without changing a bot owner', () => {
+  const { __botSourceStatus: status } = runtime()
+
+  assert.equal(status({ sourceReachable: true }).label, 'Ready')
+  assert.equal(status({ sourceError: 'connect-on-demand', sourceReachable: false }).label, 'On demand')
+  assert.equal(status({ sourceError: '401 unauthorized', sourceReachable: false }).label, 'Sign-in required')
+  assert.equal(status({ sourceError: 'timeout', sourceReachable: false }).label, 'Unavailable')
+  assert.equal(status({ sourceMissing: true }).label, 'Gateway removed')
+})
+
+test('gateway options sort by label and count source-qualified bots', () => {
+  const { __rosterGatewayOptions: options } = runtime()
+  const result = options(
+    [
+      { connectionId: 'work', label: 'Work', kind: 'remote', reachable: true },
+      { connectionId: 'local', label: 'This device', kind: 'local', reachable: true }
+    ],
+    [
+      { name: 'default', connectionId: 'work' },
+      { name: 'reviewer', connectionId: 'work' },
+      { name: 'default', connectionId: 'local' }
+    ]
+  )
+
+  assert.equal(result.map(option => option.label).join(','), 'This device,Work')
+  assert.equal(result.map(option => option.count).join(','), '1,2')
+})
+
+test('gateway sections are progressive: flat for one or filtered, foldable for several', () => {
+  const { __rosterGatewaySections: sections } = runtime()
+  const rows = [
+    { kind: 'bot', bot: { name: 'default', connectionId: 'local' } },
+    { kind: 'bot', bot: { name: 'default', connectionId: 'work' } },
+    { kind: 'bot', bot: { name: 'reviewer', connectionId: 'work' } }
+  ]
+  const options = [
+    { connectionId: 'local', label: 'This device', kind: 'local' },
+    { connectionId: 'work', label: 'Work', kind: 'remote' }
+  ]
+
+  const many = sections(rows, options, 'all')
+  assert.equal(many.sectioned, true)
+  assert.equal(many.sections.map(section => `${section.id}:${section.rows.length}`).join(','), 'local:1,work:2')
+
+  assert.equal(sections(rows.slice(0, 1), options.slice(0, 1), 'all').sectioned, false)
+  assert.equal(sections(rows.slice(1), options, 'work').sectioned, false)
+})
+
+test('gateway and activity filters preserve exact source rows', () => {
+  const { __filterBotsByGateway: byGateway, __rosterActivityMatches: activity } = runtime()
+  const roster = [
+    { name: 'default', connectionId: 'local' },
+    { name: 'default', connectionId: 'work' },
+    { name: 'reviewer', connectionId: 'work' }
+  ]
+  const now = Date.now()
+
+  assert.equal(byGateway(roster, 'work').map(bot => `${bot.connectionId}:${bot.name}`).join(','), 'work:default,work:reviewer')
+  assert.equal(activity({ active: true, activity: 0 }, 'active', now), true)
+  assert.equal(activity({ active: false, activity: now - 1000 }, 'recent', now), true)
+  assert.equal(activity({ active: false, activity: now - 8 * 24 * 60 * 60 * 1000 }, 'older', now), true)
 })
 
 test('resolveRosterMentions: @dixie and @bob-mac-mini hit Connections bots, not this chat', () => {

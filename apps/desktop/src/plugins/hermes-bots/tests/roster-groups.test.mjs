@@ -189,10 +189,11 @@ test('stripPreviewMarkdown: flattens bold, quotes, code, and links out of previe
   assert.equal(stripPreviewMarkdown(''), '')
 })
 
-test('source contract: the roster stays a flat list of bot and group rows', () => {
-  // Ordering is deliberately unchanged in this PR; sectioned ordering follows separately.
-  assert.doesNotMatch(pluginSource, /function groupRoster\(/)
-  assert.match(pluginSource, /rosterRows\.map\(row =>/)
+test('source contract: the roster progressively groups multiple gateways and keeps group chats distinct', () => {
+  assert.match(pluginSource, /function rosterGatewaySections\(/)
+  assert.match(pluginSource, /options\.length <= 1/)
+  assert.match(pluginSource, /gatewayFilter !== 'all'/)
+  assert.match(pluginSource, /label: 'Group chats'/)
   assert.match(pluginSource, /function GroupRow\(/)
   assert.match(pluginSource, /onGroup: setGrouping/)
 })

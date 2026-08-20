@@ -52,6 +52,54 @@ class TestFetchOpenRouterModels:
 
         assert models == OPENROUTER_MODELS
 
+    def test_fetches_extra_models_from_config(self, monkeypatch):
+        """User-configured openrouter.extra_models are appended to the picker list."""
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"},'
+                    b'"supported_parameters":["temperature","tools"]},'
+                    b'{"id":"google/gemini-2.5-flash","pricing":{"prompt":"0.00001","completion":"0.00003"},'
+                    b'"supported_parameters":["temperature","tools"]}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        mock_config = {"openrouter": {"extra_models": ["google/gemini-2.5-flash"]}}
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[("anthropic/claude-opus-4.6", "")]),
+            patch("hermes_cli.config.load_config", return_value=mock_config),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        assert "anthropic/claude-opus-4.6" in ids
+        assert "google/gemini-2.5-flash" in ids
+        assert ("google/gemini-2.5-flash", "") in models
+
+    def test_extra_models_in_fallback_when_offline(self, monkeypatch):
+        """User-configured openrouter.extra_models remain in fallback list during fetch failure."""
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        mock_config = {"openrouter": {"extra_models": ["google/gemini-2.5-flash"]}}
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[("anthropic/claude-opus-4.6", "")]),
+            patch("hermes_cli.config.load_config", return_value=mock_config),
+            patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("offline")),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        assert "anthropic/claude-opus-4.6" in ids
+        assert "google/gemini-2.5-flash" in ids
+
     def test_filters_out_models_without_tool_support(self, monkeypatch):
         """Models whose supported_parameters omits 'tools' must not appear in the picker.
 

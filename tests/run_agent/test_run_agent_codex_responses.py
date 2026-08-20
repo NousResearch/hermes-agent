@@ -883,6 +883,172 @@ def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
     assert response.output == [commentary_item]
 
 
+def test_consume_codex_stream_infers_phase_less_commentary_before_server_tool():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    progress_item = SimpleNamespace(
+        type="message",
+        id="msg_progress",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="I will search now.")],
+    )
+    search_item = SimpleNamespace(
+        type="web_search_call",
+        id="search_1",
+        status="completed",
+    )
+    final_item = SimpleNamespace(
+        type="message",
+        id="msg_final",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="Final answer.")],
+    )
+    commentary_messages = []
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", id="msg_progress"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="I will search now."),
+            SimpleNamespace(type="response.output_item.done", item=progress_item),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="web_search_call", id="search_1"),
+            ),
+            SimpleNamespace(type="response.web_search_call.in_progress", item_id="search_1"),
+            SimpleNamespace(type="response.output_item.done", item=search_item),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", id="msg_final"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="Final answer."),
+            SimpleNamespace(type="response.output_item.done", item=final_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ]),
+        model="research-model",
+        on_commentary_message=commentary_messages.append,
+    )
+
+    assert commentary_messages == ["I will search now."]
+    assert response.interim_message_item_ids == ("msg_progress",)
+    assert response.interim_message_item_indexes == (0,)
+    assert response.output == [progress_item, search_item, final_item]
+
+
+def test_responses_event_bridge_coalesces_provider_tool_lifecycle():
+    from agent.codex_runtime import make_codex_responses_event_bridge
+
+    observed = []
+    agent = SimpleNamespace(
+        tool_progress_callback=lambda event, name, preview, args, **kwargs: observed.append(
+            (event, name, args, kwargs.get("is_error"))
+        )
+    )
+    bridge = make_codex_responses_event_bridge(agent)
+    search_item = {
+        "type": "web_search_call",
+        "id": "search_1",
+        "status": "completed",
+        "action": {"type": "search", "query": "Hermes Agent"},
+    }
+
+    bridge({"type": "response.output_item.added", "item": search_item})
+    bridge({"type": "response.web_search_call.in_progress", "item_id": "search_1"})
+    bridge({"type": "response.web_search_call.searching", "item_id": "search_1"})
+    bridge({"type": "response.web_search_call.completed", "item_id": "search_1"})
+    bridge({"type": "response.output_item.done", "item": search_item})
+
+    assert observed == [
+        (
+            "tool.started",
+            "web_search",
+            {"type": "search", "query": "Hermes Agent"},
+            None,
+        ),
+        ("tool.completed", "web_search", None, False),
+    ]
+
+
+def test_inferred_commentary_marks_existing_stream_segment_instead_of_resending(
+    monkeypatch,
+):
+    agent = _build_agent(monkeypatch)
+    streamed = []
+    delivered = []
+    agent.stream_delta_callback = streamed.append
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: delivered.append(
+            (text, already_streamed)
+        )
+    )
+    progress_item = SimpleNamespace(
+        type="message",
+        id="msg_progress",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="I will search now.")],
+    )
+    search_item = SimpleNamespace(
+        type="web_search_call",
+        id="search_1",
+        status="completed",
+    )
+    final_item = SimpleNamespace(
+        type="message",
+        id="msg_final",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="Final answer.")],
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_kwargs: _FakeCreateStream([
+                SimpleNamespace(
+                    type="response.output_item.added",
+                    item=SimpleNamespace(type="message", id="msg_progress"),
+                ),
+                SimpleNamespace(
+                    type="response.output_text.delta",
+                    delta="I will search now.",
+                ),
+                SimpleNamespace(type="response.output_item.done", item=progress_item),
+                SimpleNamespace(
+                    type="response.output_item.added",
+                    item=SimpleNamespace(type="web_search_call", id="search_1"),
+                ),
+                SimpleNamespace(
+                    type="response.web_search_call.in_progress",
+                    item_id="search_1",
+                ),
+                SimpleNamespace(type="response.output_item.done", item=search_item),
+                SimpleNamespace(
+                    type="response.output_item.added",
+                    item=SimpleNamespace(type="message", id="msg_final"),
+                ),
+                SimpleNamespace(
+                    type="response.output_text.delta",
+                    delta="Final answer.",
+                ),
+                SimpleNamespace(type="response.output_item.done", item=final_item),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(status="completed"),
+                ),
+            ])
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert delivered == [("I will search now.", True)]
+    assert "".join(streamed) == "I will search now.Final answer."
+    assert response.interim_message_item_ids == ("msg_progress",)
+
+
 
 
 def test_run_codex_stream_delivers_redacted_commentary_once(monkeypatch):

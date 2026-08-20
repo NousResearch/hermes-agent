@@ -227,6 +227,66 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.codex_reasoning_items is None
 
 
+def test_phase_less_messages_before_server_tools_are_not_joined_into_final_answer():
+    response = SimpleNamespace(
+        status="completed",
+        output_text="I will search now.Final answer.",
+        output=[
+            SimpleNamespace(
+                type="message",
+                id="msg_progress",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="I will search now.")],
+            ),
+            SimpleNamespace(
+                type="web_search_call",
+                id="search_1",
+                status="completed",
+            ),
+            SimpleNamespace(
+                type="message",
+                id="msg_final",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="Final answer.")],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Final answer."
+    # Both exact message items remain available for Responses replay/cache
+    # continuity even though the progress narration is not final content.
+    assert [item["id"] for item in assistant_message.codex_message_items] == [
+        "msg_progress",
+        "msg_final",
+    ]
+
+
+def test_web_extractor_call_is_a_completed_provider_tool_not_incomplete_output():
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="web_extractor_call",
+                id="extract_1",
+                status="in_progress",
+            ),
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="Extracted answer.")],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Extracted answer."
+
+
 
 
 # ---------------------------------------------------------------------------

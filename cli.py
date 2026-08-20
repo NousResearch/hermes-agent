@@ -4942,6 +4942,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+        # Mid-turn natural-language narration is independent from token
+        # streaming and tool progress. The callback itself additionally gates
+        # on _interactive_turn so single-query stdout stays final-answer-only.
+        self.interim_assistant_messages_enabled = bool(
+            CLI_CONFIG["display"].get("interim_assistant_messages", True)
+        )
         # show_timestamps: prefix user and assistant labels with timestamps
         self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
         self.timestamp_format = CLI_CONFIG["display"].get("timestamp_format", "%H:%M")
@@ -7571,6 +7577,49 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if deferred:
                 self._deferred_content = ""
                 self._emit_stream_text(deferred)
+
+    def _on_interim_assistant(
+        self,
+        text: str,
+        *,
+        already_streamed: bool = False,
+    ) -> None:
+        """Commit one mid-turn assistant message in the interactive CLI.
+
+        Responses providers can emit natural-language narration before a
+        server-side tool call.  The agent reports that completed segment here
+        independently from tool progress.  Non-interactive ``-q``/``-Q``
+        invocations intentionally keep their stdout final-answer-only, so this
+        callback is gated on the run loop's per-turn marker.
+
+        With token streaming enabled the same text is already in the open
+        response box; only close that segment before tool progress renders.
+        Otherwise feed the complete message through the normal stream renderer
+        so markdown stripping, terminal colours, and prompt-toolkit-safe output
+        stay identical to ordinary assistant text.
+        """
+        if not getattr(self, "_interactive_turn", False):
+            return
+
+        visible = str(text or "").strip()
+        if not visible:
+            return
+
+        self._flush_reasoning_preview(force=True)
+        if already_streamed:
+            self._flush_stream()
+            self._reset_stream_state()
+            self._invalidate()
+            return
+
+        # Start from a clean segment in case a provider switches from a
+        # reasoning surface to an unstreamed assistant status message.
+        self._flush_stream()
+        self._reset_stream_state()
+        self._stream_delta(visible)
+        self._flush_stream()
+        self._reset_stream_state()
+        self._invalidate()
 
     def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.

@@ -25,6 +25,22 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+# Provider-executed Responses tools are reported as output items but do not
+# require a client-side function-call round trip.  Keep this list at module
+# scope so response normalization and the streaming event bridge share the
+# same classification.
+SERVER_SIDE_TOOL_CALL_TYPES = frozenset({
+    "web_search_call",
+    "web_extractor_call",
+    "file_search_call",
+    "code_interpreter_call",
+    "image_generation_call",
+    "computer_call",
+    "local_shell_call",
+    "mcp_call",
+})
+
+
 def _classify_responses_issuer(
     *,
     is_xai_responses: bool = False,
@@ -1385,17 +1401,27 @@ def _normalize_codex_response(
     # after 3 continuation attempts".  client-side function/custom tool
     # calls keep their own in_progress handling below (they are skipped,
     # not awaited).
-    _SERVER_SIDE_TOOL_CALL_TYPES = {
-        "web_search_call",
-        "file_search_call",
-        "code_interpreter_call",
-        "image_generation_call",
-        "computer_call",
-        "local_shell_call",
-        "mcp_call",
+    explicit_interim_ids = {
+        value
+        for value in (getattr(response, "interim_message_item_ids", None) or ())
+        if isinstance(value, str) and value
     }
+    explicit_interim_indexes = {
+        value
+        for value in (getattr(response, "interim_message_item_indexes", None) or ())
+        if isinstance(value, int) and not isinstance(value, bool)
+    }
+    last_server_tool_index = max(
+        (
+            index
+            for index, candidate in enumerate(output)
+            if getattr(candidate, "type", None) in SERVER_SIDE_TOOL_CALL_TYPES
+        ),
+        default=-1,
+    )
+    saw_inferred_interim = False
 
-    for item in output:
+    for item_index, item in enumerate(output):
         item_type = getattr(item, "type", None)
         item_status = getattr(item, "status", None)
         if isinstance(item_status, str):
@@ -1405,7 +1431,7 @@ def _normalize_codex_response(
 
         if (
             item_status in {"queued", "in_progress", "incomplete"}
-            and item_type not in _SERVER_SIDE_TOOL_CALL_TYPES
+            and item_type not in SERVER_SIDE_TOOL_CALL_TYPES
         ):
             has_incomplete_items = True
             saw_streaming_or_item_incomplete = True
@@ -1423,6 +1449,21 @@ def _normalize_codex_response(
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
             if message_text:
+                item_id = getattr(item, "id", None)
+                is_inferred_interim = (
+                    normalized_phase is None
+                    and (
+                        item_index in explicit_interim_indexes
+                        or (isinstance(item_id, str) and item_id in explicit_interim_ids)
+                        # Some OpenAI-compatible Responses providers omit the
+                        # ``phase`` field entirely.  A message followed by a
+                        # provider-side tool item is necessarily mid-turn
+                        # narration; only messages after the final such tool
+                        # can be the answer.
+                        or item_index < last_server_tool_index
+                    )
+                )
+                saw_inferred_interim = saw_inferred_interim or is_inferred_interim
                 # Responses ``commentary``/``analysis`` phase text is mid-turn
                 # preamble/progress narration, never the turn's final answer
                 # (Codex CLI excludes it from last-message extraction; issues
@@ -1433,7 +1474,7 @@ def _normalize_codex_response(
                 # item is still preserved below for replay/cache continuity.
                 if is_commentary_phase:
                     reasoning_parts.append(message_text)
-                else:
+                elif not is_inferred_interim:
                     content_parts.append(message_text)
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
@@ -1441,7 +1482,6 @@ def _normalize_codex_response(
                     "status": _normalize_responses_message_status(item_status),
                     "content": [{"type": "output_text", "text": message_text}],
                 }
-                item_id = getattr(item, "id", None)
                 if isinstance(item_id, str) and item_id:
                     raw_message_item["id"] = item_id
                 if normalized_phase:
@@ -1550,6 +1590,7 @@ def _normalize_codex_response(
         not final_text
         and hasattr(response, "output_text")
         and not (saw_commentary_phase and not saw_final_answer_phase)
+        and not saw_inferred_interim
     ):
         out_text = getattr(response, "output_text", "")
         if isinstance(out_text, str):

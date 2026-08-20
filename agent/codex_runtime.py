@@ -22,6 +22,7 @@ import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
+from agent.codex_responses_adapter import SERVER_SIDE_TOOL_CALL_TYPES
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 logger = logging.getLogger(__name__)
@@ -998,6 +999,148 @@ def _item_field(item: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+_RESPONSES_PROVIDER_TOOL_NAMES = {
+    "web_search_call": "web_search",
+    "web_extractor_call": "web_extractor",
+    "file_search_call": "file_search",
+    "code_interpreter_call": "code_interpreter",
+    "image_generation_call": "image_generation",
+    "computer_call": "computer",
+    "local_shell_call": "local_shell",
+    "mcp_call": "mcp",
+}
+
+
+def _responses_provider_tool_args(item: Any) -> dict[str, Any]:
+    """Return a small, display-safe argument preview for a server tool item."""
+    action = _item_field(item, "action")
+    if isinstance(action, dict):
+        return dict(action)
+    if action is not None and hasattr(action, "model_dump"):
+        try:
+            dumped = action.model_dump(exclude_none=True)
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+
+    args: dict[str, Any] = {}
+    for key in ("query", "queries", "url", "urls", "name", "server_label"):
+        value = _item_field(item, key)
+        if value not in (None, "", [], {}):
+            args[key] = value
+    return args
+
+
+def make_codex_responses_event_bridge(agent) -> Callable[[Any], None]:
+    """Project provider-side Responses tools onto Hermes progress callbacks.
+
+    Responses-compatible providers execute tools such as ``web_search`` on
+    their own servers, so those calls never pass through Hermes' ordinary
+    function-tool dispatcher.  This bridge gives them the same start/complete
+    progress lifecycle without depending on any provider-specific model name.
+    Duplicate lifecycle frames are coalesced by output-item id.
+    """
+    known_items: dict[str, Any] = {}
+    started: dict[str, tuple[str, float]] = {}
+    completed: set[str] = set()
+
+    def _item_id(event: Any, item: Any = None) -> str:
+        value = _item_field(item, "id") if item is not None else None
+        if not value:
+            value = _event_field(event, "item_id")
+        return str(value or "")
+
+    def _tool_type_from_event(event_type: str, item: Any = None) -> str:
+        item_type = str(_item_field(item, "type", "") or "")
+        if item_type in SERVER_SIDE_TOOL_CALL_TYPES:
+            return item_type
+        for candidate in SERVER_SIDE_TOOL_CALL_TYPES:
+            if event_type.startswith(f"response.{candidate}."):
+                return candidate
+        return ""
+
+    def _start(call_key: str, tool_type: str, item: Any) -> None:
+        if call_key in started or call_key in completed:
+            return
+        name = _RESPONSES_PROVIDER_TOOL_NAMES.get(tool_type, tool_type.removesuffix("_call"))
+        started[call_key] = (name, time.monotonic())
+        cb = getattr(agent, "tool_progress_callback", None)
+        if cb is None:
+            return
+        args = _responses_provider_tool_args(item)
+        preview = json.dumps(args, ensure_ascii=False)[:500] if args else None
+        try:
+            cb("tool.started", name, preview, args)
+        except Exception:
+            logger.debug(
+                "tool_progress_callback raised on Responses tool.started for %s",
+                name,
+                exc_info=True,
+            )
+
+    def _complete(call_key: str, tool_type: str, item: Any) -> None:
+        if call_key in completed:
+            return
+        if call_key not in started:
+            _start(call_key, tool_type, item)
+        name, started_at = started.pop(
+            call_key,
+            (_RESPONSES_PROVIDER_TOOL_NAMES.get(tool_type, tool_type.removesuffix("_call")), time.monotonic()),
+        )
+        completed.add(call_key)
+        cb = getattr(agent, "tool_progress_callback", None)
+        if cb is None:
+            return
+        status = str(_item_field(item, "status", "") or "").lower()
+        is_error = status in {"failed", "cancelled", "incomplete"}
+        try:
+            cb(
+                "tool.completed",
+                name,
+                None,
+                None,
+                duration=max(0.0, time.monotonic() - started_at),
+                is_error=is_error,
+                result=None,
+            )
+        except Exception:
+            logger.debug(
+                "tool_progress_callback raised on Responses tool.completed for %s",
+                name,
+                exc_info=True,
+            )
+
+    def on_event(event: Any) -> None:
+        event_type = str(_event_field(event, "type", "") or "")
+        item = _event_field(event, "item")
+        tool_type = _tool_type_from_event(event_type, item)
+        if not tool_type:
+            return
+        call_key = _item_id(event, item)
+        if not call_key:
+            # Output indexes are stable within one response and provide a
+            # deterministic fallback for providers that omit item ids.
+            call_key = f"{tool_type}:{_event_field(event, 'output_index', 'unknown')}"
+        if item is not None:
+            known_items[call_key] = item
+        else:
+            item = known_items.get(call_key)
+
+        # Register output_item.added but wait for the provider's in-progress
+        # frame before displaying it. This lets the stream consumer first emit
+        # any immediately preceding unphased narration as commentary.
+        if event_type == "response.output_item.added":
+            return
+        if event_type == "response.output_item.done" or event_type.endswith(".completed"):
+            _complete(call_key, tool_type, item)
+            return
+        if event_type.endswith((".in_progress", ".searching", ".extracting")):
+            _start(call_key, tool_type, item)
+
+    return on_event
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -1042,6 +1185,7 @@ def _consume_codex_event_stream(
     on_text_delta=None,
     on_reasoning_delta=None,
     on_commentary_message=None,
+    on_inferred_commentary_message=None,
     on_first_delta=None,
     on_event=None,
     interrupt_check=None,
@@ -1078,6 +1222,9 @@ def _consume_codex_event_stream(
       is supplied, commentary also uses this legacy fallback.
     * ``on_commentary_message(str)`` — fires once per completed
       ``phase=commentary`` message, before any following tool item executes.
+    * ``on_inferred_commentary_message(str)`` — optional separate sink for a
+      phase-less message inferred to be commentary from a following server
+      tool. Falls back to ``on_commentary_message`` when omitted.
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
     * ``on_event(event)`` — fires for every event before any other processing.
       Used for watchdog activity, debug logging, anything wire-shape-agnostic.
@@ -1089,6 +1236,9 @@ def _consume_codex_event_stream(
     first_delta_fired = False
     active_message_phase: str | None = None
     commentary_text_deltas: List[str] = []
+    pending_unphased_messages: list[tuple[int, Any]] = []
+    interim_message_item_ids: set[str] = set()
+    interim_message_item_indexes: set[int] = set()
     # Last reasoning summary_index seen. The Responses stream delimits summary
     # parts by this index and gives each part no separator of its own, so a
     # change of index is where the blank line belongs.
@@ -1134,6 +1284,38 @@ def _consume_codex_event_stream(
         if event_type == "response.output_item.added":
             item = _event_field(event, "item")
             item_type = _item_field(item, "type", "")
+            if item_type in SERVER_SIDE_TOOL_CALL_TYPES and pending_unphased_messages:
+                # A phase-less assistant message followed by a provider-side
+                # tool cannot be the final answer. Several compatible APIs
+                # (including Bailian) omit Codex's ``phase=commentary`` marker,
+                # so infer it from event ordering and emit it while the tool is
+                # still running. The exact raw item remains in output for
+                # replay/cache continuity.
+                for message_index, pending_item in pending_unphased_messages:
+                    interim_message_item_indexes.add(message_index)
+                    pending_id = _item_field(pending_item, "id")
+                    if isinstance(pending_id, str) and pending_id:
+                        interim_message_item_ids.add(pending_id)
+                    inferred_commentary_cb = (
+                        on_inferred_commentary_message or on_commentary_message
+                    )
+                    if inferred_commentary_cb is not None:
+                        content_parts = _item_field(pending_item, "content", [])
+                        if isinstance(content_parts, list):
+                            pending_text = "".join(
+                                str(_item_field(part, "text", "") or "")
+                                for part in content_parts
+                                if _item_field(part, "type", "") == "output_text"
+                            ).strip()
+                            if pending_text:
+                                try:
+                                    inferred_commentary_cb(pending_text)
+                                except Exception:
+                                    logger.debug(
+                                        "Codex stream inferred commentary callback raised",
+                                        exc_info=True,
+                                    )
+                pending_unphased_messages = []
             if item_type == "message":
                 phase = _item_field(item, "phase", None)
                 active_message_phase = phase.strip().lower() if isinstance(phase, str) else None
@@ -1209,6 +1391,10 @@ def _consume_codex_event_stream(
                 collected_output_items.append(done_item)
                 done_phase = _item_field(done_item, "phase", None)
                 done_phase = done_phase.strip().lower() if isinstance(done_phase, str) else None
+                if _item_field(done_item, "type", "") == "message" and done_phase is None:
+                    pending_unphased_messages.append(
+                        (len(collected_output_items) - 1, done_item)
+                    )
                 if done_phase == "commentary" and on_commentary_message is not None:
                     commentary_text = "".join(commentary_text_deltas).strip()
                     if not commentary_text:
@@ -1301,6 +1487,8 @@ def _consume_codex_event_stream(
         model=model,
         incomplete_details=terminal_incomplete_details,
         error=terminal_error,
+        interim_message_item_ids=tuple(sorted(interim_message_item_ids)),
+        interim_message_item_indexes=tuple(sorted(interim_message_item_indexes)),
     )
     return final
 
@@ -1390,10 +1578,27 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _on_commentary_message(text: str) -> None:
         agent._fire_streamed_codex_commentary(text)
 
+    def _on_inferred_commentary_message(text: str) -> None:
+        # Phase-less narration was already routed through the normal text
+        # delta channel before event ordering revealed that a provider tool
+        # follows it. Streaming surfaces should only close that segment;
+        # non-streaming surfaces still need the standalone interim message.
+        already_streamed = bool(
+            getattr(agent, "stream_delta_callback", None)
+            or getattr(agent, "_stream_callback", None)
+        )
+        agent._fire_streamed_codex_commentary(
+            text,
+            already_streamed=already_streamed,
+        )
+
+    responses_event_bridge = make_codex_responses_event_bridge(agent)
+
     def _on_event(event: Any) -> None:
         # TTFB watchdog and activity touch — runs once per SSE event.
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
+        responses_event_bridge(event)
 
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
@@ -1504,6 +1709,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_reasoning_delta=_on_reasoning_delta,
                     on_commentary_message=(
                         _on_commentary_message
+                        if (
+                            getattr(agent, "interim_assistant_callback", None) is not None
+                            and getattr(agent, "show_commentary", True)
+                        )
+                        else None
+                    ),
+                    on_inferred_commentary_message=(
+                        _on_inferred_commentary_message
                         if (
                             getattr(agent, "interim_assistant_callback", None) is not None
                             and getattr(agent, "show_commentary", True)
@@ -1628,4 +1841,5 @@ __all__ = [
     "run_codex_create_stream_fallback",
     "_consume_codex_event_stream",
     "make_codex_app_server_event_bridge",
+    "make_codex_responses_event_bridge",
 ]

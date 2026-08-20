@@ -1812,6 +1812,10 @@ class GatewaySlashCommandsMixin:
         user_provs = None
         custom_provs = None
         excluded_provs = []
+        configured_model = None
+        configured_provider = None
+        configured_base_url = None
+        configured_context_length = None
         config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
             cfg = _load_gateway_config(config_path=config_path)
@@ -1821,6 +1825,12 @@ class GatewaySlashCommandsMixin:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                    configured_model = model_cfg.get("default") or model_cfg.get("model")
+                    configured_provider = model_cfg.get("provider")
+                    configured_base_url = model_cfg.get("base_url")
+                    raw_context_length = model_cfg.get("context_length")
+                    if raw_context_length is not None:
+                        configured_context_length = int(raw_context_length)
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
@@ -2097,19 +2107,6 @@ class GatewaySlashCommandsMixin:
                         lines.append(t("gateway.model.provider_label", provider=plabel))
                         mi = result.model_info
                         from hermes_cli.model_switch import resolve_display_context_length_async
-                        _sw_config_ctx = None
-                        _sw_model_cfg = {}
-                        try:
-                            _sw_cfg = _load_gateway_config()
-                            _sw_model_cfg = _sw_cfg.get("model", {})
-                            if isinstance(_sw_model_cfg, dict):
-                                _sw_raw = _sw_model_cfg.get("context_length")
-                                if _sw_raw is not None:
-                                    _sw_config_ctx = int(_sw_raw)
-                        except Exception:
-                            pass
-                        if not isinstance(_sw_model_cfg, dict):
-                            _sw_model_cfg = {}
                         ctx = await resolve_display_context_length_async(
                             result.new_model,
                             result.target_provider,
@@ -2117,13 +2114,10 @@ class GatewaySlashCommandsMixin:
                             api_key=result.api_key or current_api_key or "",
                             model_info=mi,
                             custom_providers=custom_provs,
-                            config_context_length=_sw_config_ctx,
-                            configured_model=(
-                                _sw_model_cfg.get("default")
-                                or _sw_model_cfg.get("model")
-                            ),
-                            configured_provider=_sw_model_cfg.get("provider"),
-                            configured_base_url=_sw_model_cfg.get("base_url"),
+                            config_context_length=configured_context_length,
+                            configured_model=configured_model,
+                            configured_provider=configured_provider,
+                            configured_base_url=configured_base_url,
                         )
                         if ctx:
                             lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
@@ -2424,19 +2418,6 @@ class GatewaySlashCommandsMixin:
             # Copilot, and Nous-enforced caps win over the raw models.dev entry.
             mi = result.model_info
             from hermes_cli.model_switch import resolve_display_context_length_async
-            _sw2_config_ctx = None
-            _sw2_model_cfg = {}
-            try:
-                _sw2_cfg = _load_gateway_config()
-                _sw2_model_cfg = _sw2_cfg.get("model", {})
-                if isinstance(_sw2_model_cfg, dict):
-                    _sw2_raw = _sw2_model_cfg.get("context_length")
-                    if _sw2_raw is not None:
-                        _sw2_config_ctx = int(_sw2_raw)
-            except Exception:
-                pass
-            if not isinstance(_sw2_model_cfg, dict):
-                _sw2_model_cfg = {}
             ctx = await resolve_display_context_length_async(
                 result.new_model,
                 result.target_provider,
@@ -2444,13 +2425,10 @@ class GatewaySlashCommandsMixin:
                 api_key=result.api_key or current_api_key or "",
                 model_info=mi,
                 custom_providers=custom_provs,
-                config_context_length=_sw2_config_ctx,
-                configured_model=(
-                    _sw2_model_cfg.get("default")
-                    or _sw2_model_cfg.get("model")
-                ),
-                configured_provider=_sw2_model_cfg.get("provider"),
-                configured_base_url=_sw2_model_cfg.get("base_url"),
+                config_context_length=configured_context_length,
+                configured_model=configured_model,
+                configured_provider=configured_provider,
+                configured_base_url=configured_base_url,
             )
             if ctx:
                 lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))

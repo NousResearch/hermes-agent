@@ -147,6 +147,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
         onClick={handleLogout}
         className={cn(
           "shrink-0 rounded p-1.5 text-muted-foreground/70",
+          "min-h-[24px] min-w-[24px]",
           "transition-colors hover:bg-current/10 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
         )}

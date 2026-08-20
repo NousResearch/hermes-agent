@@ -41,6 +41,18 @@ class TestIsVoiceStopPhrase:
     def test_bare_stop_matches(self, utterance):
         assert is_voice_stop_phrase(utterance, ("stop",)) is True
 
+    @pytest.mark.parametrize("utterance", [
+        "停止", "停止。", "停止！", "停止？", "停止，", "停止…", "“停止”",
+        "『停止』", "（停止）", "停止；",
+    ])
+    def test_cjk_punctuation_stripped(self, utterance):
+        """Whisper transcribes Chinese with full-width marks (停止。); the
+        exact-match gate must strip them or the phrase never fires."""
+        assert is_voice_stop_phrase(utterance, ("停止",)) is True
+
+    def test_cjk_phrase_inside_sentence_still_does_not_match(self):
+        assert is_voice_stop_phrase("停止播放音乐", ("停止",)) is False
+
 
     def test_uses_config_when_phrases_omitted(self):
         with patch("tools.voice_mode._load_voice_stop_phrases", return_value=("halt",)):

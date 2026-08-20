@@ -42,16 +42,16 @@ def _ok_response():
     return {"ok": True}
 
 
-def _client_sync():
+def _client_sync(base_url="https://api.openai.com/v1"):
     client = MagicMock()
-    client.base_url = "https://api.openai.com/v1"
+    client.base_url = base_url
     client.chat.completions.create.return_value = _ok_response()
     return client
 
 
-def _client_async():
+def _client_async(base_url="https://api.openai.com/v1"):
     client = MagicMock()
-    client.base_url = "https://api.openai.com/v1"
+    client.base_url = base_url
     client.chat.completions.create = AsyncMock(return_value=_ok_response())
     return client
 
@@ -110,6 +110,74 @@ class TestCompressionTimeoutFloorSync:
             f"non-compression task timeout must stay {low}, got {timeout}"
         )
 
+    def test_local_primary_uses_short_timeout_but_remote_fallback_keeps_floor(self):
+        primary = _client_sync("http://127.0.0.1:10243/v1")
+        primary.chat.completions.create.side_effect = TimeoutError("local timeout")
+        fallback = _client_sync("https://openrouter.ai/api/v1")
+        local_timeout = 60.0
+        chain = [{
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        }]
+        p1, p2, p3, p4 = _patches(primary, task_timeout=local_timeout)
+        with (
+            p1, p2, p3, p4,
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"fallback_chain": chain},
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(
+                    fallback,
+                    "fallback-model",
+                    "fallback_chain[0](openrouter)",
+                ),
+            ),
+        ):
+            assert call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarise"}],
+            ) == _ok_response()
+
+        primary_timeout = primary.chat.completions.create.call_args.kwargs["timeout"]
+        fallback_timeout = fallback.chat.completions.create.call_args.kwargs["timeout"]
+        assert primary_timeout == local_timeout
+        assert fallback_timeout >= COMPRESSION_TIMEOUT_FLOOR
+
+    def test_explicit_call_timeout_survives_remote_fallback(self):
+        primary = _client_sync("http://localhost:10243/v1")
+        primary.chat.completions.create.side_effect = TimeoutError("local timeout")
+        fallback = _client_sync("https://openrouter.ai/api/v1")
+        explicit = 45.0
+        chain = [{
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        }]
+        p1, p2, p3, p4 = _patches(primary, task_timeout=60.0)
+        with (
+            p1, p2, p3, p4,
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"fallback_chain": chain},
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(
+                    fallback,
+                    "fallback-model",
+                    "fallback_chain[0](openrouter)",
+                ),
+            ),
+        ):
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarise"}],
+                timeout=explicit,
+            )
+
+        assert fallback.chat.completions.create.call_args.kwargs["timeout"] == explicit
+
 
 
 class TestCompressionTimeoutFloorAsync:
@@ -156,3 +224,43 @@ class TestCompressionTimeoutFloorAsync:
             )
         timeout = client.chat.completions.create.call_args.kwargs["timeout"]
         assert timeout == low
+
+    @pytest.mark.asyncio
+    async def test_local_primary_uses_short_timeout_but_remote_fallback_keeps_floor(self):
+        primary = _client_async("http://[::1]:10243/v1")
+        primary.chat.completions.create.side_effect = TimeoutError("local timeout")
+        fallback = _client_async("https://openrouter.ai/api/v1")
+        local_timeout = 60.0
+        chain = [{
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        }]
+        p1, p2, p3, p4 = _patches(primary, task_timeout=local_timeout)
+        with (
+            p1, p2, p3, p4,
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"fallback_chain": chain},
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(
+                    fallback,
+                    "fallback-model",
+                    "fallback_chain[0](openrouter)",
+                ),
+            ),
+            patch(
+                "agent.auxiliary_client._to_async_client",
+                return_value=(fallback, "fallback-model"),
+            ),
+        ):
+            assert await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarise"}],
+            ) == _ok_response()
+
+        primary_timeout = primary.chat.completions.create.call_args.kwargs["timeout"]
+        fallback_timeout = fallback.chat.completions.create.call_args.kwargs["timeout"]
+        assert primary_timeout == local_timeout
+        assert fallback_timeout >= COMPRESSION_TIMEOUT_FLOOR

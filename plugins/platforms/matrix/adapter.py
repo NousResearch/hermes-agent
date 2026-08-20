@@ -1840,8 +1840,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 return False
         elif self._password and self._user_id:
             try:
+                # Some homeservers (e.g. nope.chat) require the localpart
+                # rather than a fully-qualified Matrix User ID for password
+                # login. Strip the leading ``@`` and server part if present.
+                login_identifier = self._user_id
+                if login_identifier.startswith("@"):
+                    login_identifier = login_identifier[1:].split(":", 1)[0]
                 resp = await client.login(
-                    identifier=self._user_id,
+                    identifier=login_identifier,
                     password=self._password,
                     device_name="Hermes Agent",
                     device_id=self._device_id or None,

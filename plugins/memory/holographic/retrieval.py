@@ -7,6 +7,8 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -563,10 +565,14 @@ class FactRetriever:
     def _tokenize(text: str) -> set[str]:
         """Simple whitespace tokenization with lowercasing.
 
-        Strips common punctuation. No stemming/lemmatization (Phase 1).
+        Strips common punctuation. NFC-normalizes to handle macOS NFD
+        Hangul. No stemming/lemmatization (Phase 1).
         """
         if not text:
             return set()
+        # NFC-normalize so that macOS NFD Hangul tokens (e.g. 알림을
+        # pasted as NFD) match the NFC form used during indexing.
+        text = unicodedata.normalize("NFC", text)
         # Split on whitespace, lowercase, strip punctuation
         tokens = set()
         for word in text.lower().split():
@@ -596,15 +602,30 @@ class FactRetriever:
         "you", "your", "yours", "yourself", "yourselves",
     })
 
+    # Hangul syllable ranges for detecting Korean text in FTS5 queries.
+    # Covers Hangul Jamo, Hangul Syllables, and Extended-A/B blocks.
+    _HANGUL_RE = re.compile(
+        "["
+        "\u1100-\u11ff"   # Hangul Jamo
+        "\uac00-\ud7af"   # Hangul Syllables
+        "\ua960-\ua97f"    # Hangul Jamo Extended-A
+        "\ud7b0-\ud7ff"    # Hangul Jamo Extended-B
+        "]"
+    )
+
     @classmethod
     def _sanitize_fts_query(cls, query: str) -> str:
         """Convert a natural-language query to an FTS5-safe OR expression.
 
         FTS5 treats a multi-word MATCH argument as AND-joined by default,
         which tanks recall on prose queries. This helper:
+          - NFC-normalizes the query (handles macOS NFD Hangul)
           - tokenizes the query
           - drops stopwords and short (<2 char) tokens
           - strips FTS5 special characters from each token
+          - appends the FTS5 prefix operator (*) to Hangul-containing
+            tokens so that a bare noun matches its particle-suffixed
+            indexed form (e.g. 알림 matches 알림을)
           - OR-joins the survivors
 
         If nothing remains (pathological query), falls back to the raw
@@ -612,6 +633,9 @@ class FactRetriever:
         """
         if not query:
             return ""
+        # NFC-normalize so that Hangul queries from macOS (which pastes
+        # as NFD) are comparable with NFC-indexed content.
+        query = unicodedata.normalize("NFC", query)
         # Strip FTS5 operator characters from EACH token to avoid
         # accidentally creating a malformed query.
         _FTS_SPECIAL = '"()*^:-+'
@@ -624,9 +648,13 @@ class FactRetriever:
                 continue
             if cleaned in cls._FTS_STOPWORDS:
                 continue
-            # FTS5 phrase-literal each token to ensure no special chars
-            # sneak through as operators.
-            tokens.append(f'"{cleaned}"')
+            # FTS5 phrase-literal each token. For Hangul-containing
+            # tokens, also append the prefix operator so queries for
+            # the bare noun match particle-suffixed indexed forms.
+            if cls._HANGUL_RE.search(cleaned):
+                tokens.append(f'"{cleaned}"*')
+            else:
+                tokens.append(f'"{cleaned}"')
         if not tokens:
             # Fallback: raw query (likely returns 0, but never crashes)
             return query

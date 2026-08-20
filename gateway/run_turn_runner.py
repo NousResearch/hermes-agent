@@ -1370,7 +1370,10 @@ class TurnRunner:
         if resume_pending and (interruption_is_fresh or mark_is_fresh):
             # Empty message = the startup auto-resume turn; there is no NEW user message.
             ctx.message, persist_override = _prepare_resume_pending_message(
-                resume_reason, ctx.message, interactive=self._resume_note_interactive(),
+                resume_reason,
+                ctx.message,
+                interactive=self._resume_note_interactive(),
+                startup_resume=ctx.startup_resume,
             )
         elif agent_history and agent_history[-1].get("role") == "tool" and interruption_is_fresh:
             persist_override = ctx.message
@@ -1385,8 +1388,18 @@ class TurnRunner:
         # Safety net: a startup auto-resume event carries empty text; if the resume_pending branch
         # did not fire (freshness signals disagreed, marker cleared) we must NOT hand the model a blank
         # user turn. Restricted to resume_pending sessions so caption-less image turns are untouched.
-        if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
-            ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
+        if (
+            ctx.startup_resume
+            and isinstance(ctx.message, str)
+            and not ctx.message.strip()
+            and resume_pending
+        ):
+            ctx.message = build_resume_recovery_note(
+                resume_reason,
+                "",
+                interactive=self._resume_note_interactive(),
+                startup_resume=True,
+            )
         return persist_override, ctx.persist_user_timestamp
 
     def _native_image_run_message(self):

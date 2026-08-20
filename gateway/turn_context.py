@@ -92,3 +92,7 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    # Exact provenance for the synthetic startup recovery turn. Kept last to
+    # preserve positional construction compatibility for existing fields.
+    startup_resume: bool = False

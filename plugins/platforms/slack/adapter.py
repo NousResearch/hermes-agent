@@ -3939,6 +3939,19 @@ class SlackAdapter(BasePlatformAdapter):
             return False
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
+    def _clarify_buttons_enabled(self) -> bool:
+        """Whether multiple-choice clarify prompts use Block Kit buttons.
+
+        Defaults to enabled for backward compatibility.  Set
+        ``platforms.slack.extra.clarify_buttons: false`` to use the shared
+        numbered-text fallback instead, preserving full option text and typed
+        numeric/custom replies.
+        """
+        raw = self.config.extra.get("clarify_buttons")
+        if raw is None:
+            return True
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
     def _markdown_blocks_enabled(self) -> bool:
         """Whether to render outbound messages via Slack's ``markdown`` block.
 
@@ -7071,13 +7084,14 @@ class SlackAdapter(BasePlatformAdapter):
         (:meth:`GatewayRunner._handle_message`) picks up the next typed
         message and resolves the clarify — no Slack-specific text machinery.
 
-        Open-ended mode (``choices`` empty): delegates to the base
-        implementation, which renders the plain question and arms the same
-        text-intercept.
+        Open-ended mode (``choices`` empty), or deployments with
+        ``platforms.slack.extra.clarify_buttons: false``: delegates to the
+        base implementation, which renders plain numbered text and arms the
+        same text-intercept.
         """
-        # Open-ended prompts have no buttons — the base implementation renders
-        # the plain question and arms the gateway text-intercept for us.
-        if not choices:
+        # Open-ended prompts have no buttons.  Deployments can also opt out of
+        # button labels when Slack's compact boxes make option text unreadable.
+        if not choices or not self._clarify_buttons_enabled():
             return await super().send_clarify(
                 chat_id=chat_id,
                 question=question,

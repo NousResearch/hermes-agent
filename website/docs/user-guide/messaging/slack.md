@@ -341,7 +341,7 @@ posted publicly to the channel as a fallback. (Commands typed as regular
 messages — `!cmd` in threads, `@Hermes /cmd` — reply as normal visible
 messages instead.)
 
-### Clarify prompts (one-tap buttons)
+### Clarify prompts
 
 When the agent needs to ask you a multiple-choice question (the `clarify`
 tool), Slack renders it as **Block Kit buttons** — one tap per option, plus an
@@ -351,8 +351,13 @@ answered and what was chosen; further clicks on the same prompt are ignored.
 Button clicks honor the same user authorization as messages, and expired
 prompts (gateway restart, timeout) tell you to re-ask instead of silently
 eating the click. Open-ended clarify questions render as a plain question and
-accept your next typed reply. No configuration needed — this works regardless
-of the `rich_blocks` setting.
+accept your next typed reply.
+
+For choices that are too long for Slack's compact button labels, set
+`platforms.slack.extra.clarify_buttons: false`. Multiple-choice prompts then
+render as a numbered text list with the full option text; users can reply with
+the number, the exact option text, or a custom answer. This setting is
+independent of `rich_blocks`.
 
 ### Advanced: emit only the slash-commands array
 
@@ -410,6 +415,11 @@ platforms:
       # Only the first chunk of the first reply is broadcast.
       reply_broadcast: false
 
+      # Render multiple-choice clarify prompts as Block Kit buttons
+      # (default: true). Set false to show full options as numbered text and
+      # accept a number, exact option text, or custom typed answer.
+      clarify_buttons: true
+
       # Render agent messages as Slack Block Kit blocks (default: false).
       # When true, the final agent message is sent with structured blocks —
       # section headers, dividers, true nested lists (via rich_text), and
@@ -458,6 +468,7 @@ platforms:
 | `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
+| `platforms.slack.extra.clarify_buttons` | `true` | When `false`, multiple-choice clarify prompts show the full options as numbered text instead of clickable Block Kit buttons. Users can reply with a number, exact option text, or custom answer. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
 | `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. This is an explicit progress opt-in independent of Slack's default `tool_progress: off`; native API failures fall back to one continuously edited text update. |

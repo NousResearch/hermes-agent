@@ -3302,12 +3302,13 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
 #     stored in the cache entry). While the entry lives, that id cannot be
 #     reused by another object, so id-equality implies object-equality —
 #     strings are immutable, so value-equality too (no #50372-style aliasing).
-#   * ints/floats/bools/None are fingerprinted by value.
+#   * ints/bools/None are fingerprinted by value. Floats use their repr because
+#     numerically equal signed zeros render differently in ``str(shadow)``.
 #   * dicts/lists recurse structurally, preserving key order — ``str(shadow)``
 #     depends on insertion order, so order is part of the key.
 #   * any other type aborts the memo and falls through to a direct compute.
-# Equal fingerprints therefore imply deep-equal messages built from identical
-# immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical estimate.
+# Equal fingerprints therefore imply identical structure and leaf renderings,
+# hence identical ``str(shadow)`` bytes and an identical estimate.
 #
 # Because the api_messages build shallow-copies history dicts each iteration,
 # the copies share the same content strings — so unchanged history messages
@@ -3323,8 +3324,10 @@ def _msg_fingerprint(value: Any, pins: list) -> Any:
     if t is str:
         pins.append(value)
         return ("s", id(value))
-    if t is int or t is float:
-        return ("n", t.__name__, value)
+    if t is int:
+        return ("n", "int", value)
+    if t is float:
+        return ("n", "float", repr(value))
     if t is dict:
         return ("d", tuple(
             (_msg_fingerprint(k, pins), _msg_fingerprint(v, pins))

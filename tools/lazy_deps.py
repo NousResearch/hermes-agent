@@ -80,6 +80,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -524,7 +525,9 @@ def _allow_lazy_installs() -> bool:
         cfg = None
     if cfg is not None:
         sec = cfg.get("security") or {}
-        if not bool(sec.get("allow_lazy_installs", True)):
+        if "allow_lazy_installs" in sec and not is_truthy_value(
+            sec.get("allow_lazy_installs")
+        ):
             return False
 
     # (2) Sealed-venv env var: blocks ONLY when there is no safe durable

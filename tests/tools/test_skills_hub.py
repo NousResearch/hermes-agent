@@ -760,6 +760,29 @@ class TestAppendAuditLog:
 
 
 class TestOptionalSkillSourceMetadata:
+    def test_trusted_git_does_not_resolve_executable_from_path(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_hub as hub
+
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text("#!/bin/sh\nprintf ATTACKER_GIT_EXECUTED\n")
+        fake_git.chmod(0o755)
+        monkeypatch.setenv("PATH", str(fake_bin))
+
+        result = hub._run_trusted_git(
+            tmp_path,
+            "--version",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        assert "ATTACKER_GIT_EXECUTED" not in result.stdout
+        assert result.stdout.startswith("git version ")
+
     def test_git_archive_ignores_replace_refs(self, monkeypatch, tmp_path):
         import subprocess
         import tools.skills_hub as hub
@@ -1635,6 +1658,71 @@ def test_install_does_not_follow_parent_swapped_after_resolution(
                 q_dir, "demo", "devops", bundle, result
             )
 
+    assert not (outside / "demo").exists()
+
+
+def test_install_never_publishes_through_parent_swapped_after_final_check(
+    monkeypatch, tmp_path
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    category = skills_dir / "devops"
+    category.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    quarantine_root = skills_dir / ".hub" / "quarantine"
+    q_dir = quarantine_root / "demo"
+    q_dir.mkdir(parents=True)
+    (q_dir / "SKILL.md").write_text("# Demo\n")
+    bundle = hub.SkillBundle(
+        name="demo",
+        files={"SKILL.md": "# Demo\n"},
+        source="community",
+        identifier="owner/repo/demo",
+        trust_level="community",
+    )
+    result = guard.ScanResult(
+        skill_name="demo",
+        source="community",
+        trust_level="community",
+        verdict="safe",
+    )
+    original_resolve = hub._resolve_lock_install_path
+    resolve_calls = 0
+    outside_publish_attempted = False
+
+    def _swap_after_final_check(*args, **kwargs):
+        nonlocal resolve_calls
+        resolved = original_resolve(*args, **kwargs)
+        resolve_calls += 1
+        if resolve_calls == 3:
+            category.rename(skills_dir / "devops-original")
+            try:
+                category.symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                pytest.skip(f"directory symlinks unavailable: {exc}")
+        return resolved
+
+    original_replace = hub.os.replace
+
+    def _observe_replace(source, destination, *args, **kwargs):
+        nonlocal outside_publish_attempted
+        if not kwargs.get("dst_dir_fd"):
+            destination_path = Path(destination)
+            if destination_path.is_absolute() and destination_path.parent.resolve() == outside:
+                outside_publish_attempted = True
+        return original_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(hub, "_resolve_lock_install_path", _swap_after_final_check)
+    monkeypatch.setattr(hub.os, "replace", _observe_replace)
+    with patch.object(hub, "SKILLS_DIR", skills_dir), \
+            patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+        with pytest.raises((OSError, ValueError)):
+            hub.install_from_quarantine(q_dir, "demo", "devops", bundle, result)
+
+    assert outside_publish_attempted is False
     assert not (outside / "demo").exists()
 
 

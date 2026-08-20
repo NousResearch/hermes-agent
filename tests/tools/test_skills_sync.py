@@ -1073,6 +1073,68 @@ class TestRestoreOfficialOptionalSkill:
         assert (outside_demo / "SKILL.md").read_text() == "# Outside\n"
         assert not (skills_dir / ".restore-backups").exists()
 
+    def test_restore_never_publishes_through_parent_swapped_after_final_check(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_hub as hub
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Demo\n")
+        skills_dir = tmp_path / "skills"
+        category = skills_dir / "devops"
+        category.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            ss,
+            "_optional_root_identity",
+            lambda _path: "git:NousResearch/hermes-agent@" + "a" * 40,
+        )
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda *_args: {"SKILL.md": b"# Verified\n"},
+        )
+        original_resolve = hub._resolve_lock_install_path
+        resolve_calls = 0
+        outside_publish_attempted = False
+
+        def _swap_after_final_check(*args, **kwargs):
+            nonlocal resolve_calls
+            resolved = original_resolve(*args, **kwargs)
+            resolve_calls += 1
+            if resolve_calls == 2:
+                category.rename(skills_dir / "devops-original")
+                try:
+                    category.symlink_to(outside, target_is_directory=True)
+                except OSError as exc:
+                    pytest.skip(f"directory symlinks unavailable: {exc}")
+            return resolved
+
+        original_move = ss.shutil.move
+
+        def _observe_move(source_path, destination_path, *args, **kwargs):
+            nonlocal outside_publish_attempted
+            destination = Path(destination_path)
+            if destination.is_absolute() and destination.parent.resolve() == outside:
+                outside_publish_attempted = True
+            return original_move(source_path, destination_path, *args, **kwargs)
+
+        monkeypatch.setattr(hub, "_resolve_lock_install_path", _swap_after_final_check)
+        monkeypatch.setattr(ss.shutil, "move", _observe_move)
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert outside_publish_attempted is False
+        assert not (outside / "demo").exists()
+
     def test_restore_matches_using_verified_frontmatter_not_worktree(
         self, monkeypatch, tmp_path
     ):

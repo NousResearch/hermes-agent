@@ -22,6 +22,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -291,10 +292,36 @@ def _trusted_git_environment() -> Dict[str, str]:
     return env
 
 
+def _trusted_git_executable() -> Path:
+    """Return Git from a fixed OS installation path, never caller ``PATH``."""
+    if os.name == "nt":
+        drive = Path(sys.executable).drive or "C:"
+        candidates = (
+            Path(f"{drive}/Program Files/Git/cmd/git.exe"),
+            Path(f"{drive}/Program Files/Git/bin/git.exe"),
+        )
+    else:
+        candidates = (Path("/usr/bin/git"), Path("/usr/local/bin/git"))
+    for candidate in candidates:
+        try:
+            if (
+                candidate.is_file()
+                and not _is_path_redirect(candidate)
+                and stat.S_ISREG(candidate.lstat().st_mode)
+            ):
+                return candidate
+        except OSError:
+            continue
+    raise FileNotFoundError("No trusted system Git executable is available")
+
+
 def _run_trusted_git(repo_root: Path, *args: str, **kwargs):
+    executable = _trusted_git_executable()
+    env = _trusted_git_environment()
+    env["PATH"] = str(executable.parent)
     return subprocess.run(
         [
-            "git",
+            str(executable),
             "--no-replace-objects",
             "-c",
             "core.hooksPath=/dev/null",
@@ -302,7 +329,7 @@ def _run_trusted_git(repo_root: Path, *args: str, **kwargs):
             str(repo_root),
             *args,
         ],
-        env=_trusted_git_environment(),
+        env=env,
         **kwargs,
     )
 
@@ -822,6 +849,95 @@ def _resolve_lock_install_path(
     if target == skills_root or not target.is_relative_to(skills_root):
         raise ValueError(f"Unsafe install path: {install_path}")
     return target
+
+
+@contextmanager
+def _bound_directory(path: Path):
+    """Hold a directory identity across rename operations.
+
+    POSIX callers receive a directory FD used with ``*at`` operations. On
+    Windows the open handle denies delete/rename sharing, preventing a parent
+    junction from being swapped until the transaction completes.
+    """
+    path = Path(path)
+    try:
+        path_is_exact = path.absolute() == path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        path_is_exact = False
+    if not path_is_exact or _is_path_redirect(path) or not path.is_dir():
+        raise ValueError(f"Unsafe directory binding: {path}")
+    if os.name == "nt":
+        import win32con
+        import win32file
+
+        handle = win32file.CreateFile(
+            str(path),
+            win32con.FILE_READ_ATTRIBUTES,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+            None,
+            win32con.OPEN_EXISTING,
+            win32con.FILE_FLAG_BACKUP_SEMANTICS
+            | win32con.FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        try:
+            if (
+                path.absolute() != path.resolve(strict=True)
+                or _is_path_redirect(path)
+                or not path.is_dir()
+            ):
+                raise ValueError(f"Unsafe directory binding: {path}")
+            yield handle
+        finally:
+            handle.Close()
+        return
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        opened = os.fstat(fd)
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError(f"Directory changed during binding: {path}")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _directory_binding_matches(path: Path, binding: Any) -> bool:
+    if os.name == "nt":
+        return not _is_path_redirect(path) and path.is_dir()
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        opened = os.fstat(binding)
+    except OSError:
+        return False
+    return (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)
+
+
+def _replace_bound_directory_entry(
+    source: Path,
+    destination: Path,
+    source_binding: Any,
+    destination_binding: Any,
+) -> None:
+    if os.name == "nt":
+        os.replace(source, destination)
+        return
+    os.replace(
+        source.name,
+        destination.name,
+        src_dir_fd=source_binding,
+        dst_dir_fd=destination_binding,
+    )
+
+
+def _rmtree_bound(parent: Path, name: str, binding: Any) -> None:
+    if os.name == "nt":
+        shutil.rmtree(parent / name)
+        return
+    shutil.rmtree(name, dir_fd=binding)
 
 
 def _ssrf_safe_http_get(url: str, *, timeout: int = 20) -> httpx.Response:
@@ -4846,57 +4962,97 @@ def install_from_quarantine(
         if rebound_install_dir != final_install_dir:
             raise ValueError("Install destination changed before publish")
 
-        if final_install_dir.exists():
-            backup_dir = final_install_dir.with_name(
-                f".{safe_skill_name}.previous-{os.getpid()}-{time.time_ns()}"
-            )
-            os.replace(final_install_dir, backup_dir)
-        try:
-            os.replace(quarantine_path, final_install_dir)
-            published = True
-            if (
-                expected_scan_hash
-                and full_content_hash(final_install_dir) != expected_scan_hash
+        with _bound_directory(quarantine_path.parent) as source_binding, \
+                _bound_directory(final_install_dir.parent) as destination_binding:
+            if not _directory_binding_matches(
+                final_install_dir.parent, destination_binding
             ):
-                raise ValueError("Installed content changed after security scan")
-
-            installed_content_hash = content_hash(final_install_dir)
-            lock = HubLockFile()
-            lock.record_install(
-                name=safe_skill_name,
-                source=bundle.source,
-                identifier=bundle.identifier,
-                trust_level=bundle.trust_level,
-                scan_verdict=scan_result.verdict,
-                skill_hash=installed_content_hash,
-                install_path=(
-                    final_install_dir.resolve()
-                    .relative_to(_skills_dir().resolve())
-                    .as_posix()
-                ),
-                files=list(bundle.files.keys()),
-                metadata=bundle.metadata,
-                scan_provenance=(
-                    scan_provenance
-                    or getattr(scan_result, "scan_provenance", None)
-                ),
-                install_attestation=build_install_attestation(
+                raise ValueError("Install destination changed before publish")
+            if final_install_dir.exists():
+                backup_dir = final_install_dir.with_name(
+                    f".{safe_skill_name}.previous-{os.getpid()}-{time.time_ns()}"
+                )
+                _replace_bound_directory_entry(
                     final_install_dir,
+                    backup_dir,
+                    destination_binding,
+                    destination_binding,
+                )
+            try:
+                _replace_bound_directory_entry(
+                    quarantine_path,
+                    final_install_dir,
+                    source_binding,
+                    destination_binding,
+                )
+                published = True
+                if not _directory_binding_matches(
+                    final_install_dir.parent, destination_binding
+                ):
+                    raise ValueError("Install destination changed after publish")
+                if (
+                    expected_scan_hash
+                    and full_content_hash(final_install_dir) != expected_scan_hash
+                ):
+                    raise ValueError("Installed content changed after security scan")
+                if not _directory_binding_matches(
+                    final_install_dir.parent, destination_binding
+                ):
+                    raise ValueError("Install destination changed during verification")
+
+                installed_content_hash = content_hash(final_install_dir)
+                lock = HubLockFile()
+                lock.record_install(
+                    name=safe_skill_name,
                     source=bundle.source,
                     identifier=bundle.identifier,
-                    trust_level=scan_result.trust_level,
-                    origin_identity=getattr(bundle, "origin_identity", ""),
-                ),
-            )
-        except Exception:
-            if published and final_install_dir.exists():
-                shutil.rmtree(final_install_dir, ignore_errors=True)
-            if backup_dir is not None and backup_dir.exists():
-                os.replace(backup_dir, final_install_dir)
-            raise
-        else:
-            if backup_dir is not None:
-                shutil.rmtree(backup_dir, ignore_errors=True)
+                    trust_level=bundle.trust_level,
+                    scan_verdict=scan_result.verdict,
+                    skill_hash=installed_content_hash,
+                    install_path=(
+                        final_install_dir.resolve()
+                        .relative_to(_skills_dir().resolve())
+                        .as_posix()
+                    ),
+                    files=list(bundle.files.keys()),
+                    metadata=bundle.metadata,
+                    scan_provenance=(
+                        scan_provenance
+                        or getattr(scan_result, "scan_provenance", None)
+                    ),
+                    install_attestation=build_install_attestation(
+                        final_install_dir,
+                        source=bundle.source,
+                        identifier=bundle.identifier,
+                        trust_level=scan_result.trust_level,
+                        origin_identity=getattr(bundle, "origin_identity", ""),
+                    ),
+                )
+            except Exception:
+                if published:
+                    try:
+                        _rmtree_bound(
+                            final_install_dir.parent,
+                            final_install_dir.name,
+                            destination_binding,
+                        )
+                    except FileNotFoundError:
+                        pass
+                if backup_dir is not None:
+                    _replace_bound_directory_entry(
+                        backup_dir,
+                        final_install_dir,
+                        destination_binding,
+                        destination_binding,
+                    )
+                raise
+            else:
+                if backup_dir is not None:
+                    _rmtree_bound(
+                        backup_dir.parent,
+                        backup_dir.name,
+                        destination_binding,
+                    )
 
     install_dir = final_install_dir
 

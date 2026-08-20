@@ -480,7 +480,12 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
             return {"ok": False, "message": f"Official optional skill not found: {name}", "restored": [], "backfilled": [], "backed_up": []}
         targets = [target]
 
-    from tools.skills_hub import _resolve_lock_install_path
+    from tools.skills_hub import (
+        _bound_directory,
+        _directory_binding_matches,
+        _replace_bound_directory_entry,
+        _resolve_lock_install_path,
+    )
 
     verified_targets = []
     for folder_name, install_path, src in targets:
@@ -591,13 +596,41 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                         "backed_up": backed_up,
                     }
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                with tempfile.TemporaryDirectory(
-                    prefix=".restore-stage-",
-                    dir=str(_skills_dir()),
-                ) as stage_root:
-                    staged = Path(stage_root) / folder_name
-                    _write_restored_bundle(files, staged)
-                    shutil.move(str(staged), str(dest))
+                try:
+                    with tempfile.TemporaryDirectory(
+                        prefix=".restore-stage-",
+                        dir=str(_skills_dir()),
+                    ) as stage_root:
+                        staged = Path(stage_root) / folder_name
+                        _write_restored_bundle(files, staged)
+                        with _bound_directory(staged.parent) as source_binding, \
+                                _bound_directory(dest.parent) as destination_binding:
+                            if not _directory_binding_matches(
+                                dest.parent, destination_binding
+                            ):
+                                raise ValueError(
+                                    "Restore destination changed before publish"
+                                )
+                            _replace_bound_directory_entry(
+                                staged,
+                                dest,
+                                source_binding,
+                                destination_binding,
+                            )
+                            if not _directory_binding_matches(
+                                dest.parent, destination_binding
+                            ):
+                                raise ValueError(
+                                    "Restore destination changed after publish"
+                                )
+                except (OSError, ValueError):
+                    return {
+                        "ok": False,
+                        "message": f"Unsafe restore destination for: {folder_name}",
+                        "restored": restored,
+                        "backfilled": [],
+                        "backed_up": backed_up,
+                    }
                 restored.append(folder_name)
         elif not canonical_ok:
             continue

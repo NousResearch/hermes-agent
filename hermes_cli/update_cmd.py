@@ -61,6 +61,82 @@ _UPDATE_RUNTIME_RELOAD_MODULES = (
     "tools.lazy_deps",
 )
 
+#: Package prefixes whose cached modules become stale the moment the checkout
+#: changes under this process. Purged (not reloaded) by
+#: ``_purge_stale_hermes_modules`` so any LATER import chain resolves against
+#: fresh on-disk source only.
+_STALE_PURGE_PREFIXES = (
+    "hermes_cli",
+    "gateway",
+    "tools",
+    "tui_gateway",
+    "agent",
+)
+
+#: Modules that must survive the purge: they are (or are referenced by) the
+#: code currently EXECUTING the update, so evicting them buys nothing — the
+#: running frames keep their module objects alive regardless — and reloading
+#: them mid-flight is the one genuinely unsafe move.
+_STALE_PURGE_PROTECTED = frozenset(
+    {
+        "hermes_cli",
+        "hermes_cli.main",
+        "hermes_cli.update_cmd",
+        "hermes_cli.hermes_logging",
+    }
+)
+
+
+def _purge_stale_hermes_modules() -> None:
+    """Evict every cached Hermes module after the checkout changed in-place.
+
+    ``hermes update`` keeps running in the pre-pull Python process. The
+    gateway auto-restart phase that follows does function-level
+    ``from hermes_cli.gateway import ...`` — executing NEW source inside an
+    OLD ``sys.modules`` world. The moment new source references a symbol
+    that was added to an already-cached module, the import dies (2026-08-20
+    field failure: freshly-pulled ``hermes_cli.gateway`` does
+    ``from hermes_cli.cli_output import line_input``, but ``cli_output`` was
+    cached from before d0132b582 which introduced ``line_input`` → the whole
+    restart phase aborted and the gateway kept serving pre-update code).
+
+    ``_UPDATE_RUNTIME_RELOAD_MODULES`` handled this per-symptom — three
+    hardcoded module names, re-fixed every time a new module grew a new
+    export. This is the class fix: drop EVERY cached module under the Hermes
+    package prefixes so subsequent lazy imports rebuild a self-consistent,
+    all-new module graph from the updated checkout. Old module objects
+    referenced by the running updater frames stay alive and functional (a
+    purge only removes the ``sys.modules`` cache entry); only genuinely
+    executing modules are exempted, because reloading-in-place — not purging
+    — is the operation that can pull code out from under a running frame.
+
+    Best-effort: never raises.
+    """
+    try:
+        import importlib
+
+        importlib.invalidate_caches()
+        purged = []
+        for name in list(_m().sys.modules):
+            if name in _STALE_PURGE_PROTECTED:
+                continue
+            if not name.startswith(_STALE_PURGE_PREFIXES):
+                continue
+            root = name.split(".", 1)[0]
+            if root not in _STALE_PURGE_PREFIXES:
+                # Prefix-string match caught an unrelated package
+                # (e.g. ``gateway_foo``) — leave it alone.
+                continue
+            if _m().sys.modules.pop(name, None) is not None:
+                purged.append(name)
+        if purged:
+            logger.debug(
+                "Purged %d stale Hermes module(s) after checkout update", len(purged)
+            )
+    except Exception as exc:
+        logger.debug("Could not purge stale Hermes modules: %s", exc)
+
+
 def _reload_updated_runtime_modules() -> None:
     """Reload update-sensitive modules after the checkout changes in-place.
 
@@ -6261,6 +6337,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
+        #
+        # Purge stale cached Hermes modules FIRST: the import below pulls
+        # freshly-updated gateway source into this pre-update interpreter,
+        # and any already-cached sibling module (cli_output, status, ...)
+        # that the new source expects a new symbol from would otherwise
+        # ImportError and abort this whole phase (2026-08-20 field failure:
+        # new gateway.py ← stale cli_output missing line_input).
+        _m()._purge_stale_hermes_modules()
         try:
             from hermes_cli.gateway import (
                 is_macos,

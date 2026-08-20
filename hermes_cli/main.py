@@ -4880,6 +4880,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_format_time_ago",
         "_handoff_reapable_backend_pids",
         "_ledger_reapable_backend_pids",
+        "_purge_stale_hermes_modules",
         "_format_venv_python_holders_message",
         "_gateway_prompt",
         "_get_origin_url",

@@ -182,6 +182,14 @@ class NtfyAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
+    # ntfy publishes immutable notifications — there is no edit API, so a
+    # streamed preview IS the final message. Declaring no edit support lets
+    # _build_stream_consumer_config (gateway/run.py) suppress the streaming
+    # cursor (▉) instead of stranding it in the delivered text, and stops
+    # each streaming chunk being published as a separate notification
+    # (#83352). Same contract as PhotonAdapter, which has no edit API either.
+    SUPPORTS_MESSAGE_EDITING = False
+
     def __init__(self, config: PlatformConfig):
         platform = Platform("ntfy")
         super().__init__(config=config, platform=platform)

@@ -15,6 +15,35 @@ def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tm
     assert sentinel not in output
 
 
+def _qqbot_status_line(output):
+    return next(line for line in output.splitlines() if "QQBot" in line)
+
+
+def test_show_status_prefers_canonical_qqbot_home_channel(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("QQ_APP_ID", "qq-app")
+    monkeypatch.setenv("QQBOT_HOME_CHANNEL", "direct:canonical")
+    monkeypatch.setenv("QQ_HOME_CHANNEL", "direct:legacy")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    line = _qqbot_status_line(capsys.readouterr().out)
+    assert "configured (home: direct:canonical)" in line
+    assert "direct:legacy" not in line
+
+
+def test_show_status_falls_back_to_legacy_qqbot_home_channel(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("QQ_APP_ID", "qq-app")
+    monkeypatch.delenv("QQBOT_HOME_CHANNEL", raising=False)
+    monkeypatch.setenv("QQ_HOME_CHANNEL", "direct:legacy")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    line = _qqbot_status_line(capsys.readouterr().out)
+    assert "configured (home: direct:legacy)" in line
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

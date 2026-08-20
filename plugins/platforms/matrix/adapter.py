@@ -1053,7 +1053,14 @@ def ensure_matrix_deps() -> bool:
         missing = ()
         ensure_and_bind = None  # type: ignore[assignment]
 
-    if missing or ensure_and_bind is None:
+    # Stubs are installed at import-time when mautrix is missing. If packages
+    # become available later without going through ensure_and_bind, EventType
+    # stays as string stubs and Client.add_event_handler raises
+    # ValueError("Invalid event type") after E2EE setup.
+    _et = globals().get("EventType")
+    _stubbed_event_types = isinstance(getattr(_et, "ROOM_MESSAGE", None), str)
+
+    if missing or ensure_and_bind is None or _stubbed_event_types:
         def _import():
             from mautrix.types import (
                 ContentURI, EventID, EventType, PaginationDirection,
@@ -1074,8 +1081,17 @@ def ensure_matrix_deps() -> bool:
             }
 
         if ensure_and_bind is None:
-            return False
-        if not ensure_and_bind("platform.matrix", _import, globals(), prompt=False):
+            # Still try a direct rebind when only stubs are the problem and
+            # mautrix is already importable in this process.
+            if _stubbed_event_types and not missing:
+                try:
+                    globals().update(_import())
+                except Exception as exc:
+                    logger.warning("Matrix: failed to rebind mautrix types: %s", exc)
+                    return False
+            else:
+                return False
+        elif not ensure_and_bind("platform.matrix", _import, globals(), prompt=False):
             logger.warning(
                 "Matrix: required packages not installed (%s). "
                 "Run: pip install 'mautrix[encryption]' asyncpg aiosqlite "
@@ -2065,19 +2081,27 @@ class MatrixAdapter(BasePlatformAdapter):
                         return False
 
         # Register event handlers.
+        # Always re-import live mautrix event types in this stack frame. Module-
+        # level EventType can still be the import-time stub (plain strings) when
+        # the plugin was first loaded before mautrix was importable; mautrix's
+        # Syncer.add_event_handler then raises ValueError("Invalid event type").
+        from mautrix.types import EventType as LiveEventType
         from mautrix.client import InternalEventType as IntEvt
         from mautrix.client.dispatcher import MembershipEventDispatcher
+
+        # Keep module globals in sync for later send/history helpers.
+        globals()["EventType"] = LiveEventType
 
         # Without this the INVITE handler below never fires.
         client.add_dispatcher(MembershipEventDispatcher)
 
         client.add_event_handler(
-            EventType.ROOM_MESSAGE,
+            LiveEventType.ROOM_MESSAGE,
             self._on_room_message,
             wait_sync=True,
         )
         client.add_event_handler(
-            EventType.REACTION,
+            LiveEventType.REACTION,
             self._on_reaction,
             wait_sync=True,
         )

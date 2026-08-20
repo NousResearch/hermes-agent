@@ -1186,27 +1186,59 @@ class TelegramAdapter(BasePlatformAdapter):
         if not normalized_user_id:
             return False
 
+        def _build_source():
+            from gateway.session import SessionSource
+
+            normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+            if normalized_chat_type == "private":
+                normalized_chat_type = "dm"
+            elif normalized_chat_type == "supergroup":
+                normalized_chat_type = "forum" if thread_id is not None else "group"
+
+            return SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=str(chat_id or normalized_user_id),
+                chat_type=normalized_chat_type,
+                user_id=normalized_user_id,
+                user_name=str(user_name).strip() if user_name else None,
+                thread_id=str(thread_id) if thread_id is not None else None,
+            )
+
+        # Preferred path: the runner installs a callback auth resolver
+        # (``set_callback_auth_resolver``) that applies the same profile-route
+        # resolution, profile stamping, and runtime scope as normal inbound
+        # messages. This is required under ``multiplex_profiles``, where the
+        # primary event handler is a closure with no bound ``__self__`` — so
+        # the introspection path below cannot recover the runner and the
+        # routed profile's pairing store would be skipped (#86296).
+        resolver = getattr(self, "_callback_auth_resolver", None)
+        if callable(resolver):
+            # The resolver is the authoritative, profile-scoped decision. If it
+            # raises, fail CLOSED — do not fall through to the introspection /
+            # env-allowlist path below. That fallback is process-wide and not
+            # scoped to the routed profile, so honoring it here would let a
+            # resolver error silently cross the profile-specific pairing
+            # boundary (#86296). The env fallback is intentionally reserved for
+            # the no-resolver legacy path only.
+            try:
+                return bool(resolver(_build_source()))
+            except Exception:
+                logger.warning(
+                    "[Telegram] callback auth resolver failed for user %s; "
+                    "denying (fail-closed) rather than crossing the profile "
+                    "pairing boundary via env-only auth",
+                    normalized_user_id,
+                    exc_info=True,
+                )
+                return False
+
+        # Legacy fallback: recover the runner from a bound message handler
+        # (non-multiplex primary adapters), then env-only fail-closed.
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
             try:
-                from gateway.session import SessionSource
-
-                normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-                if normalized_chat_type == "private":
-                    normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
-
-                source = SessionSource(
-                    platform=Platform.TELEGRAM,
-                    chat_id=str(chat_id or normalized_user_id),
-                    chat_type=normalized_chat_type,
-                    user_id=normalized_user_id,
-                    user_name=str(user_name).strip() if user_name else None,
-                    thread_id=str(thread_id) if thread_id is not None else None,
-                )
-                return bool(auth_fn(source))
+                return bool(auth_fn(_build_source()))
             except Exception:
                 logger.debug(
                     "[Telegram] Falling back to env-only callback auth for user %s",

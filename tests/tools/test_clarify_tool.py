@@ -158,6 +158,15 @@ class TestClarifySchema:
         # The model should treat it as false when omitted
         assert "multi_select" not in CLARIFY_SCHEMA["parameters"]["required"]
 
+    def test_schema_forbids_dead_prose_followup_offers(self):
+        """Optional next-step offers must render as answerable UI, not prose."""
+        description = CLARIFY_SCHEMA["description"]
+
+        assert "I can look deeper" in description
+        assert "MUST call this tool" in description
+        assert "Do not leave optional next-step offers as prose" in description
+        assert "include the offered action in `choices`" in description
+
 
     def test_schema_description_advertises_batching(self):
         """The top-level description must tell the model it can batch.

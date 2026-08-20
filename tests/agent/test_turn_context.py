@@ -250,6 +250,50 @@ def test_prefetch_runs_for_substantive_user_message():
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
 
 
+def test_token_governance_missing_contract_fails_closed(tmp_path):
+    agent = _FakeAgent()
+    agent._token_governance_config = {
+        "enabled": True,
+        "preflight": {"enabled": True, "workspace": str(tmp_path)},
+    }
+
+    _build(agent)
+
+    assert agent._token_preflight["status"] == "blocked"
+    assert agent._token_preflight["block_reason"] == "task_contract_missing"
+
+
+def test_token_governance_preflight_blocks_before_auxiliary_work(tmp_path):
+    from agent.token_governance import build_task_contract
+    agent, mm = _agent_with_memory_manager()
+    contract = build_task_contract(
+        task_id="T", requirement_id="R", revision=1,
+        original_request="request", business_goal="goal", acceptance_criteria=[],
+    )
+    contract_path = tmp_path / "contract.json"
+    contract_path.write_text(__import__("json").dumps(contract), encoding="utf-8")
+    (tmp_path / "empty").mkdir()
+    agent._token_governance_config = {
+        "enabled": True,
+        "contract_path": str(contract_path),
+        "preflight": {"enabled": True, "workspace": str(tmp_path / "empty")},
+    }
+    agent.compression_enabled = True
+    compressor = MagicMock()
+    compressor.protect_first_n = 2
+    compressor.protect_last_n = 2
+    compressor.threshold_tokens = 1
+    agent.context_compressor = compressor
+
+    ctx = _build(agent, user_message="substantive task requiring memory")
+
+    assert agent._token_preflight["status"] == "blocked"
+    assert agent._token_preflight["block_reason"] == "workspace_empty"
+    mm.prefetch_all.assert_not_called()
+    compressor.should_compress.assert_not_called()
+    assert ctx.plugin_user_context == ""
+
+
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]

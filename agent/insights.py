@@ -31,6 +31,7 @@ from agent.usage_pricing import (
     format_duration_compact,
     has_known_pricing,
 )
+from agent.token_governance import enrich_usage_metrics
 
 
 def _fmt_est_cost(est_cost: float) -> str:
@@ -550,7 +551,7 @@ class InsightsEngine:
         date_range_start = min(started_timestamps) if started_timestamps else None
         date_range_end = max(started_timestamps) if started_timestamps else None
 
-        return {
+        overview = {
             "total_sessions": len(sessions),
             "total_messages": total_messages,
             "total_tool_calls": total_tool_calls,
@@ -575,6 +576,22 @@ class InsightsEngine:
             "unknown_cost_sessions": unknown_cost_sessions,
             "included_cost_sessions": included_cost_sessions,
         }
+        canonical = enrich_usage_metrics({
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "cache_read_tokens": total_cache_read,
+            "cache_write_tokens": total_cache_write,
+            "api_calls": sum(int(s.get("api_call_count") or 0) for s in sessions),
+        })
+        overview.update({
+            "new_input_tokens": canonical["new_input_tokens"],
+            "cache_input_tokens": canonical["cache_input_tokens"],
+            "prompt_tokens": canonical["prompt_tokens"],
+            "processed_tokens": canonical["processed_tokens"],
+            "avg_prompt_tokens_per_call": canonical["avg_prompt_tokens_per_call"],
+            "cost_unknown": bool(models_without_pricing),
+        })
+        return overview
 
     _GET_MODEL_USAGE_WITH_SOURCE = (
         "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
@@ -753,6 +770,23 @@ class InsightsEngine:
         for model, data in model_data.items():
             entry = {"model": model, **data}
             entry["sessions"] = len(data["sessions"])
+            canonical = enrich_usage_metrics({
+                "input_tokens": entry["input_tokens"],
+                "output_tokens": entry["output_tokens"],
+                "cache_read_tokens": entry["cache_read_tokens"],
+                "cache_write_tokens": entry["cache_write_tokens"],
+                "api_calls": entry["api_calls"],
+                "cost_status": entry.get("cost_status"),
+                "estimated_cost": entry.get("cost"),
+            })
+            entry.update({
+                "new_input_tokens": canonical["new_input_tokens"],
+                "cache_input_tokens": canonical["cache_input_tokens"],
+                "prompt_tokens": canonical["prompt_tokens"],
+                "processed_tokens": canonical["processed_tokens"],
+                "avg_prompt_tokens_per_call": canonical["avg_prompt_tokens_per_call"],
+                "cost_unknown": not bool(entry.get("has_pricing")),
+            })
             # Models that surfaced only via tool-call attribution (no token
             # rows) won't have these set by _accumulate — default them so the
             # output shape is uniform for downstream/JSON consumers.

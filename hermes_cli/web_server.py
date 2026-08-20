@@ -8355,6 +8355,9 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
                 resp = await client.get(url, headers=headers)
+            content_type = resp.headers.get("content-type", "")
+            if "application/json" not in content_type:
+                return {"ok": False, "reachable": True, "message": f"Endpoint returned {content_type or 'unknown content type'} instead of JSON. Is this an OpenAI-compatible API?"}
             return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
         except Exception:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}

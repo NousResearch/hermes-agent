@@ -83,10 +83,12 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
         assert "goal_mode" in cols
         assert "goal_max_turns" in cols
+        assert "goal_judge_policy" in cols
         task = kb.get_task(conn, "legacy1")
     # Existing row keeps the safe default.
     assert task.goal_mode is False
     assert task.goal_max_turns is None
+    assert task.goal_judge_policy == "best_effort"
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +155,8 @@ class TestCLIJudgeGate:
 
         fake_task = types.SimpleNamespace(
             goal_mode=goal_mode,
+            goal_judge_policy="best_effort",
+            status="running",
             title="Finish report",
             body="acceptance: criteria",
         )

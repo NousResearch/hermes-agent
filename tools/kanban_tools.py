@@ -34,7 +34,6 @@ import os
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
-from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
@@ -249,6 +248,17 @@ def _goal_judge_available() -> bool:
     except Exception:
         return False
     return client is not None and bool(model)
+
+
+def judge_goal(*args, **kwargs):
+    """Lazy compatibility wrapper for the goal judge.
+
+    Preserve the established module-level patch point without importing the
+    optional goal stack for plain Kanban calls.
+    """
+    from hermes_cli.goals import judge_goal as _judge_goal
+
+    return _judge_goal(*args, **kwargs)
 
 
 def _goal_mode_handoff_rejection(task, evidence: str) -> Optional[str]:
@@ -749,16 +759,67 @@ def _handle_complete(args: dict, **kw) -> str:
             # Goal-mode pre-completion judge gate (Issue #38367).
             # Prevent workers from bypassing the auxiliary judge by
             # calling kanban_complete before acceptance criteria are met.
-            # Only enforce when a judge is actually reachable — see
-            # _goal_judge_available for why an unavailable judge fails open.
+            # Under the default ``best_effort`` policy this stays fail-open
+            # — see _goal_judge_available for why an unreachable judge must
+            # not wedge every goal_mode worker. Only tasks created with
+            # goal_judge_policy='required' fail closed.
             task = kb.get_task(conn, tid)
-            rejection = _goal_mode_handoff_rejection(
-                task,
-                (summary or result or "").strip(),
-            )
-            if rejection is not None:
+            # The gate runs for every task the DB layer considers
+            # completable — deliberately *not* narrowed by status here.
+            # kanban_db.COMPLETABLE_STATUSES includes ``review``, and a
+            # status filter that disagreed with it would let a required
+            # task reach complete_task without proof and trip
+            # GoalJudgeRequiredError instead of this friendly path.
+            # evaluate_goal_completion short-circuits to ``pass`` for
+            # non-goal_mode tasks, so no judge probe happens for them.
+            decision = None
+            if task is not None:
+                from hermes_cli.kanban_goal_judge import evaluate_goal_completion
+
+                decision = evaluate_goal_completion(
+                    task,
+                    (summary or result or "").strip(),
+                    judge_available=_goal_judge_available,
+                    judge=judge_goal,
+                )
+            if decision is not None and decision.action == "block":
+                # ``required`` policy only: the judge could not be trusted
+                # (unreachable, unparseable, or raised), so fail closed by
+                # ending this run rather than letting the worker retry into
+                # a completion. Run-scoped so a stale run cannot clobber a
+                # newer claim.
+                run_id = _worker_run_id(tid)
+                if run_id is None:
+                    return tool_error(
+                        "Required goal judge failed closed, but the worker run id "
+                        "is missing; refusing an unscoped block or completion."
+                    )
+                if not kb.block_task(
+                    conn, tid, reason=decision.reason, kind="needs_input",
+                    expected_run_id=run_id,
+                ):
+                    return tool_error(
+                        "Required goal judge failed closed, but the run-scoped "
+                        "needs_input block was refused; task state was not claimed changed."
+                    )
+                # Report the state the board actually landed in: the
+                # unblock-loop breaker can escalate needs_input to triage,
+                # and claiming "blocked/needs_input" would be a lie.
+                resulting_task = kb.get_task(conn, tid)
+                resulting_state = (
+                    resulting_task.status if resulting_task is not None else "missing"
+                )
                 return tool_error(
-                    f"Goal completion rejected by judge: {rejection}. "
+                    f"Required goal judge failed closed: {decision.reason}. "
+                    f"The current run ended; resulting task state: {resulting_state}. "
+                    "do not send further heartbeat or completion calls."
+                )
+            if decision is not None and decision.action == "reject":
+                # Unchanged best_effort semantics: a reachable judge that
+                # says "not done" rejects the handoff and leaves the task
+                # in-flight so the worker can keep going.
+                return tool_error(
+                    f"Goal completion rejected by judge: {decision.reason}. "
                     f"To proceed, either: (1) provide explicit acceptance "
                     f"evidence in your summary matching the task's criteria, "
                     f"or (2) create continuation tasks with parents=[{tid}] "
@@ -771,6 +832,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    goal_gate_passed=bool(decision and decision.action == "pass"),
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -851,6 +913,18 @@ def _handle_block(args: dict, **kw) -> str:
         # and `transient` (or an unset kind) route back through
         # kanban_complete, which the judge now gates.
         task = kb.get_task(conn, tid)
+        if (
+            task
+            and task.goal_mode
+            and task.goal_judge_policy == "required"
+            and kind == "dependency"
+        ):
+            conn.close()
+            return tool_error(
+                "required goal-mode tasks cannot use kind='dependency' because "
+                "it is re-promotable. Use kind='needs_input' only for a genuine "
+                "human decision, or provide completion evidence to kanban_complete."
+            )
         if (
             task
             and task.goal_mode
@@ -1409,6 +1483,10 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    raw_goal_judge_policy = args.get("goal_judge_policy")
+    goal_judge_policy = (
+        "best_effort" if raw_goal_judge_policy is None else raw_goal_judge_policy
+    )
     model_override = args.get("model")
     provider_override = args.get("provider")
     if provider_override and not model_override:
@@ -1458,6 +1536,7 @@ def _handle_create(args: dict, **kw) -> str:
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
+                goal_judge_policy=goal_judge_policy,
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -2281,6 +2360,14 @@ KANBAN_CREATE_SCHEMA = {
                     "continuation turns the worker may take before the task "
                     "is blocked for review. Ignored unless goal_mode is "
                     "true. Defaults to the goal-engine default (20)."
+                ),
+            },
+            "goal_judge_policy": {
+                "type": "string",
+                "enum": ["best_effort", "required"],
+                "description": (
+                    "Completion judge policy. 'required' is valid only with "
+                    "goal_mode=true and fails closed unless the judge accepts."
                 ),
             },
             "model": {

@@ -123,6 +123,26 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_GOAL_JUDGE_POLICIES = {"best_effort", "required"}
+# Statuses that ``complete_task``'s terminal UPDATE accepts. ``review`` is in
+# the set because a human (or reviewer) can approve a task parked in the review
+# lane; the required-policy gate below therefore has to cover it too, otherwise
+# request-review would be a fail-open detour around the completion gate.
+COMPLETABLE_STATUSES = {"running", "ready", "blocked", "review"}
+
+
+class GoalJudgeRequiredError(RuntimeError):
+    """A required-policy task was completed without validated judge proof."""
+
+
+def _requires_goal_judge_proof(task, goal_gate_passed: bool) -> bool:
+    """True when ``task`` may not be completed without a positive judge decision."""
+    return (
+        task is not None
+        and task.status in COMPLETABLE_STATUSES
+        and getattr(task, "goal_judge_policy", "best_effort") == "required"
+        and not goal_gate_passed
+    )
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -1128,6 +1148,7 @@ class Task:
     # Goal-loop turn budget for ``goal_mode`` workers. ``None`` falls
     # through to the goals engine default (``goals.DEFAULT_MAX_TURNS``).
     goal_max_turns: Optional[int] = None
+    goal_judge_policy: str = "best_effort"
     # Originating chat/agent session id, when the task was created from
     # within an agent loop that propagated ``HERMES_SESSION_ID``. NULL for
     # tasks created from the CLI, the dashboard, or any path that doesn't
@@ -1223,6 +1244,11 @@ class Task:
             ),
             goal_max_turns=(
                 row["goal_max_turns"] if "goal_max_turns" in keys and row["goal_max_turns"] else None
+            ),
+            goal_judge_policy=(
+                row["goal_judge_policy"]
+                if "goal_judge_policy" in keys and row["goal_judge_policy"]
+                else "best_effort"
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
@@ -1404,6 +1430,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Goal-loop turn budget for ``goal_mode`` workers. NULL = use the
     -- goals-engine default.
     goal_max_turns       INTEGER,
+    goal_judge_policy    TEXT NOT NULL DEFAULT 'best_effort',
     -- Originating chat/agent session id when the task was created from
     -- inside an agent loop that propagated ``HERMES_SESSION_ID``. NULL
     -- for tasks created from the CLI, dashboard, or any path that doesn't
@@ -2654,6 +2681,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "goal_max_turns", "goal_max_turns INTEGER"
         )
 
+    if "goal_judge_policy" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "goal_judge_policy",
+            "goal_judge_policy TEXT NOT NULL DEFAULT 'best_effort'",
+        )
+
     if "session_id" not in cols:
         # Originating agent/chat session id, populated when the task is
         # created from within an agent loop that propagated
@@ -3178,6 +3211,7 @@ def create_task(
     reasoning_effort: Optional[str] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
+    goal_judge_policy: str = "best_effort",
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -3228,6 +3262,13 @@ def create_task(
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
+    if goal_judge_policy not in VALID_GOAL_JUDGE_POLICIES:
+        raise ValueError(
+            "goal_judge_policy must be one of "
+            f"{sorted(VALID_GOAL_JUDGE_POLICIES)}, got {goal_judge_policy!r}"
+        )
+    if goal_judge_policy == "required" and not goal_mode:
+        raise ValueError("goal_judge_policy='required' requires goal_mode=True")
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -3400,12 +3441,18 @@ def create_task(
     # insert, at which point both rows exist but the next lookup stabilises.
     if idempotency_key:
         row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "SELECT id, goal_judge_policy FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
             "ORDER BY created_at DESC LIMIT 1",
             (idempotency_key,),
         ).fetchone()
         if row:
+            existing_policy = row["goal_judge_policy"] or "best_effort"
+            if existing_policy != goal_judge_policy:
+                raise ValueError(
+                    "idempotency_key already exists with goal_judge_policy="
+                    f"{existing_policy!r}; requested {goal_judge_policy!r}"
+                )
             return row["id"]
 
     now = int(time.time())
@@ -3497,8 +3544,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, goal_judge_policy, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3523,6 +3570,7 @@ def create_task(
                         reasoning_effort,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
+                        goal_judge_policy,
                         session_id,
                     ),
                 )
@@ -3550,6 +3598,7 @@ def create_task(
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "goal_judge_policy": goal_judge_policy,
                         "model_override": model_override,
                         "provider_override": provider_override,
                     },
@@ -5359,6 +5408,7 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
+    goal_gate_passed: bool = False,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5398,6 +5448,12 @@ def complete_task(
     if not _parents_satisfied(conn, task_id):
         return False
 
+    task = get_task(conn, task_id)
+    if _requires_goal_judge_proof(task, goal_gate_passed):
+        raise GoalJudgeRequiredError(
+            f"task {task_id} requires a positive goal judge decision"
+        )
+
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
     # tiny dedicated txn, then raise. The caller is responsible for
@@ -5434,6 +5490,16 @@ def complete_task(
         # ``review`` or ``running``.
         if not _parents_satisfied(conn, task_id):
             return False
+        # Authoritative goal-judge gate under the SQLite write lock.  The
+        # earlier check is a fast rejection, but task status can change before
+        # this transaction begins (for example todo/triage -> ready in another
+        # process).  Re-read here so every status accepted by the terminal
+        # UPDATE is judged from the same locked state.
+        locked_task = get_task(conn, task_id)
+        if _requires_goal_judge_proof(locked_task, goal_gate_passed):
+            raise GoalJudgeRequiredError(
+                f"task {task_id} requires a positive goal judge decision"
+            )
         prior = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
             (task_id,),

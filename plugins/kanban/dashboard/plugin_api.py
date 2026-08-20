@@ -610,6 +610,7 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    goal_judge_policy: str = "best_effort"
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
     # Per-task thinking depth (none|minimal|…|ultra). None = inherit the
@@ -642,6 +643,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            goal_judge_policy=payload.goal_judge_policy,
             model_override=payload.model_override,
             provider_override=payload.provider_override,
             reasoning_effort=payload.reasoning_effort,
@@ -897,12 +899,15 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             s = payload.status
             ok = True
             if s == "done":
-                ok = kanban_db.complete_task(
-                    conn, task_id,
-                    result=payload.result,
-                    summary=payload.summary,
-                    metadata=payload.metadata,
-                )
+                try:
+                    ok = kanban_db.complete_task(
+                        conn, task_id,
+                        result=payload.result,
+                        summary=payload.summary,
+                        metadata=payload.metadata,
+                    )
+                except kanban_db.GoalJudgeRequiredError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc))
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
             elif s == "scheduled":
@@ -1130,6 +1135,8 @@ def _set_status_direct(
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
+    if new_status == "done":
+        raise ValueError("direct status helper cannot set done; use complete_task")
     terminations: list[tuple[Optional[int], Optional[str]]] = []
     effective_status = new_status
     with kanban_db.write_txn(conn):
@@ -1446,6 +1453,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             entry.update(ok=False, error="reasoning override refused")
                     except (ValueError, RuntimeError) as e:
                         entry.update(ok=False, error=str(e))
+            except kanban_db.GoalJudgeRequiredError as e:
+                entry.update(
+                    ok=False,
+                    error_code="goal_judge_required",
+                    error=str(e),
+                )
             except Exception as e:  # defensive — one bad id shouldn't kill the batch
                 entry.update(ok=False, error=str(e))
             results.append(entry)

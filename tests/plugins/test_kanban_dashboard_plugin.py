@@ -685,6 +685,38 @@ def test_bulk_status_done_forwards_completion_summary(client):
         conn.close()
 
 
+def test_required_goal_completion_single_and_bulk_conflict(client):
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        single = kb.create_task(
+            conn, title="single guarded", goal_mode=True,
+            goal_judge_policy="required",
+        )
+        bulk = kb.create_task(
+            conn, title="bulk guarded", goal_mode=True,
+            goal_judge_policy="required",
+        )
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{single}", json={"status": "done"}
+    )
+    assert response.status_code == 409
+
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [bulk], "status": "done"},
+    )
+    assert response.status_code == 200
+    assert response.json()["results"][0]["ok"] is False
+    assert response.json()["results"][0]["error_code"] == "goal_judge_required"
+    assert "goal judge" in response.json()["results"][0]["error"].lower()
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, single).status != "done"
+        assert kb.get_task(conn, bulk).status != "done"
+
+
 def test_bulk_status_running_rejected(client):
     """Bulk updates must match single-task PATCH: direct 'running' is invalid."""
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]

@@ -78,6 +78,9 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "max_retries": t.max_retries,
         "model_override": t.model_override,
         "provider_override": t.provider_override,
+        "goal_mode": t.goal_mode,
+        "goal_max_turns": t.goal_max_turns,
+        "goal_judge_policy": t.goal_judge_policy,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
@@ -393,6 +396,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           metavar="N", dest="goal_max_turns",
                           help="Turn budget for --goal workers (default 20). "
                                "Ignored without --goal.")
+    p_create.add_argument(
+        "--goal-judge-policy",
+        choices=sorted(kb.VALID_GOAL_JUDGE_POLICIES),
+        default="best_effort",
+        help="Goal completion judge policy (required needs --goal).",
+    )
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -1555,6 +1564,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
         print(f"kanban: --max-runtime: {exc}", file=sys.stderr)
         return 2
     max_retries = getattr(args, "max_retries", None)
+    if (
+        getattr(args, "goal_judge_policy", "best_effort") != "best_effort"
+        and not getattr(args, "goal_mode", False)
+    ):
+        print("kanban: --goal-judge-policy required requires --goal", file=sys.stderr)
+        return 2
     if max_retries is not None and max_retries < 1:
         print(
             f"kanban: --max-retries must be >= 1 (got {max_retries}); "
@@ -1585,6 +1600,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
+            goal_judge_policy=getattr(args, "goal_judge_policy", "best_effort"),
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
@@ -2279,18 +2295,68 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             # to every terminal handoff so request-review cannot bypass the
             # acceptance contract that protects complete.
             task = kb.get_task(conn, tid)
-            rejection = _goal_mode_handoff_rejection(
-                task,
-                (summary or args.result or "").strip(),
-            )
-            if rejection is not None:
-                print(
-                    f"kanban: goal completion of {tid} rejected by judge: {rejection}. "
-                    f"Provide evidence matching the task's acceptance criteria.",
-                    file=sys.stderr,
-                )
+            decision = None
+            if task and task.status not in kb.COMPLETABLE_STATUSES:
                 failed.append(tid)
+                print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
                 continue
+            if task and task.goal_mode:
+                from hermes_cli.kanban_goal_judge import evaluate_goal_completion
+
+                def _available() -> bool:
+                    try:
+                        from agent.auxiliary_client import get_text_auxiliary_client
+
+                        client, model = get_text_auxiliary_client("goal_judge")
+                    except Exception:
+                        return False
+                    return client is not None and bool(model)
+
+                def _judge_goal(**kwargs):
+                    from hermes_cli.goals import judge_goal
+
+                    return judge_goal(**kwargs)
+
+                decision = evaluate_goal_completion(
+                    task, summary or args.result or "",
+                    judge_available=_available, judge=_judge_goal,
+                )
+                if decision.action == "block":
+                    run_id = _worker_run_id_for(tid)
+                    if run_id is None and task.status == "running":
+                        print(
+                            f"kanban: required goal judge failed closed for {tid}; "
+                            "no matching worker run is present, so task state was not changed",
+                            file=sys.stderr,
+                        )
+                        failed.append(tid)
+                        continue
+                    ok = kb.block_task(
+                        conn, tid, reason=decision.reason, kind="needs_input",
+                        expected_run_id=run_id,
+                    )
+                    resulting_task = kb.get_task(conn, tid) if ok else None
+                    resulting_state = (
+                        resulting_task.status
+                        if resulting_task is not None
+                        else ("missing" if ok else "unchanged")
+                    )
+                    print(
+                        f"kanban: required goal judge failed closed for {tid}: "
+                        f"{decision.reason}; resulting state: "
+                        f"{resulting_state}",
+                        file=sys.stderr,
+                    )
+                    failed.append(tid)
+                    continue
+                if decision.action == "reject":
+                    print(
+                        f"kanban: goal completion of {tid} rejected by judge: "
+                        f"{decision.reason}. Provide evidence matching the task's "
+                        "acceptance criteria.", file=sys.stderr,
+                    )
+                    failed.append(tid)
+                    continue
 
             if not kb.complete_task(
                 conn, tid,
@@ -2298,6 +2364,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
+                goal_gate_passed=bool(decision and decision.action == "pass"),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)

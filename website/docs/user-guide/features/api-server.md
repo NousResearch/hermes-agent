@@ -252,10 +252,19 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "run_idempotency": true,
+    "run_correlation_lookup": true,
+    "run_stop_idempotent": true
   }
 }
 ```
+
+`run_idempotency`, `run_correlation_lookup`, and `run_stop_idempotent`
+advertise the exactly-once affordances on the runs API (idempotent
+submission replay, `GET /v1/runs` correlation lookup, and terminal-safe
+stop). `run_status_durable` is deliberately **not** advertised: run
+statuses live in memory and do not survive a gateway restart.
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
@@ -344,16 +353,37 @@ In addition to `/v1/chat/completions` and `/v1/responses`, the server exposes a 
 
 ### POST /v1/runs
 
-Create a new agent run. Returns a `run_id` that can be used to subscribe to progress events.
+Create a new agent run. Returns `202` with the run's full status payload
+snapshotted at creation, so clients can validate identity fields without an
+immediate follow-up poll.
 
 ```json
 {
+  "object": "hermes.run",
   "run_id": "run_abc123",
-  "status": "started"
+  "status": "queued",
+  "session_id": "space-session",
+  "model": "hermes-agent"
 }
 ```
 
 Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+
+Submission honors an optional **`Idempotency-Key`** header: retrying with the
+same key replays the existing run's current status payload (`202`) instead of
+dispatching a second agent, and replays are served even when the gateway is at
+its concurrency limit (a replay dispatches nothing). Status payloads echo
+`idempotency_key` whenever one was supplied. A retry that reuses a key with a
+*different* body still replays the original run — clients must use one key per
+logical submission.
+
+### GET /v1/runs
+
+Correlation lookup by idempotency key, for clients that submitted a run but
+lost the response. Pass the key as an `Idempotency-Key` header or an
+`idempotency_key` query parameter; the response is the mapped run's full
+status payload. Returns `400` when no key is supplied and `404` when the key
+is unknown (or the run has aged out).
 
 ### GET /v1/runs/\{run_id\}
 
@@ -396,10 +426,17 @@ subscriber continues draining normally.
 
 ### POST /v1/runs/\{run_id\}/stop
 
-Interrupt a running agent turn. The endpoint returns immediately with `{"status": "stopping"}` while Hermes asks the active agent to stop at the next safe interruption point.
+Interrupt a running agent turn. The endpoint returns immediately with the
+run's full status payload (`status: "stopping"`) while Hermes asks the active
+agent to stop at the next safe interruption point.
 The run stays tracked as `stopping` until the executor-backed work exits, then
 settles as `cancelled`; requesting stop never hides a worker that is still
 running.
+
+Stop is **terminal-safe**: requesting stop on a run that already reached
+`completed`, `failed`, or `cancelled` returns that run's outcome unchanged
+instead of rewriting it to `stopping`, so a replayed stop can never mask a
+finished run's real result.
 
 ### POST /v1/runs/\{run_id\}/approval
 

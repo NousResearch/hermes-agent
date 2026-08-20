@@ -105,7 +105,9 @@ Endpoints:
 ```
 POST /v1/chat/completions        OpenAI Chat Completions (streaming via SSE)
 POST /v1/responses               OpenAI Responses API (stateful)
-POST /v1/runs                    Start a run, returns run_id (202)
+POST /v1/runs                    Start a run, returns full status payload (202);
+                                 Idempotency-Key replays instead of re-dispatching
+GET  /v1/runs                    Correlation lookup by Idempotency-Key
 GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval

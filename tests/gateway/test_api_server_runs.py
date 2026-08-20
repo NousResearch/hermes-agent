@@ -137,7 +137,9 @@ class TestStartRun:
                 resp = await cli.post("/v1/runs", json={"input": "hello"})
                 assert resp.status == 202
                 data = await resp.json()
-                assert data["status"] == "started"
+                # POST /v1/runs now returns the run's full status payload
+                # snapshotted at creation, not a "started" sentinel.
+                assert data["status"] == "queued"
                 assert data["run_id"].startswith("run_")
 
                 status_resp = await cli.get(f"/v1/runs/{data['run_id']}")

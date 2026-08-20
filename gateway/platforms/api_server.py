@@ -14,7 +14,9 @@ Exposes an HTTP server with endpoints:
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
-- POST /v1/runs                    — start a run, returns run_id immediately (202)
+- POST /v1/runs                    — start a run, returns full status payload (202);
+                                     Idempotency-Key replays instead of re-dispatching
+- GET  /v1/runs                    — correlation lookup by Idempotency-Key
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
@@ -1432,6 +1434,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Idempotency-Key -> run_id, so a client that retries a submission
+        # after a lost response correlates back to the run it already
+        # started instead of dispatching a second agent. Pruned alongside
+        # _run_statuses by the orphan sweep.
+        self._run_idempotency: Dict[str, str] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -2092,6 +2099,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
             ("POST", "/v1/runs", self._handle_runs),
+            ("GET", "/v1/runs", self._handle_lookup_run),
             ("GET", "/v1/runs/{run_id}", self._handle_get_run),
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
             ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
@@ -3177,6 +3185,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_steer": True,
                 "run_approval_response": True,
+                "run_idempotency": True,
+                "run_correlation_lookup": True,
+                "run_stop_idempotent": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -3203,6 +3214,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
+                "run_lookup": {"method": "GET", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
@@ -6678,6 +6690,25 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # Exactly-once submission: a retry carrying an Idempotency-Key already
+        # bound to a live run replays that run's status instead of starting a
+        # second agent.
+        #
+        # This deliberately precedes the concurrency gate. A replay is a dict
+        # lookup that dispatches no agent, so saturation is no reason to
+        # refuse it — and refusing it is actively harmful: a caller that
+        # reads 429 as a terminal rejection would journal the run as rejected
+        # while the original agent is still running. Recovery retries are
+        # exactly what a saturated server produces, so they must be the
+        # requests it keeps answering.
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if idempotency_key:
+            existing_run_id = self._run_idempotency.get(idempotency_key)
+            if existing_run_id is not None:
+                existing_status = self._run_statuses.get(existing_run_id)
+                if existing_status is not None:
+                    return web.json_response(existing_status, status=202)
+
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
         limited = self._concurrency_limited_response()
@@ -6796,13 +6827,19 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-        self._set_run_status(
-            run_id,
-            "queued",
-            created_at=created_at,
-            session_id=session_id,
-            model=body.get("model", self._model_name),
-        )
+        if idempotency_key:
+            self._run_idempotency[idempotency_key] = run_id
+
+        status_fields: Dict[str, Any] = {
+            "created_at": created_at,
+            "session_id": session_id,
+            "model": body.get("model", self._model_name),
+        }
+        if idempotency_key:
+            status_fields["idempotency_key"] = idempotency_key
+        # Snapshot: the live record is mutated by the background task, and the
+        # submit response must describe the run as it was accepted.
+        creation_status = dict(self._set_run_status(run_id, "queued", **status_fields))
 
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
@@ -7080,8 +7117,13 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = (
             {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
         )
+        # Full hermes.run payload, identical in shape to the replay path and
+        # to GET /v1/runs/{run_id}: callers validate run identity (run_id,
+        # session_id, idempotency_key echo) straight off the submit response.
+        # Note this reports the real lifecycle status ("queued") rather than
+        # the former "started" sentinel, which was never a run status.
         return web.json_response(
-            {"run_id": run_id, "status": "started"},
+            creation_status,
             status=202,
             headers=response_headers,
         )
@@ -7097,6 +7139,37 @@ class APIServerAdapter(BasePlatformAdapter):
         if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+        return web.json_response(status)
+
+    async def _handle_lookup_run(self, request: "web.Request") -> "web.Response":
+        """GET /v1/runs — resolve a run by Idempotency-Key.
+
+        Recovery path for a client that submitted a run but lost the response:
+        it can correlate its own key back to the run without knowing the
+        server-assigned run_id. The key may travel as the Idempotency-Key
+        header or an ``idempotency_key`` query parameter.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        key = request.headers.get("Idempotency-Key") or request.query.get("idempotency_key")
+        if not key:
+            return web.json_response(
+                _openai_error(
+                    "Missing Idempotency-Key header or idempotency_key query parameter",
+                    code="missing_idempotency_key",
+                ),
+                status=400,
+            )
+
+        run_id = self._run_idempotency.get(key)
+        status = self._run_statuses.get(run_id) if run_id is not None else None
+        if status is None:
+            return web.json_response(
+                _openai_error(f"No run found for idempotency key: {key}", code="run_not_found"),
                 status=404,
             )
         return web.json_response(status)
@@ -7308,13 +7381,21 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+
+        # Stop is idempotent against a finished run: replaying it must not
+        # rewrite a terminal outcome as "stopping", which would strand
+        # pollers waiting for a transition that can never happen.
+        current = self._run_statuses.get(run_id)
+        if current is not None and current.get("status") in {"completed", "failed", "cancelled"}:
+            return web.json_response(current)
+
         agent = self._active_run_agents.get(run_id)
         task = self._active_run_tasks.get(run_id)
 
         if agent is None and task is None:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
-        self._set_run_status(run_id, "stopping", last_event="run.stopping")
+        stopping_status = self._set_run_status(run_id, "stopping", last_event="run.stopping")
         self._stopping_run_ids.add(run_id)
 
         if agent is not None:
@@ -7331,7 +7412,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent, source="api_server_run_stop"
             )
 
-        return web.json_response({"run_id": run_id, "status": "stopping"})
+        return web.json_response(stopping_status)
 
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically expire transport buffers and terminal status records."""
@@ -7380,6 +7461,13 @@ class APIServerAdapter(BasePlatformAdapter):
         ]
         for run_id in stale_statuses:
             self._run_statuses.pop(run_id, None)
+
+        # Correlation entries outlive nothing: once a run's status is gone the
+        # key can no longer resolve, so drop it rather than leak an entry per
+        # submitted run for the process lifetime.
+        for key, mapped_run_id in list(self._run_idempotency.items()):
+            if mapped_run_id not in self._run_statuses:
+                self._run_idempotency.pop(key, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

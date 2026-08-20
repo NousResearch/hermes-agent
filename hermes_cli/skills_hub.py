@@ -686,7 +686,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
                name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None,
+               replace_existing: bool = False) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
@@ -702,6 +703,10 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     identifier cannot be fuzzy-resolved to a same-named skill in a different
     registry. Skill names are not namespaced across registries, so an
     unconstrained resolve can silently change a skill's provenance.
+
+    ``replace_existing`` allows an update to replace its current installation
+    without treating replacement as ``--force``. Scan policy and confirmation
+    remain active unless the caller explicitly passes ``force=True``.
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -824,7 +829,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     existing = lock.get_installed(bundle.name)
     if existing:
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
-        if not force:
+        if not force and not replace_existing:
             c.print("Use --force to reinstall.\n")
             return
 
@@ -1306,9 +1311,10 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
         do_install(
             entry["identifier"],
             category=category,
-            force=True,
+            force=force,
             console=c,
             source_id=entry.get("source", "") or None,
+            replace_existing=True,
         )
 
     updated_count = len(updates) - len(skipped_local)

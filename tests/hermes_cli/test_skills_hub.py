@@ -94,7 +94,13 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
     monkeypatch.setattr(hub, "HubLockFile", lambda: type("L", (), {
         "get_installed": lambda self, name: {"install_path": "category/" + name}
     })())
-    monkeypatch.setattr(cli_hub, "do_install", lambda identifier, category="", force=False, console=None, source_id=None: installs.append((identifier, category, force)))
+    monkeypatch.setattr(
+        cli_hub,
+        "do_install",
+        lambda identifier, category="", force=False, console=None,
+        source_id=None, replace_existing=False:
+            installs.append((identifier, category, force)),
+    )
 
     do_update(console=console)
     return sink.getvalue(), installs
@@ -1172,7 +1178,8 @@ def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool):
     installs = []
     monkeypatch.setattr(
         cli_hub, "do_install",
-        lambda identifier, category="", force=False, console=None, source_id=None:
+        lambda identifier, category="", force=False, console=None, source_id=None,
+        replace_existing=False:
             installs.append(identifier),
     )
 
@@ -1211,3 +1218,40 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
     assert installs == ["someone/hub-skill"]
     assert "Updated 1 skill(s)" in sink.getvalue()
+
+
+def test_do_update_does_not_force_downgraded_source_policy(monkeypatch, tmp_path):
+    """Replacing an installed skill must not imply bypassing scan/confirm policy."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    from tools.skills_guard import content_hash
+
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "category" / "hub-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# installed\n")
+    recorded = content_hash(skill_dir)
+    monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: [{
+        "name": "hub-skill",
+        "identifier": "official/category/hub-skill",
+        "source": "official",
+        "status": "update_available",
+    }])
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("L", (), {
+        "get_installed": lambda self, _name: {
+            "install_path": "category/hub-skill",
+            "content_hash": recorded,
+        }
+    })())
+    calls = []
+
+    def _install(_identifier, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(cli_hub, "do_install", _install)
+
+    do_update(console=Console(file=StringIO(), force_terminal=False))
+
+    assert calls[0]["replace_existing"] is True
+    assert calls[0]["force"] is False

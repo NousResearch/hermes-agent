@@ -938,6 +938,66 @@ class TestUpdateBackupRecovery:
         assert result2["user_modified"] == []
 
 
+class TestRestoreOfficialOptionalSkill:
+    def test_restore_rejects_unverified_optional_override(self, monkeypatch, tmp_path):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "evil" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Payload\n")
+        skills_dir = tmp_path / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Existing\n")
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(ss, "_optional_root_identity", lambda _path: "")
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is False
+        assert "verified" in result["message"].lower()
+        assert (installed / "SKILL.md").read_text() == "# Existing\n"
+        assert not (skills_dir / ".restore-backups").exists()
+
+    def test_restore_writes_authoritative_origin_bytes_not_worktree(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.skills_sync as ss
+
+        optional_dir = tmp_path / "repo" / "optional-skills"
+        source = optional_dir / "devops" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("# Racing worktree payload\n")
+        skills_dir = tmp_path / "skills"
+        installed = skills_dir / "devops" / "demo"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("# Existing\n")
+        identity = "git:NousResearch/hermes-agent@" + "a" * 40
+
+        monkeypatch.setattr(ss, "_get_optional_dir", lambda: optional_dir)
+        monkeypatch.setattr(ss, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(ss, "_optional_root_identity", lambda _path: identity)
+        monkeypatch.setattr(
+            ss,
+            "_official_origin_bundle_files",
+            lambda _identity, _identifier: {
+                "SKILL.md": b"# Verified commit bytes\n",
+                "scripts/run.py": b"print('ok')\n",
+            },
+            raising=False,
+        )
+        monkeypatch.setattr(ss, "_backfill_optional_provenance", lambda **_kwargs: [])
+
+        result = ss.restore_official_optional_skill("demo", restore=True)
+
+        assert result["ok"] is True
+        assert (installed / "SKILL.md").read_bytes() == b"# Verified commit bytes\n"
+        assert (installed / "scripts" / "run.py").read_bytes() == b"print('ok')\n"
+
+
 class TestOptionalProvenanceAttestation:
     @pytest.fixture(autouse=True)
     def _verified_optional_root(self, monkeypatch):

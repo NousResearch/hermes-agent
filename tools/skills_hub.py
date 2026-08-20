@@ -480,11 +480,11 @@ def _git_optional_skill_files(
         return None
 
 
-def official_origin_bundle_hash(
+def official_origin_bundle_files(
     origin_identity: str,
     identifier: str,
-) -> Optional[str]:
-    """Resolve official bytes independently of the same-user lock record."""
+) -> Optional[Dict[str, Union[str, bytes]]]:
+    """Resolve official bytes independently of mutable worktree/lock state."""
     if not identifier.startswith("official/"):
         return None
     try:
@@ -504,12 +504,11 @@ def official_origin_bundle_hash(
     if origin_identity.startswith("github:NousResearch/hermes-agent@"):
         origin_identity = "git:" + origin_identity[len("github:") :]
     if origin_identity.startswith("git:NousResearch/hermes-agent@"):
-        files = _git_optional_skill_files(
+        return _git_optional_skill_files(
             optional_root.resolve().parent,
             skill_rel,
             origin_identity,
         )
-        return full_content_hash_for_files(files) if files else None
     if not origin_identity.startswith("nix-store:"):
         return None
     if optional_skills_root_identity(optional_root) != origin_identity:
@@ -518,14 +517,37 @@ def official_origin_bundle_hash(
         source_path = (optional_root / Path(*skill_rel.split("/"))).resolve()
         if not source_path.is_relative_to(optional_root.resolve()):
             return None
-        from tools.skills_guard import full_content_hash
-
-        digest = full_content_hash(source_path)
+        files: Dict[str, Union[str, bytes]] = {}
+        total_size = 0
+        for entry in sorted(source_path.rglob("*")):
+            if _is_path_redirect(entry):
+                return None
+            if entry.is_dir():
+                continue
+            if not entry.is_file():
+                return None
+            rel_path = PurePosixPath(entry.relative_to(source_path).as_posix())
+            if not _optional_bundle_file_is_included(rel_path):
+                continue
+            data = entry.read_bytes()
+            total_size += len(data)
+            if total_size > 64 * 1024 * 1024:
+                return None
+            files[rel_path.as_posix()] = data
     except (OSError, ValueError):
         return None
     if optional_skills_root_identity(optional_root) != origin_identity:
         return None
-    return digest
+    return files or None
+
+
+def official_origin_bundle_hash(
+    origin_identity: str,
+    identifier: str,
+) -> Optional[str]:
+    """Hash official bytes independently of the same-user lock record."""
+    files = official_origin_bundle_files(origin_identity, identifier)
+    return full_content_hash_for_files(files) if files else None
 
 
 _ALLOWED_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets", "examples"})

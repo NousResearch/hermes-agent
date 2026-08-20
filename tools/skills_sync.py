@@ -29,6 +29,7 @@ import os
 import shutil
 import stat
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -130,6 +131,35 @@ def _official_origin_bundle_hash(origin_identity: str, identifier: str) -> Optio
     from tools.skills_hub import official_origin_bundle_hash
 
     return official_origin_bundle_hash(origin_identity, identifier)
+
+
+def _official_origin_bundle_files(
+    origin_identity: str,
+    identifier: str,
+) -> Optional[Dict[str, Any]]:
+    from tools.skills_hub import official_origin_bundle_files
+
+    return official_origin_bundle_files(origin_identity, identifier)
+
+
+def _write_restored_bundle(files: Dict[str, Any], destination: Path) -> None:
+    """Materialize already verified bundle bytes without dereferencing a source tree."""
+    from tools.skills_hub import _validate_bundle_rel_path
+
+    validated = []
+    for rel_path, content in files.items():
+        safe_rel = _validate_bundle_rel_path(rel_path)
+        validated.append((safe_rel, content))
+    if not any(rel_path == "SKILL.md" for rel_path, _content in validated):
+        raise ValueError("Official bundle has no root SKILL.md")
+    destination.mkdir(parents=True)
+    for rel_path, content in validated:
+        target = destination.joinpath(*rel_path.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(str(content), encoding="utf-8")
 
 
 def _build_external_skill_index() -> Set[str]:
@@ -414,6 +444,16 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
     repairs already-mutated/reorganized skills by backing up matching active
     copies and copying the official optional source into its canonical path.
     """
+    optional_dir = _get_optional_dir()
+    origin_identity = _optional_root_identity(optional_dir)
+    if not origin_identity:
+        return {
+            "ok": False,
+            "message": "No verified official optional skills source found.",
+            "restored": [],
+            "backfilled": [],
+            "backed_up": [],
+        }
     index = _optional_skill_index()
     if not index:
         return {"ok": False, "message": "No official optional skills directory found.", "restored": [], "backfilled": [], "backed_up": []}
@@ -425,15 +465,34 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
             return {"ok": False, "message": f"Official optional skill not found: {name}", "restored": [], "backfilled": [], "backed_up": []}
         targets = [target]
 
+    verified_targets = []
+    for folder_name, install_path, src in targets:
+        identifier = f"official/{install_path}"
+        files = _official_origin_bundle_files(origin_identity, identifier)
+        if not files:
+            return {
+                "ok": False,
+                "message": f"Could not verify official source bytes for: {folder_name}",
+                "restored": [],
+                "backfilled": [],
+                "backed_up": [],
+            }
+        verified_targets.append((folder_name, install_path, src, files))
+
     restored: List[str] = []
     backed_up: List[str] = []
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     backup_root = _skills_dir() / ".restore-backups" / f"official-optional-{timestamp}"
 
-    for folder_name, install_path, src in targets:
+    from tools.skills_guard import full_content_hash, full_content_hash_for_files
+
+    for folder_name, install_path, src, files in verified_targets:
         dest = _skills_dir() / Path(*install_path.split("/"))
-        src_hash = _dir_hash(src)
-        canonical_ok = dest.exists() and _dir_hash(dest) == src_hash
+        authoritative_hash = full_content_hash_for_files(files)
+        canonical_ok = (
+            dest.exists()
+            and full_content_hash(dest) == authoritative_hash
+        )
 
         # Find already-active copies of this official skill by frontmatter name
         # or folder slug, even if curator moved it into another category.
@@ -462,7 +521,13 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                 backed_up.append(_move_to_restore_backup(dest, backup_root))
             if not dest.exists():
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(src, dest)
+                with tempfile.TemporaryDirectory(
+                    prefix=".restore-stage-",
+                    dir=str(_skills_dir()),
+                ) as stage_root:
+                    staged = Path(stage_root) / folder_name
+                    _write_restored_bundle(files, staged)
+                    shutil.move(str(staged), str(dest))
                 restored.append(folder_name)
         elif not canonical_ok:
             continue

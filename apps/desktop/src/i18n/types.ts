@@ -1752,6 +1752,79 @@ export interface Translations {
     projectEmpty: string
     noSessions: string
     noFilterMatches: string
+    viewMenu: {
+      filters: string
+      savedViews: string
+      useView: string
+      apply: string
+      saveCurrent: string
+      updateCurrent: string
+      update: string
+      rename: string
+      delete: string
+      saveTitle: string
+      saveDescription: string
+      renameTitle: string
+      renameDescription: string
+      applyTitle: string
+      applyDescription: (name: string, profile: string) => string
+      updateTitle: string
+      updateDescription: (name: string) => string
+      deleteTitle: string
+      deleteDescription: (name: string) => string
+      nameLabel: string
+      namePlaceholder: string
+      grouping: string
+      ordering: string
+      show: string
+      inboxStyle: string
+      status: string
+      pullRequest: string
+      profile: string
+      project: string
+      archived: string
+      resetToDefaults: string
+      expandAll: string
+      collapseAll: string
+      markAllRead: string
+      groupings: {
+        date: string
+        none: string
+        project: string
+        status: string
+        profile: string
+      }
+      orderings: {
+        updated: string
+        created: string
+        status: string
+        tokens: string
+        cost: string
+        manual: string
+      }
+      metadata: {
+        updated: string
+        preview: string
+        tokens: string
+        cost: string
+        pr: string
+        profile: string
+      }
+      statusFilters: {
+        'needs-input': string
+        working: string
+        unread: string
+        draft: string
+        idle: string
+      }
+      pullRequestFilters: {
+        open: string
+        draft: string
+        merged: string
+        closed: string
+        none: string
+      }
+    }
     projects: {
       sectionLabel: string
       home: string

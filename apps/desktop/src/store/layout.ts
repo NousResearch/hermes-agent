@@ -238,7 +238,7 @@ export const $sidebarAgentsGrouped: ReadableAtom<boolean> = computed(
 /** How the recents list is divided. `date` is the sidebar's long-standing
  *  default (Today / Yesterday / Last week dividers). `profile` only means
  *  anything while the sidebar is showing every profile at once. */
-export type SidebarGrouping = 'date' | 'profile' | 'project' | 'status'
+export type SidebarGrouping = 'date' | 'none' | 'profile' | 'project' | 'status'
 /** What ranks rows within whatever grouping is active. */
 export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
@@ -261,9 +261,23 @@ function listOf<T extends string>(values: readonly T[]): Codec<T[]> {
   }
 }
 
-const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'preview', 'profile', 'tokens', 'updated']
-const STATUS_FILTERS: readonly SessionStatusBucket[] = ['needs-input', 'working', 'unread', 'draft', 'idle']
-const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
+export const SIDEBAR_GROUPINGS: readonly SidebarGrouping[] = ['date', 'none', 'project', 'status', 'profile']
+export const SIDEBAR_ROW_META_OPTIONS: readonly SidebarRowMeta[] = [
+  'cost',
+  'pr',
+  'preview',
+  'profile',
+  'tokens',
+  'updated'
+]
+export const SIDEBAR_STATUS_FILTERS: readonly SessionStatusBucket[] = [
+  'needs-input',
+  'working',
+  'unread',
+  'draft',
+  'idle'
+]
+export const SIDEBAR_PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
 export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
 
 // `project` deliberately does NOT live here. Entering a project from ⌘K, the
@@ -273,7 +287,7 @@ export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created
 const $sidebarFlatGrouping = persistentAtom<SidebarGrouping>(
   SIDEBAR_GROUPING_STORAGE_KEY,
   'date',
-  oneOf(['date', 'status'], 'date')
+  oneOf(['date', 'none', 'status'], 'date')
 )
 
 // All-profiles keeps its own grouping: `profile` only means anything there, and
@@ -283,7 +297,7 @@ const $sidebarFlatGrouping = persistentAtom<SidebarGrouping>(
 const $sidebarAllProfilesGrouping = persistentAtom<SidebarGrouping>(
   SIDEBAR_ALL_PROFILES_GROUPING_STORAGE_KEY,
   'date',
-  oneOf(['date', 'profile', 'status'], 'date')
+  oneOf(['date', 'none', 'profile', 'status'], 'date')
 )
 
 // The sidebar as it ships. Declared once so the atoms below, "Reset to
@@ -302,7 +316,7 @@ const $sidebarSortKey = persistentAtom<SidebarSortKey>(
 export const $sidebarRowMeta = persistentAtom<SidebarRowMeta[]>(
   SIDEBAR_ROW_META_STORAGE_KEY,
   SIDEBAR_DEFAULT_ROW_META,
-  listOf(ROW_META)
+  listOf(SIDEBAR_ROW_META_OPTIONS)
 )
 
 /** Inbox style: render the flat list's session rows as three-line cards
@@ -328,7 +342,7 @@ export const $sidebarShowArchived = persistentAtom(SIDEBAR_SHOW_ARCHIVED_STORAGE
 export const $sidebarStatusFilter = persistentAtom<SessionStatusBucket[]>(
   SIDEBAR_STATUS_FILTER_STORAGE_KEY,
   [],
-  listOf(STATUS_FILTERS)
+  listOf(SIDEBAR_STATUS_FILTERS)
 )
 
 // Project ids as `liveSessionProjectId` reports them: an explicit project's id,
@@ -353,7 +367,7 @@ export const $sidebarProfileFilter = persistentAtom(
 export const $sidebarPrFilter = persistentAtom<PullRequestBucket[]>(
   SIDEBAR_PR_FILTER_STORAGE_KEY,
   [],
-  listOf(PR_FILTERS)
+  listOf(SIDEBAR_PR_FILTERS)
 )
 
 export const $sidebarGrouping: ReadableAtom<SidebarGrouping> = computed(

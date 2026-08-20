@@ -75,4 +75,13 @@ describe('the sidebar as it ships', () => {
     expect($showAllProfiles.get()).toBe(true)
     expect($sidebarGrouping.get()).toBe('profile')
   })
+
+  it('supports a truly ungrouped list in both profile scopes', () => {
+    setSidebarGrouping('none')
+    expect($sidebarGrouping.get()).toBe('none')
+
+    $showAllProfiles.set(true)
+    setSidebarGrouping('none')
+    expect($sidebarGrouping.get()).toBe('none')
+  })
 })

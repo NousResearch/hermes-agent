@@ -8,6 +8,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $sidebarRowMeta } from '@/store/layout'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -44,7 +45,11 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
+vi.mock('@/app/chat/profile-tag', () => ({
+  ProfileTag: ({ profile }: { profile?: null | string }) => (
+    <span data-testid="profile-tag">{profile ?? 'default'}</span>
+  )
+}))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
@@ -224,6 +229,18 @@ describe('SidebarSessionRow running arc', () => {
 })
 
 describe('SidebarSessionRow', () => {
+  afterEach(() => {
+    $sidebarRowMeta.set(['preview', 'updated'])
+  })
+
+  it('shows the default profile when profile metadata is explicitly enabled', () => {
+    $sidebarRowMeta.set(['profile'])
+
+    renderRow(makeSession({ profile: 'default', title: 'Default profile session' }))
+
+    expect(screen.getByTestId('profile-tag').textContent).toBe('default')
+  })
+
   it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
     render(
       <SidebarSessionRow

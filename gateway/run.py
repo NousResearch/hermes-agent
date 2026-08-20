@@ -8672,8 +8672,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _scale_to_zero_is_idle(self) -> bool:
         from gateway.scale_to_zero import is_idle
 
+        # _active_work_count(), NOT _running_agent_count(): cron jobs run
+        # through a standalone AIAgent on the scheduler's own thread pool and
+        # API-server runs live on the adapter — both entirely outside
+        # _running_agents (the same blind spot as the #60432 shutdown drain).
+        # Counting agents alone let the idle predicate read True DURING a
+        # running cron job; a suspend then freezes the job mid-flight.
+        # Observed live on staging 2026-08-20: is_idle held True throughout a
+        # cron run at 10:45:04-22 — only watcher-tick timing (next tick 9s
+        # after the job finished) avoided a mid-job freeze.
         return is_idle(
-            running_agent_count=self._running_agent_count(),
+            running_agent_count=self._active_work_count(),
             seconds_since_last_inbound=time.time() - self._last_inbound_at,
             idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
             has_live_background_work=self._scale_to_zero_has_live_background_work(),

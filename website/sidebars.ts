@@ -402,6 +402,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-data-science',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/data-science/data-science-graph-engineering',
                     'user-guide/skills/optional/data-science/data-science-jupyter-notebook',
                   ],
                 },

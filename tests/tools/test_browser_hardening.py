@@ -214,6 +214,44 @@ class TestTruncateSnapshot:
             if line.strip() and "truncated" not in line.lower():
                 assert line.startswith("- item") or line == ""
 
+    def test_truncation_uses_docker_visible_cache_path(self, tmp_path, monkeypatch):
+        from tools.browser_tool import _truncate_snapshot
+
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        snapshot = "\n".join(
+            f'- item "Element {i}" [ref=e{i}]' for i in range(500)
+        )
+
+        result = _truncate_snapshot(snapshot, max_chars=2000)
+
+        stored_files = list(
+            (hermes_home / "cache" / "web").glob("browser-snapshot-*.txt")
+        )
+        assert len(stored_files) == 1
+        visible_path = f"/root/.hermes/cache/web/{stored_files[0].name}"
+        assert f'read_file path="{visible_path}"' in result
+        assert str(hermes_home) not in result
+        assert '[ref=e499]' in stored_files[0].read_text(encoding="utf-8")
+
+    def test_truncation_keeps_local_cache_path(self, tmp_path, monkeypatch):
+        from tools.browser_tool import _truncate_snapshot
+
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        snapshot = "\n".join(
+            f'- item "Element {i}" [ref=e{i}]' for i in range(500)
+        )
+
+        result = _truncate_snapshot(snapshot, max_chars=2000)
+
+        stored_file = next(
+            (hermes_home / "cache" / "web").glob("browser-snapshot-*.txt")
+        )
+        assert str(stored_file) in result
+        assert "/root/.hermes/cache/web/" not in result
 
     def test_stored_snapshot_is_secret_redacted(self):
         """Page-rendered secrets must not land unmasked on disk."""
@@ -245,6 +283,33 @@ class TestTruncateSnapshot:
         assert result.startswith("Summary with button")
         assert "Full snapshot" in result
         assert "read_file" in result
+
+    def test_extract_relevant_content_uses_docker_visible_cache_path(
+        self, tmp_path, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+        from tools.browser_tool import _extract_relevant_content
+
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        snapshot = "\n".join(
+            f'- item "Element {i}" [ref=e{i}]' for i in range(400)
+        )
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock()]
+        mock_resp.choices[0].message.content = "Summary with button [ref=e5]"
+
+        with patch("tools.browser_tool.call_llm", return_value=mock_resp):
+            result = _extract_relevant_content(snapshot, "find the button")
+
+        stored_files = list(
+            (hermes_home / "cache" / "web").glob("browser-snapshot-*.txt")
+        )
+        assert len(stored_files) == 1
+        visible_path = f"/root/.hermes/cache/web/{stored_files[0].name}"
+        assert f"saved to: {visible_path}" in result
+        assert str(hermes_home) not in result
 
 
 # ---------------------------------------------------------------------------

@@ -43,6 +43,8 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
+_CACHE_MOUNTS_LABEL_KEY = "hermes-cache-mounts"
+_CACHE_MOUNTS_LABEL_VALUE = "v1"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -1375,6 +1377,8 @@ class DockerEnvironment(BaseEnvironment):
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
             "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
+            "--label",
+            f"{_CACHE_MOUNTS_LABEL_KEY}={_CACHE_MOUNTS_LABEL_VALUE}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -1387,6 +1391,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label,
+            _CACHE_MOUNTS_LABEL_KEY: _CACHE_MOUNTS_LABEL_VALUE,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -1396,10 +1401,10 @@ class DockerEnvironment(BaseEnvironment):
         # restores the documented contract; opt out via
         # ``terminal.docker_persist_across_processes: false``.
         #
-        # Reuse matches on labels only.  The egress posture gets its own label
-        # because env vars, CA mounts, and host mappings are immutable after
-        # container creation — reusing a pre-egress or pre-rotation container
-        # would silently bypass the credential firewall.
+        # Reuse matches on labels only.  Immutable creation-time state gets
+        # its own compatibility label: egress covers proxy env and CA mounts,
+        # while the cache-mount layout prevents an older container without
+        # prepared cache directories from receiving paths it cannot read.
         reused = False
         if persist_across_processes:
             existing = self._find_reusable_container(
@@ -1846,6 +1851,8 @@ class DockerEnvironment(BaseEnvironment):
                 "--filter", "label=hermes-agent=1",
                 "--filter", f"label=hermes-task-id={task_label}",
                 "--filter", f"label=hermes-profile={profile_label}",
+                "--filter",
+                f"label={_CACHE_MOUNTS_LABEL_KEY}={_CACHE_MOUNTS_LABEL_VALUE}",
             ]
             if egress_label != "off":
                 filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])

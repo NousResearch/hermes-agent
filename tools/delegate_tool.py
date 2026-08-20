@@ -1575,6 +1575,52 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+def _resolve_child_reasoning(
+    delegation_cfg: Optional[Dict[str, Any]],
+    parent_reasoning,
+    parent_model: Optional[str],
+    child_model: Optional[str],
+):
+    """Decide which reasoning config a subagent should run with.
+
+    An explicit ``delegation.reasoning_effort`` always wins.  With no explicit
+    setting the parent's config is inherited **only when the child runs the
+    parent's model** — a different model says nothing about whether it supports
+    thinking, and handing ``thinking`` to a model that lacks it is answered with
+    a non-retryable ``HTTP 400 ... does not support thinking`` that kills the
+    entire delegation batch.
+
+    The previous gate skipped the override for an empty string or a missing key
+    and inherited unconditionally, which made the failure mode the default for
+    the common setup: a frontier parent delegating to a cheap local worker.
+    """
+    cfg = delegation_cfg or {}
+    effort = cfg.get("reasoning_effort")
+    # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean False
+    # (``reasoning_effort: false``) to "" and lose the "disabled" intent.
+    if effort or effort is False:
+        try:
+            from hermes_constants import parse_reasoning_effort
+
+            parsed = parse_reasoning_effort(effort)
+        except Exception as exc:
+            logger.debug("Could not load delegation reasoning_effort: %s", exc)
+            parsed = None
+        if parsed is not None:
+            return parsed
+        logger.warning(
+            "Unknown delegation.reasoning_effort %r; not inheriting the parent's "
+            "reasoning config for child model %r",
+            effort,
+            child_model,
+        )
+
+    # ``model=None`` means "run the parent's model", which is safe to inherit.
+    if (child_model or parent_model) == parent_model:
+        return parent_reasoning
+    return {"enabled": False}
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -1819,27 +1865,14 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: delegation override > inherit only on same model
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
-    child_reasoning = parent_reasoning
-    try:
-        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
-        # False (``reasoning_effort: false``) to "" and inherit the parent
-        # instead of disabling thinking for children.
-        delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
-
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-            else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    child_reasoning = _resolve_child_reasoning(
+        delegation_cfg,
+        parent_reasoning,
+        getattr(parent_agent, "model", None),
+        model,
+    )
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level

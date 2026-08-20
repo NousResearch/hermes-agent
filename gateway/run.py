@@ -3798,6 +3798,24 @@ def _format_concise_process_notification(
     return text
 
 
+def _has_api_server_wake_fallback(session_key: str, evt: dict) -> bool:
+    """Is an unresolvable synthetic source recoverable by the caller?
+
+    Mirrors the raw-session-id recovery in ``_process_synthetic_event``: the
+    api_server binds a RAW ``X-Hermes-Session-Id`` as the session key rather
+    than a structured ``agent:main:...`` one, so routing metadata cannot be
+    derived from it — but the caller then wakes that session by self-post
+    instead of dropping the event.
+
+    Used only to pick a log level, so a recoverable delivery is not reported
+    with wording that reads as lost work.
+    """
+    if str((evt or {}).get("origin_session_id") or "").strip():
+        return True
+    sk = str(session_key or "").strip()
+    return bool(sk) and _parse_session_key(sk) is None
+
+
 def _format_gateway_process_notification(evt: dict) -> "str | None":
     """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
     evt_type = evt.get("type", "completion")
@@ -24681,13 +24699,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         chat_type = str(evt.get("chat_type") or derived_chat_type or "").strip().lower()
         chat_id = str(evt.get("chat_id") or derived_chat_id or "").strip()
         if not platform_name or not chat_type or not chat_id:
-            logger.warning(
-                "Synthetic event source unresolvable: "
-                "session_key=%r platform=%r chat_type=%r chat_id=%r "
-                "evt_type=%s",
-                session_key, platform_name, chat_type, chat_id,
-                evt.get("type", "?"),
-            )
+            if _has_api_server_wake_fallback(session_key, evt):
+                # Expected for api_server-bound sessions: the caller recovers the
+                # raw session id and wakes the session by self-post. Warning here
+                # reads as dropped work and has been misdiagnosed as exactly that.
+                logger.debug(
+                    "Synthetic event source not derivable from raw api_server "
+                    "session key %r; caller falls back to a self-post wake "
+                    "(evt_type=%s)",
+                    session_key, evt.get("type", "?"),
+                )
+            else:
+                logger.warning(
+                    "Synthetic event source unresolvable, event will be dropped: "
+                    "session_key=%r platform=%r chat_type=%r chat_id=%r "
+                    "evt_type=%s",
+                    session_key, platform_name, chat_type, chat_id,
+                    evt.get("type", "?"),
+                )
             return None
 
         try:

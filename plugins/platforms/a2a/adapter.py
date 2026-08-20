@@ -338,6 +338,14 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 class A2AAdapter(BasePlatformAdapter):
     """Inbound A2A server adapter."""
 
+    # A2A is request/response — there is no edit API for an already-delivered
+    # reply. Declaring this False makes the gateway skip the stream consumer
+    # for A2A sessions entirely (run.py _build_stream_consumer_config raises
+    # for non-editable platforms), so a reply can never be mangled by
+    # preview/tail-send racing (observed: streamed replies arriving truncated
+    # or empty while the full text had been generated).
+    SUPPORTS_MESSAGE_EDITING = False
+
     def __init__(self, config, **kwargs):
         platform = Platform("a2a")
         super().__init__(config=config, platform=platform)

@@ -804,6 +804,39 @@ class TestZulipStreamingEditContract:
 
         assert getattr(adapter, "SUPPORTS_MESSAGE_EDITING", False) is True
 
+    def test_adapter_declares_long_message_splitting(self):
+        """Cron delivery skips the 4000-char truncate when send() chunks natively."""
+        adapter = _make_adapter()
+
+        assert getattr(adapter, "splits_long_messages", False) is True
+
+    @pytest.mark.asyncio
+    async def test_cron_delivery_does_not_truncate_zulip_payload(self, tmp_path, monkeypatch):
+        from gateway.config import GatewayConfig
+        from gateway.delivery import DeliveryRouter, DeliveryTarget
+        from gateway.platforms.base import SendResult
+
+        monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+        adapter = _make_adapter()
+        sent = []
+
+        async def capture(chat_id, content, metadata=None):
+            sent.append(content)
+            return SendResult(success=True)
+
+        adapter.send = capture
+        router = DeliveryRouter(GatewayConfig(), adapters={Platform("zulip"): adapter})
+        long_content = "x" * 5000
+
+        await router._deliver_to_platform(
+            DeliveryTarget.parse("zulip:42"),
+            long_content,
+            metadata={"job_id": "job1"},
+        )
+
+        assert sent == [long_content]
+        assert "truncated" not in sent[0]
+
     def test_streaming_edit_warning_is_not_logged_on_adapter_startup(self, caplog):
         """Startup should stay quiet until effective Zulip streaming edits a message."""
         caplog.set_level(logging.WARNING, logger="plugins.platforms.zulip.adapter")

@@ -576,6 +576,7 @@ class ZulipAdapter(BasePlatformAdapter):
     """Gateway adapter for Zulip (cloud or self-hosted)."""
 
     SUPPORTS_MESSAGE_EDITING = True
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("zulip"))

@@ -202,9 +202,9 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
         setattr(agent, attr, rendered)
         return rendered
     try:
-        from hermes_cli.plugins import render_system_prompt_sections
+        from hermes_cli.plugins import get_plugin_manager
 
-        rendered = tuple(render_system_prompt_sections(_plugin_session_info(agent)))
+        rendered = tuple(get_plugin_manager().render_system_prompt_sections(_plugin_session_info(agent)))
     except Exception as exc:
         logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
         rendered = ()

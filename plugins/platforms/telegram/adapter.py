@@ -906,6 +906,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        self._STATUS_MESSAGE_IDS_MAX = 2000
         # Last truncated mid-stream preview delivered per (chat_id, message_id).
         # Once an oversized streaming edit saturates at the 4096 preview cap,
         # every subsequent progressive edit truncates to the SAME text; sending
@@ -5468,13 +5469,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id, cached_id, content, finalize=True, metadata=metadata,
             )
             if result.success:
-                if result.message_id:
+                if (
+                    result.message_id
+                    and self._status_message_ids.get(key) == cached_id
+                ):
                     self._status_message_ids[key] = str(result.message_id)
                 return result
             # Edit failed — clear the cached id and fall through to a fresh send.
             self._status_message_ids.pop(key, None)
         result = await self.send(chat_id, content, metadata=metadata)
         if result.success and result.message_id:
+            if len(self._status_message_ids) >= self._STATUS_MESSAGE_IDS_MAX:
+                # Simple FIFO trim: drop the oldest half to bound memory.
+                for stale in list(self._status_message_ids)[
+                    : self._STATUS_MESSAGE_IDS_MAX // 2
+                ]:
+                    self._status_message_ids.pop(stale, None)
             self._status_message_ids[key] = str(result.message_id)
         return result
 

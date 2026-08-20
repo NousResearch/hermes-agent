@@ -2955,7 +2955,10 @@ class SlackAdapter(BasePlatformAdapter):
                 chat_id, cached_id, content, finalize=False, metadata=metadata,
             )
             if result.success:
-                if result.message_id:
+                if (
+                    result.message_id
+                    and self._status_message_ids.get(key) == cached_id
+                ):
                     self._status_message_ids[key] = str(result.message_id)
                 return result
             # Edit failed — clear the cached ts and fall through to a fresh send.

@@ -330,6 +330,30 @@ def _get_search_backend() -> str:
     return _get_capability_backend("search")
 
 
+def _get_search_fallback_backends() -> List[str]:
+    """Return the configured, ordered runtime search fallback chain.
+
+    A scalar is accepted as a convenience, while the documented form is a
+    YAML list. Invalid and duplicate entries are ignored. Provider capability
+    and credential checks remain the dispatcher's responsibility because the
+    plugin registry may not be populated when config is read.
+    """
+    configured = _load_web_config().get("search_fallback_backends", [])
+    if isinstance(configured, str):
+        configured = [configured]
+    if not isinstance(configured, list):
+        return []
+
+    result: List[str] = []
+    for item in configured:
+        if not isinstance(item, str):
+            continue
+        name = item.strip().lower()
+        if name and name not in result:
+            result.append(name)
+    return result
+
+
 def _get_extract_backend() -> str:
     """Determine which backend to use for web_extract specifically.
 
@@ -672,6 +696,32 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
+_RETRYABLE_SEARCH_HTTP_RE = re.compile(r"\bHTTP\s+(402|429|5\d\d)\b", re.IGNORECASE)
+_RETRYABLE_SEARCH_TRANSPORT_RE = re.compile(
+    r"\b(timeout|timed out|connection (?:error|failed|refused|reset)|"
+    r"could not reach|temporarily unavailable|network error)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_retryable_web_search_error(response: Dict[str, Any]) -> bool:
+    """Whether a provider failure is safe to retry on another backend."""
+    if response.get("success") is not False:
+        return False
+    if response.get("retryable") is True:
+        return True
+    status = response.get("status_code")
+    if status in (402, 429) or (
+        isinstance(status, int) and 500 <= status <= 599
+    ):
+        return True
+    error = str(response.get("error") or "")
+    return bool(
+        _RETRYABLE_SEARCH_HTTP_RE.search(error)
+        or _RETRYABLE_SEARCH_TRANSPORT_RE.search(error)
+    )
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -803,6 +853,68 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 provider.name, query, limit,
             )
             response_data = provider.search(query, limit)
+
+            primary_name = provider.name
+            current_name = primary_name
+            attempted = [primary_name]
+            considered = {primary_name}
+            while (
+                not response_data.get("success")
+                and _is_retryable_web_search_error(response_data)
+            ):
+                fallback = None
+                for fallback_name in _get_search_fallback_backends():
+                    if fallback_name in considered:
+                        continue
+                    considered.add(fallback_name)
+                    candidate = _wsp_get_provider(fallback_name)
+                    if candidate is None or not candidate.supports_search():
+                        logger.warning(
+                            "Skipping web search fallback %s: provider is not registered "
+                            "or does not support search",
+                            fallback_name,
+                        )
+                        continue
+                    try:
+                        available = bool(candidate.is_available())
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Skipping web search fallback %s: availability check failed: %s",
+                            fallback_name, exc,
+                        )
+                        continue
+                    if not available:
+                        logger.warning(
+                            "Skipping web search fallback %s: provider is unavailable",
+                            fallback_name,
+                        )
+                        continue
+                    fallback = candidate
+                    break
+
+                if fallback is None:
+                    break
+
+                previous_error = str(response_data.get("error") or "search failed")
+                logger.warning(
+                    "Web search via %s failed with a retryable error (%s); "
+                    "falling back to %s",
+                    current_name, previous_error, fallback.name,
+                )
+                current_name = fallback.name
+                attempted.append(fallback.name)
+                response_data = fallback.search(query, limit)
+                if response_data.get("success"):
+                    response_data.setdefault("meta", {}).update({
+                        "provider": fallback.name,
+                        "fallback_from": primary_name,
+                    })
+
+            if not response_data.get("success") and len(attempted) > 1:
+                response_data.setdefault("meta", {}).update({
+                    "providers_attempted": attempted,
+                    "fallback_from": primary_name,
+                })
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)

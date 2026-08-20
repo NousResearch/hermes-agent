@@ -115,11 +115,114 @@ class TestDefaultConfig:
         web = DEFAULT_CONFIG["web"]
         assert "backend" in web
         assert "search_backend" in web
+        assert "search_fallback_backends" in web
         assert "extract_backend" in web
         # All empty string by default (no override)
         assert web["backend"] == ""
         assert web["search_backend"] == ""
+        assert web["search_fallback_backends"] == []
         assert web["extract_backend"] == ""
+
+
+class TestRuntimeSearchFallback:
+    class FakeProvider:
+        def __init__(self, name, response, *, available=True):
+            self.name = name
+            self.response = response
+            self.available = available
+            self.calls = []
+
+        def supports_search(self):
+            return True
+
+        def is_available(self):
+            return self.available
+
+        def search(self, query, limit=5):
+            self.calls.append((query, limit))
+            return self.response
+
+    def _run(self, monkeypatch, primary_response, fallback_response, *, config=None):
+        from tools import web_tools
+
+        primary = self.FakeProvider("brave-free", primary_response)
+        fallback = self.FakeProvider("tavily", fallback_response)
+        providers = {primary.name: primary, fallback.name: fallback}
+
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_get_search_backend", lambda: primary.name)
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: config or {"search_fallback_backends": [fallback.name]},
+        )
+        import agent.web_search_registry as registry
+        monkeypatch.setattr(registry, "get_provider", providers.get)
+        monkeypatch.setattr(registry, "get_active_search_provider", lambda: primary)
+
+        result = json.loads(web_tools.web_search_tool("query", limit=3))
+        return result, primary, fallback
+
+    @pytest.mark.parametrize("error", [
+        "Brave Search returned HTTP 402",
+        "provider returned HTTP 429",
+        "provider returned HTTP 503",
+        "Could not reach provider: connection reset",
+        "request timed out",
+    ])
+    def test_retryable_failure_uses_configured_fallback(self, monkeypatch, error):
+        result, primary, fallback = self._run(
+            monkeypatch,
+            {"success": False, "error": error},
+            {"success": True, "data": {"web": []}},
+        )
+
+        assert result["success"] is True
+        assert result["meta"] == {
+            "provider": "tavily",
+            "fallback_from": "brave-free",
+        }
+        assert primary.calls == [("query", 3)]
+        assert fallback.calls == [("query", 3)]
+
+    def test_non_retryable_failure_does_not_fallback(self, monkeypatch):
+        result, primary, fallback = self._run(
+            monkeypatch,
+            {"success": False, "error": "invalid query"},
+            {"success": True, "data": {"web": []}},
+        )
+
+        assert result == {"success": False, "error": "invalid query"}
+        assert primary.calls == [("query", 3)]
+        assert fallback.calls == []
+
+    def test_fallback_is_disabled_by_default(self, monkeypatch):
+        result, _, fallback = self._run(
+            monkeypatch,
+            {"success": False, "error": "Brave Search returned HTTP 402"},
+            {"success": True, "data": {"web": []}},
+            config={"search_fallback_backends": []},
+        )
+
+        assert result["success"] is False
+        assert fallback.calls == []
+
+    def test_scalar_and_duplicate_fallback_config_is_normalized(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {"search_fallback_backends": [" Tavily ", "tavily", 42, ""]},
+        )
+        assert web_tools._get_search_fallback_backends() == ["tavily"]
+
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {"search_fallback_backends": "Tavily"},
+        )
+        assert web_tools._get_search_fallback_backends() == ["tavily"]
 
 
 # ---------------------------------------------------------------------------
@@ -475,4 +578,3 @@ class TestDisabledPluginDiagnostic:
             assert "No web search provider configured" not in err
         finally:
             restore()
-

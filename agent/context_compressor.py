@@ -84,6 +84,11 @@ def _is_hygiene_idle_timeout_error(error: object) -> bool:
     return any(marker in text for marker in _HYGIENE_IDLE_TIMEOUT_MARKERS)
 
 
+def _is_transient_summary_upstream_status(status: Any) -> bool:
+    """Return True for temporary upstream statuses that must preserve history."""
+    return isinstance(status, int) and status in {408, 429, 500, 502, 503, 504}
+
+
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
 
@@ -4806,6 +4811,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # back to the main model instead of entering a 60-second cooldown.
             # See issue #18458.
             _is_streaming_closed = _is_connection_error(e)
+            _is_transient_upstream = _is_transient_summary_upstream_status(_status)
             # Authentication, permission, and exhausted-quota failures are NOT
             # transient or fixable by retrying the same request. Flag them so
             # compress() preserves the session instead of rotating into a
@@ -4911,7 +4917,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # placeholder marker — retrying once the network recovers is
             # strictly better than dropping context (#29559, #25585). Mirrors
             # the auth-failure carve-out; independent of abort_on_summary_failure.
-            if _is_streaming_closed:
+            if _is_streaming_closed or _is_transient_upstream:
                 self._last_summary_network_failure = True
             logger.warning(
                 "Failed to generate context summary: %s. "

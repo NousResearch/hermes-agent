@@ -39,6 +39,8 @@ import {
   createVersionResolver,
   buildLocationPayload,
   buildTextSendPayload,
+  buildGroupRoster,
+  resolveAtNameMentions,
   createBoundedMessageStore,
   extractBridgeEvent,
   inboundReadReceiptKeys,
@@ -281,6 +283,26 @@ const MAX_QUEUE_SIZE = 100;
 const recentlySentIds = createOutboundIdTracker(512);
 const recentlyProcessedPollUpdates = createOutboundIdTracker(512);
 const messageStore = createBoundedMessageStore(512);
+// jid -> WhatsApp display name (pushName), fed from inbound messages so the
+// group roster can show human names instead of bare numbers.
+const nameCache = new Map();
+// chatId -> { roster, ts } for @Name mention resolution; refreshed on demand.
+const rosterCache = new Map();
+const ROSTER_TTL_MS = 5 * 60 * 1000;
+
+async function getGroupRoster(chatId) {
+  if (!chatId.endsWith('@g.us') || !sock) return [];
+  const cached = rosterCache.get(chatId);
+  if (cached && Date.now() - cached.ts < ROSTER_TTL_MS) return cached.roster;
+  try {
+    const metadata = await sock.groupMetadata(chatId);
+    const roster = buildGroupRoster(metadata.participants, nameCache);
+    rosterCache.set(chatId, { roster, ts: Date.now() });
+    return roster;
+  } catch {
+    return cached ? cached.roster : [];
+  }
+}
 
 function normalizePollUpdateOptions(aggregation, pollUpdateMessage, meId) {
   const selected = [];
@@ -546,6 +568,11 @@ async function startSocket() {
       const senderId = msg.key.participant || chatId;
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
+      // Feed the name cache from pushName so the group roster can show
+      // human names. Skip our own messages (no useful display name).
+      if (msg.pushName && !msg.key.fromMe) {
+        nameCache.set(normalizeWhatsAppId(senderId), msg.pushName);
+      }
       emitDebugEvent({
         stage: 'upsert',
         type,
@@ -825,12 +852,21 @@ app.post('/send', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, message, replyTo } = req.body;
+  const { chatId, message, replyTo, mentions } = req.body;
   if (!chatId || !message) {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
 
   try {
+    // Resolve "@Name" tags in the text against the group roster when the
+    // caller didn't pass explicit mentions, so the model can tag a member by
+    // display name without knowing their JID.
+    let resolvedMentions = Array.isArray(mentions) ? mentions : [];
+    if (!resolvedMentions.length && chatId.endsWith('@g.us')) {
+      const roster = await getGroupRoster(chatId);
+      resolvedMentions = resolveAtNameMentions(message, roster);
+    }
+
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
@@ -838,6 +874,7 @@ app.post('/send', async (req, res) => {
         chatId,
         replyTo: i === 0 ? replyTo : undefined,
         messageStore,
+        mentions: resolvedMentions,
       });
       const sent = await sendWithTimeout(chatId, payload, options);
       trackSentMessageId(sent);
@@ -1089,7 +1126,7 @@ app.get('/chat/:id', async (req, res) => {
       return res.json({
         name: metadata.subject,
         isGroup: true,
-        participants: metadata.participants.map(p => p.id),
+        participants: buildGroupRoster(metadata.participants, nameCache),
       });
     } catch {
       // Fall through to default

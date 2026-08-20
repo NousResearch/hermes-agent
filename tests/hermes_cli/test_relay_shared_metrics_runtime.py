@@ -947,13 +947,16 @@ def test_execution_adapters_do_not_create_relay_host_without_a_consumer(
 
 
 
-def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, caplog):
+def test_core_runtime_is_quietly_fail_open_without_a_published_binding(
+    monkeypatch,
+    caplog,
+):
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
 
     def missing_relay(name: str):
         assert name == "nemo_relay"
-        raise ModuleNotFoundError(name)
+        raise ModuleNotFoundError(f"No module named '{name}'", name=name)
 
     monkeypatch.setattr(relay_runtime.importlib, "import_module", missing_relay)
 
@@ -968,6 +971,35 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
         args={"command": "true"},
     ) == {"command": "true"}
     assert not relay_runtime.emit_mark("hermes.probe", session_id="s1")
+    assert "Hermes Relay runtime initialization failed" not in caplog.text
+    relay_runtime._reset_for_tests()
+
+
+def test_core_runtime_warns_when_relay_has_a_missing_transitive_dependency(
+    monkeypatch,
+    caplog,
+):
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+
+    def missing_transitive_dependency(name: str):
+        assert name == "nemo_relay"
+        dependency = "nemo_relay_native"
+        raise ModuleNotFoundError(
+            f"No module named '{dependency}'",
+            name=dependency,
+        )
+
+    monkeypatch.setattr(
+        relay_runtime.importlib,
+        "import_module",
+        missing_transitive_dependency,
+    )
+
+    assert relay_runtime.get_runtime() is None
+    host = relay_runtime.get_host()
+    assert isinstance(host, relay_runtime.NoopRelayRuntime)
+    assert "nemo_relay_native" in host.reason
     assert "Hermes Relay runtime initialization failed" in caplog.text
     relay_runtime._reset_for_tests()
 

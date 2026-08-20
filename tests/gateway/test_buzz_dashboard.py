@@ -50,7 +50,7 @@ def test_stock_dashboard_discovers_serves_and_safely_mounts_bundled_buzz(monkeyp
         "icon": "MessageSquare",
         "version": "1.0.0",
         "tab": {"path": "/buzz", "hidden": True},
-        "slots": ["config:top"],
+        "slots": ["config:section:buzz"],
         "entry": "dist/index.js",
         "css": "dist/style.css",
         "api": "plugin_api.py",
@@ -110,7 +110,7 @@ def test_dashboard_bundle_uses_policy_api_profile_and_stale_response_guards():
     assert "const readyPair" in source
     assert "loading || saving || !ready || locked" in source
     assert "useEffect" in source and "[profile]" in source
-    assert 'registry.registerSlot(PLUGIN_NAME, "config:top", BuzzPolicyPanel)' in source
+    assert 'registry.registerSlot(PLUGIN_NAME, "config:section:buzz", BuzzPolicyPanel)' in source
     assert "registry.register(PLUGIN_NAME" not in source
 
 

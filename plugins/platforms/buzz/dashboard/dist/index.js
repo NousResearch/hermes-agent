@@ -440,6 +440,6 @@
     );
   }
 
-  registry.registerSlot(PLUGIN_NAME, "config:top", BuzzPolicyPanel);
+  registry.registerSlot(PLUGIN_NAME, "config:section:buzz", BuzzPolicyPanel);
   return helpers;
 });

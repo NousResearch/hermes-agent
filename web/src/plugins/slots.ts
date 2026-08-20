@@ -51,6 +51,9 @@ import React, { Fragment, useEffect, useState } from "react";
  *  - `plugins:bottom`    — bottom of /plugins page
  *  - `config:top`       — top of /config page
  *  - `config:bottom`    — bottom of /config page
+ *  - `config:section:*` — plugin-owned entry in Config's Sections list;
+ *                         the suffix is the section key (for example,
+ *                         `config:section:buzz`)
  *  - `env:top`          — top of /env (Keys) page
  *  - `env:bottom`       — bottom of /env (Keys) page
  *  - `docs:top`         — top of /docs page (above the docs iframe)
@@ -138,6 +141,28 @@ export function registerSlot(
  *  registry state. */
 export function getSlotEntries(slot: string): SlotEntry[] {
   return (_slotRegistry.get(slot) ?? []).slice();
+}
+
+const CONFIG_SECTION_PREFIX = "config:section:";
+
+/** Config categories contributed by currently registered plugin slots. */
+export function getConfigSectionNames(): string[] {
+  return [..._slotRegistry.keys()]
+    .filter((slot) => slot.startsWith(CONFIG_SECTION_PREFIX))
+    .map((slot) => slot.slice(CONFIG_SECTION_PREFIX.length))
+    .filter(Boolean)
+    .sort();
+}
+
+/** Reactively track plugin-owned Config sections as plugins load/unload. */
+export function useConfigSectionNames(): string[] {
+  const [sections, setSections] = useState<string[]>(getConfigSectionNames);
+  useEffect(() => {
+    const refresh = () => setSections(getConfigSectionNames());
+    refresh();
+    return onSlotRegistered(refresh);
+  }, []);
+  return sections;
 }
 
 /** Subscribe to registry changes. Returns an unsubscribe function. */

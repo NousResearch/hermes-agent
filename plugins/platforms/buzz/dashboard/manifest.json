@@ -9,7 +9,7 @@
     "hidden": true
   },
   "slots": [
-    "config:top"
+    "config:section:buzz"
   ],
   "entry": "dist/index.js",
   "css": "dist/style.css",

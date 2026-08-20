@@ -625,6 +625,7 @@ window.__HERMES_PLUGINS__.registerSlot("my-plugin", "header-left", MyCrest);
 | `cron:top` / `cron:bottom` | Top / bottom of the `/cron` page. |
 | `skills:top` / `skills:bottom` | Top / bottom of the `/skills` page. |
 | `config:top` / `config:bottom` | Top / bottom of the `/config` page. |
+| `config:section:<key>` | A plugin-owned entry in Config's Sections list. Selecting it renders that slot in the normal Config content pane; for example, `config:section:acme`. |
 | `env:top` / `env:bottom` | Top / bottom of the `/env` (Keys) page. |
 | `docs:top` / `docs:bottom` | Top (above the iframe) / bottom of `/docs`. |
 | `chat:top` / `chat:bottom` | Top / bottom of `/chat` (only active when embedded chat is enabled). |

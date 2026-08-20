@@ -1,0 +1,75 @@
+# Hermes Agent
+
+> Open-source autonomous AI agent by Nous Research with a built-in learning loop, 20+ messaging platforms, and skills that improve through use.
+
+## Getting Started
+
+- [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart): First conversation with Hermes covering installation, key features, and configuration fundamentals.
+- [Installation](https://hermes-agent.nousresearch.com/docs/getting-started/installation): Install Hermes on Linux, macOS, WSL2, Android Termux, or native Windows with a one-line command.
+- [Desktop App](https://hermes-agent.nousresearch.com/desktop): Native Electron application for macOS, Linux, and Windows with one-click install and in-app self-update.
+- [Learning Path](https://hermes-agent.nousresearch.com/docs/getting-started/learning-path): Recommended reading order for beginners through advanced users of Hermes Agent.
+
+## Core Docs
+
+- [CLI Interface](https://hermes-agent.nousresearch.com/docs/user-guide/cli): Complete CLI reference for chat, sessions, configuration, profiles, and system management commands.
+- [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration): All config.yaml settings covering providers, models, toolsets, display, security, and automation.
+- [Configuring Models](https://hermes-agent.nousresearch.com/docs/user-guide/configuring-models): Set up and switch between LLM providers including OpenRouter, Nous Portal, OpenAI, and local models.
+- [Profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles): Run multiple isolated agent configurations with separate configs, skills, memory, and API keys.
+- [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security): Dangerous command approval modes, container isolation, environment passthrough, and platform allowlists.
+- [FAQ & Troubleshooting](https://hermes-agent.nousresearch.com/docs/reference/faq): Common solutions for installation, provider setup, configuration issues, and runtime errors.
+
+## Features
+
+- [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools): 60+ built-in tools across web search, browser automation, terminal, file editing, delegation, and more.
+- [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills): On-demand knowledge documents loaded per-task, compatible with agentskills.io open standard.
+- [Scheduled Tasks (Cron)](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron): Schedule one-shot and recurring tasks with natural language, delivered to any messaging platform.
+- [Subagent Delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation): Spawn isolated subagents for parallel workstreams with configurable tool access and role assignments.
+- [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp): Connect Hermes to any MCP server for extended tool capabilities with fine-grained exposure filtering.
+- [Voice Mode](https://hermes-agent.nousresearch.com/docs/user-guide/features/voice-mode): Full voice interaction across CLI and messaging platforms including Discord voice channel conversations.
+- [Persistent Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory): Cross-session memory with FTS5 search, Honcho dialectic modeling, and automatic consolidation.
+- [Kanban Orchestration](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban): Multi-agent board for decomposing complex work across specialist profiles with dependency management.
+
+## Messaging & Integrations
+
+- [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging): Single background process connecting Hermes to 20+ platforms with session handling and cron delivery.
+- [Nous Portal](https://hermes-agent.nousresearch.com/docs/integrations/nous-portal): Unified subscription with 300+ models plus web search, image gen, TTS, and browser under one OAuth login.
+
+## Guides & Developer Docs
+
+- [Use MCP with Hermes](https://hermes-agent.nousresearch.com/docs/guides/use-mcp-with-hermes): Practical walkthrough for connecting Hermes to MCP servers with real usage patterns and safety tips.
+- [Use Voice Mode with Hermes](https://hermes-agent.nousresearch.com/docs/guides/use-voice-mode-with-hermes): Hands-on guide for setting up and using voice interaction across CLI, Telegram, and Discord.
+- [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture): System overview covering directory structure, data flows for CLI, gateway, and cron sessions.
+- [CLI Commands Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands): Complete reference for all hermes commands, global options, and subcommand syntax.
+
+## Blog & Releases
+
+- [v0.16.0 Release — The Surface Release](https://github.com/NousResearch/hermes-agent/releases/tag/v0.16.0): Hermes Desktop App, web dashboard admin panel, remote gateway, fuzzy model picker, and /undo command.
+- [v0.15.0 Release — The Velocity Release](https://github.com/NousResearch/hermes-agent/releases/tag/v0.15.0): Major run_agent.py refactor, multi-agent kanban platform, session_search rebuilt at 4500x speed, ntfy platform.
+- [v0.14.0 Release — The Foundation Release](https://github.com/NousResearch/hermes-agent/releases/tag/v0.14.0): Plugin system, Hermes TUI, kanban orchestration, MCP protocol, and 6 terminal backends.
+- [Nous Research Announcements](https://nousresearch.com/): Official news and product updates from Nous Research.
+
+## Videos & Demos
+
+- [Hermes Agent Overview — Self-Evolving AI Agent](https://www.youtube.com/watch?v=cu2fgknmemA): Full walkthrough of Hermes Agent capabilities including skill creation, memory, and visual explanations.
+- [Hermes Desktop App Demo](https://www.youtube.com/watch?v=YBp_PXBbe80): Showcase of the new Hermes Desktop App with multi-agent management, HyperFrames, and cross-platform support.
+- [Hermes Agent Full Tutorial](https://www.youtube.com/watch?v=4ftONmdO9yo): Comprehensive beginner setup guide covering VPS deployment, Telegram integration, and research automation.
+- [The People Who Train AI Built Their Own Agent](https://www.youtube.com/watch?v=12Cffcjha-w): Documentary-style overview of Hermes Agent by Nous Research and its self-improving architecture.
+
+## Key Facts
+
+- Built by Nous Research, the lab behind the Hermes, Nomos, and Psyche model families
+- Runs on 6 terminal backends: local, Docker, SSH, Daytona, Singularity, and Modal (serverless)
+- Supports 20+ messaging platforms including Telegram, Discord, Slack, WhatsApp, Signal, and Email
+- Ships with 60+ built-in tools covering web, terminal, files, browser, media, and automation
+- Features built-in cron scheduler, subagent delegation, and multi-agent Kanban orchestration
+- Compatible with the agentskills.io open standard and community Skills Hub
+- Licensed under MIT License
+- Industry: AI Infrastructure / Developer Tools
+
+## Contact
+
+- Website: https://hermes-agent.nousresearch.com
+- GitHub: https://github.com/NousResearch/hermes-agent
+- Discord: https://hermes-agent.nousresearch.com/discord
+- Nous Research: https://nousresearch.com
+- Portal: https://portal.nousresearch.com

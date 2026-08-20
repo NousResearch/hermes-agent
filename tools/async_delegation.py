@@ -140,9 +140,30 @@ def _connect() -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state import apply_wal_with_fallback
-
-    apply_wal_with_fallback(conn, db_label="state.db (async_delegation)")
+    # SessionDB owns initial WAL activation.  A short-lived ledger connection
+    # must only verify that ownership state, never re-run journal_mode=WAL
+    # against the gateway's live WAL/SHM files.  Activating WAL here races
+    # the gateway's live SessionDB connection (a PRAGMA journal_mode flip
+    # while another connection holds the WAL state corrupts the database
+    # image — observed 2026-08-16: delegate_task persisted with a fresh
+    # connection, the flip landed mid-checkpoint, and state.db ended up with
+    # "database disk image is malformed" in ordinary B-tree indexes).
+    row = conn.execute("PRAGMA journal_mode").fetchone()
+    mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
+    if mode != "wal":
+        # Do NOT flip journal mode here.  The gateway's SessionDB already
+        # owns WAL activation; a ledger writer must simply fail fast if the
+        # database isn't in the expected mode rather than mutate it.
+        logger.warning(
+            "state.db (async_delegation) journal_mode=%s, expected wal; "
+            "skipping WAL activation (SessionDB owns it)",
+            mode,
+        )
+        conn.close()
+        raise sqlite3.OperationalError(
+            f"state.db journal_mode is {mode!r}, expected 'wal' "
+            "(SessionDB owns WAL activation; refusing to flip it)"
+        )
     conn.execute(
         """CREATE TABLE IF NOT EXISTS async_delegations (
             delegation_id TEXT PRIMARY KEY,

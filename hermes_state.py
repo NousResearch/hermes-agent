@@ -4253,6 +4253,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "the full offline repair path (repair_state_db_schema)."
             )
             return False
+        # Also rebuild ordinary B-tree indexes: a write can surface through
+        # the FTS sync triggers while the actual damage is in a regular index
+        # (e.g. idx_sessions_session_key / idx_sessions_gateway_peer) —
+        # observed when routing saves kept failing with "database disk image
+        # is malformed" right after a successful in-place FTS rebuild, because
+        # the one-shot guard already prevented a second attempt. REINDEX
+        # rewrites every ordinary index from its canonical table rows (mirrors
+        # repair_state_db_schema's Strategy 0.5), so a single self-heal pass
+        # now covers both corruption classes.
+        try:
+            with self._lock:
+                self._conn.execute("REINDEX")
+                self._conn.commit()
+            logger.warning(
+                "state.db ordinary B-tree indexes rebuilt via REINDEX."
+            )
+        except Exception as reindex_exc:
+            logger.error(
+                "In-place REINDEX after FTS rebuild failed (%s); the "
+                "database needs the full offline repair path "
+                "(repair_state_db_schema).",
+                reindex_exc,
+            )
+            return False
         logger.warning(
             "state.db FTS indexes rebuilt in place (%d); retrying the failed write.",
             rebuilt,

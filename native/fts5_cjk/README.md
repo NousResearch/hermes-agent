@@ -8,8 +8,9 @@ Build & install to `~/.hermes/lib/`:
 
     ./build.sh
 
-Uses the system `sqlite3ext.h` when available, else the vendored copy in
-`vendor/` — no libsqlite3-dev required.
+Uses the vendored public-domain SQLite extension headers in `vendor/`, so no
+libsqlite3-dev package is required and SDK headers that disable loadable
+extensions cannot break the build.
 
 Once the extension is installed, the next `SessionDB` open creates the
 `messages_fts_cjk` index (external-content, tool rows excluded — same v23

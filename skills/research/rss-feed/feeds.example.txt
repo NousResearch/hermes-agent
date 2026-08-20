@@ -1,0 +1,12 @@
+# Example feeds file for the rss-feed skill.
+# One URL per line. Lines starting with `#` are comments.
+# Blank lines are ignored.
+
+# Hacker News front page
+https://hnrss.org/frontpage
+
+# Anthropic news
+https://www.anthropic.com/news/rss.xml
+
+# LWN headlines
+https://lwn.net/headlines/rss

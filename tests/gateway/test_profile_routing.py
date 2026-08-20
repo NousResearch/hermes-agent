@@ -1,5 +1,7 @@
 """Tests for gateway/profile_routing.py — profile-based routing."""
 
+import logging
+
 import pytest
 from gateway.profile_routing import (
     ProfileRoute,
@@ -50,6 +52,138 @@ class TestParseProfileRoutes:
         assert parse_profile_routes(None) == []
         assert parse_profile_routes([]) == []
 
+
+class TestNumericRouteIds:
+    """Unquoted numeric IDs in YAML parse as int; SessionSource fields are str.
+
+    parse_profile_routes must coerce them so the route can actually match
+    (previously an int discriminator compared int != str and silently never
+    matched, falling through to the default profile).
+    """
+
+    def test_numeric_ids_are_coerced_to_str(self):
+        # Simulates `guild_id: 123456789012345678` in config.yaml
+        routes = parse_profile_routes([
+            {
+                "name": "numeric",
+                "platform": "discord",
+                "profile": "server-profile",
+                "guild_id": 123456789012345678,
+                "chat_id": 111222333,
+                "thread_id": 444555666,
+            },
+        ])
+        assert len(routes) == 1
+        r = routes[0]
+        assert r.guild_id == "123456789012345678"
+        assert r.chat_id == "111222333"
+        assert r.thread_id == "444555666"
+
+    def test_numeric_route_matches_str_source(self):
+        routes = parse_profile_routes([
+            {
+                "name": "numeric",
+                "platform": "discord",
+                "profile": "server-profile",
+                "guild_id": 123456789012345678,
+            },
+        ])
+        assert match_profile_route(
+            routes, "discord", guild_id="123456789012345678"
+        ) is not None
+
+    def test_non_string_id_logs_warning(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="gateway.profile_routing"):
+            parse_profile_routes([
+                {
+                    "name": "numeric",
+                    "platform": "discord",
+                    "profile": "server-profile",
+                    "guild_id": 123456789012345678,
+                },
+            ])
+        assert any(
+            "not a string" in rec.message and "guild_id" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_string_ids_unchanged(self):
+        routes = parse_profile_routes([
+            {
+                "name": "quoted",
+                "platform": "discord",
+                "profile": "server-profile",
+                "guild_id": "123",
+                "chat_id": "456",
+            },
+        ])
+        assert routes[0].guild_id == "123"
+        assert routes[0].chat_id == "456"
+
+    def test_float_id_warns_and_never_matches(self, caplog):
+        """A YAML float (e.g. `guild_id: 123.0`) must not be silently
+        stringified: str(123.0) == "123.0" never equals the str source
+        "123", recreating the silent-no-match this coercion exists to fix.
+        The value stays a string (so the route is never unconstrained) but
+        the warning says outright it can never match."""
+        with caplog.at_level(logging.WARNING, logger="gateway.profile_routing"):
+            routes = parse_profile_routes([
+                {
+                    "name": "floaty",
+                    "platform": "discord",
+                    "profile": "server-profile",
+                    "guild_id": 123.0,
+                },
+            ])
+        r = routes[0]
+        assert r.guild_id == "123.0"  # kept as str, never None
+        # The float stringification does NOT match the int-coerced str form.
+        assert match_profile_route(routes, "discord", guild_id="123") is None
+        assert any(
+            "can never match" in rec.message and "guild_id" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_bool_id_warns_and_never_matches(self, caplog):
+        """bool is an int subclass in Python, so the bool branch must be
+        checked BEFORE int — `guild_id: true` would otherwise be coerced
+        like a numeric ID. A boolean can never name a route; warn loudly
+        and keep it a string (never None/unconstrained)."""
+        with caplog.at_level(logging.WARNING, logger="gateway.profile_routing"):
+            routes = parse_profile_routes([
+                {
+                    "name": "booly",
+                    "platform": "discord",
+                    "profile": "server-profile",
+                    "guild_id": True,
+                },
+            ])
+        r = routes[0]
+        assert r.guild_id == "True"  # kept as str, never None
+        assert match_profile_route(routes, "discord", guild_id="true") is None
+        assert any(
+            "boolean" in rec.message and "guild_id" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_non_string_ids_never_become_none(self):
+        """None would make the discriminator unconstrained (matches() uses
+        truthiness) and turn the route into an accidental wildcard — the
+        coercion contract is: every non-None input yields a str."""
+        routes = parse_profile_routes([
+            {
+                "name": "mixed",
+                "platform": "discord",
+                "profile": "server-profile",
+                "guild_id": 123.0,
+                "chat_id": True,
+                "thread_id": 456,
+            },
+        ])
+        r = routes[0]
+        assert isinstance(r.guild_id, str)
+        assert isinstance(r.chat_id, str)
+        assert isinstance(r.thread_id, str)
 
 class TestMatchProfileRoute:
 

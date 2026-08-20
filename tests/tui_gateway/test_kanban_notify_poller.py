@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli import kanban_db as kb
+from gateway.kanban_notifications import ACTIONABLE_TEXT_LIMIT
 from tui_gateway.server import (
     _collect_kanban_notifications,
     _format_kanban_event_text,
@@ -249,6 +250,26 @@ class TestFormatKanbanEventText:
         assert "needs creds" in text
         assert "[main]" in text
         assert "@worker" in text
+
+    def test_blocked_preserves_full_actionable_reason(self):
+        reason = "approve " + ("reviewed-stage " * 20) + "REPLY_MARKER_AT_THE_END"
+        ev = SimpleNamespace(kind="blocked", payload={"reason": reason})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert text is not None
+        assert reason in text
+        assert text.endswith("REPLY_MARKER_AT_THE_END")
+
+    def test_blocked_bounds_reason_without_losing_trailing_action(self):
+        reason = "OPENING_CONTEXT " + ("middle " * 300) + "REPLY_MARKER_AT_THE_END"
+        ev = SimpleNamespace(kind="blocked", payload={"reason": reason})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert text is not None
+        rendered_reason = text.split(" blocked: ", 1)[1]
+        assert len(rendered_reason) == ACTIONABLE_TEXT_LIMIT
+        assert rendered_reason.startswith("OPENING_CONTEXT")
+        assert "[middle truncated]" in rendered_reason
+        assert rendered_reason.endswith("REPLY_MARKER_AT_THE_END")
+        assert reason not in text
 
     def test_completed_prefers_payload_summary(self):
         ev = SimpleNamespace(kind="completed", payload={"summary": "first line\nsecond"})

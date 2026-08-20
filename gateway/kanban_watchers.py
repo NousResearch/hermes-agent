@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
+from gateway.kanban_notifications import bound_actionable_text
 
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
@@ -558,7 +559,7 @@ class GatewayKanbanWatchersMixin:
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
+                                reason = f": {bound_actionable_text(ev.payload['reason'])}"
                             msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""
@@ -608,7 +609,7 @@ class GatewayKanbanWatchersMixin:
                             recurrences = None
                             if ev.payload:
                                 if ev.payload.get("reason"):
-                                    reason = f": {str(ev.payload['reason'])[:160]}"
+                                    reason = f": {bound_actionable_text(ev.payload['reason'])}"
                                 recurrences = ev.payload.get("recurrences")
                             rc = f" (blocked {recurrences}x for the same cause)" if recurrences else ""
                             msg = (

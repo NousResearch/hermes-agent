@@ -23,6 +23,7 @@ from agent.secret_scope import (
     reset_secret_scope,
     set_secret_scope,
 )
+from gateway.kanban_notifications import bound_actionable_text
 from hermes_constants import (
     DEFAULT_INDICATOR_STYLE,
     INDICATOR_STYLES,
@@ -9936,7 +9937,7 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
             handoff = f"\n{lines[0][:160]}" if lines else ""
         return f"✔ {board_tag}{tag}Kanban {task_id} done — {title}{handoff}"
     if kind == "blocked":
-        reason = f": {str(payload.get('reason'))[:160]}" if payload.get("reason") else ""
+        reason = f": {bound_actionable_text(payload.get('reason'))}" if payload.get("reason") else ""
         return f"⏸ {board_tag}{tag}Kanban {task_id} blocked{reason}"
     if kind == "gave_up":
         err = f"\n{str(payload.get('error'))[:200]}" if payload.get("error") else ""

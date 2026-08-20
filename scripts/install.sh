@@ -618,18 +618,33 @@ install_uv() {
 check_python() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Checking Termux Python..."
-        if command -v python >/dev/null 2>&1; then
-            PYTHON_PATH="$(command -v python)"
-            if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-                PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-                log_success "Python found: $PYTHON_FOUND_VERSION"
-                return 0
+        # Hermes currently declares requires-python >=3.11,<3.14.  Termux can
+        # expose a newer default `python` before dependencies have compatible
+        # wheels, so do not accept the default interpreter until the upper bound
+        # is verified. Prefer the project's pinned minor when present, then
+        # other explicit compatible interpreters.
+        for python_cmd in python3.11 python3.12 python3.13 python; do
+            if command -v "$python_cmd" >/dev/null 2>&1; then
+                local candidate_path
+                candidate_path="$(command -v "$python_cmd")"
+                if "$candidate_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                    PYTHON_PATH="$candidate_path"
+                    PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+                    log_success "Python found: $PYTHON_FOUND_VERSION"
+                    return 0
+                fi
             fi
-        fi
+        done
 
         log_info "Installing Python via pkg..."
         pkg install -y python >/dev/null
         PYTHON_PATH="$(command -v python)"
+        if ! "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+            PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null || true)"
+            log_error "Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+            log_info "Install a compatible Termux Python (for example python3.11) and re-run this script"
+            exit 1
+        fi
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
         return 0

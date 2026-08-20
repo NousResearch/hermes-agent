@@ -3042,6 +3042,17 @@ class ContextCompressor(ContextEngine):
         self._last_aux_call_provider: str = ""
         self._last_aux_call_model: str = ""
         self._last_aux_call_base_url: str = ""
+        # The CONFIG-layer auxiliary identity (provider/model/base_url as
+        # declared under auxiliary.compression), captured per attempt. Used
+        # only when no physical request was dispatched (e.g. an explicit
+        # provider whose API key is missing fails before the client is
+        # built) to distinguish "configured but pre-dispatch failure" from
+        # "auxiliary.compression not set at all" — the latter is the only
+        # case where the diagnostic may fall back to the main-model
+        # identity (#72636).
+        self._last_aux_config_provider: str = ""
+        self._last_aux_config_model: str = ""
+        self._last_aux_config_base_url: str = ""
         # Per-attempt failure classification ("auth" | "network" | "other" |
         # None). Unlike _last_summary_auth_failure / _last_summary_network_failure,
         # which are intentionally sticky across compress() calls to preserve
@@ -4677,10 +4688,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             _aux_provider = ""
             _aux_model = self.summary_model or ""
             _aux_context = None
+            _resolved_base = None
             try:
                 from agent.auxiliary_client import _resolve_task_provider_model
 
-                _resolved_provider, _resolved_model, _, _, _ = (
+                _resolved_provider, _resolved_model, _resolved_base, _, _ = (
                     _resolve_task_provider_model(
                         "compression",
                         model=(self.summary_model or ""),
@@ -4701,6 +4713,28 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._last_aux_call_provider = ""
             self._last_aux_call_model = ""
             self._last_aux_call_base_url = ""
+            # Config-layer identity: what auxiliary.compression is DECLARED to
+            # use, captured before dispatch. Populated only when an explicit
+            # provider is configured — when the task is unset the resolution
+            # returns "auto" and the summary call inherits the main-model
+            # identity. Used when no physical request was dispatched (e.g. the
+            # explicit provider's API key is missing) so the abort diagnostic
+            # reports the configured auxiliary identity as a pre-dispatch
+            # failure instead of substituting the main endpoint (#72636).
+            self._last_aux_config_provider = ""
+            self._last_aux_config_model = ""
+            self._last_aux_config_base_url = ""
+            if _aux_provider not in ("", "auto", None):
+                _cfg_base = str(_resolved_base or "")
+                if _cfg_base:
+                    try:
+                        from agent.auxiliary_client import _extract_url_query_params
+                        _cfg_base, _ = _extract_url_query_params(_cfg_base)
+                    except Exception:
+                        _cfg_base = _cfg_base.split("?", 1)[0]
+                self._last_aux_config_provider = str(_aux_provider)
+                self._last_aux_config_model = str(_aux_model or "")
+                self._last_aux_config_base_url = _cfg_base
 
             def _record_aux_route(provider, model, base_url):
                 # Invoked before every call_llm physical request; the final

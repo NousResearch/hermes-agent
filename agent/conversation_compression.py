@@ -2286,18 +2286,36 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     _aux_model = (getattr(_ctx_comp, "_last_aux_call_model", "") or "").strip()
     _aux_base = (getattr(_ctx_comp, "_last_aux_call_base_url", "") or "").strip()
 
+    _cfg_provider = (getattr(_ctx_comp, "_last_aux_config_provider", "") or "").strip()
+    _cfg_model = (getattr(_ctx_comp, "_last_aux_config_model", "") or "").strip()
+    _cfg_base = (getattr(_ctx_comp, "_last_aux_config_base_url", "") or "").strip()
+
     # _last_aux_call_* is written by call_llm's route_callback after the real
     # client is built (auto-detection / fallback applied). When the callback
-    # never fired — e.g. call_llm raised "no provider configured" before a
-    # client existed — the fields stay empty; fall back to the main-model
-    # identity and say so, rather than inventing a phantom endpoint. A non-
-    # empty "auto" provider here is a REAL auto-chain route, not a missing
-    # config, so it is reported as-is.
+    # never fired, no physical request was dispatched. Two distinct shapes
+    # must not be conflated (#72636):
+    #
+    # 1. auxiliary.compression IS configured with an explicit provider, but
+    #    the call died before dispatch — e.g. that provider's API key is
+    #    missing ("Provider 'X' is set in config.yaml but no API key was
+    #    found"). Report the CONFIGURED identity as a pre-dispatch failure;
+    #    never substitute the healthy main endpoint here.
+    # 2. auxiliary.compression is unset, so the summary call would have used
+    #    the main model. Fall back to the main-model identity and say so,
+    #    rather than inventing a phantom endpoint.
+    _pre_dispatch = False
     if not _aux_provider and not _aux_model and not _aux_base:
-        _aux_provider = (getattr(_ctx_comp, "provider", "") or "auto").strip() or "auto"
-        _aux_model = (getattr(_ctx_comp, "model", "") or "unknown").strip() or "unknown"
-        _aux_base = (getattr(_ctx_comp, "base_url", "") or "unknown").strip() or "unknown"
-        _note = " (auxiliary.compression is not configured — using main model)"
+        if _cfg_provider or _cfg_model or _cfg_base:
+            _aux_provider = _cfg_provider or "unknown"
+            _aux_model = _cfg_model or "unknown"
+            _aux_base = _cfg_base or "unknown"
+            _pre_dispatch = True
+            _note = " (no request was dispatched)"
+        else:
+            _aux_provider = (getattr(_ctx_comp, "provider", "") or "auto").strip() or "auto"
+            _aux_model = (getattr(_ctx_comp, "model", "") or "unknown").strip() or "unknown"
+            _aux_base = (getattr(_ctx_comp, "base_url", "") or "unknown").strip() or "unknown"
+            _note = " (auxiliary.compression is not configured — using main model)"
     else:
         _note = ""
 
@@ -2305,17 +2323,25 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     # (notably "auxiliary ... failed" and "compression summary failed") so
     # the message reaches Telegram/Discord/Slack, not just local/CLI.
     if _cls == "auth":
-        _guidance = (
-            "auth/permission error — check the credential and "
-            "auxiliary.compression in config.yaml"
-        )
+        if _pre_dispatch:
+            _guidance = "credential missing — set this provider's API key"
+        else:
+            _guidance = (
+                "auth/permission error — check the credential and "
+                "auxiliary.compression in config.yaml"
+            )
     elif _cls == "network":
         _guidance = "network/connection error — this is usually transient"
     else:
         _guidance = "error — see agent.log for detail"
 
+    _headline = (
+        "⚠ Compression auxiliary provider could not start its request "
+        if _pre_dispatch
+        else "⚠ Compression auxiliary endpoint could not be reached "
+    )
     agent._emit_warning(
-        f"⚠ Compression auxiliary endpoint could not be reached "
+        f"{_headline}"
         f"({_guidance}). "
         f"🔌 Provider: {_aux_provider}  Model: {_aux_model}  "
         f"🌐 Endpoint: {_aux_base}{_note}"

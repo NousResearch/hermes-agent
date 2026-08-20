@@ -242,6 +242,35 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_duration_with_multiple_repeats_is_rejected(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="every 2m"):
+            create_job(prompt="Repeat", schedule="2m", repeat=3)
+
+        assert load_jobs() == []
+
+    def test_load_does_not_revive_completed_duration_repeat_job(self, tmp_cron_dir):
+        job = create_job(prompt="Completed", schedule="every 1m", repeat=3)
+        duration_schedule = parse_schedule("2m")
+        job.update(
+            {
+                "schedule": duration_schedule,
+                "schedule_display": duration_schedule["display"],
+                "repeat": {"times": 3, "completed": 1},
+                "enabled": False,
+                "state": "completed",
+                "next_run_at": None,
+            }
+        )
+        save_jobs([job])
+
+        loaded = load_jobs()[0]
+
+        assert loaded["schedule"] == duration_schedule
+        assert loaded["repeat"] == {"times": 3, "completed": 1}
+        assert loaded["enabled"] is False
+        assert loaded["state"] == "completed"
+        assert loaded["next_run_at"] is None
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
@@ -276,6 +305,39 @@ class TestUpdateJob:
         # Verify persisted to disk
         fetched = get_job(job["id"])
         assert fetched["name"] == "New Name"
+
+    def test_update_duration_schedule_with_existing_repeat_is_rejected(self, tmp_cron_dir):
+        job = create_job(prompt="Repeat", schedule="every 1m", repeat=3)
+
+        with pytest.raises(ValueError, match="every 2m"):
+            update_job(job["id"], {"schedule": "2m"})
+
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched["schedule"] == job["schedule"]
+        assert fetched["repeat"] == job["repeat"]
+
+    def test_update_repeat_on_duration_schedule_is_rejected(self, tmp_cron_dir):
+        job = create_job(prompt="One shot", schedule="2m")
+
+        with pytest.raises(ValueError, match="every 2m"):
+            update_job(job["id"], {"repeat": 3})
+
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched["schedule"] == job["schedule"]
+        assert fetched["repeat"] == job["repeat"]
+
+    def test_update_duration_and_repeat_together_is_rejected(self, tmp_cron_dir):
+        job = create_job(prompt="Recurring", schedule="every 1m")
+
+        with pytest.raises(ValueError, match="every 2m"):
+            update_job(job["id"], {"schedule": "2m", "repeat": 3})
+
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched["schedule"] == job["schedule"]
+        assert fetched["repeat"] == job["repeat"]
 
 
 class TestPauseResumeJob:

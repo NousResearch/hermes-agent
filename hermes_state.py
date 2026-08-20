@@ -11692,11 +11692,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         max_cost: Optional[float] = None,
         min_tool_calls: Optional[int] = None,
         max_tool_calls: Optional[int] = None,
+        include_open: bool = False,
     ) -> Tuple[str, list]:
         """Build the shared WHERE clause for bulk prune/archive selection.
 
         All filters AND together. Only ended sessions are ever candidates
         (``ended_at IS NOT NULL``) so a live session is never selected.
+        Pass ``include_open=True`` to lift the ended-session guard for
+        non-destructive operations like export (#89223).
         ``archived`` is a tri-state: ``None`` = both, ``True`` = only
         archived rows, ``False`` = only unarchived rows.
 
@@ -11711,7 +11714,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         The clause references the ``s`` table alias — callers must select
         ``FROM sessions s``.
         """
-        clauses = ["s.ended_at IS NOT NULL"]
+        clauses: list = [] if include_open else ["s.ended_at IS NOT NULL"]
         params: list = []
         if last_active_before is not None:
             clauses.append(
@@ -11824,6 +11827,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         older_than_days: Optional[float] = None,
         source: str = None,
+        include_open: bool = False,
         **filters,
     ) -> List[Dict[str, Any]]:
         """Return the sessions a matching :meth:`prune_sessions` /
@@ -11836,9 +11840,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         message_count, archived``. ``older_than_days`` is an inactivity
         threshold: it uses the latest message timestamp, falling back to
         ``started_at`` for sessions without messages.
+
+        Pass ``include_open=True`` for non-destructive listing (export)
+        where open sessions should be included (#89223).
         """
         self._apply_prune_age_filter(older_than_days, filters)
-        where, params = self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_filter_where(
+            source=source, include_open=include_open, **filters
+        )
         with self._lock:
             cursor = self._conn.execute(
                 f"""SELECT s.id, s.source, s.title, s.model, s.started_at,

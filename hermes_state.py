@@ -8769,6 +8769,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append("s.hidden = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        # The pinned back-fill is the single source of pinned rows; the
+        # LIMIT/OFFSET page must not consume its own capacity on active pins
+        # (which would dilute "did we fill a full page" truncation checks and
+        # double-serve rows the back-fill also fetches). Apply the pinned=0
+        # filter to the page query only — the back-fill below reuses
+        # ``where_sql`` (without it) so its ``AND s.pinned = 1`` still matches.
+        page_where = where_sql
+        if include_pinned:
+            page_where = (
+                f"{where_sql} AND s.pinned = 0"
+                if where_sql
+                else "WHERE s.pinned = 0"
+            )
         # Snapshot the filter params before the query builders below extend
         # them with LIMIT/OFFSET — the pinned back-fill reuses the same WHERE.
         base_where_params = list(params)
@@ -8805,7 +8818,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # races can insert the continuation row before the parent's
             # ended_at is written, while stale websocket siblings may satisfy
             # the timestamp test and hijack resume/list projection.
-            outer_where = where_sql
+            outer_where = page_where
             id_params: List[Any] = []
             filter_clauses: List[str] = []
 
@@ -8850,12 +8863,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if filter_clauses:
                 combined = " AND ".join(filter_clauses)
                 outer_where = (
-                    f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
+                    f"{page_where} AND {combined}" if page_where else f"WHERE {combined}"
                 )
             _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
-                    SELECT s.id, s.id FROM sessions s {where_sql}
+                    SELECT s.id, s.id FROM sessions s {page_where}
                     UNION ALL
                     SELECT c.root_id, child.id
                     FROM chain c
@@ -8907,7 +8920,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     {_sql_session_last_active("s")} AS last_active
                 FROM sessions s
                 {prompt_join}
-                {where_sql}
+                {page_where}
                 ORDER BY s.started_at DESC
                 LIMIT ? OFFSET ?
             """

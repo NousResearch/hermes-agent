@@ -384,6 +384,72 @@ VALID_HOOKS: Set[str] = {
     #   alias_used: the exact token the user typed (str), args_raw: str,
     #   session_key: str | None (gateway), platform: str | None (gateway).
     "pre_command",
+    # ── Nested guard hooks (:guard suffix) ──
+    #
+    # Each skill operation follows a nested-hook model:
+    #   :guard hook  →  guards (existence, org-mirror, review)  →  pre hook  →  execute
+    #
+    # The :guard hook fires BEFORE any guard checks.  Plugins use it to
+    # resolve or pre-process skill content independent of filesystem state.
+    # For example, a skill-graph plugin might intercept a name it knows about
+    # even when the skill directory doesn't exist yet locally.  If no plugin
+    # registers the :guard hook, the default guard-first behaviour applies.
+    #
+    # The pre hook fires AFTER guards pass — "the skill exists and is safe to
+    # modify."  Plugins use this to inspect or transform the operation before
+    # execution, knowing the basic safety checks are already satisfied.
+    #
+    # Both :guard and pre hooks support: handled, block.
+    # Create also supports redirect (in both :guard and pre).
+    #
+    # ── create ──
+    # pre_skill_create:guard — fires before existence check. Same redirect /
+    #   handled / block semantics as pre_skill_create.
+    #   Kwargs: name, content, category (str or None)
+    "pre_skill_create:guard",
+    # pre_skill_create — fires after existence check passes.
+    #   Redirect / handled / block.
+    #   Kwargs: name, content, category (str or None)
+    "pre_skill_create",
+    # post_skill_create — observer-only.
+    #   Kwargs: name, category, path (abs str; "" when handled), success (bool)
+    "post_skill_create",
+    # ── edit ──
+    # pre_skill_edit:guard — fires before existence + write guards.
+    #   Kwargs: name, content (new full SKILL.md)
+    "pre_skill_edit:guard",
+    # pre_skill_edit — fires after existence + write guards pass.
+    #   Kwargs: name, content, old_content (str or None)
+    "pre_skill_edit",
+    # post_skill_edit — observer-only.
+    #   Kwargs: name, path (abs str), success (bool)
+    "post_skill_edit",
+    # ── patch ──
+    "pre_skill_patch:guard",
+    # pre_skill_patch — fires after guards pass.
+    #   Kwargs: name, old_string, new_string, file_path (str or None), replace_all (bool)
+    "pre_skill_patch",
+    "post_skill_patch",
+    # ── write_file ──
+    "pre_skill_write_file:guard",
+    # pre_skill_write_file — fires after guards pass.
+    #   Kwargs: name, file_path, file_content
+    "pre_skill_write_file",
+    "post_skill_write_file",
+    # ── remove_file ──
+    "pre_skill_remove_file:guard",
+    # pre_skill_remove_file — fires after guards pass.
+    #   Kwargs: name, file_path
+    "pre_skill_remove_file",
+    "post_skill_remove_file",
+    # ── delete ──
+    "pre_skill_delete:guard",
+    # pre_skill_delete — fires after existence + pinned + curator guards pass.
+    #   Kwargs: name
+    "pre_skill_delete",
+    # post_skill_delete — observer-only.
+    #   Kwargs: name, success (bool)
+    "post_skill_delete",
 }
 
 # Hooks whose return value carries a directive that the shell-hook response

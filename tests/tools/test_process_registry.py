@@ -2583,14 +2583,15 @@ class TestHandleProcessTransformHook:
         original_secret = "sk-proj-abc123def456ghi789jkl012mno345"
         replacement_secret = "sk-proj-zyx987wvu654tsr321qpo098nml765"
         pr, sess = self._setup(
-            monkeypatch, "printenv",
-            f"OPENAI_API_KEY={original_secret}",
+            monkeypatch,
+            "printenv",
+            f"\x1b[31mOPENAI_API_KEY={original_secret}\x1b[0m",
         )
         hook_inputs = []
 
         def _replace(hook_name, **kw):
             hook_inputs.append(kw["output"])
-            return [f"OPENAI_API_KEY={replacement_secret}"]
+            return [f"\x1b[31mOPENAI_API_KEY={replacement_secret}\x1b[0m"]
 
         monkeypatch.setattr(
             "hermes_cli.lifecycle.invoke_hook",
@@ -2598,7 +2599,8 @@ class TestHandleProcessTransformHook:
         )
         out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
 
-        assert hook_inputs == [f"OPENAI_API_KEY={original_secret}"]
+        assert hook_inputs == [f"\x1b[31mOPENAI_API_KEY={original_secret}\x1b[0m"]
+        assert "\x1b" not in out["output"]
         assert original_secret not in out["output"]
         assert replacement_secret not in out["output"]
         assert "OPENAI_API_KEY=" in out["output"]

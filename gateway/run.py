@@ -25691,7 +25691,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           - ``error``  — final raw-output message only when exit code != 0
           - ``off``    — no messages at all
         """
-        from tools.process_registry import process_registry, transform_terminal_output
+        from tools.process_registry import process_registry, render_process_output
 
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
@@ -25740,16 +25740,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     _command = getattr(session, "command", "") or ""
                     _raw = session.output_buffer if session.output_buffer else ""
-                    _raw = transform_terminal_output(
+                    _raw = render_process_output(
                         _raw,
                         command=_command,
                         returncode=session.exit_code,
                         task_id=getattr(session, "task_id", "") or "",
                     )
-                    from tools.ansi_strip import strip_ansi
-                    from agent.redact import redact_terminal_output
-                    _raw = strip_ansi(_raw)
-                    _raw = redact_terminal_output(_raw, _command)
                     _command = _redact_gateway_user_facing_secrets(_command)
                     # Truncate at line boundaries so notifications never start
                     # mid-line (fixes #23284). Keep the last ~2000 chars but
@@ -25829,22 +25825,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if should_notify:
                     new_output = session.output_buffer[-1000:] if session.output_buffer else ""
                     if new_output:
-                        new_output = transform_terminal_output(
+                        new_output = render_process_output(
                             new_output,
                             command=getattr(session, "command", "") or "",
                             returncode=session.exit_code,
                             task_id=getattr(session, "task_id", "") or "",
                         )
-                        from tools.ansi_strip import strip_ansi
-                        from agent.redact import redact_terminal_output
-                        new_output = strip_ansi(new_output)
-                        new_output = redact_terminal_output(
-                            new_output, getattr(session, "command", "") or ""
-                        )
-                        # redact_terminal_output() is unforced, so it returns raw
-                        # text when security.redact_secrets is off.  This send
-                        # goes straight to the platform adapter, so it needs the
-                        # same unconditional floor as the agent-notify path.
+                        # The shared pipeline respects the configured redaction
+                        # toggle; this send goes straight to the platform adapter,
+                        # so it still needs the gateway's unconditional floor.
                         new_output = _redact_gateway_user_facing_secrets(new_output)
                     if notify_mode == "concise":
                         _cmd_disp = _redact_gateway_user_facing_secrets(
@@ -25888,17 +25877,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Skip periodic updates for agent_notify watchers (they only care about completion)
                 new_output = session.output_buffer[-500:] if session.output_buffer else ""
                 if new_output:
-                    new_output = transform_terminal_output(
+                    new_output = render_process_output(
                         new_output,
                         command=getattr(session, "command", "") or "",
                         returncode=session.exit_code,
                         task_id=getattr(session, "task_id", "") or "",
-                    )
-                    from tools.ansi_strip import strip_ansi
-                    from agent.redact import redact_terminal_output
-                    new_output = strip_ansi(new_output)
-                    new_output = redact_terminal_output(
-                        new_output, getattr(session, "command", "") or ""
                     )
                     new_output = _redact_gateway_user_facing_secrets(new_output)
                 message_text = (

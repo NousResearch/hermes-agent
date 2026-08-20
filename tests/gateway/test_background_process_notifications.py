@@ -194,7 +194,7 @@ async def test_completion_notification_transforms_and_redacts_hook_output(
     original_secret = "sk-proj-abc123def456ghi789jkl012mno345"
     replacement_secret = "sk-proj-zyx987wvu654tsr321qpo098nml765"
     sessions = [SimpleNamespace(
-        output_buffer=f"raw output with {original_secret}",
+        output_buffer=f"\x1b[31mraw output with {original_secret}\x1b[0m",
         exited=True,
         exit_code=0,
         command="echo background",
@@ -211,7 +211,7 @@ async def test_completion_notification_transforms_and_redacts_hook_output(
     def _transform(hook_name, **kwargs):
         if hook_name == "transform_terminal_output":
             seen.append(kwargs["output"])
-            return [f"hook output with {replacement_secret}"]
+            return [f"\x1b[32mhook output with {replacement_secret}\x1b[0m"]
         return []
 
     monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _transform)
@@ -223,7 +223,8 @@ async def test_completion_notification_transforms_and_redacts_hook_output(
 
     adapter.send.assert_awaited_once()
     message = adapter.send.await_args.args[1]
-    assert seen == [f"raw output with {original_secret}"]
+    assert seen == [f"\x1b[31mraw output with {original_secret}\x1b[0m"]
+    assert "\x1b" not in message
     assert original_secret not in message
     assert replacement_secret not in message
 

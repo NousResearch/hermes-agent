@@ -61,6 +61,7 @@ _MODELS_DEV_RETRY_DELAY = 300  # 5 minutes after a failed refresh
 _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
 _models_dev_retry_after: float = 0
+_models_dev_cache_path: Optional[Path] = None
 _models_dev_fetch_lock = threading.Lock()
 _models_dev_refresh_lock = threading.Lock()
 _models_dev_refresh_in_flight = False
@@ -613,7 +614,13 @@ def fetch_models_dev(
     vision routing, context-length lookup) that must never wait on the
     network.
     """
-    global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after
+    global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after, _models_dev_cache_path
+
+    cache_path = _get_cache_path()
+    if _models_dev_cache_path is not None and _models_dev_cache_path != cache_path:
+        _models_dev_cache = {}
+        _models_dev_cache_time = 0
+    _models_dev_cache_path = cache_path
 
     if not allow_network:
         if _models_dev_cache:

@@ -157,6 +157,7 @@ class TestFetchModelsDev:
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = 0
         md._models_dev_refresh_in_flight = False
+        md._models_dev_cache_path = None
         yield
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
@@ -194,6 +195,34 @@ class TestFetchModelsDev:
         mock_get.assert_not_called()
         mock_refresh.assert_called_once()
         assert "anthropic" in result
+
+    @patch("agent.models_dev.requests.get")
+    def test_in_memory_cache_is_scoped_to_cache_path(self, mock_get, tmp_path):
+        """Changing HERMES_HOME/cache path must not reuse another profile's cache."""
+        import agent.models_dev as md
+
+        old_path = tmp_path / "old" / "models_dev_cache.json"
+        new_path = tmp_path / "new" / "models_dev_cache.json"
+        fresh_registry = {"openai": {"id": "openai", "models": {}}}
+
+        md._models_dev_cache = SAMPLE_REGISTRY
+        md._models_dev_cache_time = time.time()
+        md._models_dev_cache_path = old_path
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = fresh_registry
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        with patch.object(md, "_get_cache_path", return_value=new_path), \
+             patch.object(md, "_disk_cache_age_seconds", return_value=None), \
+             patch.object(md, "_save_disk_cache"):
+            result = fetch_models_dev()
+
+        mock_get.assert_called_once()
+        assert result == fresh_registry
+        assert md._models_dev_cache_path == new_path
 
 
 

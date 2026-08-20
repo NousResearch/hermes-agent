@@ -4237,6 +4237,36 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         pass
 
 
+def _resolve_anthropic_pool_catalog_credentials() -> tuple[str, str]:
+    """Return a read-only API-key pool credential for model discovery.
+
+    ``resolve_anthropic_token()`` intentionally ignores ``api_key`` pool
+    entries because its runtime contract is OAuth-oriented. The model catalog
+    supports regular ``x-api-key`` auth, so it needs a narrow fallback that
+    preserves the credential's configured endpoint instead of sending a
+    proxy-scoped key to Anthropic's public host.
+    """
+    try:
+        from agent.credential_pool import AUTH_TYPE_API_KEY
+        from hermes_cli.auth import read_credential_pool
+
+        for entry in read_credential_pool("anthropic"):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("auth_type") != AUTH_TYPE_API_KEY:
+                continue
+            token = str(entry.get("access_token") or "").strip()
+            if not token:
+                continue
+            endpoint = str(
+                entry.get("base_url") or entry.get("inference_base_url") or ""
+            ).strip()
+            return token, endpoint
+    except Exception:
+        pass
+    return "", ""
+
+
 def _fetch_anthropic_models(
     timeout: float = 5.0,
     *,
@@ -4245,8 +4275,9 @@ def _fetch_anthropic_models(
 ) -> Optional[list[str]]:
     """Fetch available models from the Anthropic /v1/models endpoint.
 
-    Uses resolve_anthropic_token() to find credentials (env vars or
-    Claude Code auto-discovery) unless api_key is provided explicitly.
+    Uses resolve_anthropic_token() to find credentials (env vars, OAuth,
+    or Claude Code auto-discovery) unless api_key is provided explicitly. If
+    those sources are empty, a read-only API-key credential_pool entry is used.
     Returns sorted model IDs or None.
     """
     try:
@@ -4254,7 +4285,12 @@ def _fetch_anthropic_models(
     except ImportError:
         return None
 
+    resolved_base_url = base_url
     token = (api_key or "").strip() or resolve_anthropic_token()
+    if not token:
+        # A pool credential and its endpoint are one security boundary. Never
+        # pair the selected pool key with a caller-provided model endpoint.
+        token, resolved_base_url = _resolve_anthropic_pool_catalog_credentials()
     if not token:
         return None
 
@@ -4269,7 +4305,7 @@ def _fetch_anthropic_models(
 
     def _do_request(h: dict[str, str]):
         req = urllib.request.Request(
-            _anthropic_models_url(base_url),
+            _anthropic_models_url(resolved_base_url),
             headers=h,
         )
         with _urlopen_model_catalog_request(req, timeout=timeout) as resp:

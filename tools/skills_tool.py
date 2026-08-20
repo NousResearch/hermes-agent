@@ -2148,16 +2148,22 @@ def _skill_view_with_bump(args, **kw):
             # qualified forms ("plugin:skill") return with the canonical name.
             resolved = parsed.get("name") or name
             if resolved:
-                from tools.skill_usage import bump_use, bump_view
-                bump_view(str(resolved))
-                # A skill_view tool call is the agent actively loading the skill
-                # to act on it — that counts as use, not just a browse/view.
-                # Curator's stale timer keys off last_used_at (see agent/curator.py).
-                bump_use(
-                    str(resolved),
-                    task_id=kw.get("task_id"),
-                    session_id=kw.get("session_id"),
-                )
+                from tools.skill_provenance import is_background_review
+                # The curator's review fork calls skill_view to inspect
+                # candidates it's judging — that must not itself count as
+                # use, or the inspection inflates the very signal the
+                # review reads.
+                if not is_background_review():
+                    from tools.skill_usage import bump_use, bump_view
+                    bump_view(str(resolved))
+                    # A skill_view tool call is the agent actively loading the skill
+                    # to act on it — that counts as use, not just a browse/view.
+                    # Curator's stale timer keys off last_used_at (see agent/curator.py).
+                    bump_use(
+                        str(resolved),
+                        task_id=kw.get("task_id"),
+                        session_id=kw.get("session_id"),
+                    )
     except Exception:
         pass
     return result

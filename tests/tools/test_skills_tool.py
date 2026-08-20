@@ -410,6 +410,46 @@ class TestSkillView:
         assert result["name"] == "knowledge-brain"
 
 
+class TestSkillViewBump:
+    """`skill_view`'s telemetry bump must not fire from the curator's
+    background-review fork — else browsing candidates while judging them
+    inflates the very use_count/last_used_at signal the review reads."""
+
+    def test_bump_skipped_during_background_review(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skill_provenance.is_background_review", return_value=True),
+            patch("tools.skill_usage.bump_view") as mock_bump_view,
+            patch("tools.skill_usage.bump_use") as mock_bump_use,
+        ):
+            _make_skill(tmp_path, "my-skill")
+            result = json.loads(
+                skills_tool_module._skill_view_with_bump({"name": "my-skill"})
+            )
+
+        assert result["success"] is True
+        mock_bump_view.assert_not_called()
+        mock_bump_use.assert_not_called()
+
+    def test_bump_still_fires_for_foreground_calls(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skill_provenance.is_background_review", return_value=False),
+            patch("tools.skill_usage.bump_view") as mock_bump_view,
+            patch("tools.skill_usage.bump_use") as mock_bump_use,
+        ):
+            _make_skill(tmp_path, "my-skill")
+            result = json.loads(
+                skills_tool_module._skill_view_with_bump({"name": "my-skill"})
+            )
+
+        assert result["success"] is True
+        mock_bump_view.assert_called_once_with("my-skill")
+        mock_bump_use.assert_called_once_with(
+            "my-skill", task_id=None, session_id=None
+        )
+
+
 class TestSkillViewSecureSetupOnLoad:
     def test_requests_missing_required_env_and_continues(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)

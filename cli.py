@@ -20435,6 +20435,12 @@ def main(
         ignore_rules=ignore_rules,
     )
 
+    # Expose the active CLI to plugins before selecting query or interactive
+    # mode. HermesCLI.run() also sets this reference, but query mode calls
+    # agent.run_conversation() directly and therefore skips run().
+    from hermes_cli.plugins import get_plugin_manager
+    get_plugin_manager()._cli_ref = cli
+
     if parsed_skills:
         # Load the skill payloads in the background: skill_view walks the
         # full skills tree per skill (~0.5s for a large library) and the

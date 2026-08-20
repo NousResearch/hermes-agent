@@ -46,8 +46,10 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import {
+  isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
   shouldLatchBackendStartFailure,
+  shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
 import {
@@ -9743,6 +9745,13 @@ async function ensureBackend(profile) {
   }
 
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(async error => {
+    // Land the failure in desktop.log: without this a spawn that dies before
+    // its child exists (guard rejection, runtime resolution) leaves no trace
+    // beyond renderer-side rejections users never see in a bundle.
+    rememberLog(
+      `Hermes backend for profile "${key}" failed to start: ${error instanceof Error ? error.message : String(error)}`
+    )
+
     if (backendPool.get(key) === entry) {
       backendPool.delete(key)
     }
@@ -9825,6 +9834,12 @@ async function ensureRegistryBackend(connectionId, profile) {
       forceLocal: true,
       poolKey: localRoute.poolKey
     }).catch(async error => {
+      // Same trace rule as the v1 pool path: a forced-local child whose spawn
+      // rejects before the child exists must still land in desktop.log.
+      rememberLog(
+        `Hermes backend for profile "${profileKey}" (forced-local) failed to start: ${error instanceof Error ? error.message : String(error)}`
+      )
+
       if (backendPool.get(localRoute.poolKey) === localEntry) {
         backendPool.delete(localRoute.poolKey)
       }
@@ -10106,12 +10121,18 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
-  rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
-
-  const parentStartMarker = await desktopParentStartMarker()
+  // Guard BEFORE the "Starting" line: a profile that only exists on a remote
+  // backend (remote-primary desktop asked for a forced-local child) rejects
+  // here, and logging "Starting" first left an orphaned line with no READY
+  // and no exit — the exact undiagnosable burst signature in remote-gateway
+  // user bundles (Aug 2026, Dash's report).
   assertLocalProfileCanStart(profile, profileDeletionGate, key =>
     directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
+
+  rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
+
+  const parentStartMarker = await desktopParentStartMarker()
   const backendNonce = crypto.randomBytes(16).toString('hex')
   const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
 
@@ -10657,6 +10678,7 @@ async function startHermes() {
     }
 
     const message = error instanceof Error ? error.message : String(error)
+    const hostKeyChanged = isHostKeyChangedBootFailure(error)
 
     // Only latch LOCAL boot failures. A remote failure (lapsed session / mint
     // timeout / host briefly unreachable across sleep) is transient and has no
@@ -10664,6 +10686,16 @@ async function startHermes() {
     // on "session expired" until a full restart, defeating reconnect, the
     // "Sign out & sign in" reload, and the wake-recovery revalidate path.
     if (shouldLatchBackendStartFailure({ attemptedRemote })) {
+      backendStartFailure = error instanceof Error ? error : new Error(message)
+    }
+
+    // A host-key CHANGE is the terminal exception among remote failures: SSH
+    // fails closed until the user verifies the change and clears the stale
+    // known_hosts entry, so retrying re-drives the identical doomed boot (one
+    // bundle showed 157 consecutive failures over 2.5h). Latch it like a local
+    // failure — reset/repair/apply-config clear the latch after the user fixes
+    // known_hosts.
+    if (shouldLatchHostKeyChangedFailure({ attemptedRemote, isReauth: false, isHostKeyChanged: hostKeyChanged })) {
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
 
@@ -10681,9 +10713,14 @@ async function startHermes() {
         // Renderer contract for the self-heal loop (#82679): a transient
         // REMOTE failure (dropped SSH/HTTP registered connection, mint
         // timeout) is retryable — the renderer re-attempts the boot with
-        // bounded backoff. Local failures and confirmed reauth rejections
-        // are not: those end in the recovery overlay / sign-in affordance.
-        retryable: isRetryableRemoteBootFailure({ attemptedRemote, isReauth: isReauthRequiredError(error) }),
+        // bounded backoff. Local failures, confirmed reauth rejections, and
+        // host-key changes are not: those end in the recovery overlay /
+        // sign-in affordance.
+        retryable: isRetryableRemoteBootFailure({
+          attemptedRemote,
+          isReauth: isReauthRequiredError(error),
+          isHostKeyChanged: hostKeyChanged
+        }),
         running: false
       },
       { allowDecrease: true }
@@ -12624,6 +12661,31 @@ async function probeSshProfileInventory(connection) {
 }
 
 async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRegistry()) {
+  // One dead source must not wedge the whole roster: ensureRegistryBackend on
+  // an unreachable remote can block up to the 45s readiness timeout, and the
+  // Bot Mode poll runs every 5s — each poll queued behind the dead dial, so
+  // the renderer painted stale rows for the entire outage (and the roster IPC
+  // hung >30s in live repro). Bound each source's enumeration; a timeout is
+  // reported like any other unreachable source and retried on the next poll.
+  const perSourceTimeoutMs = 10_000
+
+  const withEnumerationDeadline = async <T,>(work: Promise<T>): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('roster enumeration timed out')), perSourceTimeoutMs)
+        })
+      ])
+    } finally {
+      if (timer !== null) {
+        clearTimeout(timer)
+      }
+    }
+  }
+
   return Promise.all(
     registry.connections.map(async connection => {
       let raw: { connection: typeof connection; error?: string; installId?: string; profiles: null | string[] }
@@ -12657,7 +12719,10 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             }
           }
 
-          const descriptor: any = await ensureRegistryBackend(connection.id, null)
+          const descriptor: any = await withEnumerationDeadline(
+            Promise.resolve(ensureRegistryBackend(connection.id, null))
+          )
+
           const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
 
           // Cached with a TTL, so the 5s roster poll usually pays zero extra

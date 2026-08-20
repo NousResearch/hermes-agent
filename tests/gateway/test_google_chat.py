@@ -632,16 +632,14 @@ class TestBuildMessageEvent:
         ) == 1
 
     @pytest.mark.asyncio
-    async def test_dm_second_message_in_same_thread_is_side_thread(self, adapter):
-        """If we've SEEN a thread before (count > 0), the user explicitly
-        re-engaged it (clicked 'Reply in thread' on a prior message).
-        Isolate to its own session so old top-level chatter doesn't
-        leak in.
-
-        Without this isolation the bug Ramón reported reappears: he
-        opens a new thread, says 'Hola!', asks 'dime los mensajes
-        anteriores' and the bot answers with messages from OTHER
-        threads — because all DM threads were sharing one session."""
+    async def test_dm_second_message_in_same_thread_keeps_space_session(self, adapter):
+        """replying inside a DM
+        thread must NOT isolate the session — the reply continues the
+        DM's space-level session so the agent has the conversation's
+        context (previously a 'side thread' got its own session and the
+        reply arrived with no history). The thread is still cached for
+        OUTBOUND placement so the bot's reply nests in the user's
+        thread visually."""
         env1 = _make_chat_envelope(text="primera vez", thread_name="spaces/S/threads/T1")
         msg1 = env1["chat"]["messagePayload"]["message"]
         event1 = await adapter._build_message_event(msg1, env1)
@@ -650,8 +648,11 @@ class TestBuildMessageEvent:
         env2 = _make_chat_envelope(text="segunda vez", thread_name="spaces/S/threads/T1")
         msg2 = env2["chat"]["messagePayload"]["message"]
         event2 = await adapter._build_message_event(msg2, env2)
-        # Second time same thread = user re-engaged → isolated session.
-        assert event2.source.thread_id == "spaces/S/threads/T1"
+        # Reply in an engaged thread: session stays space-level (context!),
+        # but the thread is cached so the bot replies inside it visually.
+        assert event2.source.thread_id is None
+        assert event2.source.chat_id == "spaces/S"
+        assert adapter._last_inbound_thread.get("spaces/S") == "spaces/S/threads/T1"
 
 
     @pytest.mark.asyncio
@@ -684,6 +685,74 @@ class TestSend:
         result = await adapter.send("spaces/S", "hola")
         adapter._create_message.assert_called()
         assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_plain_send_does_not_seed(self, adapter):
+        """non-cron sends never seed sessions."""
+        adapter._session_store = MagicMock()
+        adapter._space_types["spaces/S"] = "dm"
+        resp = type("R", (), {"success": True, "message_id": "m/1",
+                              "raw_response": {"thread": {"name": "spaces/S/threads/TN"}}})()
+        adapter._create_message = AsyncMock(return_value=resp)
+        with patch("gateway.mirror.mirror_to_session") as mirror:
+            result = await adapter.send("spaces/S", "hola")
+        assert result.success is True
+        mirror.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cron_send_seeds_thread_session_for_group(self, adapter):
+        """a cron notification delivered to a
+        group space seeds the delivered message's thread session with the
+        brief, so a reply in that thread has context."""
+        adapter._session_store = MagicMock()
+        captured = {}
+
+        def _fake_mirror(platform, chat_id, text, **kw):
+            captured.update(kw)
+            captured["text"] = text
+            return True
+
+        adapter._space_types["spaces/G"] = "group"
+        resp = type("R", (), {"success": True, "message_id": "m/1",
+                              "raw_response": {"thread": {"name": "spaces/G/threads/TN"}}})()
+        adapter._create_message = AsyncMock(return_value=resp)
+        with patch("gateway.mirror.mirror_to_session", _fake_mirror):
+            result = await adapter.send(
+                "spaces/G", "the brief", metadata={"job_id": "j1"}
+            )
+        assert result.success is True
+        assert captured["thread_id"] == "spaces/G/threads/TN"
+        assert captured["role"] == "user"
+        assert "the brief" in captured["text"]
+        # Session row created for the thread key.
+        adapter._session_store.get_or_create_session.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cron_send_seeds_dm_session_flat(self, adapter):
+        """a cron notification delivered to a DM
+        seeds the space-level DM session (thread_id=None) — replies in the
+        DM resolve there (DMs key sessions at space level)."""
+        adapter._session_store = MagicMock()
+        captured = {}
+
+        def _fake_mirror(platform, chat_id, text, **kw):
+            captured["chat_id"] = chat_id
+            captured["text"] = text
+            captured.update(kw)
+            return True
+
+        adapter._space_types["spaces/S"] = "dm"
+        resp = type("R", (), {"success": True, "message_id": "m/1",
+                              "raw_response": {"thread": {"name": "spaces/S/threads/TN"}}})()
+        adapter._create_message = AsyncMock(return_value=resp)
+        with patch("gateway.mirror.mirror_to_session", _fake_mirror):
+            result = await adapter.send(
+                "spaces/S", "brief dm", metadata={"job_id": "j2"}
+            )
+        assert result.success is True
+        assert captured["thread_id"] is None
+        assert captured["chat_id"] == "spaces/S"
+        assert "brief dm" in captured["text"]
 
     @pytest.mark.asyncio
     async def test_create_message_passes_messageReplyOption_when_thread_set(self, adapter):

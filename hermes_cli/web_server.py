@@ -9350,7 +9350,12 @@ def _whatsapp_linked_account_from_session(session_path: Path) -> tuple[str | Non
 
 def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     """Install bridge dependencies when the dashboard is the setup surface."""
-    if (bridge_dir / "node_modules").exists():
+    from gateway.platforms.whatsapp_common import (
+        record_whatsapp_bridge_dependency_fingerprint,
+        whatsapp_bridge_dependencies_fresh,
+    )
+
+    if whatsapp_bridge_dependencies_fresh(bridge_dir):
         return
 
     from hermes_constants import find_node_executable, with_hermes_node_path
@@ -9396,6 +9401,11 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
         raise HTTPException(
             status_code=500,
             detail=f"npm install failed for WhatsApp bridge: {detail or 'no output'}",
+        )
+    if not record_whatsapp_bridge_dependency_fingerprint(bridge_dir):
+        raise HTTPException(
+            status_code=500,
+            detail="WhatsApp bridge dependencies installed, but their version stamp could not be written.",
         )
 
 

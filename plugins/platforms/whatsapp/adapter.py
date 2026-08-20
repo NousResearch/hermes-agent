@@ -284,7 +284,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import (
+    WhatsAppBehaviorMixin,
+    whatsapp_bridge_dependencies_fresh,
+)
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -565,13 +568,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         try:
             # Gateway startup is runtime-only. Dependency installation belongs
-            # to the explicit setup/update phase, never to adapter connection.
+            # to explicit setup, never to adapter connection.
             bridge_dir = bridge_path.parent
-            if not (bridge_dir / "node_modules").exists():
+            if not whatsapp_bridge_dependencies_fresh(bridge_dir):
                 self._set_fatal_error(
-                    "whatsapp_dependencies_missing",
-                    "WhatsApp bridge dependencies are missing; run `hermes whatsapp` "
-                    "to install them before starting the gateway.",
+                    "whatsapp_dependencies_missing_or_stale",
+                    "WhatsApp bridge dependencies are missing or stale; run "
+                    "`hermes whatsapp` to install them before starting the gateway.",
                     retryable=False,
                 )
                 return False

@@ -2558,6 +2558,37 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     print_completion("✓ Already up to date!")
 
 
+def _update_whatsapp_bridge_dependencies(npm: str, env: dict) -> bool:
+    """Refresh an already-installed WhatsApp bridge outside gateway runtime."""
+    from gateway.platforms.whatsapp_common import (
+        record_whatsapp_bridge_dependency_fingerprint,
+        whatsapp_bridge_dependencies_fresh,
+    )
+
+    bridge_dir = _m().PROJECT_ROOT / "scripts" / "whatsapp-bridge"
+    if not (bridge_dir / "node_modules").is_dir():
+        return True
+    if whatsapp_bridge_dependencies_fresh(bridge_dir):
+        return True
+
+    print("→ Updating WhatsApp bridge dependencies...")
+    result = _m()._run_npm_install_deterministic(
+        npm,
+        bridge_dir,
+        extra_args=("--no-fund", "--no-audit", "--prefer-offline", "--progress=false"),
+        capture_output=False,
+        env=env,
+    )
+    if result.returncode != 0:
+        print("  ⚠ WhatsApp bridge npm install failed")
+        return False
+    if not record_whatsapp_bridge_dependency_fingerprint(bridge_dir):
+        print("  ⚠ WhatsApp bridge dependency version stamp could not be written")
+        return False
+    print("  ✓ WhatsApp bridge dependencies installed")
+    return True
+
+
 def _update_node_dependencies() -> list[str]:
     """Refresh Node deps for the ui-tui and web workspaces.
 
@@ -2608,9 +2639,16 @@ def _update_node_dependencies() -> list[str]:
     except Exception:
         pass
 
+    from hermes_constants import with_hermes_node_path
+
+    nixos_env = with_hermes_node_path(_m()._nixos_build_env())
+    failures: list[str] = []
+    if not _update_whatsapp_bridge_dependencies(npm, nixos_env):
+        failures.append("WhatsApp bridge")
+
     if not _m()._npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
-        return []
+        return failures
 
     # Root package.json has no dependencies of its own (agent-browser and
     # @streamdown/math were moved out — see #43564): agent-browser resolves
@@ -2643,10 +2681,6 @@ def _update_node_dependencies() -> list[str]:
         "--include-workspace-root",
     ]
 
-    from hermes_constants import with_hermes_node_path
-
-    nixos_env = with_hermes_node_path(_m()._nixos_build_env())
-
     # NOTE: capture_output=False here is deliberate (#18840) — optional
     # postinstall scripts print download progress, and capturing it makes a
     # long download look hung. The chatty npm-deprecation noise during
@@ -2662,13 +2696,12 @@ def _update_node_dependencies() -> list[str]:
     if result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ ui-tui, web workspaces installed (desktop skipped)")
-        failures: list[str] = []
     else:
         print("  ⚠ npm install failed")
         stderr = (result.stderr or "").strip() if result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
-        failures = _partial_update_failure("ui-tui, web workspaces")
+        failures.extend(_partial_update_failure("ui-tui, web workspaces"))
 
     return failures
 

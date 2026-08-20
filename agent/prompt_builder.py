@@ -2267,19 +2267,21 @@ def _truncate_content(
     max_chars: Optional[int] = None,
     context_length: Optional[int] = None,
     read_path: Optional[str] = None,
+    read_paths: Optional[List[str]] = None,
 ) -> str:
     """Head/tail truncation with a marker in the middle.
 
     ``filename`` is the human label used in warnings. ``read_path`` is the
     concrete path the agent should ``read_file`` to recover the full content
-    (defaults to ``filename`` when not supplied). ``context_length`` lets the
-    cap scale to the model's window when no explicit config override is set.
+    (defaults to ``filename`` when not supplied). ``read_paths`` supplies every
+    source when ``content`` is an aggregate that cannot be recovered from one
+    file. ``context_length`` lets the cap scale to the model's window when no
+    explicit config override is set.
     """
     if max_chars is None:
         max_chars = _get_context_file_max_chars(context_length)
     if len(content) <= max_chars:
         return content
-    target = read_path or filename
     msg = (
         f"⚠️  Context file {filename} TRUNCATED: "
         f"{len(content)} chars exceeds limit of {max_chars} — "
@@ -2292,11 +2294,22 @@ def _truncate_content(
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
     head = content[:head_chars]
     tail = content[-tail_chars:]
+    if read_paths:
+        targets = "\n".join(f"- {path}" for path in read_paths)
+        recovery = (
+            "read each complete source file with the read_file tool:\n"
+            f"{targets}"
+        )
+    else:
+        target = read_path or filename
+        recovery = (
+            "read the complete file with the read_file tool: "
+            f"{target}"
+        )
     marker = (
         f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of "
         f"{len(content)} chars. The middle is omitted — if you need the full "
-        f"instructions, read the complete file with the read_file tool: "
-        f"{target}]\n\n"
+        f"instructions, {recovery}]\n\n"
     )
     return head + marker + tail
 
@@ -2411,6 +2424,7 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """
     cwd_resolved = cwd_path.resolve()
     sections: List[str] = []
+    source_paths: List[str] = []
     seen_content: set = set()
     for directory in _agents_md_directory_chain(cwd_resolved):
         for name in ["AGENTS.override.md", "AGENTS.md", "agents.md"]:
@@ -2438,6 +2452,7 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
                 read_path=str(candidate),
             )
             sections.append(section)
+            source_paths.append(str(candidate))
             break  # first name match wins per directory
     if not sections:
         return ""
@@ -2449,7 +2464,7 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     return _truncate_content(
         merged, "AGENTS.md (directory chain)",
         context_length=context_length,
-        read_path=str(cwd_resolved / "AGENTS.md"),
+        read_paths=source_paths,
     )
 
 

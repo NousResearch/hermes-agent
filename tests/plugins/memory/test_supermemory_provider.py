@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -219,6 +220,43 @@ def test_search_tool_formats_results(provider):
     result = json.loads(provider.handle_tool_call("supermemory_search", {"query": "concise docs"}))
     assert result["count"] == 1
     assert result["results"][0]["similarity"] == 92
+
+
+@pytest.mark.parametrize(
+    ("memory", "chunk", "expected"),
+    [
+        ("Memory result", None, "Memory result"),
+        (None, "Document chunk result", "Document chunk result"),
+        ("Memory result", "Document chunk result", "Memory result"),
+    ],
+)
+def test_client_normalizes_memory_and_document_results(memory, chunk, expected):
+    """Hybrid search returns memory hits and document chunk hits."""
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._container_tag = "hermes"
+    client._search_mode = "hybrid"
+    client._client = SimpleNamespace(
+        search=SimpleNamespace(
+            memories=lambda **kwargs: SimpleNamespace(
+                results=[
+                    SimpleNamespace(
+                        id="result-1",
+                        memory=memory,
+                        chunk=chunk,
+                        similarity=0.9,
+                        updated_at="2026-08-12T00:00:00Z",
+                        metadata=None,
+                    )
+                ]
+            )
+        )
+    )
+
+    result = client.search_memories("query")
+
+    assert result[0]["memory"] == expected
 
 
 def test_forget_tool_by_id(provider):

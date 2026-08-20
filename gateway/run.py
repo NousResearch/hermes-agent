@@ -918,6 +918,22 @@ def _has_platform_display_override(user_config: dict, platform_key: str, setting
     return isinstance(platform_cfg, dict) and setting in platform_cfg
 
 
+def _merge_turn_presentation_policy(current: dict, proposed: Any) -> dict:
+    """Merge trusted hook presentation hints toward the stricter policy."""
+    merged = dict(current or {})
+    if not isinstance(proposed, dict):
+        return merged
+    if proposed.get("final_only") is True:
+        merged["final_only"] = True
+    elif "final_only" not in merged and proposed.get("final_only") is False:
+        merged["final_only"] = False
+    reason = proposed.get("policy_reason")
+    if isinstance(reason, str) and reason and len(reason) <= 128:
+        if proposed.get("final_only") is True or "policy_reason" not in merged:
+            merged["policy_reason"] = reason
+    return merged
+
+
 def _resolve_gateway_display_bool(
     user_config: dict,
     platform_key: str,
@@ -16348,6 +16364,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
+            _turn_presentation: dict = {}
             try:
                 from hermes_cli.lifecycle import invoke_hook as _invoke_hook
                 _hook_results = _invoke_hook(
@@ -16363,9 +16380,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
                 _hook_results = []
 
+            _turn_presentation = _merge_turn_presentation_policy(
+                _turn_presentation, getattr(event, "presentation", None)
+            )
+            if _turn_presentation:
+                event = dataclasses.replace(
+                    event, presentation=dict(_turn_presentation)
+                )
+
             for _result in _hook_results:
                 if not isinstance(_result, dict):
                     continue
+                _turn_presentation = _merge_turn_presentation_policy(
+                    _turn_presentation,
+                    _result.get("presentation") or getattr(event, "presentation", None),
+                )
+                if _turn_presentation:
+                    event = dataclasses.replace(
+                        event, presentation=dict(_turn_presentation)
+                    )
                 _action = _result.get("action")
                 if _action == "skip":
                     logger.info(
@@ -19957,6 +19990,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                presentation=getattr(event, "presentation", None),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -20120,6 +20154,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATTERMOST
                     else getattr(self, "_show_reasoning", False)
                 )
+            if bool(getattr(event, "presentation", {}).get("final_only")):
+                _show_reasoning_effective = False
             if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -27610,6 +27646,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        presentation: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -27630,6 +27667,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                presentation=presentation,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -27643,6 +27681,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                presentation=presentation,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -27786,6 +27825,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        presentation: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -27814,6 +27854,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from run_agent import AIAgent
         import queue
+
+        final_only = bool((presentation or {}).get("final_only"))
 
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
@@ -27926,6 +27968,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
+        if final_only:
+            tool_progress_enabled = False
         # Live working-state status for text-rendering typing indicators
         # (Slack's assistant status line). Independent of tool_progress —
         # Slack defaults tool_progress off (permanent lines spam channels)
@@ -27957,6 +28001,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source.platform != Platform.WEBHOOK
             and interim_assistant_messages_mode != "off"
         )
+        if final_only:
+            interim_assistant_messages_enabled = False
         # thinking_progress is independent — if enabled, we need the progress
         # queue even when tool_progress is off (thinking relay uses same infra).
         # Mattermost requires a per-platform opt-in: global scratch-text display
@@ -27967,6 +28013,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
+        if final_only:
+            _thinking_enabled = False
         # Slack-native task cards (#29483): when the Slack adapter's opt-in
         # is set, tool progress renders as native plan/task cards via
         # chat.startStream — the progress queue is needed even though Slack
@@ -27986,7 +28034,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
         needs_progress_queue = (
-            tool_progress_enabled or _thinking_enabled or _native_slack_task_cards
+            tool_progress_enabled
+            or _thinking_enabled
+            or (_native_slack_task_cards and not final_only)
         )
 
 
@@ -28518,7 +28568,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             default=True,
             allow_generic=True,
         )
-        if _long_running_mode == "off":
+        if final_only or _long_running_mode == "off":
             _NOTIFY_INTERVAL = None
         _notify_start = time.time()
 

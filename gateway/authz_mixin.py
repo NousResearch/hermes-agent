@@ -579,6 +579,20 @@ class GatewayAuthorizationMixin:
         if platform_allow_all_var and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}:
             return True
 
+        # BlueBubbles can be intentionally invited into an ad-hoc iMessage
+        # group.  This narrowly admits only group traffic when the operator has
+        # explicitly enabled the invitation policy *and* the adapter's mention
+        # gate is on.  It does not open DMs and it leaves command-level
+        # authorization to the installed assistant plugin.
+        if source.platform == Platform.BLUEBUBBLES and source.chat_type == "group":
+            adapter = self._adapter_for_source(source)
+            extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+            if (
+                extra.get("group_policy") == "admin_invited"
+                and getattr(adapter, "require_mention", False) is True
+            ):
+                return True
+
         # Adapter-verified role auth: the Discord adapter already confirmed the
         # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.
         # Compare with ``is True`` so the real bool field authorizes while a

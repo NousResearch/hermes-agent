@@ -2379,6 +2379,10 @@ class MessageEvent:
     # particular key existing.
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # Trusted plugin-derived presentation policy for this turn.  The gateway
+    # validates/merges it; adapters and untrusted inbound payloads never set it.
+    presentation: Dict[str, Any] = field(default_factory=dict)
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
 

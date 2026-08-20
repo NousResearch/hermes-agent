@@ -152,6 +152,8 @@ class TestFeishuExecApproval:
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_002"
         assert state["chat_id"] == "oc_12345"
+        assert state["command"] == "echo test"
+        assert state["description"] == "dangerous command"
 
 
 # ===========================================================================
@@ -314,6 +316,8 @@ class TestCardActionCallbackResponse:
             "session_key": "sess-1",
             "message_id": "msg-1",
             "chat_id": "oc_12345",
+            "command": "rm -rf /important",
+            "description": "dangerous deletion",
         }
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 1},
@@ -329,9 +333,59 @@ class TestCardActionCallbackResponse:
         assert response.card.type == "raw"
         card = response.card.data
         assert card["header"]["template"] == "green"
-        assert "Approved once" in card["header"]["title"]["content"]
-        assert "Bob" in card["elements"][0]["content"]
+        assert "Approved once by Bob" in card["header"]["title"]["content"]
+        # Command preview preserved in card body (same rendering as the pending card)
+        assert "rm -rf /important" in card["elements"][0]["content"]
+        assert "dangerous deletion" in card["elements"][0]["content"]
 
+    def test_returns_card_for_deny_action(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[2] = {
+            "session_key": "sess-2",
+            "message_id": "msg-2",
+            "chat_id": "oc_12345",
+            "command": "rm -rf /",
+            "description": "dangerous",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "deny", "approval_id": 2},
+            open_id="ou_bob",
+        )
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "red"
+        assert "Denied by Bob" in card["header"]["title"]["content"]
+        assert "rm -rf /" in card["elements"][0]["content"]
+
+    def test_no_card_when_state_already_resolved(self, _patch_callback_card_types):
+        """Duplicate/already-resolved callbacks (state absent) return no card."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_alice"}
+        # approval_id 9 is NOT in _approval_state — simulates a duplicate
+        # callback or a race where _resolve_approval already popped it.
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 9},
+            open_id="ou_alice",
+        )
+        adapter._sender_name_cache["ou_alice"] = ("Alice", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
 
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -342,6 +396,8 @@ class TestCardActionCallbackResponse:
             "session_key": "sess-4",
             "message_id": "msg-4",
             "chat_id": "oc_12345",
+            "command": "ls",
+            "description": "list",
         }
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 4},
@@ -353,8 +409,9 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         card = response.card.data
-        assert "Old Name" not in card["elements"][0]["content"]
-        assert "ou_expired" in card["elements"][0]["content"]
+        # Expired cache name not used; open_id used as fallback in the header title
+        assert "Old Name" not in card["header"]["title"]["content"]
+        assert "ou_expired" in card["header"]["title"]["content"]
 
     def test_rejects_approval_click_from_unauthorized_user(self, _patch_callback_card_types):
         adapter = _make_adapter()

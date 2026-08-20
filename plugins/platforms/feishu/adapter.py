@@ -2121,6 +2121,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "command": command,
+                    "description": description,
                 }
             return result
         except Exception as exc:
@@ -2196,22 +2198,18 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
-    def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
+    def _build_resolved_approval_card(*, choice: str, user_name: str, body: str) -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        header_title = f"{icon} {label} by {user_name}" if user_name else f"{icon} {label}"
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"content": f"{icon} {label}", "tag": "plain_text"},
+                "title": {"content": header_title, "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "elements": [{"tag": "markdown", "content": body}],
         }
 
     @staticmethod
@@ -2830,7 +2828,13 @@ class FeishuAdapter(BasePlatformAdapter):
         if CallBackCard is not None:
             card = CallBackCard()
             card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+            card.data = self._build_resolved_approval_card(
+                choice=choice,
+                user_name=user_name,
+                body=self._format_exec_approval(
+                    state.get("command", ""), state.get("description", ""),
+                ),
+            )
             response.card = card
         return response
 

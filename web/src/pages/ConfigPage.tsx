@@ -275,9 +275,10 @@ export default function ConfigPage() {
     : Object.entries(schema).filter(
         ([, s]) => String(s.category ?? "general") === selectedCategory,
       );
-  const activePluginSection = pluginConfigSections.includes(selectedCategory)
-    ? `config:section:${selectedCategory}`
-    : null;
+  const activePluginSection =
+    !isSearching && pluginConfigSections.includes(selectedCategory)
+      ? `config:section:${selectedCategory}`
+      : null;
 
   /* ---- Handlers ---- */
   const handleSave = async () => {

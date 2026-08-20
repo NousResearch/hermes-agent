@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/i18n";
@@ -16,10 +16,15 @@ const apiMocks = vi.hoisted(() => ({
   saveConfig: vi.fn(),
   saveConfigRaw: vi.fn(),
 }));
+const headerMock = vi.hoisted(() => ({ end: null as ReactNode }));
 
 vi.mock("@/lib/api", () => ({ api: apiMocks }));
 vi.mock("@/contexts/usePageHeader", () => ({
-  usePageHeader: () => ({ setEnd: vi.fn() }),
+  usePageHeader: () => ({
+    setEnd: (node: ReactNode) => {
+      headerMock.end = node;
+    },
+  }),
 }));
 vi.mock("@nous-research/ui/hooks/use-toast", () => ({
   useToast: () => ({ toast: null, showToast: vi.fn() }),
@@ -28,6 +33,8 @@ vi.mock("@nous-research/ui/hooks/use-toast", () => ({
 describe("Config plugin sections", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let headerContainer: HTMLDivElement;
+  let headerRoot: Root;
 
   beforeEach(() => {
     apiMocks.getConfig.mockResolvedValue({ general: { model: "test" } });
@@ -49,14 +56,20 @@ describe("Config plugin sections", () => {
       <div data-testid="buzz-policy-panel">Buzz policy panel</div>
     ));
     container = document.createElement("div");
+    headerContainer = document.createElement("div");
     document.body.append(container);
+    document.body.append(headerContainer);
     root = createRoot(container);
+    headerRoot = createRoot(headerContainer);
+    headerMock.end = null;
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    await act(async () => headerRoot.unmount());
     unregisterPluginSlots("buzz-platform");
     container.remove();
+    headerContainer.remove();
     vi.clearAllMocks();
   });
 
@@ -79,5 +92,38 @@ describe("Config plugin sections", () => {
     expect(container.querySelector('[data-testid="buzz-policy-panel"]')?.textContent).toBe(
       "Buzz policy panel",
     );
+  });
+
+  it("restores core Save and Reset controls when searching from a plugin section", async () => {
+    await act(async () => root.render(<I18nProvider><ConfigPage /></I18nProvider>));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const buzzSection = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Buzz"),
+    );
+    await act(async () => buzzSection?.click());
+    expect(container.querySelector('[data-testid="buzz-policy-panel"]')).not.toBeNull();
+
+    await act(async () => headerRoot.render(headerMock.end));
+    const search = headerContainer.querySelector("input");
+    expect(search).not.toBeNull();
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setValue?.call(search, "model");
+      search?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.some((button) => button.textContent?.trim() === "Save")).toBe(true);
+    expect(
+      buttons.some((button) => /reset/i.test(button.getAttribute("aria-label") ?? "")),
+    ).toBe(true);
   });
 });

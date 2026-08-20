@@ -71,13 +71,28 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
 
     Only local CLI sessions get a recorded cwd: the directory the process was
     launched from is meaningful for ``hermes -c`` / ``--resume`` (relaunch
-    where you left off). Gateway/cron/remote-backend sessions have no stable
-    host cwd to restore, so they record nothing.
+    where you left off). Gateway/remote-backend sessions have no stable host
+    cwd to restore, so they record nothing.
+
+    Cron sessions are the exception: a job with a configured ``workdir`` runs
+    its tools in that directory, and the scheduler pins it via the
+    ``_SESSION_CWD`` contextvar. Stamping it keeps ``sessions list --workspace``
+    and resume-to-workspace working for cron runs (#79623).
 
     ``TERMINAL_ENV`` is set by the CLI's config bridge (``load_cli_config``);
     a non-"local" backend (docker/ssh/modal/...) means the host cwd is
     irrelevant to the agent's tools, so we skip it there too.
     """
+    if source == "cron":
+        # Cron workdir is pinned by the scheduler via _SESSION_CWD.
+        try:
+            from agent.runtime_cwd import _session_cwd_override
+            cron_cwd = _session_cwd_override().strip()
+            if cron_cwd and Path(cron_cwd).is_dir():
+                return cron_cwd
+        except Exception:
+            pass
+        return None
     if source != "cli":
         return None
     backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()

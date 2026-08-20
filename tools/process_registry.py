@@ -1686,6 +1686,16 @@ class ProcessRegistry:
         """
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
+        # A live drain is the consumer half of async-delegation delivery; make
+        # sure the delivery sweeper is running here so a completion stranded
+        # by a producer-side process death is re-enqueued into a process that
+        # can actually deliver it.
+        try:
+            from tools.async_delegation import _ensure_delivery_sweeper
+
+            _ensure_delivery_sweeper()
+        except Exception:
+            pass
         while not self.completion_queue.empty():
             try:
                 evt = self.completion_queue.get_nowait()

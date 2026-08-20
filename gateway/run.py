@@ -25668,6 +25668,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from tools.process_registry import process_registry as _pr
         while self._running:
             try:
+                # A live gateway drain is the consumer half of async-delegation
+                # delivery: keep the delivery sweeper running here so a
+                # completion stranded by a producer-side process death is
+                # re-enqueued into a process that can deliver it.
+                try:
+                    from tools.async_delegation import _ensure_delivery_sweeper
+
+                    _ensure_delivery_sweeper()
+                except Exception:
+                    pass
                 # Peek the queue for async-delegation events. We must NOT
                 # consume watch/completion events here (other drains own them),
                 # so requeue anything that isn't ours.

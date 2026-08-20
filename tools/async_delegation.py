@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -119,6 +120,40 @@ _STALL_GRACE_SECONDS = 120.0  # after interrupt, time for the runner to return
 _monitor_lock = threading.Lock()
 _monitor_thread: Optional[threading.Thread] = None
 _monitor_stop = threading.Event()
+
+# Delivery sweeper: re-enqueues durable completions that are still pending
+# (delivery_state='pending') onto the local completion queue. Delivery of an
+# async-delegation event is a chain of two hops: (1) the event is pushed onto
+# the completion_queue of the process where the child finished (or where the
+# durable row was restored after a restart), and (2) a drain (CLI process_loop,
+# gateway watcher, TUI/desktop poller) claims it and injects it as a fresh
+# turn into the owning session. Hop (1) can be lost when the producing process
+# dies between persisting the completion and the queue drain, or when a
+# recovery runs after the one-time startup restore already selected pending
+# rows — the durable row then sits in delivery_state='pending' with zero
+# delivery attempts forever and the parent session never hears the outcome.
+# This sweeper closes that gap: it re-enqueues any pending completion older
+# than ``_DELIVERY_SWEEP_MIN_AGE`` so a live drain eventually claims it. The
+# existing claim/attempts machinery makes re-enqueues idempotent (only one
+# claim succeeds per window; a duplicate copy is consumed and dropped), and
+# the replay-age cap terminally drops events that can never be delivered.
+_DELIVERY_SWEEP_INTERVAL = 60.0  # seconds between delivery re-enqueue sweeps
+# Min-age must EXCEED the sweep interval: the sweeper refreshes the dedupe
+# timestamp on every enqueue, so a 30s window would already be expired at
+# the next 60s sweep and the dedupe would never skip anything (queue would
+# grow by one copy per sweep per unclaimable row). 90s = interval + margin.
+_DELIVERY_SWEEP_MIN_AGE = 90.0
+_DELIVERY_SWEEP_IDLE_ROUNDS = 5  # stop after this many consecutive empty sweeps
+
+_sweeper_lock = threading.Lock()
+_sweeper_thread: Optional[threading.Thread] = None
+_sweeper_stop = threading.Event()
+# Per-process dedupe: delegation_id -> last enqueue time (monotonic). The
+# sweeper must not pile up a new queue copy every sweep for rows that no
+# consumer in THIS process can claim (the drain re-queues them, the durable
+# row stays pending, and without the dedupe the queue would grow by one copy
+# per sweep forever).
+_sweeper_enqueued: Dict[str, float] = {}
 
 
 def _db_path():
@@ -322,6 +357,11 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]),
         )
+    # A completion is now durably pending; make sure the delivery sweeper is
+    # alive so that even if this process dies before its queue drains (or the
+    # event is stranded in a process with no matching consumer), a live drain
+    # still re-enqueues and eventually claims it.
+    _ensure_delivery_sweeper()
 
 
 def _note_delivery_attempt(delegation_id: str) -> None:
@@ -332,14 +372,24 @@ def _note_delivery_attempt(delegation_id: str) -> None:
         )
 
 
-def recover_abandoned_delegations() -> int:
-    """Classify records whose owning process disappeared as outcome unknown."""
+def recover_abandoned_delegations(target_queue=None) -> int:
+    """Classify records whose owning process disappeared as outcome unknown.
+
+    When ``target_queue`` is provided, each recovered event is enqueued
+    immediately after the transaction commits (a recovered event was never
+    pushed by its producer, so there is no live copy to dedupe against).
+    Without this, a recovery that runs after the one-shot startup restore
+    already selected pending rows would leave the completion in
+    ``delivery_state='pending'`` with zero delivery attempts forever and the
+    parent session would never hear the outcome.
+    """
     try:
         from gateway.status import _pid_exists, get_process_start_time
     except Exception:
         return 0
     now = time.time()
     recovered = 0
+    recovered_events: List[Dict[str, Any]] = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
@@ -386,20 +436,39 @@ def recover_abandoned_delegations() -> int:
                 (now, now, json.dumps(event), json.dumps(result), delegation_id),
             )
             recovered += 1
+            recovered_events.append(event)
+    # Enqueue only AFTER the transaction committed: a rollback after a put()
+    # would leave events in flight whose durable row is still 'running'.
+    if target_queue is not None:
+        for event in recovered_events:
+            # The owner is dead by definition, so every recovered copy must
+            # carry the restored stamp (#64484): an unfiltered legacy drain
+            # must not adopt a dead session's result.
+            if isinstance(event, dict):
+                event.setdefault("restored", True)
+            try:
+                target_queue.put(event)
+            except Exception:
+                logger.error(
+                    "Recovered delegation %s could not be enqueued; the "
+                    "delivery sweeper will retry it",
+                    event.get("delegation_id"),
+                    exc_info=True,
+                )
     return recovered
 
 
 def restore_undelivered_completions(target_queue) -> int:
     """Enqueue durable pending completions as fresh turns after process start.
 
-    Every restored event is stamped ``restored=True`` (in-memory only — the
-    stamp is added after the durable payload is deserialized and is never
-    persisted). Restored events originate from a *previous* process, so no
-    consumer in THIS process implicitly owns them: drain paths that run
-    without an ownership filter (the legacy single-session behavior) must
-    leave them queued for a consumer that can positively prove ownership,
-    otherwise a brand-new session adopts a dead session's delegation
-    results seconds after boot (#64484).
+    Restored events originate from a *previous* process (their durable
+    owner_pid is foreign), so no consumer in THIS process implicitly owns
+    them: drain paths that run without an ownership filter (the legacy
+    single-session behavior) must leave them queued for a consumer that can
+    positively prove ownership, otherwise a brand-new session adopts a dead
+    session's delegation results seconds after boot (#64484). Events this
+    process persisted itself are NOT stamped, so a legacy drain that could
+    legitimately consume the retry copy still can.
 
     Staleness cap: a pending completion older than
     ``_MAX_COMPLETION_REPLAY_AGE_S`` is terminally dropped instead of
@@ -407,20 +476,71 @@ def restore_undelivered_completions(target_queue) -> int:
     a full-context turn (a July session replayed in August burned a
     102K-token context on the staging fleet) for a result nobody is waiting
     on anymore; the payload stays queryable on the dropped row.
+
+    The one-shot startup call can race a concurrent recovery commit in a
+    dying sibling process, and a completion persisted by a process that dies
+    before its drain runs would otherwise sit in ``delivery_state='pending'``
+    with zero delivery attempts forever — the parent session never hears the
+    outcome. The periodic delivery sweeper re-enqueues any completion that
+    remains pending after this call, making delivery eventually-consistent;
+    the claim/attempts machinery bounds it.
     """
-    recover_abandoned_delegations()
+    recover_abandoned_delegations(target_queue)
+    _ensure_delivery_sweeper()
+    # Restore replays EVERY pending completion, regardless of row freshness:
+    # in a fresh process there is no live producer that could still hold a
+    # copy in its queue. The min-age guard is only for the periodic sweeper.
+    return requeue_pending_completions(target_queue, min_age_seconds=0.0)
+
+
+def requeue_pending_completions(
+    target_queue,
+    min_age_seconds: float = _DELIVERY_SWEEP_MIN_AGE,
+    skip_ids: Optional[set] = None,
+) -> int:
+    """Re-enqueue durable completions that are still undelivered.
+
+    Selects terminal (not running/finalizing) pending rows with an event
+    payload, older than ``min_age_seconds`` (so an event that was just
+    pushed and is sitting in the queue awaiting its drain is not duplicated
+    immediately), and applies the ``_MAX_COMPLETION_REPLAY_AGE_S`` staleness
+    cap (dropping rows nobody will ever wait for). Re-enqueue is idempotent
+    by design: a duplicate copy is consumed by the drain and dropped when
+    its claim fails, and the delivery-attempts cap terminally drops events
+    no consumer can ever deliver.
+
+    The ``restored`` stamp is applied ONLY to events whose durable owner is
+    a different process (``owner_pid`` mismatch): those originated in a
+    previous process and no consumer in this one implicitly owns them, so
+    unfiltered legacy drains must leave them queued (#64484). Events this
+    process produced itself must NOT be stamped, or a legacy drain that
+    could legitimately consume the retry copy would refuse it forever.
+
+    ``skip_ids`` (used by the delivery sweeper) excludes rows this process
+    already enqueued within the min-age window, so a row that no consumer in
+    this process can claim cannot pile up one queue copy per sweep.
+    """
     now = time.time()
     restored = 0
+    dropped: List[str] = []
+    enqueued: List[str] = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
-            """SELECT delegation_id, event_json, completed_at, dispatched_at
+            """SELECT delegation_id, event_json, owner_pid, completed_at,
+                      dispatched_at
                FROM async_delegations
-               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
-               ORDER BY completed_at, delegation_id"""
+               WHERE state NOT IN ('running','finalizing')
+                 AND delivery_state='pending' AND event_json IS NOT NULL
+                 AND updated_at < ?
+               ORDER BY completed_at, delegation_id""",
+            (now - min_age_seconds,),
         ).fetchall()
-        for delegation_id, payload, completed_at, dispatched_at in rows:
+        for delegation_id, payload, owner_pid, completed_at, dispatched_at in rows:
+            if skip_ids and delegation_id in skip_ids:
+                continue
             age_basis = completed_at or dispatched_at
             if age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
+                dropped.append((delegation_id, age_basis))
                 conn.execute(
                     """UPDATE async_delegations SET delivery_state='dropped',
                               delivery_claim=NULL, delivery_claimed_at=NULL,
@@ -428,20 +548,124 @@ def restore_undelivered_completions(target_queue) -> int:
                        WHERE delegation_id=? AND delivery_state='pending'""",
                     (now, delegation_id),
                 )
-                logger.warning(
-                    "Async delegation %s: pending completion is %.1fh old "
-                    "(cap %.1fh); terminally dropping the replay (result "
-                    "remains queryable).",
-                    delegation_id, (now - age_basis) / 3600.0,
-                    _MAX_COMPLETION_REPLAY_AGE_S / 3600.0,
-                )
                 continue
             evt = json.loads(payload)
             if isinstance(evt, dict):
-                evt["restored"] = True
+                # Rows without owner_pid predate the column (or the pid could
+                # not be resolved at dispatch) — treat them as foreign so an
+                # unfiltered legacy drain never adopts a result it cannot
+                # prove ownership of (#64484). A corrupt value degrades to
+                # the same conservative choice instead of aborting the sweep.
+                try:
+                    foreign_owner = (
+                        owner_pid is None
+                        or int(owner_pid) != os.getpid()
+                    )
+                except (TypeError, ValueError):
+                    foreign_owner = True
+                if foreign_owner:
+                    evt.setdefault("restored", True)
             target_queue.put(evt)
             restored += 1
+            enqueued.append(delegation_id)
+    for delegation_id, age_basis in dropped:
+        logger.warning(
+            "Async delegation %s: pending completion is %.1fh old "
+            "(cap %.1fh); terminally dropping the replay (result "
+            "remains queryable).",
+            delegation_id, (now - age_basis) / 3600.0,
+            _MAX_COMPLETION_REPLAY_AGE_S / 3600.0,
+        )
+    if enqueued:
+        # Feed the sweeper's per-process dedupe: these copies are (or just
+        # were) in this process's queue, so the sweeper must not re-enqueue
+        # them within the min-age window.
+        with _sweeper_lock:
+            for delegation_id in enqueued:
+                _sweeper_enqueued[delegation_id] = now
     return restored
+
+
+def _ensure_delivery_sweeper() -> None:
+    """Start (once) the module-level delivery re-enqueue sweeper thread.
+
+    One daemon thread serves every process; it exits on its own after
+    ``_DELIVERY_SWEEP_IDLE_ROUNDS`` consecutive empty sweeps and is
+    restarted by the next completion/restore/drain activity.
+
+    Called from BOTH the producer side (``_persist_completion``,
+    ``restore_undelivered_completions``) and the consumer side
+    (``ProcessRegistry.drain_notifications``, gateway watcher, TUI poller):
+    a completion stranded by a producer-side process death must be
+    re-enqueued in the process that can actually deliver it, which may be
+    one that never persisted anything itself.
+    """
+    # Under pytest, the module-global sweeper would outlive the test
+    # process's monkeypatched HERMES_HOME and start touching the real
+    # state.db mid-suite. Tests exercise the sweeper explicitly instead.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    global _sweeper_thread
+    with _sweeper_lock:
+        if _sweeper_thread is not None and _sweeper_thread.is_alive():
+            return
+        _sweeper_stop.clear()
+        _sweeper_thread = threading.Thread(
+            target=_delivery_sweeper_loop,
+            name="async-delegate-delivery-sweeper",
+            daemon=True,
+        )
+        _sweeper_thread.start()
+
+
+def _delivery_sweeper_loop() -> None:
+    """Periodically re-enqueue durable pending completions.
+
+    Runs while there is work: each sweep re-enqueues terminal pending
+    completions onto the local ``process_registry.completion_queue`` — at
+    most one copy per row per ``_DELIVERY_SWEEP_MIN_AGE`` per process
+    (``_sweeper_enqueued`` dedupe), so a row that no consumer in this
+    process can claim cannot grow the queue unboundedly. Rows older than
+    ``_MAX_COMPLETION_REPLAY_AGE_S`` are terminally dropped by
+    ``requeue_pending_completions`` instead of being retried forever. After
+    ``_DELIVERY_SWEEP_IDLE_ROUNDS`` consecutive empty sweeps the thread
+    exits and is restarted on demand.
+    """
+    idle_rounds = 0
+    while not _sweeper_stop.wait(_DELIVERY_SWEEP_INTERVAL):
+        try:
+            from tools.process_registry import process_registry
+        except Exception:  # pragma: no cover
+            continue
+        now = time.time()
+        try:
+            # Prune the local dedupe map; build the skip set from rows this
+            # process enqueued within the min-age window.
+            with _sweeper_lock:
+                stale_ids = [
+                    did for did, ts in _sweeper_enqueued.items()
+                    if now - ts > _MAX_COMPLETION_REPLAY_AGE_S
+                ]
+                for did in stale_ids:
+                    _sweeper_enqueued.pop(did, None)
+                recent = {
+                    did for did, ts in _sweeper_enqueued.items()
+                    if now - ts < _DELIVERY_SWEEP_MIN_AGE
+                }
+            requeued = requeue_pending_completions(
+                process_registry.completion_queue, skip_ids=recent
+            )
+        except Exception:
+            logger.exception(
+                "Async delegation delivery sweeper crashed; will retry next sweep"
+            )
+            continue
+        if requeued:
+            idle_rounds = 0
+        else:
+            idle_rounds += 1
+            if idle_rounds >= _DELIVERY_SWEEP_IDLE_ROUNDS:
+                return
 
 
 def mark_completion_delivered(delegation_id: str) -> bool:
@@ -1587,7 +1811,7 @@ def interrupt_for_session(
 
 def _reset_for_tests() -> None:
     """Test-only: clear all state and tear down the executor + monitor."""
-    global _executor, _executor_max_workers, _monitor_thread
+    global _executor, _executor_max_workers, _monitor_thread, _sweeper_thread
     with _executor_lock:
         if _executor is not None:
             _executor.shutdown(wait=False)
@@ -1599,5 +1823,12 @@ def _reset_for_tests() -> None:
         _monitor_thread = None
     if thread is not None and thread.is_alive():
         thread.join(timeout=2)
+    _sweeper_stop.set()
+    with _sweeper_lock:
+        sweeper = _sweeper_thread
+        _sweeper_thread = None
+    if sweeper is not None and sweeper.is_alive():
+        sweeper.join(timeout=2)
     with _records_lock:
         _records.clear()
+        _sweeper_enqueued.clear()

@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -553,6 +554,215 @@ assert ad.mark_completion_delivered({delegation_id!r})
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"
+
+
+# ---------------------------------------------------------------------------
+# Delivery recovery: a completion that was persisted but never enqueued must
+# still reach a live drain (process death between persist and drain, or a
+# recovery racing the one-shot startup restore). Regression for the observed
+# failure where a delegation recovered as 'unknown' sat in
+# delivery_state='pending' with zero delivery attempts forever and the
+# parent session never received its completion notice.
+# ---------------------------------------------------------------------------
+
+def _seed_pending_completion(tmp_path, monkeypatch, *, delegation_id, updated_age, owner_pid=None):
+    monkeypatch.setattr(ad, "get_hermes_home", lambda: tmp_path)
+    conn = ad._connect()
+    try:
+        now = time.time()
+        conn.execute(
+            """INSERT OR REPLACE INTO async_delegations
+               (delegation_id, origin_session, origin_ui_session_id,
+                parent_session_id, state, dispatched_at, completed_at,
+                updated_at, event_json, result_json, delivery_state,
+                delivery_attempts, owner_pid, task_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (delegation_id, "owner-session", "", "durable-parent", "unknown",
+             now - 1000, now - 1000, now - updated_age,
+             json.dumps({
+                 "type": "async_delegation", "delegation_id": delegation_id,
+                 "session_key": "owner-session",
+                 "parent_session_id": "durable-parent",
+                 "status": "unknown", "summary": None,
+                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
+             }),
+             json.dumps({"status": "unknown"}), "pending", 0, owner_pid, "{}"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_requeue_pending_completions_re_enqueues_stranded_events(tmp_path, monkeypatch):
+    """A durable pending completion older than the min-age guard is re-enqueued;
+    delivered rows and fresh rows are left alone; the restored stamp is only
+    applied to completions owned by a foreign process."""
+    _seed_pending_completion(
+        tmp_path, monkeypatch, delegation_id="deleg_stranded", updated_age=300.0,
+        owner_pid=999999,  # foreign (dead) owner -> stamped restored
+    )
+    q = queue.Queue()
+    n = ad.requeue_pending_completions(q)
+    assert n == 1
+    evt = q.get_nowait()
+    assert evt["delegation_id"] == "deleg_stranded"
+    assert evt["restored"] is True
+    assert evt["session_key"] == "owner-session"
+
+    # A delivered row must never be re-enqueued.
+    ad.mark_completion_delivered("deleg_stranded")
+    q2 = queue.Queue()
+    assert ad.requeue_pending_completions(q2) == 0
+
+    # A freshly-updated row (still being handled by a live drain) is skipped
+    # by the default min-age guard but picked up with an explicit zero age.
+    _seed_pending_completion(
+        tmp_path, monkeypatch, delegation_id="deleg_fresh", updated_age=5.0,
+    )
+    q3 = queue.Queue()
+    assert ad.requeue_pending_completions(q3) == 0
+    assert ad.requeue_pending_completions(q3, min_age_seconds=0.0) == 1
+    assert q3.get_nowait()["delegation_id"] == "deleg_fresh"
+
+    # A completion produced by THIS process must not carry the restored
+    # stamp: a legacy drain that could legitimately consume the retry copy
+    # must not refuse it (#64484 ownership semantics).
+    _seed_pending_completion(
+        tmp_path, monkeypatch, delegation_id="deleg_local", updated_age=300.0,
+        owner_pid=os.getpid(),
+    )
+    q4 = queue.Queue()
+    assert ad.requeue_pending_completions(q4) == 1
+    assert "restored" not in q4.get_nowait()
+
+
+def test_delivery_sweeper_re_enqueues_stranded_event(tmp_path, monkeypatch):
+    """The periodic sweeper re-enqueues a stranded pending completion onto the
+    shared queue, so a live drain eventually claims and delivers it — even
+    when the completion becomes terminal AFTER the sweeper (and the one-shot
+    startup restore) already ran, which is the incident race."""
+    monkeypatch.setattr(ad, "_DELIVERY_SWEEP_INTERVAL", 0.05)
+    monkeypatch.setattr(ad, "_DELIVERY_SWEEP_MIN_AGE", 0.0)
+    monkeypatch.setattr(ad, "_DELIVERY_SWEEP_IDLE_ROUNDS", 100)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    # Sweeper runs BEFORE the row exists (simulates a row that becomes
+    # terminal only after the one-shot restore has already passed).
+    ad._ensure_delivery_sweeper()
+    _seed_pending_completion(
+        tmp_path, monkeypatch, delegation_id="deleg_swept", updated_age=300.0,
+        owner_pid=999999,
+    )
+    try:
+        evt = _drain_for("deleg_swept", timeout=5.0)
+    finally:
+        ad._sweeper_stop.set()
+    assert evt is not None
+    assert evt["delegation_id"] == "deleg_swept"
+    assert evt["restored"] is True
+
+
+def test_delivery_sweeper_drops_hopeless_completions(tmp_path, monkeypatch):
+    """A pending completion nobody claimed past the replay-age cap is terminally
+    dropped instead of being re-enqueued forever."""
+    monkeypatch.setattr(ad, "_DELIVERY_SWEEP_INTERVAL", 0.05)
+    monkeypatch.setattr(ad, "_DELIVERY_SWEEP_MIN_AGE", 0.0)
+    monkeypatch.setattr(ad, "_MAX_COMPLETION_REPLAY_AGE_S", 0.05)
+    monkeypatch.setattr(ad, "_DELIVERY_SWEEP_IDLE_ROUNDS", 100)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    _seed_pending_completion(
+        tmp_path, monkeypatch, delegation_id="deleg_hopeless", updated_age=300.0,
+    )
+    ad._ensure_delivery_sweeper()
+    try:
+        deadline = time.monotonic() + 5.0
+        state = None
+        while time.monotonic() < deadline:
+            conn = ad._connect()
+            try:
+                row = conn.execute(
+                    "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+                    ("deleg_hopeless",),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row:
+                state = row[0]
+                if state == "dropped":
+                    break
+            time.sleep(0.02)
+    finally:
+        ad._sweeper_stop.set()
+    assert state == "dropped"
+
+
+def test_recovered_completion_reaches_the_queue_after_owner_death(tmp_path):
+    """E2E: a delegation whose owning process dies mid-run is recovered as
+    'unknown' AND its completion is enqueued immediately — the parent session
+    hears an outcome instead of waiting forever."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import json
+import os
+import time
+from tools import async_delegation as ad
+r = ad.dispatch_async_delegation(
+    goal="doomed", context=None, toolsets=None, role="leaf", model="m",
+    session_key="owner-session", parent_session_id="durable-parent",
+    runner=lambda: time.sleep(3600),  # never completes on its own
+)
+print(r["delegation_id"], flush=True)
+# Keep the record visible as 'running' until we are killed.
+time.sleep(3600)
+'''
+    proc = subprocess.Popen(
+        [sys.executable, "-c", producer], cwd=repo, env=env,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        delegation_id = proc.stdout.readline().strip()
+        assert delegation_id.startswith("deleg_")
+        # Wait until the durable row exists and is 'running'.
+        deadline = time.monotonic() + 10
+        state = None
+        while time.monotonic() < deadline:
+            conn = sqlite3.connect(str(tmp_path / "state.db"))
+            try:
+                row = conn.execute(
+                    "SELECT state FROM async_delegations WHERE delegation_id=?",
+                    (delegation_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row:
+                state = row[0]
+                if state == "running":
+                    break
+            time.sleep(0.1)
+        assert state == "running"
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+    # A fresh process (simulating a restart) restores pending completions.
+    consumer = r'''
+import json
+import sys
+from tools.process_registry import process_registry
+from tools.async_delegation import restore_undelivered_completions
+restore_undelivered_completions(process_registry.completion_queue)
+evt = process_registry.completion_queue.get(timeout=10)
+print(json.dumps(evt, sort_keys=True))
+'''
+    out = subprocess.run(
+        [sys.executable, "-c", consumer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=30, check=True,
+    )
+    evt = json.loads(out.stdout.strip().splitlines()[-1])
+    assert evt["delegation_id"] == delegation_id
+    assert evt["status"] == "unknown"
+    assert evt["session_key"] == "owner-session"
+    assert evt["parent_session_id"] == "durable-parent"
 
 
 # ---------------------------------------------------------------------------

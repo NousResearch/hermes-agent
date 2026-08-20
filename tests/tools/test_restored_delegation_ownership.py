@@ -79,6 +79,16 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     evt = _delegation_event(session_key="OLD_SESSION_A", delegation_id="d-old")
     ad._persist_completion(evt, {"summary": "SECRET RESULT"})
 
+    # Simulate the restart: the durable row was persisted by a PREVIOUS
+    # process instance (owner_pid is foreign/dead). Restore must stamp such
+    # events restored=True so unfiltered legacy drains leave them queued;
+    # a row this process persisted itself must NOT be stamped.
+    with ad._connect() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET owner_pid=? WHERE delegation_id='d-old'",
+            (999999,),
+        )
+
     q = queue.Queue()
     restored = ad.restore_undelivered_completions(q)
     assert restored == 1

@@ -346,16 +346,36 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     provider/model on any resolution error so a misconfigured slot still
     attempts the call rather than aborting the whole MoA turn.
 
-    The resolved runtime is cached per (provider, model) with a short TTL
+    A slot may also carry explicit ``base_url`` / ``api_key`` / ``api_mode``
+    keys (inline connection info). These are forwarded to
+    ``resolve_runtime_provider`` as ``explicit_base_url`` / ``explicit_api_key``
+    — the same escape hatch the CLI's runtime resolution already supports — so
+    two slots can reference the same model served by different endpoints (e.g.
+    a primary provider and a mirror) without registering each endpoint as a
+    separate named provider. An explicit slot ``api_mode`` wins over the
+    auto-detected one.
+
+    The resolved runtime is cached per (provider, model, and the slot's
+    explicit connection fields) with a short TTL
     (``_RUNTIME_CACHE_TTL_SECONDS``): the resolution does real I/O (catalog
     query + config read) that used to run serially per create() call before
     the parallel fan-out could start — the dominant source of MoA cold-start
     latency (#66793). The TTL bounds credential staleness (key rotation,
-    base_url edits) instead of caching for the process lifetime.
+    base_url edits) instead of caching for the process lifetime. The
+    connection fields MUST be part of the key: two slots sharing
+    provider+model but differing only in base_url would otherwise collide,
+    and every sibling slot would silently inherit the first slot's endpoint
+    and credentials.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
-    cache_key = (provider, model)
+    cache_key = (
+        provider,
+        model,
+        str(slot.get("base_url") or ""),
+        str(slot.get("api_key") or ""),
+        str(slot.get("api_mode") or ""),
+    )
     now = time.monotonic()
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)
@@ -367,13 +387,24 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        rt = resolve_runtime_provider(requested=provider, target_model=model)
+        rt = resolve_runtime_provider(
+            requested=provider,
+            target_model=model,
+            explicit_base_url=slot.get("base_url"),
+            explicit_api_key=slot.get("api_key"),
+        )
         if rt.get("base_url"):
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):
             out["api_key"] = rt["api_key"]
         if rt.get("api_mode"):
             out["api_mode"] = rt["api_mode"]
+        # An explicit slot api_mode overrides the auto-detected one: the
+        # whole point of inline connection info is that the slot author
+        # knows the endpoint's API surface better than the catalog does.
+        slot_api_mode = str(slot.get("api_mode") or "").strip()
+        if slot_api_mode:
+            out["api_mode"] = slot_api_mode
         request_overrides = rt.get("request_overrides")
         if isinstance(request_overrides, dict):
             extra_body = request_overrides.get("extra_body")

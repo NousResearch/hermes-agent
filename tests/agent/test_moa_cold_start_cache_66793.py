@@ -180,8 +180,9 @@ def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
     assert moa._slot_runtime(slot)["api_key"] == "key-1"
     assert calls["n"] == 1
 
-    # Age the entry past the TTL and confirm re-resolution.
-    key = ("openai", "gpt-5")
+    # Age the entry past the TTL and confirm re-resolution. The cache key
+    # includes the slot's explicit connection fields (empty for this slot).
+    key = ("openai", "gpt-5", "", "", "")
     stamped_at, cached = moa._runtime_cache[key]
     moa._runtime_cache[key] = (
         stamped_at - moa._RUNTIME_CACHE_TTL_SECONDS - 1, cached

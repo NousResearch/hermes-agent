@@ -119,3 +119,67 @@ async def test_websocket_auth_raises_on_rejection():
         await adapter._authenticate_websocket(RejectingWs())
 
 
+@pytest.mark.asyncio
+async def test_new_conversation_subscription_starts_before_membership_event(monkeypatch):
+    adapter = _make_adapter()
+    websocket = _FakeWebSocket()
+    subscriptions = {}
+    membership_created_at = 1_700_000_000
+
+    async def discover_new_dm(*, seed):
+        assert seed is False
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "dm",
+            "last_ts": 0,
+            "seen": {},
+        }
+
+    adapter._discover_dms = discover_new_dm
+    monkeypatch.setattr(_buzz_mod.time, "time", lambda: membership_created_at + 30)
+
+    await adapter._handle_membership_event(
+        websocket,
+        subscriptions,
+        {"created_at": membership_created_at},
+    )
+
+    request = websocket.sent[-1]
+    assert request[0] == "REQ"
+    assert request[2]["#h"] == [CHANNEL]
+    assert request[2]["since"] == membership_created_at - 1
+
+
+@pytest.mark.asyncio
+async def test_new_dm_keeps_membership_anchor_across_websocket_reconnect(monkeypatch):
+    """A reconnect before the opening message must not move `since` to now."""
+    adapter = _make_adapter()
+    first_websocket = _FakeWebSocket()
+    subscriptions = {}
+    membership_created_at = 1_700_000_000
+
+    async def discover_new_dm(*, seed):
+        assert seed is False
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "dm",
+            "last_ts": 0,
+            "seen": {},
+        }
+
+    adapter._discover_dms = discover_new_dm
+    monkeypatch.setattr(_buzz_mod.time, "time", lambda: membership_created_at + 300)
+
+    await adapter._handle_membership_event(
+        first_websocket,
+        subscriptions,
+        {"created_at": membership_created_at},
+    )
+
+    reconnect_websocket = _FakeWebSocket()
+    await adapter._subscribe_websocket(reconnect_websocket)
+
+    request = reconnect_websocket.sent[0]
+    assert request[0] == "REQ"
+    assert request[2]["#h"] == [CHANNEL]
+    assert request[2]["since"] == membership_created_at - 1
+
+

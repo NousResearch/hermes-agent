@@ -790,9 +790,29 @@ class BuzzAdapter(BasePlatformAdapter):
                 detail = response[-1] if len(response) > 1 else "authentication failed"
                 raise ConnectionError(f"Buzz WebSocket AUTH failed: {detail}")
 
-    async def _send_channel_subscription(self, websocket, subscription_id: str, channel_id: str) -> None:
+    async def _send_channel_subscription(
+        self,
+        websocket,
+        subscription_id: str,
+        channel_id: str,
+        *,
+        initial_since: Optional[int] = None,
+    ) -> None:
         state = self._channel_state.get(channel_id) or {}
-        since = max(int(state.get("last_ts") or time.time()) - 1, 0)
+        # A membership event is the only reliable lower bound for a brand-new
+        # conversation. Keep that bound in channel state until the first chat
+        # event advances last_ts; otherwise a WebSocket reconnect between the
+        # membership notification and the opening message resubscribes from
+        # "now" and can lose that first message (#78429).
+        if initial_since is not None and not state.get("last_ts"):
+            previous = state.get("bootstrap_since")
+            state["bootstrap_since"] = (
+                min(int(previous), int(initial_since))
+                if previous is not None
+                else int(initial_since)
+            )
+        anchor = state.get("last_ts") or state.get("bootstrap_since") or time.time()
+        since = max(int(anchor) - 1, 0)
         request = [
             "REQ",
             subscription_id,
@@ -825,7 +845,11 @@ class BuzzAdapter(BasePlatformAdapter):
     async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
         """A membership event p-tagged to us: rediscover conversations and
         subscribe to any new ones (fresh DMs dispatch from their beginning)."""
-        self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
+        try:
+            membership_created_at = max(int(event.get("created_at") or 0), 0)
+        except (TypeError, ValueError):
+            membership_created_at = 0
+        self._membership_since = max(self._membership_since, membership_created_at)
         before = set(self._channel_state)
         await self._discover_dms(seed=False)
         for channel_id in self._channel_state:
@@ -833,7 +857,12 @@ class BuzzAdapter(BasePlatformAdapter):
                 continue
             subscription_id = f"hermes-buzz-dm-{len(subscriptions)}"
             subscriptions[subscription_id] = channel_id
-            await self._send_channel_subscription(websocket, subscription_id, channel_id)
+            await self._send_channel_subscription(
+                websocket,
+                subscription_id,
+                channel_id,
+                initial_since=membership_created_at or None,
+            )
             logger.info("Buzz: subscribed to new conversation %s", channel_id)
 
     async def _websocket_loop(self) -> None:
@@ -1013,6 +1042,8 @@ class BuzzAdapter(BasePlatformAdapter):
             return
         state["seen"][event_id] = None
         state["last_ts"] = max(state["last_ts"], created_at)
+        if state["last_ts"]:
+            state.pop("bootstrap_since", None)
 
         if int(event.get("kind") or 0) != _CHAT_KIND:
             return

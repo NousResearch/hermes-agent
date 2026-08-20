@@ -3126,7 +3126,13 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
     if wav_path != output_path:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
-            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error"]
+            # Telegram native voice bubbles require OGG/Opus. Letting ffmpeg
+            # infer the codec from a .ogg suffix chooses Vorbis, which Telegram
+            # sends as a generic audio attachment instead.
+            if output_path.lower().endswith(".ogg"):
+                conv_cmd.extend(["-c:a", "libopus", "-b:a", "48k"])
+            conv_cmd.append(output_path)
             subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             os.remove(wav_path)
         else:
@@ -3451,12 +3457,15 @@ def _text_to_speech_single(
         elif (
             want_opus
             and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
-            and not file_str.endswith(".ogg")
         ):
-            opus_path = _convert_to_opus(file_str)
-            if opus_path:
-                file_str = opus_path
-                voice_compatible = True
+            if not file_str.endswith(".ogg"):
+                opus_path = _convert_to_opus(file_str)
+                if opus_path:
+                    file_str = opus_path
+            # Providers such as KittenTTS may already have written OGG/Opus
+            # directly. That is still native-voice compatible and must not be
+            # left marked false merely because no second conversion was needed.
+            voice_compatible = file_str.endswith(".ogg")
         elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 

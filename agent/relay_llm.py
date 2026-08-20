@@ -70,6 +70,43 @@ def _relay_metadata(
     return relay_metadata
 
 
+def _strip_empty_tool_calls(request: dict[str, Any]) -> int:
+    """Remove empty/invalid tool_calls arrays on assistant messages.
+
+    Strict OpenAI-compatible providers (DeepSeek v4, Console Go) reject
+    ``tool_calls: []`` with HTTP 400 "Invalid 'messages[N].tool_calls':
+    empty array. Expected an array with minimum length 1". Empty arrays
+    reach this final relay chokepoint from session-resume / compression
+    rebuild paths that re-materialize assistant turns with a vacuous
+    tool_calls key. Stripping the key in place preserves object identity
+    so aliased copies (e.g. ``_moa_prepared_request.messages``) stay in
+    sync; non-empty lists are never touched.
+    """
+    stripped = 0
+    if not isinstance(request, dict):
+        return stripped
+    seen: set[int] = set()
+    prep = request.get("_moa_prepared_request")
+    for msgs in (
+        request.get("messages"),
+        (prep.get("messages") if isinstance(prep, dict) else None),
+    ):
+        if not isinstance(msgs, list) or id(msgs) in seen:
+            continue
+        seen.add(id(msgs))
+        for msg in msgs:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            if "tool_calls" not in msg:
+                continue
+            tcs = msg["tool_calls"]
+            if isinstance(tcs, list) and tcs:
+                continue
+            msg.pop("tool_calls", None)
+            stripped += 1
+    return stripped
+
+
 def execute(
     request: dict[str, Any],
     callback: Callable[[dict[str, Any]], Any],
@@ -81,6 +118,7 @@ def execute(
     defer_logical_completion: bool = False,
 ) -> Any:
     """Run one non-streaming physical provider attempt through Relay."""
+    _strip_empty_tool_calls(request)
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
     if runtime is None or session is None or not runtime.managed_execution_enabled():
         return callback(request)
@@ -392,6 +430,12 @@ def stream(
     defer_logical_completion: bool = False,
 ) -> "ManagedLlmStream":
     """Return a synchronous view of one Relay-managed provider stream."""
+    _stripped = _strip_empty_tool_calls(request)
+    if _stripped:
+        logger.debug(
+            "relay_llm.stream: stripped %d empty tool_calls array(s) from request",
+            _stripped,
+        )
     return ManagedLlmStream(
         request,
         stream_factory,

@@ -483,3 +483,55 @@ class TestInstallSpecs:
         result = ld.install_specs(["honcho-ai==2.2.0"])
         assert result.ok is False
         assert "disk on fire" in result.stderr
+
+
+class TestAnchorDistinctiveness:
+    """Guard the convention active_features() depends on: LAZY_DEPS[f][0]
+    is the feature's *anchor* — a package distinctive enough that its
+    presence proves the user enabled that feature.
+
+    Nothing else enforces this. If a future feature lists a shared floor
+    first (aiohttp, numpy, sounddevice, starlette, qrcode all appear in
+    multiple features' spec lists), activation keyed on ``specs[0]`` would
+    silently regress to the pre-#72361 behaviour for that feature: any
+    unrelated install of the shared package would mark it active and
+    ``hermes update`` would start refreshing (and potentially installing)
+    a backend the user never enabled — the #58458 false-activation bug,
+    back with no test failing.
+
+    Exception: a feature whose *every* spec is shared (today
+    ``tts.mistral`` / ``stt.mistral``, both only ``mistralai``) has no
+    distinctive package to lead with. That case is benign — if the shared
+    package is present the feature is complete, so ``feature_missing()``
+    is empty and the refresh is a no-op ``"current"``.
+    """
+
+    @staticmethod
+    def _norm(spec: str) -> str:
+        # PEP 503 name normalization, so "foo_bar" and "foo-bar" collide.
+        import re
+        return re.sub(r"[-_.]+", "-", ld._pkg_name_from_spec(spec)).lower()
+
+    def test_every_anchor_is_distinctive_or_feature_is_all_shared(self):
+        from collections import Counter
+
+        counts = Counter(
+            self._norm(spec)
+            for specs in ld.LAZY_DEPS.values()
+            for spec in specs
+        )
+        for feature, specs in ld.LAZY_DEPS.items():
+            if not specs:
+                continue
+            names = {self._norm(spec) for spec in specs}
+            if all(counts[name] > 1 for name in names):
+                # All-shared feature: no distinctive package exists to be
+                # the anchor; presence == complete, refresh is a no-op.
+                continue
+            anchor = self._norm(specs[0])
+            assert counts[anchor] == 1, (
+                f"{feature}: anchor {specs[0]!r} is also declared by another "
+                "feature, so its presence cannot prove this feature was "
+                "enabled — active_features() would false-positive. Put the "
+                "feature's distinctive package first in LAZY_DEPS."
+            )

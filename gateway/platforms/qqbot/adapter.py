@@ -1129,7 +1129,10 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if chat_type in {"c2c", "dm"}:
+            # QQ c2c messages are normalized to ``dm`` session keys by the
+            # gateway; both are one-to-one chats where the operator openid
+            # must equal the session chat_id.
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

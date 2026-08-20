@@ -9,6 +9,7 @@ volume when a runtime install is unavoidable.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -137,3 +138,25 @@ def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
         monkeypatch.undo()
         importlib.reload(photon_adapter)
         importlib.reload(photon_cli)
+
+
+def test_mirror_files_cover_all_local_sidecar_imports() -> None:
+    """Every local .mjs module imported by index.mjs must be mirrored.
+
+    The sidecar mirror on a read-only install is created from exactly
+    ``_MIRROR_FILES``. A module that ``index.mjs`` imports but which is
+    missing from that list crashes the sidecar at startup with
+    ``ERR_MODULE_NOT_FOUND`` (send-format.mjs and stream-staleness.mjs were
+    historically omitted). Guard the invariant directly instead of re-adding
+    files one outage at a time.
+    """
+    index = sidecar_paths.SOURCE_SIDECAR_DIR / "index.mjs"
+    source_text = index.read_text(encoding="utf-8")
+    imported = set(
+        re.findall(r'from ["\']\./([\w.-]+\.mjs)["\']', source_text)
+    )
+    assert imported, "expected local .mjs imports in index.mjs"
+    missing = imported - set(sidecar_paths._MIRROR_FILES)
+    assert not missing, (
+        f"_MIRROR_FILES omits modules imported by index.mjs: {sorted(missing)}"
+    )

@@ -53,6 +53,8 @@ _MIRROR_FILES = (
     "package.json",
     "package-lock.json",
     "patch-spectrum-mixed-attachments.mjs",
+    "send-format.mjs",
+    "stream-staleness.mjs",
 )
 
 

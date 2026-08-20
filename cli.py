@@ -6433,18 +6433,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
 
     def _spinner_widget_height(self, width: Optional[int] = None) -> int:
-        """Return the visible height for the spinner/status text line above the status bar."""
-        spinner_line = self._render_spinner_text()
-        if not spinner_line:
+        """Return the stable single-row height for the live spinner widget.
+
+        The classic CLI runs prompt_toolkit in non-full-screen mode. Letting
+        this live widget grow when its status text wraps makes every repaint
+        reserve another physical terminal row; on Windows that row is pushed
+        into scrollback instead of being updated in place. The rendered text
+        is clipped by :meth:`_render_spinner_widget_text`, so the widget must
+        never advertise a wrapped height.
+        """
+        if not self._render_spinner_text():
             return 0
         if self._use_minimal_tui_chrome(width=width):
             return 0
-        width = width or self._get_tui_terminal_width()
-        if width and width > 10:
-            import math
-            text_width = self._status_bar_display_width(spinner_line)
-            return max(1, math.ceil(text_width / width))
         return 1
+
+    def _render_spinner_widget_text(self, width: Optional[int] = None) -> str:
+        """Render spinner text without entering the terminal's wrap column."""
+        spinner_line = self._render_spinner_text()
+        if not spinner_line:
+            return ""
+        width = width or self._get_tui_terminal_width()
+        # prompt_toolkit deliberately avoids the final terminal cell because
+        # writing it can trigger autowrap. Keep the live row within the same
+        # boundary used by its screen diff renderer.
+        return self._trim_status_bar_text(spinner_line, max(1, width - 1))
 
     def _render_spinner_text(self) -> str:
         """Return the live spinner/status text exactly as rendered in the TUI."""
@@ -18610,7 +18623,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return cli_ref._agent_spacer_height()
 
         def get_spinner_text():
-            spinner_line = cli_ref._render_spinner_text()
+            spinner_line = cli_ref._render_spinner_widget_text()
             if not spinner_line:
                 return []
             return [('class:hint', spinner_line)]
@@ -18621,7 +18634,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         spinner_widget = Window(
             content=FormattedTextControl(get_spinner_text),
             height=get_spinner_height,
-            wrap_lines=True,
+            wrap_lines=False,
         )
 
         # Petdex mascot — right-aligned half-block sprite above the prompt,

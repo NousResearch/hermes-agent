@@ -19,8 +19,27 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
-from gateway.session import SessionSource
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+)
+from gateway.session import SessionSource, build_session_key
+
+
+class _StubPlatformAdapter(BasePlatformAdapter):
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        pass
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=True, message_id="reply1")
+
+    async def get_chat_info(self, chat_id):
+        return {}
 
 
 def _make_source() -> SessionSource:
@@ -82,6 +101,28 @@ def _make_runner():
     return runner, adapter
 
 
+def _make_base_adapter():
+    adapter = _StubPlatformAdapter(
+        PlatformConfig(enabled=True, token="***"),
+        Platform.TELEGRAM,
+    )
+    message_handler = AsyncMock(return_value="should not be called")
+    send_with_retry = AsyncMock(
+        return_value=SimpleNamespace(success=True, message_id="reply1")
+    )
+    adapter._message_handler = message_handler
+    adapter._send_with_retry = send_with_retry
+    return adapter, message_handler, send_with_retry
+
+
+def _base_session_key(source: SessionSource) -> str:
+    return build_session_key(
+        source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+
+
 def _register_blocking_approval(runner):
     """Register a real blocking approval entry for the runner's session."""
     from tools.approval import _ApprovalEntry, _gateway_queues
@@ -133,3 +174,172 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     _clear_approval_state()
 
 
+@pytest.mark.parametrize("emoji", ["👍", "thumbsup", "+1", "THUMBSUP"])
+def test_thumbs_up_reaction_resolves_approval(emoji):
+    """A 👍 tapback on the approval prompt approves once.
+
+    Reactions reach the gateway as the cross-platform synthetic message
+    ``reaction:added:<emoji>`` (Slack/Feishu/Photon adapters).  Slack name
+    forms and Feishu's uppercase emoji_type are accepted as fallbacks in
+    case a reaction reaches this path before emoji translation.
+    """
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(
+            _make_event(f"reaction:added:{emoji}"), session_key
+        )
+    )
+
+    assert handled is True
+    assert entry.event.is_set()
+    assert entry.result == "once"
+    adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
+def test_reaction_approval_routes_through_base_adapter_busy_path():
+    """Regression guard for the production handoff.
+
+    ``BasePlatformAdapter.handle_message`` must route a synthetic reaction
+    message through the registered busy-session handler while the session is
+    active, instead of queuing it as an ordinary follow-up turn.
+    """
+    _clear_approval_state()
+    runner, _ = _make_runner()
+    adapter, message_handler, send_with_retry = _make_base_adapter()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+
+    session_key, entry = _register_blocking_approval(runner)
+    assert session_key == _base_session_key(_make_source())
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    asyncio.run(adapter.handle_message(_make_event("reaction:added:👍")))
+
+    assert entry.event.is_set()
+    assert entry.result == "once"
+    message_handler.assert_not_awaited()
+    assert session_key not in adapter._pending_messages
+    send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize("emoji", ["👎", "thumbsdown", "-1", "THUMBSDOWN"])
+def test_thumbs_down_reaction_denies_approval(emoji):
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(
+            _make_event(f"reaction:added:{emoji}"), session_key
+        )
+    )
+
+    assert handled is True
+    assert entry.event.is_set()
+    assert entry.result == "deny"
+    adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize("text", ["reaction:removed:👍", "reaction:removed:👎",
+                                  "reaction:removed:thumbsup", "reaction:removed:-1"])
+def test_reaction_removed_never_resolves_approval(text):
+    """Un-reacting is not a decision — removals must not approve or deny."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    asyncio.run(
+        runner._handle_active_session_busy_message(_make_event(text), session_key)
+    )
+
+    assert not entry.event.is_set()
+    assert entry.result is None
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize(
+    "emoji", ["🚀", "✅", "👀", "eyes", "white_check_mark", "ok", "yes"]
+)
+def test_arbitrary_reaction_does_not_resolve_approval(emoji):
+    """Only thumbs reactions count — no other emoji may approve a
+    dangerous command, even while an approval is blocking."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    asyncio.run(
+        runner._handle_active_session_busy_message(
+            _make_event(f"reaction:added:{emoji}"), session_key
+        )
+    )
+
+    assert not entry.event.is_set()
+    assert entry.result is None
+    _clear_approval_state()
+
+
+def test_reaction_without_pending_approval_consumes_nothing():
+    """A 👍 reaction with no blocking approval must not register or resolve
+    an approval — the has_blocking_approval gate is the only door in."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key = runner._session_key_for_source(_make_source())
+
+    asyncio.run(
+        runner._handle_active_session_busy_message(
+            _make_event("reaction:added:👍"), session_key
+        )
+    )
+
+    from tools.approval import _gateway_queues
+    assert session_key not in _gateway_queues
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("reaction:added:👍", "👍"),
+        ("reaction:added:thumbsup", "👍"),
+        ("reaction:added:+1", "👍"),
+        ("reaction:added::thumbsup:", "👍"),
+        ("reaction:added:👎", "👎"),
+        ("reaction:added:thumbsdown", "👎"),
+        ("reaction:added:-1", "👎"),
+        ("reaction:removed:👍", None),
+        ("reaction:removed:👎", None),
+        ("reaction:added:🚀", None),
+        ("reaction:added:", None),
+        ("👍", None),
+        ("yes", None),
+    ],
+)
+def test_approval_reaction_word_classification(text, expected):
+    """Unit-level contract for the reaction → approval-word mapping."""
+    from gateway.run import _approval_reaction_word
+
+    assert _approval_reaction_word(text) == expected
+
+
+def test_unrelated_text_with_pending_approval_falls_through():
+    """Text that is neither approve nor deny vocab must NOT resolve the
+    approval — it falls through to normal busy handling."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(
+            _make_event("what files are here?"), session_key
+        )
+    )
+
+    # Approval still pending — not resolved by unrelated text.
+    assert not entry.event.is_set()
+    _clear_approval_state()

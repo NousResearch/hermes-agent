@@ -356,6 +356,42 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
 
+    def test_feishu_sdk_log_redaction_removes_credentials(self):
+        from plugins.platforms.feishu.adapter import _redact_feishu_sdk_log
+
+        message = (
+            "connected to wss://example.test/ws?device_id=device-1"
+            "&access_key=secret-key&ticket=secret-ticket&service_id=service-1"
+        )
+        redacted = _redact_feishu_sdk_log(message)
+
+        self.assertNotIn("secret-key", redacted)
+        self.assertNotIn("secret-ticket", redacted)
+        self.assertIn("access_key=[REDACTED]", redacted)
+        self.assertIn("ticket=[REDACTED]", redacted)
+        self.assertIn("device_id=device-1", redacted)
+        self.assertIn("service_id=service-1", redacted)
+
+    def test_feishu_sdk_log_filter_formats_args_before_redaction(self):
+        import logging
+
+        from plugins.platforms.feishu.adapter import _FeishuSDKLogRedactionFilter
+
+        record = logging.LogRecord(
+            "Lark",
+            logging.INFO,
+            __file__,
+            1,
+            "connected to %s",
+            ("wss://example.test/ws?access_key=secret&ticket=ticket-secret",),
+            None,
+        )
+
+        self.assertTrue(_FeishuSDKLogRedactionFilter().filter(record))
+        self.assertNotIn("secret", record.getMessage())
+        self.assertIn("access_key=[REDACTED]", record.getMessage())
+        self.assertIn("ticket=[REDACTED]", record.getMessage())
+
 
 def _admits_group(adapter, message, sender_id, chat_id=""):
     """Group-path shim: run a message through ``_admit`` and return a bool."""

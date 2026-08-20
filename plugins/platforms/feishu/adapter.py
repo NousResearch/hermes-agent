@@ -191,6 +191,25 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_FEISHU_SDK_SECRET_QUERY_RE = re.compile(
+    r"(?i)([?&](?:access_key|ticket|token|app_secret)=)[^&\s\]\"']+"
+)
+
+
+def _redact_feishu_sdk_log(message: str) -> str:
+    """Remove credentials embedded in URLs emitted by the Lark SDK."""
+    return _FEISHU_SDK_SECRET_QUERY_RE.sub(r"\1[REDACTED]", message)
+
+
+class _FeishuSDKLogRedactionFilter(logging.Filter):
+    """Redact SDK credentials before any attached handler formats a record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _redact_feishu_sdk_log(record.getMessage())
+        record.args = ()
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -1333,6 +1352,24 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
 
     original_connect = ws_client_module.websockets.connect
     original_configure = getattr(ws_client, "_configure", None)
+    lark_sdk_logger = getattr(ws_client_module, "logger", logging.getLogger("Lark"))
+    log_redaction_filter = _FeishuSDKLogRedactionFilter()
+    original_sdk_log = lark_sdk_logger._log
+
+    def _redacted_sdk_log(level: int, message: object, args: Any, *rest: Any, **kwargs: Any) -> Any:
+        return original_sdk_log(
+            level,
+            _redact_feishu_sdk_log(str(message)),
+            args,
+            *rest,
+            **kwargs,
+        )
+
+    lark_sdk_logger._log = _redacted_sdk_log
+    lark_sdk_logger.addFilter(log_redaction_filter)
+    filtered_handlers = list(lark_sdk_logger.handlers)
+    for handler in filtered_handlers:
+        handler.addFilter(log_redaction_filter)
 
     def _apply_runtime_ws_overrides() -> None:
         try:
@@ -1366,6 +1403,10 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     except Exception:
         pass
     finally:
+        lark_sdk_logger._log = original_sdk_log
+        lark_sdk_logger.removeFilter(log_redaction_filter)
+        for handler in filtered_handlers:
+            handler.removeFilter(log_redaction_filter)
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)

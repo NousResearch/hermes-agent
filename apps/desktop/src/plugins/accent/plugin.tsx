@@ -14,9 +14,7 @@
  */
 
 import type { HermesPlugin, PaletteContribution } from '@hermes/plugin-sdk'
-import { PALETTE_AREA, STATUSBAR_AREAS } from '@hermes/plugin-sdk'
-
-import { $accentOverride, setAccentOverride } from '@/themes/accent-override'
+import { $accentOverride, PALETTE_AREA, setAccentOverride, STATUSBAR_AREAS } from '@hermes/plugin-sdk'
 
 import { AccentPickerTrigger } from './picker'
 

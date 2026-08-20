@@ -19,13 +19,22 @@
 // Sizing note: the statusbar is `h-5` (20px). The TRIGGER must live inside that
 // band or it clips to a sliver; the panel is a popover and can be any size.
 
-import { useStore } from '@nanostores/react'
+import {
+  $accentOverride,
+  contrastRatio,
+  hexToOklch,
+  maxChroma,
+  type Oklch,
+  oklchToHex,
+  oklchToSrgb255,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  setAccentOverride,
+  useTheme,
+  useValue
+} from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { $accentOverride, setAccentOverride } from '@/themes/accent-override'
-import { contrastRatio, hexToOklch, maxChroma, type Oklch, oklchToHex, oklchToSrgb255 } from '@/themes/color'
-import { useTheme } from '@/themes/context'
 
 // Named reference points, with their OKLCH hue — the ones worth comparing while
 // judging an accent. The hue spread across the blues is the whole reason this
@@ -183,7 +192,7 @@ function HueRail({ lch, onPick }: { lch: Oklch; onPick: (h: number) => void }) {
 
 function AccentPicker() {
   const { theme, renderedMode } = useTheme()
-  const override = useStore($accentOverride)
+  const override = useValue($accentOverride)
   const painted = theme.colors.primary
   const [lch, setLch] = useState<Oklch>(() => hexToOklch(painted) ?? { l: 0.5, c: 0.15, h: 260 })
   const [text, setText] = useState(painted)

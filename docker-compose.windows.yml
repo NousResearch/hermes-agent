@@ -10,7 +10,7 @@
 #   docker compose -f docker-compose.windows.yml up -d
 #
 services:
-  gateway:
+  hermes:
     image: nousresearch/hermes-agent:latest
     container_name: hermes
     restart: unless-stopped
@@ -19,20 +19,18 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
-    command: ["gateway", "run"]
-
-  dashboard:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-dashboard
-    restart: unless-stopped
-    depends_on:
-      - gateway
-    volumes:
-      - ${USERPROFILE}/.hermes:/opt/data
-    environment:
-      - HERMES_UID=10000
-      - HERMES_GID=10000
-      - HERMES_DASHBOARD_HOST=0.0.0.0
+      # Run the supervised web dashboard alongside the gateway in this
+      # container. Required so the dashboard's gateway-liveness check
+      # works — it needs to share a PID namespace with the gateway.
+      - HERMES_DASHBOARD=1
+      # The dashboard binds 0.0.0.0 inside the container by default so
+      # the published port is reachable from the host. The port mapping
+      # below restricts that to host loopback (127.0.0.1) so it isn't
+      # exposed on LAN. The bind being non-loopback inside the container
+      # makes the dashboard fail closed at startup unless an OAuth
+      # provider is registered or this opt-out is set. Replace with
+      # HERMES_DASHBOARD_OAUTH_CLIENT_ID for real auth.
+      - HERMES_DASHBOARD_INSECURE=1
     ports:
       - "127.0.0.1:9119:9119"
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+    command: ["gateway", "run"]

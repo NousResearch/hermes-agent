@@ -6049,6 +6049,16 @@ def _run_with_idle_timeout(
 
     # Drain reader so we don't leak the stdout file descriptor.
     reader_thread.join(timeout=2)
+    # Close the stdout pipe so that orphaned child processes (e.g. vite
+    # spawned by npm) that inherited the write end cannot keep the parent
+    # process alive via an open pipe fd.  If the reader thread is still
+    # stuck (join timed out), closing the fd unblocks it and lets the
+    # thread exit cleanly.  See issue #79040.
+    if proc.stdout is not None:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
 
     combined = "".join(merged_chunks)
     if idle_killed:

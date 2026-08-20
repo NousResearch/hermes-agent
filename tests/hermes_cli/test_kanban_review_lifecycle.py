@@ -708,3 +708,49 @@ def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
         ev = _events(conn, tid, kind="review_requested")[0][1]
         assert ev["reviewer"] == "lead-reviewer"
         assert ev["implementer"] == "worker"
+
+
+def test_first_review_without_reviewer_or_assignee_is_refused(kanban_home: Path) -> None:
+    """A review row nobody owns is never dispatched, so it must never be made.
+
+    The dispatcher's review lane selects on ``status = 'review' AND claim_lock
+    IS NULL`` and then skips rows with no assignee — there is no CLI or tool
+    that can claim a review row by hand either. So a task that reaches ``review``
+    unowned is not waiting, it is stranded.
+
+    Observed 2026-08-14 on the frontend-only release board: a builder finished
+    at 20:54, the row went to ``review`` with no assignee, and it sat until a
+    human assigned a reviewer the next morning — twelve hours in which the board
+    looked busy and nothing could move. Refusing at the transition turns that
+    silent strand into an error the caller has to answer.
+
+    Inheriting an assignee is still fine, and so is naming a reviewer; only the
+    case with neither is refused.
+    """
+    with kb.connect() as conn:
+        orphan = kb.create_task(conn, title="no owner", assignee=None)
+        kb.claim_task(conn, orphan)
+        run_id = kb.get_task(conn, orphan).current_run_id
+        ok, reason = kb.request_review(
+            conn, orphan, summary="v1", expected_run_id=run_id, with_reason=True
+        )
+        assert ok is False
+        assert "no reviewer and no assignee" in reason
+        assert kb.get_task(conn, orphan).status == "running"
+
+        # Naming a reviewer resolves it.
+        assert kb.request_review(
+            conn, orphan, summary="v1", reviewer="lead-reviewer", expected_run_id=run_id
+        ) is True
+        assert kb.get_task(conn, orphan).status == "review"
+        assert kb.get_task(conn, orphan).assignee == "lead-reviewer"
+
+        # And an inherited assignee was never the broken case.
+        owned = kb.create_task(conn, title="owned", assignee="worker")
+        kb.claim_task(conn, owned)
+        assert kb.request_review(
+            conn, owned, summary="v1",
+            expected_run_id=kb.get_task(conn, owned).current_run_id,
+        ) is True
+        assert kb.get_task(conn, owned).status == "review"
+        assert kb.get_task(conn, owned).assignee == "worker"

@@ -6585,6 +6585,20 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
                 reviewer = prior_reviewer
+            elif not (isinstance(implementer, str) and implementer.strip()):
+                # A first review with neither an explicit reviewer nor an
+                # assignee to inherit lands in `review` owned by nobody, and the
+                # dispatcher skips unassigned review rows — so the row is not
+                # waiting for a reviewer, it is stranded, and nothing will ever
+                # pick it up. Measured 2026-08-14: a builder finished at 20:54
+                # and the row sat until a human assigned a reviewer by hand the
+                # next morning, twelve hours later.
+                return _ret(
+                    False,
+                    "first review has no reviewer and no assignee to inherit; "
+                    "pass reviewer= explicitly — an unassigned review row is "
+                    "never dispatched",
+                )
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]

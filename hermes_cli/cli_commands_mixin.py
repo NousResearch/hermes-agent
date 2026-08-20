@@ -3137,9 +3137,10 @@ class CLICommandsMixin:
             try:
                 subprocess.call([*shlex.split(editor), path])
             except Exception:
-                # Fall back to a bare invocation (editor value may not be a
-                # simple argv-splittable string on some platforms).
-                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+                # A failed editor launch cancels the compose. Never fall back
+                # to a shell invocation — an unquoted $EDITOR string handed
+                # to a shell is an injection sink (#81364).
+                return ""
             with open(path, "r", encoding="utf-8") as fh:
                 raw = fh.read()
         finally:

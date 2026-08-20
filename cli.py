@@ -20435,6 +20435,17 @@ def main(
         ignore_rules=ignore_rules,
     )
 
+    # Give the plugin manager a CLI reference as soon as the instance exists,
+    # before we branch into query vs. interactive execution. Interactive mode
+    # re-sets this inside ``HermesCLI.run()``, but single-query (`-q`) mode
+    # calls ``cli.chat()`` directly and never enters ``run()`` — so without
+    # this, ``PluginContext.dispatch_tool()`` cannot resolve ``parent_agent``
+    # (its ``_cli_ref`` stays ``None``) and agent-context tools like
+    # ``delegate_task`` lose the active agent in query mode (#67597).
+    from hermes_cli.plugins import get_plugin_manager as _get_plugin_manager
+
+    _get_plugin_manager()._cli_ref = cli
+
     if parsed_skills:
         # Load the skill payloads in the background: skill_view walks the
         # full skills tree per skill (~0.5s for a large library) and the

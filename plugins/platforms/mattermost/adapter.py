@@ -1088,8 +1088,16 @@ async def _standalone_send(
             # 1. Upload media (if any) and collect file_ids.
             file_ids: List[str] = []
             for media in media_files:
-                file_path = media.get("path") if isinstance(media, dict) else media
-                if not file_path or not os.path.exists(file_path):
+                if isinstance(media, dict):
+                    file_path = media.get("path")
+                elif isinstance(media, (tuple, list)) and media:
+                    # extract_media returns (path, is_voice) pairs
+                    file_path = media[0]
+                else:
+                    file_path = media
+                if not isinstance(file_path, str) or not file_path:
+                    continue
+                if not os.path.exists(file_path):
                     continue
                 form = aiohttp.FormData()
                 # Mattermost requires channel_id on file uploads so the

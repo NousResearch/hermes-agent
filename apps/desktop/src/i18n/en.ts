@@ -1722,6 +1722,8 @@ export const en: Translations = {
     enabledRestarting: 'Webhooks enabled; gateway restarting...',
     all: '(all)',
     deliverOnly: 'deliver only',
+    statusEnabled: 'Enabled',
+    statusDisabled: 'Disabled',
     createdTitle: 'Subscription created',
     createdSecretHint: 'Copy the secret now — it is only shown once.',
     webhookUrl: 'Webhook URL',

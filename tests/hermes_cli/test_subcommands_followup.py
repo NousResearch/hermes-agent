@@ -64,3 +64,25 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_memory_parser_accepts_hygiene_and_review_subcommands():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("memory")
+    build_memory_parser(sub, cmd_memory=handler)
+
+    ns = parser.parse_args(["memory", "audit", "--write-metadata", "--json"])
+    assert ns.command == "memory"
+    assert ns.memory_command == "audit"
+    assert ns.write_metadata is True
+    assert ns.json is True
+    assert ns.func is handler
+
+    ns = parser.parse_args(["memory", "approve", "all"])
+    assert ns.memory_command == "approve"
+    assert ns.pending_id == "all"
+
+    ns = parser.parse_args(["memory", "approval", "on"])
+    assert ns.memory_command == "approval"
+    assert ns.mode == "on"

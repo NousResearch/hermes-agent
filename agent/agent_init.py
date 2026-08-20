@@ -138,6 +138,7 @@ def _relay_moa_reference_event(agent: Any, event: str, **kwargs: Any) -> None:
                 moa_ref_count=kwargs.get("ref_count"),
             )
     except Exception:
+        logger.debug("MoA reference callback relay failed", exc_info=True)
         pass
 
 
@@ -772,6 +773,7 @@ def init_agent(
     try:
         agent._get_transport()
     except Exception:
+        logger.debug("Transport cache warm-up failed (non-fatal)", exc_info=True)
         pass  # Non-fatal — transport may not exist for all modes yet
 
     try:
@@ -783,6 +785,7 @@ def init_agent(
         if agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
     except Exception:
+        logger.debug("Model normalization for provider failed", exc_info=True)
         pass
 
     # GPT-5.x models usually require the Responses API path, but some
@@ -981,6 +984,7 @@ def init_agent(
             agent._cache_ttl = None
             agent._cache_disabled = True
     except Exception:
+        logger.debug("Loading prompt caching config failed", exc_info=True)
         pass
 
     # Iteration budget: the LLM is only notified when it actually exhausts
@@ -1252,6 +1256,7 @@ def init_agent(
                 if _gr.get("trace"):
                     agent._bedrock_guardrail_config["trace"] = _gr["trace"]
         except Exception:
+            logger.debug("Loading Bedrock guardrail config failed", exc_info=True)
             pass
         agent.client = None
         agent._client_kwargs = {}
@@ -1319,6 +1324,7 @@ def init_agent(
                     if _ph and _ph.default_headers:
                         client_kwargs["default_headers"] = dict(_ph.default_headers)
                 except Exception:
+                    logger.debug("Loading provider profile default headers failed", exc_info=True)
                     pass
         else:
             # No explicit creds — use the centralized provider router
@@ -1359,6 +1365,7 @@ def init_agent(
                         if _pcfg and _pcfg.api_key_env_vars:
                             _env_hint = _pcfg.api_key_env_vars[0]
                     except Exception:
+                        logger.debug("Looking up provider registry for env hint failed", exc_info=True)
                         pass
                     # --- Init-time fallback (#17929) ---
                     _fb_entries = []
@@ -1655,6 +1662,7 @@ def init_agent(
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
         agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
     except Exception:
+        logger.debug("Loading session JSON config failed", exc_info=True)
         pass
     # logs_dir is retained unconditionally for request_dump_*.json (debug
     # breadcrumb path written by agent_runtime_helpers.dump_api_request_debug).
@@ -1821,6 +1829,7 @@ def init_agent(
                 )
                 agent._memory_store.load_from_disk()
         except Exception:
+            logger.debug("Memory store initialization failed (non-fatal)", exc_info=True)
             pass  # Memory is optional -- don't break agent init
     
 
@@ -1869,6 +1878,7 @@ def init_agent(
                             if _st:
                                 _init_kwargs["session_title"] = _st
                         except Exception:
+                            logger.debug("Getting session title for memory provider failed", exc_info=True)
                             pass
                     # Thread gateway user identity for per-user memory scoping
                     if agent._user_id:
@@ -1895,6 +1905,7 @@ def init_agent(
                         _init_kwargs["agent_identity"] = _profile
                         _init_kwargs["agent_workspace"] = "hermes"
                     except Exception:
+                        logger.debug("Getting active profile name for memory provider failed", exc_info=True)
                         pass
                     # NOTE: status_callback (for the deterministic retain
                     # indicator) is wired above, CLI-only — gateway status is
@@ -1918,6 +1929,7 @@ def init_agent(
         skills_config = _agent_cfg.get("skills", {})
         agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
     except Exception:
+        logger.debug("Loading skills config failed", exc_info=True)
         pass
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded
@@ -2076,6 +2088,7 @@ def init_agent(
             )
         )
     except Exception:
+        logger.debug("Loading compression threshold config failed", exc_info=True)
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
@@ -2608,6 +2621,7 @@ def init_agent(
         _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
         _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
     except Exception:
+        logger.debug("Loading context engine config failed", exc_info=True)
         pass
 
     if _engine_name != "compressor":

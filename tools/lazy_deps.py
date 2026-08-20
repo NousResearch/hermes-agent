@@ -55,7 +55,8 @@ Security model:
 * **Offline detection.** If the install fails (offline, mirror down,
   PyPI 404 / quarantine), we surface the failure as
   :class:`FeatureUnavailable` with the actual pip stderr — no silent
-  retries, no caching of bad state.
+  retries; a session-scoped negative cache stops the doomed install from
+  being re-run on every call.
 
 Adding a new backend:
 
@@ -383,6 +384,16 @@ _LAZY_TARGET_ENV = "HERMES_LAZY_INSTALL_TARGET"
 # incompatible; we detect the mismatch and wipe the store so packages get
 # re-resolved against the new interpreter rather than importing a stale .so.
 _TARGET_STAMP_NAME = ".python-abi"
+
+# Session-scoped negative cache for lazy installs. Keys are feature names;
+# values are the failure reason recorded when an install attempt failed this
+# process. A failed install is NOT re-attempted for the rest of the session:
+# every ensure() call for that feature short-circuits to the recorded error
+# instead of re-running the slow uv -> pip fallback (the reported bug: each
+# STT message retried a doomed install). The cache clears naturally when the
+# deps become available - ensure() returns early once feature_missing() is
+# empty - and is process-scoped, so a fresh run retries fresh.
+_failed_installs: dict[str, str] = {}
 
 
 def _python_abi_tag() -> str:
@@ -911,6 +922,14 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             "lazy installs disabled (security.allow_lazy_installs=false)"
         )
 
+    # A previous install attempt for this feature failed earlier in this
+    # process. Don't re-run the slow uv -> pip fallback on every subsequent
+    # call - e.g. each STT message would otherwise retry the whole doomed
+    # install. Report the recorded failure until the deps become available.
+    cached_failure = _failed_installs.get(feature)
+    if cached_failure:
+        raise FeatureUnavailable(feature, missing, cached_failure)
+
     # Only show the interactive confirmation when we own a TTY and
     # prompt_toolkit isn't running.  A bare input() deadlocks when a
     # prompt_toolkit app owns the terminal because keystrokes route to
@@ -950,10 +969,9 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         if snippet:
             # Clip to a readable size — pip can dump pages of resolution traces.
             snippet = snippet[-2000:]
-        raise FeatureUnavailable(
-            feature, missing,
-            f"pip install failed: {snippet or 'no error output'}"
-        )
+        reason = f"pip install failed: {snippet or 'no error output'}"
+        _failed_installs[feature] = reason
+        raise FeatureUnavailable(feature, missing, reason)
 
     # Verify post-install. importlib.metadata caches per-process, so if we
     # just installed something the cache may not see it without a refresh.
@@ -966,11 +984,12 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
 
     still_missing = feature_missing(feature)
     if still_missing:
-        raise FeatureUnavailable(
-            feature, still_missing,
+        reason = (
             "install reported success but packages still not importable "
             "(may require Python restart)"
         )
+        _failed_installs[feature] = reason
+        raise FeatureUnavailable(feature, still_missing, reason)
 
     logger.info("Lazy install complete for feature %r", feature)
 

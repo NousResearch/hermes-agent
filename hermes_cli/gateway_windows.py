@@ -542,6 +542,24 @@ def _build_startup_launcher(script_path: Path) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+def _write_tmp_then_replace(tmp: Path, target: Path, content: str) -> None:
+    """Atomically write ``content`` to ``target`` via a sibling ``.tmp`` file.
+
+    Writes to ``tmp`` first, then renames it over ``target``. The temporary
+    file is always cleaned up afterwards — even if the rename fails — so a
+    stale ``*.tmp`` never lingers in the Startup folder, where Windows would
+    otherwise pop the "How do you want to open this file?" dialog on login.
+    """
+    try:
+        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.replace(target)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _write_task_script() -> Path:
     """Generate and write the gateway.cmd wrapper. Return its absolute path."""
     _assert_windows()
@@ -560,18 +578,14 @@ def _write_task_script() -> Path:
 
     content = _build_gateway_cmd_script(python_path, working_dir, hermes_home, profile_arg)
     script_path = get_task_script_path()
-    tmp = script_path.with_suffix(".tmp")
-    tmp.write_text(content, encoding="utf-8", newline="")
-    tmp.replace(script_path)
+    _write_tmp_then_replace(script_path.with_suffix(".tmp"), script_path, content)
 
     # Also render the console-less .vbs launcher used by Scheduled Task and the
     # Startup-folder fallback via wscript.exe (issue #45599 fix A). The .cmd
     # wrapper stays as a generated helper/compatibility artifact.
     vbs_content = _build_gateway_vbs_script(python_path, working_dir, hermes_home, profile_arg)
     vbs_path = script_path.with_suffix(".vbs")
-    vbs_tmp = vbs_path.with_name(vbs_path.name + ".tmp")
-    vbs_tmp.write_text(vbs_content, encoding="utf-8", newline="")
-    vbs_tmp.replace(vbs_path)
+    _write_tmp_then_replace(vbs_path.with_name(vbs_path.name + ".tmp"), vbs_path, vbs_content)
     return script_path
 
 
@@ -706,9 +720,7 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    tmp = entry.with_suffix(".tmp")
-    tmp.write_text(_build_startup_launcher(script_path), encoding="utf-8", newline="")
-    tmp.replace(entry)
+    _write_tmp_then_replace(entry.with_suffix(".tmp"), entry, _build_startup_launcher(script_path))
     legacy_entry = _legacy_startup_entry_path()
     try:
         if legacy_entry.exists():

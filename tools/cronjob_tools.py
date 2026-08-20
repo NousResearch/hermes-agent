@@ -692,6 +692,32 @@ def _execute_job_now(
     Returns {"claimed": bool, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
+    job_name = str(job.get("name") or job_id)
+
+    # Reap any execution row this job (or any job) left stranded 'claimed'/
+    # 'running' by a dead owner process — same self-heal _try_dispatch_
+    # background_run() applies before its own claim. That function's own
+    # async_delivery_supported() gate returns early for a one-shot `hermes
+    # cron run` invocation (which always declares its session stateless, see
+    # hermes_cli/cron.py's _job_action), so its reap call never runs for the
+    # exact CLI path this one exists to serve — this is the path a one-shot
+    # `hermes cron run` with no gateway present actually falls through to
+    # (#86721). Duplicated rather than hoisted to the shared caller so this
+    # function stays self-contained for any other entry point.
+    try:
+        from cron.executions import recover_interrupted_executions
+
+        _reclaimed = recover_interrupted_executions()
+        if _reclaimed:
+            logger.warning(
+                "Reclaimed %d stale cron execution(s) from dead owner(s) "
+                "before running job '%s'",
+                _reclaimed,
+                job_name,
+            )
+    except Exception as _reap_exc:
+        logger.debug("Stale execution reclaim failed: %s", _reap_exc)
+
     claimed_job = None
     try:
         # At-most-once claim: bail without running if a tick/other fire owns it.

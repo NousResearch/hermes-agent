@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { buildDesktopServeChildEnv, isHermesCredentialEnvVar, scrubDesktopChildEnv } from './scrub-child-env'
+import {
+  buildDesktopServeChildEnv,
+  buildDesktopTerminalEnv,
+  isHermesCredentialEnvVar,
+  scrubDesktopChildEnv
+} from './scrub-child-env'
 
 test('matches Hermes-owned credentials case-insensitively', () => {
   assert.equal(isHermesCredentialEnvVar('OPENROUTER_API_KEY'), true)
@@ -91,4 +96,31 @@ test('serve env admits only its freshly minted dashboard token', () => {
   assert.equal(env.FAL_KEY, undefined)
   assert.equal(env.OPENAI_API_KEY, undefined)
   assert.equal(env.GATEWAY_RELAY_SECRET, undefined)
+})
+
+test('terminal env scrubs Hermes credentials and retains the operator shell contract', () => {
+  const env = buildDesktopTerminalEnv(
+    {
+      PATH: '/usr/bin',
+      OPENROUTER_API_KEY: 'provider-secret',
+      NPM_TOKEN: 'operator-secret',
+      AWS_ACCESS_KEY_ID: 'operator-aws',
+      npm_config_prefix: '/npm',
+      NO_COLOR: '1',
+      LC_CTYPE: 'ja_JP.UTF-8'
+    },
+    '0.17.0'
+  )
+
+  assert.equal(env.OPENROUTER_API_KEY, undefined)
+  assert.equal(env.NPM_TOKEN, 'operator-secret')
+  assert.equal(env.AWS_ACCESS_KEY_ID, 'operator-aws')
+  assert.equal(env.npm_config_prefix, undefined)
+  assert.equal(env.NO_COLOR, undefined)
+  assert.equal(env.LC_CTYPE, 'ja_JP.UTF-8')
+  assert.equal(env.COLORTERM, 'truecolor')
+  assert.equal(env.TERM, 'xterm-256color')
+  assert.equal(env.TERM_PROGRAM, 'Hermes')
+  assert.equal(env.TERM_PROGRAM_VERSION, '0.17.0')
+  assert.equal(env.HERMES_DESKTOP_TERMINAL, '1')
 })

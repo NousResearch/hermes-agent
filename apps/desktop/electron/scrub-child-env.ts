@@ -199,6 +199,29 @@ export function scrubDesktopChildEnv(...sources: Array<EnvMap | null | undefined
   return out
 }
 
+export function buildDesktopTerminalEnv(source: EnvMap, appVersion: string): Record<string, string> {
+  const env = scrubDesktopChildEnv(source)
+
+  for (const key of Object.keys(env)) {
+    if (key === 'npm_config_prefix' || key.startsWith('npm_config_') || key.startsWith('npm_package_')) {
+      delete env[key]
+    }
+  }
+
+  delete env.NO_COLOR
+  delete env.FORCE_COLOR
+  delete env.COLORFGBG
+
+  env.COLORTERM = 'truecolor'
+  env.LC_CTYPE = env.LC_CTYPE || 'UTF-8'
+  env.TERM = 'xterm-256color'
+  env.TERM_PROGRAM = 'Hermes'
+  env.TERM_PROGRAM_VERSION = appVersion
+  env.HERMES_DESKTOP_TERMINAL = '1'
+
+  return env
+}
+
 export interface DesktopServeChildEnvOptions {
   source?: EnvMap
   backendEnv?: EnvMap

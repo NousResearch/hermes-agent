@@ -1423,12 +1423,31 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "text", allow_expired=True)
 
 
+@method("preview.act.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string with the interaction's outcome (drive_preview
+    # tool) — what it acted on, the live url/title, and a refreshed element
+    # inventory. allow_expired=True for the same reason as preview.read: the
+    # settle-and-rescan can lose the race with the tool's bounded wait.
+    return _respond(rid, params, "text", allow_expired=True)
+
+
 @method("window.read.respond")
 def _(rid, params: dict) -> dict:
     # `text` is a JSON string describing the OS window underneath the Hermes
     # window (read_window_below tool). allow_expired=True for the same reason
     # as terminal.read: the tool's bounded wait can expire while the renderer's
     # round-trip to the main process is still in flight.
+    return _respond(rid, params, "text", allow_expired=True)
+
+
+@method("tour.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string with the tour action's outcome (tour tool) —
+    # matched targets, the active step, or an error naming the bad selector.
+    # allow_expired=True for the same reason as terminal.read: a preview tour
+    # injecting driver.js into a slow page can lose the race with the tool's
+    # bounded wait.
     return _respond(rid, params, "text", allow_expired=True)
 
 

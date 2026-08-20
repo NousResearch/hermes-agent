@@ -666,20 +666,47 @@ _DB_CACHE: Dict[str, Any] = {}
 _DB_BOOTSTRAP_LOCK = threading.Lock()
 _DB_BOOTSTRAP_INFLIGHT: Dict[str, threading.Event] = {}
 
-# How long a loop-thread caller waits for the background bootstrap before
-# degrading to None. Normal SessionDB init is ~10-100ms, so the common case
-# still returns a real DB (no silently dropped goal writes); a contended
-# init (locked state.db mid-migration) blows past this and the caller
-# degrades, with the loop stalled far under the watchdog's probe window.
+# How long a loop-thread caller waits for an ALREADY-RUNNING bootstrap
+# before degrading to None. Normal SessionDB init is ~10-100ms, so a call
+# that arrives mid-bootstrap usually picks the cached instance up within
+# this window. A contended init (locked state.db mid-migration) blows past
+# it and the caller degrades. The loop stalls far under the watchdog's
+# probe window.
 _DB_BOOTSTRAP_LOOP_WAIT_S = 0.25
+
+# The call that STARTS the bootstrap (cold cache, nothing in flight)
+# waits this long instead of the short window above. A fresh state.db
+# init measures ~300ms warm on a fast machine: schema DDL, FTS table
+# creation, and the first hermes_cli.config import (journal-mode
+# resolution). It is longer on a slow CI box, and it is well past 0.25s.
+# The old window dropped the first /goal write. The response said
+# "Goal set" but nothing persisted. The longer window is a bounded
+# one-time stall. Only the kick call pays it. Every later call keeps
+# the short window, so a contended migration never stalls the loop
+# repeatedly.
+_DB_BOOTSTRAP_INIT_WAIT_S = 1.5
 
 
 def _bootstrap_session_db(home: str, done: threading.Event) -> None:
     """Construct SessionDB off-loop and populate the cache (worker thread)."""
     try:
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        # Bind the caller's home for this thread. The cache key is the
+        # caller's scoped home, so the constructed SessionDB must point at
+        # that home's state.db too. Without the override, a multiplexed
+        # worker thread resolves the process env (the default profile's
+        # HERMES_HOME). It then caches the wrong profile's DB under this
+        # profile's key.
+        token = set_hermes_home_override(home)
+        try:
+            db = SessionDB()
+        finally:
+            reset_hermes_home_override(token)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
         db = None
@@ -704,8 +731,12 @@ def _get_session_db() -> Optional[Any]:
     seconds — on the gateway's loop thread that starves the loop-liveness
     watchdog, which hard-exits the process (exit 75) and crash-loops the
     gateway (enterprise field report, 2026-08-14). On a cache miss with a running
-    loop we kick a one-shot background bootstrap and return None; every
-    caller already degrades gracefully on None, and a later call returns the
+    loop we kick a one-shot background bootstrap and wait a bounded grace
+    window for it. The kick call waits the one-time init window
+    (``_DB_BOOTSTRAP_INIT_WAIT_S``), so a healthy cold init completes and
+    the first write is not dropped. Later calls wait only the short window
+    (``_DB_BOOTSTRAP_LOOP_WAIT_S``). On timeout we return None. Every
+    caller degrades gracefully on None, and a later call returns the
     cached instance.
     """
     try:
@@ -745,12 +776,20 @@ def _get_session_db() -> Optional[Any]:
                     name="goals-sessiondb-bootstrap",
                     daemon=True,
                 ).start()
-        # Grace window: a healthy init finishes in tens of ms, so waiting
-        # briefly keeps goal/heartbeat persistence working on the very first
-        # loop-thread call instead of silently dropping it. A contended init
-        # (the crash-loop scenario) exceeds the window and we degrade to
-        # None — a bounded stall far below the watchdog's probe timeout.
-        done.wait(_DB_BOOTSTRAP_LOOP_WAIT_S)
+                # This call starts the bootstrap, so it pays the one-time
+                # init cost. Wait long enough for a healthy cold init
+                # (~300ms warm, more on slow CI) to finish. This keeps the
+                # first goal/heartbeat write from being silently dropped.
+                wait = _DB_BOOTSTRAP_INIT_WAIT_S
+            else:
+                # Bootstrap already running: brief grace window only. A
+                # healthy init usually finishes in tens of ms, so this
+                # still picks the cached instance up. A contended init
+                # (the crash-loop scenario) exceeds the window and we
+                # degrade to None. The stall is bounded, far below the
+                # watchdog's probe timeout.
+                wait = _DB_BOOTSTRAP_LOOP_WAIT_S
+        done.wait(wait)
         return _DB_CACHE.get(home)
 
     try:
@@ -770,6 +809,22 @@ def _get_session_db() -> Optional[Any]:
             return existing
         _DB_CACHE[home] = db
     return db
+
+
+def _warn_dropped_write(manager: str, kind: str, session_id: str) -> None:
+    """Log a dropped state write at WARNING.
+
+    The reply already told the user that the state was set. A silent
+    drop makes that reply a lie. One shared message keeps the goal,
+    loop, and heartbeat logs greppable as one bug class.
+    """
+    logger.warning(
+        "%s: %s for %s not persisted — session DB unavailable "
+        "(bootstrap window exceeded, in-memory state still active)",
+        manager,
+        kind,
+        session_id,
+    )
 
 
 def load_goal(session_id: str) -> Optional[GoalState]:
@@ -799,6 +854,7 @@ def save_goal(session_id: str, state: GoalState) -> None:
         return
     db = _get_session_db()
     if db is None:
+        _warn_dropped_write("GoalManager", "goal", session_id)
         return
     try:
         db.set_meta(_meta_key(session_id), state.to_json())

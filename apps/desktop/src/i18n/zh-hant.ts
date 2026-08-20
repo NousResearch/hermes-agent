@@ -52,6 +52,9 @@ export const zhHant = defineLocale({
     revealInSidebar: '在檔案樹中顯示',
     copyPath: '複製路徑',
     copyRelativePath: '複製相對路徑',
+    download: '下載',
+    downloadSaved: '已儲存',
+    downloadFailed: '下載失敗',
     rename: '重新命名…',
     delete: '刪除',
     renameTitle: '重新命名',
@@ -203,6 +206,7 @@ export const zhHant = defineLocale({
     swapSidebarSides: '交換側邊欄位置',
     hideRightSidebar: '隱藏右側邊欄',
     showRightSidebar: '顯示右側邊欄',
+    unreadSessions: count => (count === 1 ? '1 個未讀工作階段' : `${count} 個未讀工作階段`),
     muteHaptics: '靜音觸感回饋',
     unmuteHaptics: '開啟觸感回饋',
     openSettings: '開啟設定',
@@ -335,10 +339,12 @@ export const zhHant = defineLocale({
       terminalFontPreview: '字形預覽',
       terminalFontReset: '使用預設字型',
       translucencyTitle: '視窗透明',
-      translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
-      translucencyGlassDesc: '霧面玻璃：桌面以柔和模糊透出，文字保持清晰。僅支援 macOS。',
+      translucencyDesc: '讓整個視窗（包括文字）透出桌面。',
+      translucencyGlassDesc: '霧面玻璃：桌面以柔和模糊透出，文字保持清晰。',
       translucencyModeClear: '透明',
       translucencyModeGlass: '玻璃',
+      translucencyTintTitle: '色調',
+      translucencyFadeTitle: '淡出',
       translucencyFrostTitle: '磨砂質感',
       translucencyFrost: {
         'under-window': '深邃',
@@ -353,6 +359,8 @@ export const zhHant = defineLocale({
       },
       backdropTitle: '聊天背景',
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
+      introSplashTitle: '開場標識',
+      introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       composerPopoutTitle: '懸浮輸入框',
@@ -1426,6 +1434,8 @@ export const zhHant = defineLocale({
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
     switchToProfile: name => `切換至 ${name}`,
+    switchToConnection: name => `切換至 ${name}`,
+    switchConnectionFailed: name => `無法連線至 ${name}`,
     manageProfiles: '管理設定檔…',
     actions: '動作',
     color: '顏色…',
@@ -1883,6 +1893,7 @@ export const zhHant = defineLocale({
     endShort: '結束',
     stopDictation: '停止聽寫',
     transcribingDictation: '正在轉寫聽寫',
+    voiceControls: '語音',
     voiceDictation: '語音聽寫',
     speakReplies: '朗讀回覆',
     stopSpeakingReplies: '停止朗讀回覆',
@@ -2029,6 +2040,7 @@ export const zhHant = defineLocale({
       openPr: '開啟 PR',
       ghMissing: '安裝 GitHub CLI (gh) 並登入後可開啟 PR',
       agentShip: '讓 Hermes 提交並開 PR',
+      agentShipUnavailable: '擁有這些變更的對話目前不在畫面上。',
       agentShipPrompt: '檢查目前的變更，使用清晰的約定式提交訊息提交，推送分支，並開啟一個拉取請求。',
       newBranch: '新增分支',
       branchOffFrom: base => `從 ${base} 建立新分支`,
@@ -2098,6 +2110,13 @@ export const zhHant = defineLocale({
     pidLabel: pid => `PID ${pid}`,
     technicalDetails: '技術詳細資料',
     notNow: '暫不',
+    clientAlsoBehindTitle: '桌面應用版本落後',
+    clientAlsoBehindMessage: '後端已是最新，但此桌面應用仍是舊版本。請更新以取得最新修復。',
+    clientAlsoBehindAction: '更新桌面應用',
+    everythingDispatched: '更新已派送',
+    everythingSkipped: '已略過',
+    everythingRowFailed: '更新失敗',
+    everythingFanoutFailedTitle: '無法更新其他執行個體',
     applyStatus: {
       preparing: '正在更新後端…',
       pulling: '後端更新中…',
@@ -2532,6 +2551,11 @@ export const zhHant = defineLocale({
   zones: {
     showHeader: '顯示標題列',
     hideHeader: '隱藏標題列',
+    showStripTab: title => `顯示 ${title}`,
+    hideStripTab: title => `隱藏 ${title}`,
+    lastTabKeptTitle: '保留最後一個分頁',
+    lastTabKeptBody: '此區域至少需要一個可見分頁。請先顯示另一個分頁，或收合整個側邊欄。',
+    toggleStripTab: title => `切換 ${title} 分頁`,
     minimize: '最小化',
     restore: '還原',
     reload: '重新載入',
@@ -2566,6 +2590,30 @@ export const zhHant = defineLocale({
     notExpressible: '此排列互相咬合（風車形）——暫時無法表示為巢狀分割',
     zoneCount: count => `${count} 個區域`,
     tabCount: count => `${count} 個分頁`
+  },
+
+  contextMenu: {
+    link: {
+      openInApp: '在應用程式內瀏覽器中開啟',
+      openExternal: '在外部瀏覽器中開啟',
+      copyUrl: '複製 URL',
+      copyResolvedUrl: '複製解析後的 URL'
+    },
+    image: {
+      copyImage: '複製圖片',
+      copyImageAddress: '複製圖片位址',
+      saveImageAs: '圖片另存為…'
+    },
+    edit: {
+      cut: '剪下',
+      paste: '貼上',
+      selectAll: '全選',
+      addToDictionary: '新增至字典'
+    },
+    page: {
+      copyPageUrl: '複製頁面 URL',
+      inspectElement: '檢查元素'
+    }
   },
 
   assistant: {
@@ -2632,6 +2680,9 @@ export const zhHant = defineLocale({
       skip: '略過',
       skipped: '已略過',
       continueLabel: '繼續',
+      confirmAndContinueLabel: '確認並繼續',
+      answeredBadge: '已回答',
+      questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
       lateAnswerTip: '將此回答起草為後續訊息',
       lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'

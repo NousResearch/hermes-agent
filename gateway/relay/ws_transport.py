@@ -791,16 +791,6 @@ class WebSocketRelayTransport:
             return {"success": False, "error": "relay transport closed"}
         if self._ws is None:
             return {"success": False, "error": "relay transport not connected"}
-        if self._supervisor is not None and not self._supervisor.done():
-            # The reconnect supervisor is mid-redial (backing off after an
-            # unexpected close). `self._ws` still points at the DEAD socket
-            # until _dial_and_start() replaces it, so the check above does not
-            # cover this window — a send here would register a future no
-            # reader can resolve and block the caller for _outbound_timeout_s
-            # (Coatue incident 2026-08-18). Fail fast with the dict shape
-            # callers expect; a live supervisor's dial success ends the task,
-            # so `not done()` is exactly the redial window.
-            return {"success": False, "error": "relay transport reconnecting"}
         request_id = uuid.uuid4().hex
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Dict[str, Any]] = loop.create_future()
@@ -817,11 +807,46 @@ class WebSocketRelayTransport:
             bot_id = self._bot_id_for(platform)
             if bot_id:
                 frame["botId"] = bot_id
+        frame_sent = False
         try:
             await self._send(frame)
+            frame_sent = True
             return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
         except asyncio.TimeoutError:
-            return {"success": False, "error": "relay outbound timed out"}
+            # AMBIGUOUS by contract (PR 85796 review): the frame reached the
+            # wire — only the acknowledgement is missing. The connector may
+            # well have applied it (draft frame appended, stream sealed).
+            # Consumers that need to distinguish "connector rejected this"
+            # from "outcome unknown" key on this flag; the fail-fast paths
+            # above (closing / not connected) never sent anything and are
+            # definite non-delivery, so they stay unmarked.
+            return {
+                "success": False,
+                "error": "relay outbound timed out",
+                "ambiguous": True,
+            }
+        except Exception as exc:  # noqa: BLE001 - a dead socket is a failed send, not a raise
+            # No `is None` check can close the window where the socket dies
+            # BETWEEN the liveness guard above and the actual write — the
+            # reader's finally hasn't cleared _ws yet, so _send raises
+            # ConnectionClosed straight into callers whose contract is a
+            # result dict (RelayAdapter.send consumes it with no try).
+            # Report it like every other failed send. CancelledError is a
+            # BaseException, so cancellation still propagates.
+            #
+            # Ambiguity contract (PR 85796): a raise from the WRITE means the
+            # frame never reached the wire — definite non-delivery, no flag.
+            # A failure surfaced by the FUTURE (e.g. disconnect() failing
+            # pending mid-flight) means the frame WAS sent and only the
+            # outcome is unknown — mark it ambiguous like the timeout above.
+            logger.debug("relay %s send failed", frame_type, exc_info=True)
+            result: Dict[str, Any] = {
+                "success": False,
+                "error": f"relay send failed: {exc}",
+            }
+            if frame_sent:
+                result["ambiguous"] = True
+            return result
         finally:
             self._pending.pop(request_id, None)
 
@@ -832,9 +857,20 @@ class WebSocketRelayTransport:
         await self._ws.send(json.dumps(frame) + "\n")
 
     async def _read_loop(self) -> None:
-        assert self._ws is not None
+        # Bind the socket this reader serves: the finally below must only
+        # clear _ws if it still points at THIS socket (a supervisor re-dial
+        # may have already installed a fresh one by the time we unwind).
+        ws = self._ws
         buf = ""
         try:
+            if ws is None:
+                # Scheduled without a socket (a lifecycle bug, not a normal
+                # path). The old `assert` here escaped BEFORE the finally
+                # existed to fail pending futures — the one exit that could
+                # still strand waiters for the full outbound timeout. Fall
+                # through to the finally instead; it settles them all.
+                logger.error("relay ws read loop started with no socket")
+                return
             try:
                 async for chunk in self._ws:
                     buf += chunk if isinstance(chunk, str) else chunk.decode("utf-8")
@@ -878,6 +914,19 @@ class WebSocketRelayTransport:
                     self._reconnect_loop(), name="relay-ws-reconnect"
                 )
         finally:
+            # The socket this reader served is dead. Drop the handle (identity-
+            # guarded: a re-dial that already installed a FRESH socket must not
+            # be clobbered) so every `self._ws is None` liveness check — send,
+            # _request_response, go_idle, go_dormant — reports "not connected"
+            # for the whole outage. Without this, _ws kept pointing at the dead
+            # socket on every reader exit that arms NO supervisor (terminal
+            # 4401 revocation, reconnect=False transports), and a send there
+            # registered a future nothing could resolve: a full
+            # _outbound_timeout_s (~30s) wedge — including the revocation
+            # path's own fatal-error notification. disconnect() owns the
+            # handle during deliberate teardown, so leave it alone then.
+            if self._ws is ws and not self._closing:
+                self._ws = None
             # The reader is the ONLY thing that can resolve a pending
             # outbound_result future — once it exits (socket dropped, error,
             # or cancellation cleanup) every in-flight _request_response waiter

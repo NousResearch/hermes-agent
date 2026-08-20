@@ -197,6 +197,7 @@ CLIENT_INSTALL_METHODS: frozenset[str] = frozenset({
     "apt",
     "docker",
     "git",
+    "home-manager",
     "homebrew",
     "nixos",
     "pip",

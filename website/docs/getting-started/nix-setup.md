@@ -12,11 +12,12 @@ Nix and NixOS are [Tier 2 platforms](./platform-support.md#tier-2). The flake an
 For a supported setup, use one of the standard [installation](./installation.md) paths - either Docker or an FHS environment.
 :::
 
-Hermes Agent ships a Nix flake & a NixOS module.
+Hermes Agent ships a Nix flake, a NixOS module, and a Home Manager module.
 
 | Level | Who it's for | What you get |
 |-------|-------------|--------------|
 | **`nix run` / `nix profile install`** | Any Nix user (macOS, Linux) | Pre-built binary with all deps — then use the standard CLI workflow |
+| **Home Manager module** | An agent for one person, on any distribution or on macOS | Declarative configuration and a user service, without root |
 | **NixOS module (native)** | NixOS server deployments | Declarative config, hardened systemd service, managed secrets |
 | **NixOS module (container)** | Agents that need self-modification | Everything above, plus a persistent Ubuntu container where the agent can `apt`/`pip`/`npm install` |
 
@@ -84,7 +85,7 @@ hermes setup
 The flake exports `nixosModules.default` — a full NixOS service module that declaratively manages user creation, directories, config generation, secrets, documents, and service lifecycle.
 
 :::note
-This module requires NixOS. For non-NixOS systems (macOS, other Linux distros), use `nix profile install` and the standard CLI workflow above.
+This module needs NixOS. Hermes is an agent for one person. If you want an agent for one person and not a system service, use the [Home Manager module](#home-manager-module). That module runs on NixOS and on each other system that Home Manager supports.
 :::
 
 ### Add the Flake Input
@@ -146,7 +147,7 @@ Setting `addToSystemPackages = true` does two things: puts the `hermes` CLI on y
 :::info
 When `container.enable = true` and `addToSystemPackages = true`, **every** `hermes` command on the host automatically routes into the managed container. This means your interactive CLI session runs inside the same environment as the gateway service — with access to all container-installed packages and tools.
 
-- The routing is transparent: `hermes chat`, `hermes sessions list`, `hermes version`, etc. all exec into the container under the hood
+- The routing is transparent: `hermes chat`, `hermes sessions list`, `hermes --version`, etc. all exec into the container under the hood
 - All CLI flags are forwarded as-is
 - If the container isn't running, the CLI retries briefly (5s with a spinner for interactive use, 10s silently for scripts) then fails with a clear error — no silent fallback
 - For developers working on the hermes codebase, set `HERMES_DEV=1` to bypass container routing and run the local checkout directly
@@ -190,7 +191,7 @@ systemctl status hermes-agent
 journalctl -u hermes-agent -f
 
 # If addToSystemPackages is true, test the CLI
-hermes version
+hermes --version
 hermes config       # shows the generated config
 ```
 
@@ -287,8 +288,10 @@ Run `nix build .#configKeys && cat result` to see every leaf config key extracte
     environmentFiles = [ config.sops.secrets."hermes-env".path ];
 
     # ── Documents ──────────────────────────────────────────────────────
-    documents = {
-      "USER.md" = ./documents/USER.md;
+    # USER.md is memory, so it goes to HERMES_HOME. Workspace files use
+    # `documents`, and that option needs an explicit `workingDirectory`.
+    hermesHomeFiles = {
+      "memories/USER.md" = ./documents/USER.md;
     };
 
     # ── MCP Servers ────────────────────────────────────────────────────
@@ -336,7 +339,9 @@ Quick reference for the most common things Nix users want to customize:
 | Change the LLM model | `settings.model.default` | `"anthropic/claude-sonnet-4"` |
 | Use a different provider endpoint | `settings.model.base_url` | `"https://openrouter.ai/api/v1"` |
 | Add API keys | `environmentFiles` | `[ config.sops.secrets."hermes-env".path ]` |
-| Give the agent a personality | `${services.hermes-agent.stateDir}/.hermes/SOUL.md` | manage the file directly |
+| Give the agent an identity | `hermesHomeFiles."SOUL.md"` | `"You are a terse ops assistant."` |
+| Add project context to the workspace | `documents."AGENTS.md"` | `./documents/AGENTS.md` |
+| Run the backend for the desktop app or the dashboard | `backend.mode` | `"serve"` or `"dashboard"` |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
 | Enable Discord/Telegram/Slack | `extraDependencyGroups` | `[ "messaging" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
@@ -416,22 +421,45 @@ The file is only copied if `auth.json` doesn't already exist (unless `authFileFo
 
 ## Documents
 
-The `documents` option installs files into the agent's working directory (the `workingDirectory`, which the agent reads as its workspace). Hermes looks for specific filenames by convention:
+Hermes reads files from two directories. Thus there are two options. Use the option for the directory that the file must go into.
 
-- **`USER.md`** — context about the user the agent is interacting with.
-- Any other files you place here are visible to the agent as workspace files.
-
-The agent identity file is separate: Hermes loads its primary `SOUL.md` from `$HERMES_HOME/SOUL.md`, which in the NixOS module is `${services.hermes-agent.stateDir}/.hermes/SOUL.md`. Putting `SOUL.md` in `documents` only creates a workspace file and will not replace the main persona file.
+`documents` installs into the **working directory** of the agent, which is `workingDirectory`. The agent reads its project context from that workspace:
 
 ```nix
 {
-  services.hermes-agent.documents = {
-    "USER.md" = ./documents/USER.md;  # path reference, copied from Nix store
+  services.hermes-agent = {
+    # documents needs this option. Read the note below.
+    workingDirectory = "/var/lib/hermes/workspace";
+    documents = {
+      "AGENTS.md" = ./documents/AGENTS.md;   # path reference, copied from Nix store
+      "notes/oncall.md" = "Page #infra before restarting anything.";
+    };
   };
 }
 ```
 
-Values can be inline strings or path references. Files are installed on every `nixos-rebuild switch`.
+:::warning documents needs an explicit workingDirectory
+The module refuses `documents` until you set `workingDirectory`. The default of
+that option is different on each module. It is your home directory on Home
+Manager, and `${stateDir}/workspace` on NixOS. Thus an unset default puts the
+files in a directory that you did not select. A directory with the same path as
+the default is a correct selection, and it satisfies the rule.
+:::
+
+`hermesHomeFiles` installs into **`HERMES_HOME`**. Hermes reads the identity file and the memory files of the agent from that directory. `SOUL.md` and `memories/` work only from there. A `SOUL.md` in `documents` makes a workspace file. Hermes does not load that file as the identity:
+
+```nix
+{
+  services.hermes-agent.hermesHomeFiles = {
+    "SOUL.md" = "You are a helpful AI assistant.";
+    "memories/USER.md" = ./documents/USER.md;
+  };
+}
+```
+
+Each value is a string or a path. A key in either option can contain subdirectories, and the module makes the parent directories. Each activation installs the files again.
+
+`hermesHomeFiles` needs no `workingDirectory`, because the module owns the `HERMES_HOME` directory. Most users want `hermesHomeFiles`.
 
 ---
 
@@ -554,10 +582,108 @@ When hermes runs via the NixOS module, the following CLI commands are **blocked*
 
 This prevents drift between what Nix declares and what's on disk. Detection uses two signals:
 
-1. **`HERMES_MANAGED=true`** environment variable — set by the systemd service, visible to the gateway process
-2. **`.managed` marker file** in `HERMES_HOME` — set by the activation script, visible to interactive shells (e.g., `docker exec -it hermes-agent hermes config set ...` is also blocked)
+1. **The `HERMES_MANAGED` environment variable.** The service sets it, and the gateway process reads it.
+2. **The `.managed` marker file** in `HERMES_HOME`. The activation script writes it, and an interactive shell reads it. Thus the CLI also blocks a command such as `docker exec -it hermes-agent hermes config set ...`.
 
-To change configuration, edit your Nix config and run `sudo nixos-rebuild switch`.
+Both signals hold the name of the system that manages the install. Thus the refusal names the correct rebuild command. The NixOS module gives `sudo nixos-rebuild switch`. The Home Manager module gives `home-manager switch`.
+
+---
+
+## Home Manager Module
+
+The flake also exports `homeManagerModules.default`. Hermes is an agent for one person. The credentials, the memory, the sessions and the cron jobs all belong to that person. Thus a user service is the correct shape on a personal machine. It runs on each distribution that Home Manager supports, and not only on NixOS.
+
+The option set is the same set that the NixOS module uses. It is `services.hermes-agent`, with the same `settings`, `environmentFiles`, `documents`, `mcpServers`, `extraPlugins` and `backend` options. Each example above works here without a change. Only the necessary parts are different:
+
+| | NixOS module | Home Manager module |
+|---|---|---|
+| Runs as | a system user that you declare, with `user`, `group` and `createUser` | you |
+| State directory | `stateDir` and `/.hermes` | `hermesHome`, set directly. The default is `~/.hermes`. |
+| Service | `systemd.services` | `systemd.user.services` on Linux, `launchd.agents` on macOS |
+| CLI on the PATH | `addToSystemPackages`, which exports `HERMES_HOME` for the full system | `installPackage`, which exports it for your session only |
+| Container mode | supported | not supported, because it needs root and the Docker socket |
+
+### Add the Flake Input
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    home-manager.url = "github:nix-community/home-manager";
+    home-manager.inputs.nixpkgs.follows = "nixpkgs";
+    hermes-agent.url = "github:NousResearch/hermes-agent";
+  };
+}
+```
+
+Then import the module into your Home Manager configuration. The configuration can be standalone. It can also be under `home-manager.users.<name>` in a NixOS or nix-darwin configuration:
+
+```nix
+{
+  imports = [ hermes-agent.homeManagerModules.default ];
+
+  services.hermes-agent = {
+    enable = true;
+    gateway.enable = true;
+    settings.model.default = "anthropic/claude-sonnet-4";
+    environmentFiles = [ config.sops.secrets."hermes-env".path ];
+  };
+}
+```
+
+`home-manager switch` makes `~/.hermes`, writes `config.yaml`, builds `.env` and starts the gateway as a user service.
+
+:::warning Enable linger, or the service stops at logout
+CAUTION: Enable linger for your account. Without linger, systemd stops the user manager when your last session ends, and the gateway stops with it. Home Manager cannot set linger, because linger is a property of the account:
+
+```nix
+# NixOS
+users.users.your-username.linger = true;
+```
+
+```bash
+# anywhere else
+sudo loginctl enable-linger your-username
+```
+
+macOS has no equivalent option. A `launchd` agent with `RunAtLoad` starts at login and continues to run.
+:::
+
+### Running the Desktop / Dashboard Backend
+
+`gateway.enable` runs the messaging gateway for Telegram, Discord, Slack and the other platforms. Hermes Desktop and the web dashboard connect to a *different* process, which is `hermes serve` or `hermes dashboard`. `backend.mode` runs that process with the gateway:
+
+```nix
+{
+  services.hermes-agent = {
+    enable = true;
+    gateway.enable = true;      # messaging platforms
+    backend.mode = "dashboard"; # + the browser dashboard on 127.0.0.1:9119
+    backend.port = 9119;
+  };
+}
+```
+
+`serve` runs without a user interface. It gives the `/api/ws` and `/api/pty` sockets that Hermes Desktop connects to, and it does not build the web application. `dashboard` gives all of that, and also serves the browser admin panel. Both processes use one `HERMES_HOME` with the gateway. Thus the sessions, the skills, the memory and the cron jobs are the same for all of them. `backend.mode` works in the same way on the NixOS module, but not in container mode.
+
+:::warning Binding to an address other than loopback
+The default address is `127.0.0.1`. Each other address starts the authentication gate of the dashboard. The server also refuses each request with a `Host` header that is different from the address that the server bound to. This is a defence against DNS rebinding. Bind to the name or the address that your client uses.
+:::
+
+### Verify It Works
+
+```bash
+# Linux
+systemctl --user status hermes-agent
+journalctl --user -u hermes-agent -f
+
+# macOS
+launchctl list | grep hermes
+tail -f ~/Library/Logs/hermes-agent.log
+
+hermes --version
+hermes config     # shows the configuration that Nix wrote
+```
 
 ---
 
@@ -587,7 +713,7 @@ Host                                    Container
   │   └── mcp-tokens/                      (OAuth tokens for MCP servers)
   ├── home/                                ──►  /home/hermes    (rw)
   └── workspace/                           (agent working directory)
-      ├── SOUL.md                          (from documents option)
+      ├── AGENTS.md                        (from the documents option)
       └── (agent-created files)
 
 Container writable layer (apt/pip/npm):   /usr, /usr/local, /tmp
@@ -811,7 +937,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 
 | Check | What it tests |
 |---|---|
-| `package-contents` | `hermes` and `hermes-agent` binaries exist and `hermes version` runs |
+| `package-contents` | `hermes` and `hermes-agent` binaries exist and `hermes --version` runs |
 | `entry-points-sync` | Every `[project.scripts]` entry in `pyproject.toml` has a wrapped binary in the Nix package |
 | `cli-commands` | `hermes --help` exposes `gateway` and `config` subcommands |
 | `managed-guard` | `HERMES_MANAGED=true hermes config set ...` prints the NixOS error |
@@ -857,7 +983,8 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `documents` | `attrsOf (either str path)` | `{}` | Workspace files. Keys are filenames, values are inline strings or paths. Installed into `workingDirectory` on activation |
+| `documents` | `attrsOf (either str path)` | `{}` | Workspace files. Each key is a path relative to `workingDirectory`. You must set that option to use this one. |
+| `hermesHomeFiles` | `attrsOf (either str path)` | `{}` | Files that go into `HERMES_HOME`. `SOUL.md` and `memories/` must be here, or Hermes does not load them. |
 
 ### MCP Servers
 
@@ -885,10 +1012,29 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python312Packages` |
 | `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["hindsight"]`). Resolved by uv — no collisions |
-| `restart` | `str` | `"always"` | systemd `Restart=` policy |
-| `restartSec` | `int` | `5` | systemd `RestartSec=` value |
+| `restart` | `str` | `"always"` | The systemd `Restart=` policy. macOS does not use it. |
+| `restartSec` | `int` | `5` | The systemd `RestartSec=` value. macOS does not use it. |
 
-### Container
+### Backend (`hermes serve` / `hermes dashboard`)
+
+This option runs the process that Hermes Desktop and the web dashboard connect to, with the gateway. You cannot use it with `container.enable`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `backend.mode` | `enum ["none" "serve" "dashboard"]` | `"none"` | `serve` runs without a user interface and gives `/api/ws` and `/api/pty`. `dashboard` also serves the browser panel. |
+| `backend.host` | `str` | `"127.0.0.1"` | The address to bind to. Each address other than loopback starts the authentication gate. |
+| `backend.port` | `port` | `9119` | The port to bind to |
+| `backend.extraArgs` | `listOf str` | `[]` | More arguments for the backend command |
+
+### Home Manager only
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `hermesHome` | `str` | `"${config.home.homeDirectory}/.hermes"` | `HERMES_HOME` directly. The NixOS module builds it from `stateDir`. |
+| `installPackage` | `bool` | `true` | Add the `hermes` CLI to `home.packages`, and export `HERMES_HOME` for your shells |
+| `gateway.enable` | `bool` | `false` | Run the messaging gateway. On the NixOS module the gateway is the service, so that module has no such option. |
+
+### Container (NixOS only)
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -908,6 +1054,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 ```
 /var/lib/hermes/                     # stateDir (owned by hermes:hermes, 0750)
 ├── .hermes/                         # HERMES_HOME
+│   ├── SOUL.md                      # from hermesHomeFiles: the agent identity
 │   ├── config.yaml                  # Nix-generated (deep-merged each rebuild)
 │   ├── .managed                     # Marker: CLI config mutation blocked
 │   ├── .env                         # Merged from environment + environmentFiles
@@ -922,8 +1069,24 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 │   └── logs/
 ├── home/                            # Agent HOME
 └── workspace/                       # Agent working directory
-    ├── SOUL.md                      # From documents option
+    ├── AGENTS.md                    # from the documents option
     └── (agent-created files)
+```
+
+### Home Manager
+
+```
+~/.hermes/                           # hermesHome (HERMES_HOME), 0700
+├── SOUL.md                          # from hermesHomeFiles
+├── config.yaml                      # written by Nix, merged at each activation
+├── .managed                         # marker: names the system that manages this
+├── .env                             # written again from environment + environmentFiles
+├── auth.json                        # OAuth credentials: seeded, then Hermes owns it
+├── memories/  sessions/  skills/  cron/  logs/  plugins/
+└── (runtime state)
+
+~/                                   # workingDirectory, your home by default
+└── AGENTS.md                        # from the documents option
 ```
 
 ### Container Mode
@@ -946,7 +1109,8 @@ Same layout, mounted into the container:
 cd /etc/nixos && nix flake update hermes-agent
 
 # Rebuild
-sudo nixos-rebuild switch
+sudo nixos-rebuild switch          # for the NixOS module
+home-manager switch                # for the Home Manager module
 ```
 
 In container mode, the `current-package` symlink is updated and the agent picks up the new binary on restart. No container recreation, no loss of installed packages.
@@ -1016,7 +1180,7 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | `Cannot save configuration: managed by NixOS` | CLI guards active | Edit `configuration.nix` and `nixos-rebuild switch` |
 | `No adapter available for discord` (or telegram/slack) | Messaging deps missing from the sealed Nix venv | Install `#messaging` variant: `nix profile install ...#messaging`. For NixOS module: `extraDependencyGroups = [ "messaging" ]`. Check `journalctl -u hermes-agent` for `FeatureUnavailable` or `requirements not met` for the underlying error. |
 | Container recreated unexpectedly | `extraVolumes`, `extraOptions`, or `image` changed | Expected — writable layer resets. Reinstall packages or use a custom image |
-| `hermes version` shows old version | Container not restarted | `systemctl restart hermes-agent` |
+| `hermes --version` shows old version | Container not restarted | `systemctl restart hermes-agent` |
 | Permission denied on `/var/lib/hermes` | State dir is `0750 hermes:hermes` | Use `docker exec` or `sudo -u hermes` |
 | `nix-collect-garbage` removed hermes | GC root missing | Restart the service (preStart recreates the GC root) |
 | `no container with name or ID "hermes-agent"` (Podman) | Podman rootful container not visible to regular user | Add passwordless sudo for podman (see [Container Mode](#container-mode) section) |

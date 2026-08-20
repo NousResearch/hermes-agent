@@ -1034,11 +1034,50 @@ def _update_complete_message(pre_version: str | None) -> str:
     return "✓ Update complete!"
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
+def _print_update_summary(
+    *,
+    node_failures: list,
+    desktop_build_ok: bool,
+    pre_update_version: str | None,
+) -> None:
+    """Final update banner. A failed Desktop rebuild is non-fatal for the
+    Python side, but must not print ``✓ Update complete!`` (#88251)."""
+    print()
+    if node_failures or not desktop_build_ok:
+        parts = []
+        if node_failures:
+            parts.append(
+                f"Node.js dependencies for {', '.join(node_failures)} did not refresh"
+            )
+        if not desktop_build_ok:
+            parts.append(
+                "the desktop app was not rebuilt and is still on the previous build"
+            )
+        print("⚠ Update partially complete — " + "; ".join(parts) + ".")
+        if node_failures:
+            print("  Code and Python deps are updated, but the dashboard/TUI may")
+            print("  be in a mixed state until the Node deps are rebuilt.")
+        if not desktop_build_ok:
+            print("  Run `hermes desktop` to retry the desktop rebuild.")
+    else:
+        _print_update_completion(_update_complete_message(pre_update_version))
+
+
+def _write_gateway_update_exit_code(ok: bool) -> None:
+    path = get_hermes_home() / ".update_exit_code"
+    try:
+        path.write_text("0" if ok else "1", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
     drivers causing 'Invalid argument' errors on file creation).
+
+    Returns ``False`` when a Desktop rebuild ran and failed; ``True`` otherwise.
     """
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
 
@@ -1291,7 +1330,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
 
     node_failures = _update_node_dependencies()
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
-    _rebuild_desktop_after_update(
+    desktop_build_ok = _rebuild_desktop_after_update(
         _m().PROJECT_ROOT / "apps" / "desktop",
         had_desktop_app_before_update=had_desktop_app_before_update,
     )
@@ -1396,16 +1435,11 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
             "Post-update state.db integrity check (zip path) failed: %s", exc
         )
 
-    print()
-    if node_failures:
-        print(
-            "⚠ Update partially complete — Node.js dependencies for "
-            f"{', '.join(node_failures)} did not refresh."
-        )
-        print("  Code and Python deps are updated, but the dashboard/TUI may")
-        print("  be in a mixed state until the Node deps are rebuilt.")
-    else:
-        _print_update_completion(_update_complete_message(pre_update_version))
+    _print_update_summary(
+        node_failures=node_failures,
+        desktop_build_ok=desktop_build_ok,
+        pre_update_version=pre_update_version,
+    )
     try:
         _print_curator_first_run_notice()
     except Exception as e:
@@ -1417,6 +1451,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
     # Don't stop a working dashboard when the Node refresh failed — see the
     # git-update path for rationale (#30271).
     _finish_dashboard_update_cleanup(node_failures)
+    return desktop_build_ok
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     status = subprocess.run(
@@ -2679,6 +2714,49 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     _log_only_write(result.stdout or "")
     return result
 
+def _classify_fetch_failure(stderr: str) -> str:
+    """Map git-fetch stderr to a one-line, user-facing diagnosis.
+
+    Order matters: curl surfaces HTTP failures as
+    ``fatal: unable to access '<url>': The requested URL returned error: 429``,
+    so the rate-limit/outage checks must run BEFORE the generic
+    "unable to access" network check or a GitHub 429/5xx gets misreported as a
+    local network problem. The caller always prints the first raw stderr line
+    alongside this diagnosis — the friendly message adds guidance, it never
+    replaces the wire error.
+    """
+
+    def _has_http_code(*codes: str) -> bool:
+        return any(
+            f"HTTP {code}" in stderr or f"returned error: {code}" in stderr
+            for code in codes
+        )
+
+    if _has_http_code("429") or "rate limit" in stderr.lower():
+        return (
+            "✗ GitHub is rate limiting requests or having an outage (HTTP 429)"
+            " — try again in 5 minutes."
+        )
+    if _has_http_code("500", "502", "503", "504"):
+        return (
+            "✗ GitHub appears to be having an outage — try again in a few"
+            " minutes (https://www.githubstatus.com)."
+        )
+    if "Could not resolve host" in stderr or "unable to access" in stderr:
+        return "✗ Network error — cannot reach the remote repository."
+    if "Authentication failed" in stderr or "could not read Username" in stderr:
+        return "✗ Authentication failed — check your git credentials or SSH key."
+    return "✗ Failed to fetch updates from origin."
+
+
+def _print_fetch_failure(stderr: str) -> None:
+    """Print the classified diagnosis plus the first raw stderr line."""
+    stderr = (stderr or "").strip()
+    print(_classify_fetch_failure(stderr))
+    if stderr:
+        print(f"  {stderr.splitlines()[0]}")
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -2690,7 +2768,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     Installs that can't honor non-default branches (e.g. Docker) surface a
     one-line notice instead of silently dropping the flag.
     """
-    from hermes_cli.config import detect_install_method, recommended_update_command_for_method
+    from hermes_cli.config import (
+        detect_install_method,
+        is_nix_install_method,
+        recommended_update_command_for_method,
+    )
     method = detect_install_method(_m().PROJECT_ROOT)
     if method == "docker":
         # Docker can't ``git fetch`` from within the container.  Surface the
@@ -2701,7 +2783,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print(format_docker_update_message())
         sys.exit(1)
 
-    if method in {"nix", "nixos", "apt"}:
+    if is_nix_install_method(method) or method == "apt":
         print(recommended_update_command_for_method(method))
         sys.exit(1)
 
@@ -2796,15 +2878,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
-        stderr = fetch_result.stderr.strip()
-        if "Could not resolve host" in stderr or "unable to access" in stderr:
-            print("✗ Network error — cannot reach the remote repository.")
-        elif "Authentication failed" in stderr or "could not read Username" in stderr:
-            print("✗ Authentication failed — check your git credentials or SSH key.")
-        else:
-            print("✗ Failed to fetch.")
-            if stderr:
-                print(f"  {stderr.splitlines()[0]}")
+        _print_fetch_failure(fetch_result.stderr)
         sys.exit(1)
 
     # Verify the compare ref actually exists before asking rev-list about it.
@@ -3567,21 +3641,36 @@ def _detect_self_loaded_native_modules() -> list[str]:
 
 
 def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
-    """Defer (exit 2) when THIS process holds a native module the sync must replace.
+    """Defer the venv rewrite when THIS process holds something it must replace.
 
     Runs at the last moment before the venv rewrite — after the code swap —
     so the on-disk pyproject reflects the update target and a deferral
-    leaves the user on NEW code with only the dependency install pending
-    (completed by the next launch's marker recovery).  No-op when nothing
-    at-risk is loaded.
+    leaves the user on NEW code with only the dependency install pending.
+    No-op when nothing at-risk is held.
+
+    Two hazards, both "this process holds a file the sync must replace", and
+    they end differently because their recoveries differ:
+
+    - A mapped native extension (``.pyd``).  Exit 2 and let the next launch's
+      marker recovery finish the install: that launch runs the install before
+      importing anything heavy, so it maps nothing and the swap succeeds.
+
+    - The ``hermes.exe`` console shim we were launched from (#88838, #89599).
+      The marker cannot help here — every future ``hermes`` launch is also the
+      shim, so deferring to the next launch defers forever.  Hand the install
+      to a child under the venv interpreter and exit, releasing the shim.
     """
     locked = _m()._detect_self_loaded_native_modules()
-    if not locked:
-        return
-    _m()._defer_update_for_self_lock(locked)
-    if gateway_resume is not None:
-        _m()._resume_windows_gateways_after_update(gateway_resume)
-    sys.exit(2)
+    if locked:
+        _m()._defer_update_for_self_lock(locked)
+        if gateway_resume is not None:
+            _m()._resume_windows_gateways_after_update(gateway_resume)
+        sys.exit(2)
+
+    if _m()._reexec_dependency_sync_off_windows_shim():
+        if gateway_resume is not None:
+            _m()._resume_windows_gateways_after_update(gateway_resume)
+        sys.exit(0)
 
 
 def _defer_update_for_self_lock(loaded: list[str]) -> None:
@@ -4531,8 +4620,15 @@ def _desktop_app_present(desktop_dir: Path) -> bool:
 
 def _rebuild_desktop_after_update(
     desktop_dir: Path, *, had_desktop_app_before_update: bool
-) -> None:
-    """Rebuild an installed Desktop app when its source or artifact changed."""
+) -> bool:
+    """Rebuild an installed Desktop app when its source or artifact changed.
+
+    Returns ``False`` only when a rebuild was attempted and failed, so the
+    caller can withhold ``✓ Update complete!`` and (in gateway mode) write
+    a failing ``.update_exit_code`` (#88251). Every other outcome — nothing
+    to rebuild, up to date, build succeeded, Desktop never installed —
+    returns ``True``.
+    """
     # The release tree is ignored by git and can disappear during an update.
     # Its pre-update presence is enough to restore it; do not make people who
     # have never used Desktop pay for an Electron build.
@@ -4542,7 +4638,7 @@ def _rebuild_desktop_after_update(
         and _m()._resolve_node_runtime_npm()
         and has_desktop_app
     ):
-        return
+        return True
 
     print("→ Checking if desktop app needs rebuilding...")
     # Consult the content-hash stamp IN-PROCESS first. The spawned
@@ -4561,7 +4657,7 @@ def _rebuild_desktop_after_update(
         skip_desktop_build = False
     if skip_desktop_build:
         print("  ✓ Desktop app up to date")
-        return
+        return True
 
     desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
     # Capture the (very loud) Electron/vite build output into update.log
@@ -4586,15 +4682,16 @@ def _rebuild_desktop_after_update(
             desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
         )
     if build_result.returncode != 0:
-        print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+        print("  ⚠ Desktop build failed (run `hermes desktop` to retry)")
         tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
         if tail:
             print(tail)
         from hermes_constants import display_hermes_home as _dhh
 
         print(f"  Full build log: {_dhh()}/logs/update.log")
-    else:
-        print("  ✓ Desktop app up to date")
+        return False
+    print("  ✓ Desktop app up to date")
+    return True
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -4811,12 +4908,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
         try:
-            _update_via_zip(
+            desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
             )
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        if gateway_mode:
+            _write_gateway_update_exit_code(desktop_build_ok)
         return
 
     # Fetch and pull
@@ -4847,20 +4946,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             text=True, encoding="utf-8", errors="replace",
         )
         if fetch_result.returncode != 0:
-            stderr = fetch_result.stderr.strip()
-            if "Could not resolve host" in stderr or "unable to access" in stderr:
-                print("✗ Network error — cannot reach the remote repository.")
-                print(f"  {stderr.splitlines()[0]}" if stderr else "")
-            elif (
-                "Authentication failed" in stderr or "could not read Username" in stderr
-            ):
-                print(
-                    "✗ Authentication failed — check your git credentials or SSH key."
-                )
-            else:
-                print("✗ Failed to fetch updates from origin.")
-                if stderr:
-                    print(f"  {stderr.splitlines()[0]}")
+            _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)
 
         # Get current branch (returns literal "HEAD" when detached)
@@ -5059,10 +5145,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # otherwise "Already up to date!" gaslights the user while their
             # install stays bricked.
             healthy, detail = _venv_core_imports_healthy()
-            if not healthy:
+            # The Windows shim hand-off spawns this child precisely to run a
+            # sync its parent could not. The parent already pulled, so the
+            # checkout is current BY DESIGN and venv health is not the
+            # question — the pending sync is. Without this the child prints
+            # "Already up to date!" and exits without doing the one job it
+            # was spawned for.
+            handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
+            if handed_off_sync:
+                print("→ Finishing the dependency install handed off by hermes.exe...")
+            elif not healthy:
                 print("⚠ Checkout is current, but the venv is unhealthy:")
                 print(f"  {detail}")
                 print("→ Repairing Python dependencies...")
+            if handed_off_sync or not healthy:
                 # Self-lock deferral (#86735): the repair rewrites the venv
                 # too — same mapped-extension hazard as the update sync.
                 _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
@@ -5464,7 +5560,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         node_failures = _update_node_dependencies()
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")
 
-        _rebuild_desktop_after_update(
+        desktop_build_ok = _rebuild_desktop_after_update(
             desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
         )
@@ -5841,16 +5937,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
-        print()
-        if node_failures:
-            print(
-                "⚠ Update partially complete — Node.js dependencies for "
-                f"{', '.join(node_failures)} did not refresh."
-            )
-            print("  Code and Python deps are updated, but the dashboard/TUI may")
-            print("  be in a mixed state until the Node deps are rebuilt.")
-        else:
-            _print_update_completion(_update_complete_message(pre_update_version))
+        _print_update_summary(
+            node_failures=node_failures,
+            desktop_build_ok=desktop_build_ok,
+            pre_update_version=pre_update_version,
+        )
 
         # Search-index optimization notice (v23). Existing installs keep their
         # working search index untouched on update; the compact v23 layout —
@@ -5955,13 +6046,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         #
         # Writing the marker here — after git pull + pip install succeed but
         # before we attempt the restart — ensures the new gateway sees it
-        # regardless of how we die.
+        # regardless of how we die. Gated on desktop_build_ok (#88251): a
+        # Desktop rebuild failure must not be reported as "0" — the gateway's
+        # /update watcher (gateway/run.py) polls this file.
         if gateway_mode:
-            _exit_code_path = get_hermes_home() / ".update_exit_code"
-            try:
-                _exit_code_path.write_text("0", encoding="utf-8")
-            except OSError:
-                pass
+            _write_gateway_update_exit_code(desktop_build_ok)
 
         gateway_fleet_restart_incomplete = False
         # Snapshot of gateways running before we touch anything. Stays empty
@@ -6786,10 +6875,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
-            _update_via_zip(
+            desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
             )
+            if gateway_mode:
+                _write_gateway_update_exit_code(desktop_build_ok)
         else:
             print(f"✗ Update failed: {e}")
             sys.exit(1)

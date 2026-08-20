@@ -146,9 +146,20 @@ export async function loadRuntimePlugin(
     // standalone install of hermes-bots predating its adoption in-tree) must
     // not register a second time: contributions would double up and the two
     // copies would fight over storage. The bundled copy wins; the disk copy
-    // is skipped quietly so stale installs keep working after an app update.
+    // is skipped — but VISIBLY: a silent skip left the stale folder
+    // undiscoverable while (on shells without the bundled twin) the same
+    // folder actively breaks the feature it shadows. The inventory row
+    // carries the file path so Settings → Plugins can reveal it for deletion.
     if ($pluginRecords.get()[plugin.id]?.kind === 'bundled') {
       console.info(`[plugins] ${origin} skipped — "${plugin.id}" already ships bundled with the app`)
+      publishPlugin({
+        id: `${plugin.id}:disk-shadowed`,
+        name: `${plugin.name ?? plugin.id} (stale disk copy)`,
+        description: `Shadowed by the bundled "${plugin.id}" plugin — this folder is no longer used and can be deleted.`,
+        kind: options.kind ?? 'disk',
+        file: options.file,
+        status: 'disabled'
+      })
 
       return null
     }

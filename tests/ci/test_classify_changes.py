@@ -25,7 +25,9 @@ DEFAULT = {
     "python": True,
     "python_prod": True,
     "frontend": True,
+    "docker": True,
     "docker_meta": True,
+    "nix": True,
     "site": True,
     "scan": True,
     "deps": True,
@@ -37,12 +39,20 @@ DEFAULT = {
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
+    #
+    # docker and nix are derived: both build the product, so both ride on
+    # python_prod and frontend. The image ships the built web assets, and the
+    # flake bundles the compiled ui-tui. Pass either explicitly to override.
+    _python_prod = python if python_prod is None else python_prod
+    _product = _python_prod or frontend
     return {
         "python": python,
-        "python_prod": python if python_prod is None else python_prod,
+        "python_prod": _python_prod,
+        "docker": (docker_meta or _product) if docker is None else docker,
+        "nix": _product if nix is None else nix,
         "frontend": frontend,
         "docker_meta": docker_meta,
         "site": site,
@@ -66,16 +76,54 @@ CASES = {
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
     "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True)),
     "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
-    "website → site": (["website/docs/intro.md"], _lanes(site=True)),
+    # A website file the Python suite cannot read stays site-only.
+    "website config → site": (["website/docusaurus.config.ts"], _lanes(site=True)),
     # uv lock --check re-resolves against PyPI, so it must stay off for any
     # diff that can't desync the lockfile — a registry blip on a docs PR
     # otherwise shows up as a blocking "uv.lock out of sync" red X.
-    "docs → no uv_lock": (["website/docs/user-guide/profiles.md"], _lanes(site=True)),
+    "docs → no uv_lock": (
+        ["website/docs/developer-guide/plugins/index.md"],
+        _lanes(python=True, site=True),
+    ),
     "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
+    # The published CIMD document is asserted about by the Python suite, so a
+    # lone edit there must not skip the lane that would catch a bad edit.
+    "cimd document → python + site": (
+        ["website/static/oauth/client-metadata.json"],
+        _lanes(python=True, site=True),
+    ),
+    # A new docs page must reach llms.txt, and the generator that puts it there
+    # has its own tests. Skipping Python on either is how the index drifted to
+    # 53% coverage while every PR stayed green.
+    "docs page → python + site": (
+        ["website/docs/user-guide/bot-mode.md"],
+        _lanes(python=True, site=True),
+    ),
+    "docs generator → python + site": (
+        ["website/scripts/generate-llms-txt.py"],
+        _lanes(python=True, scan=True, site=True),
+    ),
     # SKILL.md reads like docs, but the skill-doc tests read skills/, so a
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),
     "dockerfile → docker meta": (["Dockerfile"], _lanes(docker_meta=True)),
+    # Only the flake reads these, so they run nix alone. No Python test opens
+    # them, unlike pyproject.toml and uv.lock below.
+    "nix module → nix only": (["nix/homeManagerModules.nix"], _lanes(nix=True)),
+    "flake.nix → nix only": (["flake.nix"], _lanes(nix=True)),
+    "flake.lock → nix only": (["flake.lock"], _lanes(nix=True)),
+    # A flake-only file must not mask a Python change beside it.
+    "nix + python → both": (["nix/checks.nix", "agent/x.py"], _lanes(python=True, scan=True)),
+    # Nine checks run the built binary, so product Python is a nix input even
+    # when the diff touches no file under nix/.
+    "product python → nix": (["hermes_cli/config.py"], _lanes(python=True, scan=True)),
+    # tests/ is not packaged, so the built binary cannot change.
+    "tests-only → no nix": (
+        ["tests/agent/test_foo.py"],
+        _lanes(python=True, python_prod=False, scan=True),
+    ),
+    # Prose cannot change the closure or the binary.
+    "docs-only → no nix": (["README.md"], _lanes()),
     # install.ps1 is a shell script Python never imports, but it's also not
     # provably prose, so python stays on (fail-open) alongside the Windows lane.
     "install.ps1 → installer": (["scripts/install.ps1"], _lanes(python=True, installer=True)),

@@ -70,7 +70,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestBundledPluginsRegister:
     """All eight bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_bundled_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -80,6 +80,7 @@ class TestBundledPluginsRegister:
             "ddgs",
             "exa",
             "firecrawl",
+            "keenable",
             "parallel",
             "searxng",
             "tavily",
@@ -203,6 +204,23 @@ class TestIsAvailable:
         monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
         assert p.is_available() is True
 
+    def test_firecrawl_explicit_config_allows_keyless_cloud(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("firecrawl")
+        assert p is not None
+        assert p.is_available() is False
+
+        monkeypatch.setattr(
+            "tools.web_tools._load_web_config",
+            lambda: {"backend": "firecrawl"},
+            raising=False,
+        )
+        assert p.is_available() is True
+
     def test_ddgs_always_available_when_package_importable(self) -> None:
         """DDGS is the always-on fallback — no API key required.
 
@@ -278,20 +296,21 @@ class TestRegistryResolution:
     def test_no_config_no_credentials_returns_none(
         self,
     ) -> None:
-        """No backend configured AND no available providers → typically None.
+        """No backend configured AND no credentials → keyless tier or ddgs.
 
-        ``ddgs`` is the no-credential fallback; if its ``ddgs`` Python
-        package is installed in the test env, ddgs will be picked.
-        Otherwise the resolver returns None. Either outcome is correct.
+        Resolution order with zero credentials: ddgs if its Python package
+        is importable, else the keyless free tier (Parallel/Exa public
+        endpoints — resolves with ``is_available() == False`` but
+        ``is_keyless_available() == True``), else None (keyless tier
+        disabled). All three outcomes are correct; a provider that is
+        neither keyed nor keyless-capable means an env var leaked in.
         """
         _ensure_plugins_loaded()
         from agent.web_search_registry import _resolve
 
         result = _resolve(None, capability="search")
         if result is not None:
-            # The only no-credential provider is ddgs; anything else
-            # means an env var leaked in.
-            assert result.is_available() is True
+            assert result.is_available() or result.is_keyless_available()
 
 
 # ---------------------------------------------------------------------------

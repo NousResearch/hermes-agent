@@ -1,6 +1,17 @@
-import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
+
+// Which translucency the OS can back. Asked synchronously because the renderer
+// needs it before its first paint, and answered by main because deciding it
+// needs `os.release()` — a sandboxed preload may only require electron, events,
+// timers and url, so importing node:os here throws before contextBridge runs
+// and takes the ENTIRE bridge down with it (window.hermesDesktop undefined =>
+// "Desktop IPC bridge is unavailable"). No reply means no glass, which degrades
+// to an ordinary opaque window rather than a page thinned over nothing.
+const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
+  glassSupported: translucencySupport?.glass === true,
+  translucencySupported: translucencySupport?.translucency === true,
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
@@ -64,7 +75,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
     moveBy: delta => ipcRenderer.send('hermes:hud:move-by', delta),
     setBounds: bounds => ipcRenderer.send('hermes:hud:set-bounds', bounds),
-    setVibrancy: on => ipcRenderer.invoke('hermes:hud:vibrancy', on),
+    // Whether the band covers the window below the bar. Main pairs it with the
+    // user's translucency setting to decide the native frost (macOS vibrancy /
+    // Windows 11 DWM backdrop) — see hudFrostFor.
+    setFrost: showing => ipcRenderer.invoke('hermes:hud:frost', showing),
     // The HUD tells main which session it is on; main hands that back to the
     // app window when the HUD closes, so the app can re-home onto it.
     setSession: sessionId => ipcRenderer.send('hermes:hud:session', sessionId),
@@ -137,9 +151,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     save: payload => ipcRenderer.invoke('hermes:connections:save', payload),
     remove: id => ipcRenderer.invoke('hermes:connections:remove', id),
     setPrimary: id => ipcRenderer.invoke('hermes:connections:set-primary', id),
+    setLaunchMode: mode => ipcRenderer.invoke('hermes:connections:set-launch-mode', mode),
+    setLastUsed: id => ipcRenderer.invoke('hermes:connections:set-last-used', id),
     test: id => ipcRenderer.invoke('hermes:connections:test', id),
     // Fan out `hermes update` to every eligible registered connection.
-    updateAll: () => ipcRenderer.invoke('hermes:connections:update-all'),
+    // Optional excludeIds skips rows the caller updates through another path.
+    updateAll: options => ipcRenderer.invoke('hermes:connections:update-all', options),
     // Registry lifecycle push (main → renderer): a connection was removed or
     // materially edited, so secondaries scoped to it must be disposed (and,
     // for edits, re-dialed at the new target).
@@ -185,6 +202,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   readClipboard: () => ipcRenderer.invoke('hermes:readClipboard'),
   saveGatewayFile: payload => ipcRenderer.invoke('hermes:saveGatewayFile', payload),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),
+  contextMenuEdit: command => ipcRenderer.invoke('hermes:context-menu:edit', command),
+  contextMenuCopyImage: () => ipcRenderer.invoke('hermes:context-menu:copy-image'),
+  contextMenuSpellcheck: action => ipcRenderer.invoke('hermes:context-menu:spellcheck', action),
+  contextMenuGuestAddWord: payload => ipcRenderer.invoke('hermes:context-menu:guest-add-word', payload),
+  onContextMenuSpellcheck: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:context-menu-spellcheck', listener)
+
+    return () => ipcRenderer.removeListener('hermes:context-menu-spellcheck', listener)
+  },
   saveImageBuffer: (data, ext) => ipcRenderer.invoke('hermes:saveImageBuffer', { data, ext }),
   saveClipboardImage: () => ipcRenderer.invoke('hermes:saveClipboardImage'),
   getPathForFile: file => {
@@ -218,6 +245,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   zoom: {
     // Current zoom of this window, as { level, percent }.
     get: () => ipcRenderer.invoke('hermes:zoom:get'),
+    // Synchronous zoom factor (1 = 100%). Coordinate math needs it in the
+    // same tick as the event it converts, so no IPC round-trip here.
+    factor: () => webFrame.getZoomFactor(),
     setPercent: percent => ipcRenderer.send('hermes:zoom:set-percent', percent),
     // Fires on every zoom change, including the Ctrl/Cmd +/-/0 shortcuts,
     // so the settings UI can stay in sync with the keyboard.

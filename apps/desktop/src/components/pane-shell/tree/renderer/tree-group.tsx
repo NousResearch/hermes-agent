@@ -49,6 +49,7 @@ import {
   closeTabPane,
   closeTreeTabsToRight,
   collapseTreePane,
+  hideOnlyZoneTabs,
   isCollapsePane,
   isMainStripPane,
   isSessionStripPane,
@@ -56,6 +57,7 @@ import {
   reloadTreePane,
   restoreTreePane,
   SESSION_TILE_DRAG,
+  setStripTabHidden,
   setTreeGroupHeaderHidden,
   setTreeGroupMinimized,
   treeTabCloseTargets
@@ -129,6 +131,30 @@ function ZoneMenu({
           onCloseOthers: () => closeOtherTreeTabs(targetId),
           onCloseToRight: () => closeTreeTabsToRight(targetId)
         })}
+        {(() => {
+          // Show/hide rows for the zone's hide-only chrome tabs (sessions /
+          // Bots) — their Close replacement. Resolved when the menu OPENS,
+          // same no-subscription contract as the close-verb counts above.
+          const hideOnly = hideOnlyZoneTabs(nodeId)
+
+          if (hideOnly.length === 0) {
+            return null
+          }
+
+          return (
+            <>
+              <kit.Separator />
+              {hideOnly.map(tab =>
+                renderActionItem(kit, {
+                  icon: tab.hidden ? 'eye' : 'eye-closed',
+                  key: `strip-tab-${tab.id}`,
+                  label: tab.hidden ? t.zones.showStripTab(tab.title) : t.zones.hideStripTab(tab.title),
+                  onSelect: () => setStripTabHidden(tab.id, !tab.hidden)
+                })
+              )}
+            </>
+          )
+        })()}
         <kit.Separator />
         {renderActionItem(kit, {
           icon: headerHidden ? 'eye' : 'eye-closed',
@@ -287,11 +313,13 @@ export function TreeGroup({
   const targetPane = () => menuPane ?? activeId
 
   // Close targets the right-clicked chip (falling back to the active pane);
-  // only panes that declare `uncloseable` (the main workspace) are exempt.
+  // panes that declare `uncloseable` (the main workspace) or `hideOnly`
+  // (sessions / Bots — show/hide replaces Close) are exempt.
   const closable = () => {
     const paneId = targetPane()
+    const chrome = paneChrome(paneFor(paneId))
 
-    return paneChrome(paneFor(paneId)).uncloseable ? undefined : paneId
+    return chrome.uncloseable || chrome.hideOnly ? undefined : paneId
   }
 
   // The zone hosting the uncloseable workspace never minimizes — collapsing
@@ -304,8 +332,11 @@ export function TreeGroup({
 
   // A pane whose store owns Close keeps the gesture even when the pane itself
   // is uncloseable — the workspace tab empties to a fresh draft rather than
-  // leaving the tree.
-  const closeableTab = (paneId: string) => !paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId)
+  // leaving the tree. Hide-only chrome (sessions / Bots) opts out of every
+  // close gesture: its tabs are shown/hidden (zone menu, ⌘K), never closed —
+  // an accidental ✕ on standing chrome removed Bot Mode until the next launch.
+  const closeableTab = (paneId: string) =>
+    !paneChrome(paneFor(paneId)).hideOnly && (!paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId))
 
   // A pane's own live label when it has one, else its registered string.
   const tabLabel = (paneId: string) => paneChrome(paneFor(paneId)).tabTitle?.() ?? paneFor(paneId)?.title ?? paneId
@@ -539,6 +570,7 @@ export function TreeGroup({
                   }}
                   role="tab"
                   selected={isSelected}
+                  showCloseButton={chrome.showCloseButton !== false}
                   style={{ cursor: 'grab' }}
                 >
                   {chrome.tabLead ? (

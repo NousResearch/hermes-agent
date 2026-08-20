@@ -59,7 +59,22 @@ interface Secondary {
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
+  /**
+   * Epoch-ms deadline while an activation (prepare/ensure) is mid-dial. The
+   * live-work pruner must not dispose an entry the user is switching to: a
+   * switch target is not yet the active key, has no live sessions and holds
+   * no request lease, so during a cold pool spawn (~3s) every prune recompute
+   * saw it as idle garbage and disposed it mid-dial — the root of the dead
+   * profile clicks in #89622. Cleared when the activation settles; bounded so
+   * an orphaned lease self-heals.
+   */
+  activationLeaseUntil: number
 }
+
+// How long a mid-dial activation holds its prune lease: covers a cold pool
+// backend spawn + socket connect with margin, while still letting a leaked
+// lease expire quickly enough for the reaper to reclaim the entry.
+const ACTIVATION_LEASE_MS = 30_000
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -432,7 +447,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnectAttempt: 0,
     reconnecting: false,
     retained: false,
-    wantOpen: true
+    wantOpen: true,
+    activationLeaseUntil: 0
   }
 
   // Events keep carrying the bare profile — session routing is profile-keyed
@@ -557,7 +573,9 @@ async function gatewayForProfile(
 export async function requestGatewayForProfile<T>(
   profile: string,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  timeoutMs?: number,
+  signal?: AbortSignal
 ): Promise<T> {
   const route = await gatewayForProfile(profile, true)
 
@@ -568,7 +586,12 @@ export async function requestGatewayForProfile<T>(
 
     const routedParams = route.scopeProfile ? { ...params, profile: route.key } : params
 
-    return await route.gateway.request<T>(method, routedParams)
+    // Same arity contract as the ambient path in session-request-router: only
+    // pass the deadline args through when the caller set them, so a plain
+    // profile-routed RPC keeps its two-argument call shape.
+    return await (timeoutMs === undefined && signal === undefined
+      ? route.gateway.request<T>(method, routedParams)
+      : route.gateway.request<T>(method, routedParams, timeoutMs, signal))
   } finally {
     route.release()
   }
@@ -667,27 +690,13 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
   }
 }
 
-// The agent-scoped analogue of prepareGatewayForProfile, and the same
-// publication seam: dial the agent's socket without publishing anything, and
-// hand back the synchronous activation thunk. A null connection id falls
-// through to the profile seam, so both doors into an activation share one
-// atomicity contract instead of drifting apart; an explicit `local` id is a
-// registry identity (`registryBackendScopeKey` keeps its own scope for it) and
-// stays on the registry route.
-//
-// The thunk reports whether it actually published, preserving the `activated`
-// contract callers rely on: a source edit/remove can dispose this entry while
-// its dial is in flight, and a caller must be able to tell "switched" from
-// "the target stopped existing" rather than assume the former.
-export async function prepareGatewayForAgent(connectionId: null | string, profile: string): Promise<() => boolean> {
+export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
-  // Genuinely-local scope: the profile door owns this route, so hand back ITS
-  // thunk unchanged. Wrapping it to return an unconditional `true` would have
-  // reported a rejected activation as a successful one and let the agent
-  // caller publish companion state for a switch that never happened.
   if (scope === normKey(profile)) {
-    return prepareGatewayForProfile(profile)
+    await ensureGatewayForProfile(profile)
+
+    return true
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -704,6 +713,11 @@ export async function prepareGatewayForAgent(connectionId: null | string, profil
 
   entry.retained = true
   entry.wantOpen = true
+  // Lease the entry against the live-work pruner for the whole dial: the
+  // switch target is not yet active and has no live sessions, so a prune
+  // recompute firing mid-spawn would otherwise dispose it and this
+  // activation would fail (#89622).
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
@@ -716,54 +730,45 @@ export async function prepareGatewayForAgent(connectionId: null | string, profil
     }
   }
 
-  // Bind the entry this dial settled on; see prepareGatewayForProfile.
-  const prepared = entry
+  // The activation is settling either way — release the prune lease.
+  entry.activationLeaseUntil = 0
 
-  return () => {
-    // A source edit/remove may dispose this entry while its dial is still in
-    // flight. Only the still-registered, still-owned activation may publish.
-    const activated =
-      prepared.wantOpen &&
-      g.secondaries.get(scope) === prepared &&
-      Boolean(prepared.connection) &&
-      applyActive(scope, activationEpoch)
+  // A source edit/remove may dispose this entry while its dial is still in
+  // flight. Only the still-registered, still-owned activation may publish.
+  const activated =
+    entry.wantOpen &&
+    g.secondaries.get(scope) === entry &&
+    Boolean(entry.connection) &&
+    applyActive(scope, activationEpoch)
 
-    if (activated && prepared.connection) {
-      publishActiveConnection(prepared.connection)
-    }
-
-    return activated
+  if (activated && entry.connection) {
+    publishActiveConnection(entry.connection)
   }
+
+  return activated
 }
 
-export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
-  return (await prepareGatewayForAgent(connectionId, profile))()
-}
-
-// Open `profile`'s socket if needed and hand back a synchronous activation
-// thunk — the publication seam for atomic profile switches. The caller invokes
-// the thunk in the same synchronous frame as its own atom writes (profile
-// pointer, connection descriptor), so no subscriber can observe the active
-// gateway pointing at one backend while companion state still describes
-// another. Nothing is published until the thunk runs.
-export async function prepareGatewayForProfile(profile: string): Promise<() => boolean> {
+// Make `profile` the active gateway, lazily opening its socket if needed. The
+// primary is a no-op fast path. Background sockets are never closed here.
+export async function ensureGatewayForProfile(profile: string): Promise<void> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
-    return () => applyActive(key, activationEpoch)
+    applyActive(key, activationEpoch)
+
+    return
   }
 
   // Global-remote share (routing case 3): one remote host serves every
   // profile through the PRIMARY socket, scoped per request. Activate the
   // primary instead of dialing a doomed duplicate socket at the same
-  // descriptor - $activeGatewayProfile still moves to `key`, so request
-  // scoping and profile-aware surfaces behave identically. Checked BEFORE
-  // createSecondary so a shared-remote profile never mints a secondary
-  // entry, and returned as a thunk like every other path here so this
-  // switch publishes as atomically as a dedicated-socket one.
+  // descriptor — $activeGatewayProfile still moves to `key`, so request
+  // scoping and profile-aware surfaces behave identically.
   if (await sharedPrimaryRoute(key)) {
-    return () => applyActive(g.primaryProfile, activationEpoch)
+    applyActive(g.primaryProfile, activationEpoch)
+
+    return
   }
 
   let entry = g.secondaries.get(key)
@@ -774,6 +779,9 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => b
 
   entry.retained = true
   entry.wantOpen = true
+  // Lease the entry against the live-work pruner for the whole dial — the
+  // profile-door twin of the agent path's lease above (#89622).
+  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
@@ -786,34 +794,12 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => b
     }
   }
 
-  // Bind the entry the await settled on. `g.secondaries.get(key)` can be a
-  // DIFFERENT object by the time the thunk runs (a teardown + redial between
-  // prepare and publish), and publishing that one's descriptor would be the
-  // very mismatch this seam exists to prevent, so the identity re-check below
-  // compares against this exact entry.
-  const prepared = entry
+  // The activation is settling either way — release the prune lease.
+  entry.activationLeaseUntil = 0
 
-  // Reports whether the ACTIVATION was accepted, which is a different question
-  // from whether a descriptor was published: an accepted activation with no
-  // cached connection still moved the gateway, so the caller must still move
-  // its companion state. Only a rejected activation (disposed entry, or an
-  // epoch superseded by a newer switch while this one was dialing) must leave
-  // every companion store alone.
-  return () => {
-    const activated = prepared.wantOpen && g.secondaries.get(key) === prepared && applyActive(key, activationEpoch)
-
-    if (activated && prepared.connection) {
-      publishActiveConnection(prepared.connection)
-    }
-
-    return activated
+  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
+    publishActiveConnection(entry.connection)
   }
-}
-
-// Make `profile` the active gateway, lazily opening its socket if needed. The
-// primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
-  ;(await prepareGatewayForProfile(profile))()
 }
 
 // Reconnect the active gateway after a transient request failure. Primary
@@ -913,12 +899,20 @@ function restoreActiveToPrimaryIfEvicted(): void {
 // bare profile name kept gateway B's 'default' socket alive off gateway A's
 // 'default' activity (and vice versa) — cross-connection attribution.
 export function pruneSecondaryGateways(keep: Set<string>): void {
+  const now = Date.now()
+
   for (const [key, entry] of [...g.secondaries]) {
     if (
       key === g.activeKey ||
       keep.has(key) ||
       (!entry.connectionId && keep.has(entry.profile)) ||
-      entry.activeRequests > 0
+      entry.activeRequests > 0 ||
+      // Mid-dial activation target: the profile being switched TO is not yet
+      // active and has no live work, so without this lease any recompute
+      // during its cold spawn disposed the entry and the click died silently
+      // (#89622). Number guard: dev-HMR entries predate the field. Bounded:
+      // an orphaned lease expires on its own.
+      (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now)
     ) {
       continue
     }

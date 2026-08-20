@@ -90,6 +90,7 @@ def test_preferred_session_summarizes_pin_not_latest(home):
     pref = row["preferred_session"]
     assert pref["id"] == "pinned1"
     assert pref["resolved_id"] == "pinned1"
+    assert pref["root_title"] == "Bot Chat"
     assert pref["title"] == "Bot Chat"
     assert "pinned chat content" in pref["preview"]
     # last_session keeps its own contract: the most recently active session.
@@ -156,6 +157,8 @@ def test_preferred_session_resolves_compression_tip(home):
     # The pin keeps its durable identity; the summary comes from the live tip.
     assert pref["id"] == "root1"
     assert pref["resolved_id"] == "tip1"
+    assert pref["root_title"] == "Bot Chat"
+    assert pref["title"] == "Bot Chat (continued)"
     assert "post-compression content" in pref["preview"]
 
 

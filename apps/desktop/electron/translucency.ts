@@ -14,25 +14,39 @@
 import { glassActive, type TranslucencyState } from '../../shared/src/translucency'
 
 export {
+  backgroundMaterialFor,
   clampIntensity,
   DEFAULT_GLASS_MATERIAL,
   DEFAULT_GLASS_SCOPE,
+  defaultTranslucencyState,
+  defaultTranslucencyValues,
   GLASS_MATERIALS,
   GLASS_SCOPES,
   glassActive,
   type GlassMaterial,
+  glassMaterialForPicker,
+  glassMaterialsFor,
+  glassSupportedOn,
   glassSurfaceKeep,
+  hudFrostFor,
+  normalizeBook,
   normalizeMaterial,
   normalizeMode,
   normalizeScope,
   normalizeState,
+  resolveTranslucency,
+  setTranslucencyValues,
   TRANSLUCENCY_CURVE,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_OPACITY_FLOOR,
   type TranslucencyState,
+  translucencySupportedOn,
   vibrancyFor,
-  windowOpacityFor
+  windowOpacityFor,
+  WINDOWS_BACKGROUND_MATERIALS,
+  WINDOWS_GLASS_MIN_BUILD,
+  type WindowsBackgroundMaterial
 } from '../../shared/src/translucency'
 
 /**

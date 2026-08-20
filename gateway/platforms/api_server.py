@@ -245,7 +245,15 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
 
 
 _REQUEST_OPTION_MISSING = object()
-_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+# Full internal ladder + "none": the API server accepts what /reasoning and
+# config.yaml accept (hermes_constants.VALID_REASONING_EFFORTS); wire-level
+# clamping to each provider's vocabulary happens downstream in the
+# transports/profiles via agent.reasoning_effort. Rejecting "max"/"ultra"
+# here made API/browser clients second-class citizens of the ladder
+# (#78216's api_server observation).
+_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+)
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "api_key",
     "base_url",

@@ -1,8 +1,10 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { cleanup, render } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { $displayTimestamps } from '@/store/display-timestamps'
+
+import { stubThreadEnvironment } from '../test-utils'
 
 import { Thread } from '.'
 
@@ -10,21 +12,7 @@ import { Thread } from '.'
 $displayTimestamps.set(true)
 
 const timestamp = new Date('2026-05-01T00:00:00.000Z')
-
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-vi.stubGlobal('CSS', { escape: (str: string) => str })
-
-Element.prototype.scrollTo = function scrollTo() {}
+stubThreadEnvironment()
 
 function Harness({ text }: { text: string }) {
   const message = {

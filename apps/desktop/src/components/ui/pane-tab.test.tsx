@@ -124,6 +124,21 @@ describe('PaneTab hover close button', () => {
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
   })
 
+  it('can hide the hover ✕ while retaining the close handler', () => {
+    const onClose = vi.fn()
+    render(
+      <PaneTab onClose={onClose} showCloseButton={false}>
+        <PaneTabLabel>tab</PaneTabLabel>
+      </PaneTab>
+    )
+
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+    const tab = screen.getByText('tab')
+    fireEvent.pointerDown(tab, { button: 1 })
+    fireEvent.pointerUp(tab, { button: 1 })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('renders no ✕ on a vertical rail tab (middle/⌘-click only there)', () => {
     const onClose = vi.fn()
     render(

@@ -1,5 +1,6 @@
 /**
- * BROWSER BAR — back / forward / reload / address for a URL preview.
+ * BROWSER BAR: back / forward / reload / address / open-in-browser for a URL
+ * preview.
  *
  * The Browser tab had no way to move: no history, and the only address on
  * screen was a read-only label. Every other embedded browser (VS Code's Simple
@@ -16,6 +17,7 @@
 import { useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { CopyButton } from '@/components/ui/copy-button'
 import { Input } from '@/components/ui/input'
 import { PaneStripGlyph } from '@/components/ui/pane-tab'
 import { useI18n } from '@/i18n'
@@ -29,6 +31,7 @@ interface PreviewBrowserBarProps {
   onBack: () => void
   onForward: () => void
   onNavigate: (url: string) => void
+  onOpenExternal: () => void
   onReload: () => void
   onToggleConsole: () => void
   onToggleDevTools: () => void
@@ -91,6 +94,7 @@ export function PreviewBrowserBar({
   onBack,
   onForward,
   onNavigate,
+  onOpenExternal,
   onReload,
   onToggleConsole,
   onToggleDevTools,
@@ -135,31 +139,51 @@ export function PreviewBrowserBar({
         label={copy.reload}
         onSelect={onReload}
       />
-      <Input
-        aria-invalid={invalid || undefined}
-        aria-label={copy.address}
-        inputMode="url"
-        onBlur={() => setDraft(null)}
-        onChange={event => setDraft(event.target.value)}
-        onFocus={event => {
-          setDraft(url)
-          event.currentTarget.select()
-        }}
-        onKeyDown={event => {
-          if (event.key === 'Enter') {
-            commit(event.currentTarget.value)
-            event.currentTarget.blur()
-          }
+      {/* The copy control lives INSIDE the field, on its right edge — the
+          same pre-faded inline icon code blocks use, not a toolbar button.
+          It copies what the field shows: on a remote gateway, that is the
+          reach-resolved address. */}
+      <div className="relative min-w-0 flex-1">
+        <Input
+          aria-invalid={invalid || undefined}
+          aria-label={copy.address}
+          className="pr-7"
+          inputMode="url"
+          onBlur={() => setDraft(null)}
+          onChange={event => setDraft(event.target.value)}
+          onFocus={event => {
+            setDraft(url)
+            event.currentTarget.select()
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              commit(event.currentTarget.value)
+              event.currentTarget.blur()
+            }
 
-          if (event.key === 'Escape') {
-            setDraft(null)
-            event.currentTarget.blur()
-          }
-        }}
-        placeholder={copy.addressPlaceholder}
-        size="xs"
-        spellCheck={false}
-        value={draft ?? url}
+            if (event.key === 'Escape') {
+              setDraft(null)
+              event.currentTarget.blur()
+            }
+          }}
+          placeholder={copy.addressPlaceholder}
+          size="xs"
+          spellCheck={false}
+          value={draft ?? url}
+        />
+        <CopyButton
+          appearance="inline"
+          className="absolute right-1 top-1/2 -translate-y-1/2 rounded-sm p-1"
+          iconClassName="size-3"
+          label={t.contextMenu.link.copyUrl}
+          showLabel={false}
+          text={url}
+        />
+      </div>
+      <PaneStripGlyph
+        icon={<Codicon name="link-external" size="0.8125rem" />}
+        label={t.preview.openInBrowser}
+        onSelect={onOpenExternal}
       />
       <PaneStripGlyph
         active={consoleOpen}

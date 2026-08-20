@@ -793,14 +793,24 @@ def _(rid, params: dict) -> dict:
             state = mgr.resume()
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            # Resume must restart work, not just flip persisted state
+            # (#75362). An `exec` result is display-only — nothing would
+            # re-enter the conversation loop until the user typed another
+            # message. Return a `send` dispatch carrying the canonical
+            # continuation prompt so the client fires the next turn
+            # immediately; `display` keeps the transcript showing the
+            # concise invocation instead of the model-facing scaffolding.
+            prompt = mgr.next_continuation_prompt()
+            notice = f"▶ Goal resumed: {state.goal}\nContinuing now — taking the next step."
+            if not prompt:
+                return _ok(rid, {"type": "exec", "output": f"▶ Goal resumed: {state.goal}"})
             return _ok(
                 rid,
                 {
-                    "type": "exec",
-                    "output": (
-                        f"▶ Goal resumed: {state.goal}\n"
-                        "Send any message to continue, or wait — I'll take the next step on the next turn."
-                    ),
+                    "type": "send",
+                    "notice": notice,
+                    "message": prompt,
+                    "display": "/goal resume",
                 },
             )
         if lower in {"clear", "stop", "done"}:

@@ -815,6 +815,37 @@ def _migrate_to_37(results: Dict[str, Any], quiet: bool) -> None:
             )
 
 
+def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
+    # Version 37 → 38: the bundled observability/nemo_relay plugin was
+    # removed when Relay lifecycle ownership moved into the agent core.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    from hermes_cli.relay_plugin_cutover import legacy_relay_plugin_keys
+
+    config = read_raw_config()
+    plugins = config.get("plugins")
+    if not isinstance(plugins, dict):
+        return
+    enabled = plugins.get("enabled")
+    removed = legacy_relay_plugin_keys(enabled)
+    if not removed or not isinstance(enabled, list):
+        return
+
+    plugins["enabled"] = [value for value in enabled if value not in removed]
+    config["plugins"] = plugins
+    _persist_migration(config)
+    message = (
+        "Removed legacy Relay plugin from plugins.enabled: "
+        f"{', '.join(removed)}. Configure native Relay plugins with "
+        "HERMES_NEMO_RELAY_PLUGINS_TOML."
+    )
+    results["warnings"].append(message)
+    if not quiet:
+        print(f"  ⚠ {message}")
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -839,6 +870,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (35, _migrate_to_35),
     (36, _migrate_to_36),
     (37, _migrate_to_37),
+    (38, _migrate_to_38),
 )
 
 

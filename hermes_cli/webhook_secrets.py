@@ -1,7 +1,8 @@
 """Canonical webhook secret-reference persistence and resolution.
 
-All webhook writers and readers use this seam so profile resolution, fallback,
-and migration locking cannot drift between CLI and gateway surfaces.
+Resolution delegates to the gateway's production authority instead of
+reimplementing its fallback chain. All webhook secret writers share one bounded
+cross-process lock so CLI updates and runtime migration cannot race each other.
 """
 from __future__ import annotations
 
@@ -16,34 +17,17 @@ _LOCK_STALE_SECONDS = 60.0
 
 
 def resolve_webhook_secret(secret_ref: object) -> str:
-    """Resolve one non-empty reference under the active Hermes profile."""
+    """Resolve through the gateway's canonical Task 8 secret authority."""
     if not isinstance(secret_ref, str) or not secret_ref.strip():
         return ""
-    ref = secret_ref.strip()
-    try:
-        from agent.secret_scope import get_secret
+    from gateway.platforms.webhook import WebhookAdapter
 
-        value = get_secret(ref, "")
-        if value:
-            return str(value)
-    except Exception:
-        pass
-    try:
-        from hermes_cli.config import get_env_value_prefer_dotenv
-
-        return str(get_env_value_prefer_dotenv(ref) or "")
-    except Exception:
-        return ""
+    return WebhookAdapter._resolve_secret_ref(secret_ref.strip())
 
 
 @contextmanager
 def webhook_secret_write_lock() -> Iterator[None]:
-    """Serialize webhook secret writers across CLI/gateway processes.
-
-    The lock uses atomic O_EXCL publication under the active Hermes home. A
-    stale lock older than one minute is reclaimed; live contention is bounded
-    and fails closed rather than racing two read-modify-write .env updates.
-    """
+    """Serialize webhook secret writers across CLI/gateway processes."""
     from hermes_constants import get_hermes_home
 
     home = Path(get_hermes_home())
@@ -58,8 +42,7 @@ def webhook_secret_write_lock() -> Iterator[None]:
             os.fsync(fd)
         except FileExistsError:
             try:
-                age = time.time() - lock_path.stat().st_mtime
-                if age > _LOCK_STALE_SECONDS:
+                if time.time() - lock_path.stat().st_mtime > _LOCK_STALE_SECONDS:
                     lock_path.unlink(missing_ok=True)
                     continue
             except OSError:

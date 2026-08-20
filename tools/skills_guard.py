@@ -469,7 +469,7 @@ THREAT_PATTERNS = [
      "references other agent configuration files"),
 
     # ── Hardcoded secrets (credentials embedded in the skill itself) ──
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}',
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'](?!__[A-Za-z0-9+/=_-]+__)[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure",
      "possible hardcoded API key, token, or secret"),
     (r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----',

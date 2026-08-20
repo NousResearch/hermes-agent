@@ -10,6 +10,7 @@ SIG = "sig-k3"
 KIMI = "https://api.kimi.com/coding"
 MOONSHOT = "https://api.moonshot.cn/anthropic"
 DEEPSEEK = "https://api.deepseek.com/anthropic"
+OPENROUTER = "https://openrouter.ai/api/v1"
 
 
 def _thinking_on_replay(base_url, signature=SIG, model="k3"):
@@ -41,6 +42,27 @@ def _thinking_on_replay(base_url, signature=SIG, model="k3"):
 
 
 
+
+
+def test_empty_signature_key_survives_replay():
+    """An empty-string signature must round-trip as ``signature: ""``, not vanish.
+
+    OpenRouter returns Kimi's reasoning as ``{"type": "thinking", ...,
+    "signature": ""}``. Its Anthropic-Messages validator accepts the empty
+    string but requires the KEY to be present — a thinking block with no
+    ``signature`` field at all is rejected with HTTP 400 ``invalid_union``
+    at ``messages[N].content``. Dropping the key on a falsy check therefore
+    wedges every turn after the first. See hermes-agent#17992 for the
+    adjacent DeepSeek case (signed blocks wrongly stripped on replay).
+    """
+    for base_url in (OPENROUTER, KIMI):
+        thinking = _thinking_on_replay(base_url, signature="", model="moonshotai/kimi-k3")
+        assert thinking, f"unsigned thinking block dropped entirely: {base_url}"
+        assert "signature" in thinking[0], (
+            "empty-string signature key must be preserved verbatim — dropping it "
+            f"makes the block invalid input on replay: {thinking[0]}"
+        )
+        assert thinking[0]["signature"] == ""
 
 
 def test_moonshot_keeps_signed_thinking():

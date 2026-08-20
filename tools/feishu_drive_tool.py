@@ -27,6 +27,27 @@ def get_client():
     return getattr(_local, "client", None)
 
 
+def _build_client() -> Optional[Any]:
+    """Build a lark client from env vars (fallback when set_client wasn't called)."""
+    import os
+    app_id = os.getenv("FEISHU_APP_ID", "").strip()
+    app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
+    if not app_id or not app_secret:
+        return None
+    try:
+        from lark_oapi import Client
+        return Client(app_id=app_id, app_secret=app_secret)
+    except Exception:
+        return None
+
+
+def _get_client_with_fallback():
+    client = get_client()
+    if client is None:
+        client = _build_client()
+    return client
+
+
 def _check_feishu():
     # See ``tools/feishu_doc_tool.py::_check_feishu`` — ``find_spec`` keeps
     # CLI startup fast (the SDK itself takes ~5s to import eagerly).
@@ -131,9 +152,12 @@ FEISHU_DRIVE_LIST_COMMENTS_SCHEMA = {
 
 
 def _handle_list_comments(args: dict, **kwargs) -> str:
-    client = get_client()
+    client = _get_client_with_fallback()
     if client is None:
-        return tool_error("Feishu client not available")
+        return tool_error(
+            "Feishu client not available. Set FEISHU_APP_ID and FEISHU_APP_SECRET env vars, "
+            "or use this tool within a Feishu comment context."
+        )
 
     file_token = args.get("file_token", "").strip()
     if not file_token:
@@ -206,9 +230,12 @@ FEISHU_DRIVE_LIST_REPLIES_SCHEMA = {
 
 
 def _handle_list_replies(args: dict, **kwargs) -> str:
-    client = get_client()
+    client = _get_client_with_fallback()
     if client is None:
-        return tool_error("Feishu client not available")
+        return tool_error(
+            "Feishu client not available. Set FEISHU_APP_ID and FEISHU_APP_SECRET env vars, "
+            "or use this tool within a Feishu comment context."
+        )
 
     file_token = args.get("file_token", "").strip()
     comment_id = args.get("comment_id", "").strip()
@@ -278,9 +305,12 @@ FEISHU_DRIVE_REPLY_SCHEMA = {
 
 
 def _handle_reply_comment(args: dict, **kwargs) -> str:
-    client = get_client()
+    client = _get_client_with_fallback()
     if client is None:
-        return tool_error("Feishu client not available")
+        return tool_error(
+            "Feishu client not available. Set FEISHU_APP_ID and FEISHU_APP_SECRET env vars, "
+            "or use this tool within a Feishu comment context."
+        )
 
     file_token = args.get("file_token", "").strip()
     comment_id = args.get("comment_id", "").strip()
@@ -349,9 +379,12 @@ FEISHU_DRIVE_ADD_COMMENT_SCHEMA = {
 
 
 def _handle_add_comment(args: dict, **kwargs) -> str:
-    client = get_client()
+    client = _get_client_with_fallback()
     if client is None:
-        return tool_error("Feishu client not available")
+        return tool_error(
+            "Feishu client not available. Set FEISHU_APP_ID and FEISHU_APP_SECRET env vars, "
+            "or use this tool within a Feishu comment context."
+        )
 
     file_token = args.get("file_token", "").strip()
     content = args.get("content", "").strip()

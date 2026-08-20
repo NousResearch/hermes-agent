@@ -1348,6 +1348,18 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             kwargs["ping_interval"] = adapter._ws_ping_interval
         if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
             kwargs["ping_timeout"] = adapter._ws_ping_timeout
+        # Local fix: lark_oapi forces proxy=None on websockets>=15, but this
+        # machine can only reach Feishu through the local HTTP proxy, so
+        # restore environment-variable proxy discovery when the SDK removed it.
+        if kwargs.get("proxy") is None:
+            env_proxy = (
+                os.environ.get("HTTPS_PROXY")
+                or os.environ.get("https_proxy")
+                or os.environ.get("HTTP_PROXY")
+                or os.environ.get("http_proxy")
+            )
+            if env_proxy:
+                kwargs["proxy"] = env_proxy
         return original_connect(*args, **kwargs)
 
     def _configure_with_overrides(conf: Any) -> Any:

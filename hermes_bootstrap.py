@@ -28,6 +28,9 @@ What this module does on Windows:
   - Reconfigures ``sys.stdout`` / ``sys.stderr`` to UTF-8 in the current
     process, using the ``reconfigure()`` API (Python 3.7+).  This fixes
     ``print("café")`` in the parent without a re-exec.
+  - Enables Windows virtual-terminal processing for stdout/stderr console
+    handles so ANSI color/style escapes render instead of printing literally
+    in Windows 10 CMD / PowerShell hosts.
 
 What this module does NOT do:
 
@@ -49,11 +52,62 @@ against double-reconfigure.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 
 _IS_WINDOWS = sys.platform == "win32"
 _bootstrap_applied = False
+
+_STD_OUTPUT_HANDLE = -11
+_STD_ERROR_HANDLE = -12
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
+
+def _enable_windows_virtual_terminal_processing() -> bool:
+    """Enable ANSI escape rendering for Windows console stdout/stderr."""
+    if not _IS_WINDOWS:
+        return False
+
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    except Exception:
+        return False
+
+    # ctypes assumes C ``int`` arguments and return values when signatures are
+    # omitted.  A Windows HANDLE is pointer-sized, so that default truncates
+    # valid console handles in 64-bit processes before GetConsoleMode sees them.
+    dword = ctypes.c_ulong
+    handle_type = ctypes.c_void_p
+    get_std_handle = kernel32.GetStdHandle
+    get_console_mode = kernel32.GetConsoleMode
+    set_console_mode = kernel32.SetConsoleMode
+    get_std_handle.argtypes = [dword]
+    get_std_handle.restype = handle_type
+    get_console_mode.argtypes = [handle_type, ctypes.POINTER(dword)]
+    get_console_mode.restype = ctypes.c_int
+    set_console_mode.argtypes = [handle_type, dword]
+    set_console_mode.restype = ctypes.c_int
+
+    enabled = False
+    for std_handle in (_STD_OUTPUT_HANDLE, _STD_ERROR_HANDLE):
+        try:
+            handle = get_std_handle(std_handle)
+            if handle in (None, 0, _INVALID_HANDLE_VALUE):
+                continue
+
+            mode = dword()
+            if not get_console_mode(handle, ctypes.byref(mode)):
+                continue
+
+            new_mode = mode.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            if set_console_mode(handle, new_mode):
+                enabled = True
+        except Exception:
+            continue
+
+    return enabled
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -117,6 +171,8 @@ def apply_windows_utf8_bootstrap() -> bool:
                 reconfigure(encoding="utf-8", errors="replace")
             except (OSError, ValueError):
                 pass
+
+    _enable_windows_virtual_terminal_processing()
 
     _bootstrap_applied = True
     return True

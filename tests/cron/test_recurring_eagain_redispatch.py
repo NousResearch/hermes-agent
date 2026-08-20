@@ -54,6 +54,9 @@ def wedge_env(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
     monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", hermes_home / "cron" / "output")
 
+    script = hermes_home / "scripts" / "probe.py"
+    script.write_text("print('ok')\n")
+
     # Create a recurring no_agent interval job.
     job = jobs_mod.create_job(
         prompt="probe",
@@ -64,9 +67,6 @@ def wedge_env(tmp_path, monkeypatch):
     # Force it due now.
     now = datetime.now(timezone.utc)
     jobs_mod.update_job(job["id"], {"next_run_at": (now - timedelta(minutes=1)).isoformat()})
-
-    script = hermes_home / "scripts" / "probe.py"
-    script.write_text("print('ok')\n")
 
     return {"home": hermes_home, "job_id": job["id"]}
 

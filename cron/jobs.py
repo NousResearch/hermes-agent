@@ -1904,6 +1904,21 @@ def create_job(
         normalized_script,
     )
 
+    # Same invariant, one step further: a no_agent script that is not on disk
+    # can never run, so the job would fail on every fire instead of at create
+    # time. Only no_agent jobs are checked — an agent job may reference a
+    # script it writes later, and the scheduler resolves those at fire time.
+    if normalized_no_agent and normalized_script:
+        _script_path = Path(normalized_script).expanduser()
+        if not _script_path.is_absolute():
+            _script_path = get_hermes_home() / "scripts" / _script_path
+        if not _script_path.is_file():
+            raise ValueError(
+                f"no_agent=True script does not exist: {normalized_script!r}. "
+                f"Write the script under {get_hermes_home() / 'scripts'}/ first, "
+                "then create the job."
+            )
+
     # Normalize context_from: accept str or list of str, store as list or None
     if isinstance(context_from, str):
         context_from = [context_from.strip()] if context_from.strip() else None

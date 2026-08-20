@@ -4475,16 +4475,19 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 
 def _gateway_run_command() -> list[str]:
-    """Build the `python -m hermes_cli.main [--profile X] gateway run --replace` argv.
+    """Build the `python -m hermes_cli.main [--profile X] gateway run` argv.
 
     Profile-aware: honors the active HERMES_HOME via `_profile_arg()` so the
     detached fallback launches into the same profile as the CLI invocation.
+    The explicit ``--external-supervisor`` marker is required for launchd's
+    stderr timestamp wrapper: the nested gateway child must still recognize
+    that it is supervisor-managed before ``--replace`` restarts it.
     """
     cmd = [get_python_path(), "-m", "hermes_cli.main"]
     profile_arg = _profile_arg()
     if profile_arg:
         cmd.extend(profile_arg.split())
-    cmd.extend(["gateway", "run", "--replace"])
+    cmd.extend(["gateway", "run", "--external-supervisor", "--replace"])
     return cmd
 
 

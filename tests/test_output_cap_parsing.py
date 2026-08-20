@@ -68,6 +68,22 @@ class TestParseDashScopeOutputCap:
         assert parse_available_output_tokens_from_error(msg) == 32768
 
 
+class TestParseMaximumOutputTokensCap:
+    """Some OpenAI-compatible relays report the model's separate output cap."""
+
+    def test_parenthesized_max_output_cap(self):
+        msg = (
+            "API call failed after 3 retries: [400]: max_tokens (98304) "
+            "exceeds model's maximum output tokens (65536)"
+        )
+        assert parse_available_output_tokens_from_error(msg) == 65536
+
+    def test_parenthesized_max_output_cap_is_output_cap(self):
+        assert is_output_cap_error(
+            "max_tokens (98304) exceeds model's maximum output tokens (65536)"
+        ) is True
+
+
 class TestIsOutputCapError:
     """`is_output_cap_error` is the broader yes/no gate that keeps an
     output-cap 400 out of the compression death-loop even when we can't parse

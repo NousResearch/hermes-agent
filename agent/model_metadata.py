@@ -1659,9 +1659,27 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # The input itself fits — this is purely an output-cap error, so reduce
         # max_tokens and retry; do NOT compress.
         "range of max_tokens should be" in error_lower
+    ) or (
+        # OpenAI-compatible relays may reject a request whose output cap exceeds
+        # the model's separate completion-token limit, e.g.
+        #   "max_tokens (98304) exceeds model's maximum output tokens (65536)"
+        # This is independent of the input context window.
+        "exceeds model" in error_lower
+        and "maximum output tokens" in error_lower
     )
     if not is_output_cap_error:
         return None
+
+    # Generic model-output-cap form:
+    #   "max_tokens (98304) exceeds model's maximum output tokens (65536)"
+    _m_max_output = re.search(
+        r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
+        error_lower,
+    )
+    if _m_max_output:
+        _cap = int(_m_max_output.group(1))
+        if _cap >= 1:
+            return _cap
 
     # DashScope / Alibaba range form: "Range of max_tokens should be [1, 65536]".
     # The upper bound is the available output cap.
@@ -1799,6 +1817,8 @@ def is_output_cap_error(error_msg: str) -> bool:
         or "should be" in error_lower                       # generic "max_tokens should be <= N"
         or "less than or equal" in error_lower
         or "must be" in error_lower
+        or ("exceeds model" in error_lower
+            and "maximum output tokens" in error_lower)
     )
     if not output_cap_signal:
         return False

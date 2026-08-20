@@ -5,6 +5,7 @@ export { evictInkCaches, type EvictLevel, type InkCacheSizes } from './ink/cache
 export { colorize } from './ink/colorize.js'
 export { AlternateScreen } from './ink/components/AlternateScreen.js'
 export { default as Box } from './ink/components/Box.js'
+export { InlineMouse } from './ink/components/InlineMouse.js'
 export { default as Link } from './ink/components/Link.js'
 export { default as Newline } from './ink/components/Newline.js'
 export { NoSelect } from './ink/components/NoSelect.js'

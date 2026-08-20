@@ -166,6 +166,29 @@ export function offsetFromPosition(value: string, row: number, col: number, cols
   return target.end
 }
 
+/**
+ * Map a press/drag that landed on the composer's PARENT row — the prompt
+ * gutter, the gap right of the input, or the blank spacer above it — into
+ * TextInput-local (row, col) for `TextInputMouseApi.startAt` / `dragAt`.
+ *
+ * The parent row shares the input box's top-left origin, so only the prompt
+ * gutter has to come out of the column and `rowOrigin: 'shared'` passes
+ * localRow straight through. The spacer sits on a DIFFERENT vertical origin
+ * and is column-aligned only, so `rowOrigin: 'row-zero'` pins the row instead
+ * of letting a stray vertical offset land the caret on the wrong wrapped line.
+ *
+ * Out-of-range results are intentional — `offsetFromPosition` clamps, so a
+ * press on the prompt cell itself (negative column) resolves to column 0 of
+ * THAT visual row rather than offset 0 of the whole buffer (#30536).
+ */
+export function composerLocalPoint(
+  e: { localCol?: number; localRow?: number },
+  promptWidth: number,
+  rowOrigin: 'row-zero' | 'shared'
+) {
+  return { col: (e.localCol ?? 0) - promptWidth, row: rowOrigin === 'shared' ? (e.localRow ?? 0) : 0 }
+}
+
 export function inputVisualHeight(value: string, columns: number) {
   return cursorLayout(value, value.length, columns).line + 1
 }

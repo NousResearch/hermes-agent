@@ -594,3 +594,145 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.message_id == "top_post_123"
 
 
+# ---------------------------------------------------------------------------
+# DM session isolation (Slack-compatible dm_top_level_threads_as_sessions)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dm_top_level_post_gets_own_thread_id_by_default():
+    """A top-level DM message (no root_id) is stamped with its own post_id as
+    thread_id, giving each DM root its own session — matching Slack behavior."""
+    adapter = _make_adapter()
+    adapter._reply_mode = "off"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "dm_post_123",
+        "user_id": "user_123",
+        "channel_id": "chan_dm",
+        "message": "hello",
+        "root_id": "",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+    await adapter._handle_ws_event(event)
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.source.thread_id == "dm_post_123"
+
+
+@pytest.mark.asyncio
+async def test_dm_reply_in_thread_keeps_root_id():
+    """A reply inside a DM thread keeps the thread's root_id, not its own id,
+    so it continues the same session as the root message."""
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "reply_456",
+        "user_id": "user_123",
+        "channel_id": "chan_dm",
+        "message": "follow-up",
+        "root_id": "dm_post_123",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+    await adapter._handle_ws_event(event)
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.source.thread_id == "dm_post_123"
+
+
+@pytest.mark.asyncio
+async def test_dm_top_level_disabled_when_config_false():
+    """When dm_top_level_threads_as_sessions is false, top-level DM messages
+    do NOT get a synthetic thread_id — reverting to legacy single-session."""
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    config = PlatformConfig(
+        enabled=True,
+        token="test-token",
+        extra={"url": "https://mm.example.com", "dm_top_level_threads_as_sessions": False},
+    )
+    adapter = MattermostAdapter(config)
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "dm_post_789",
+        "user_id": "user_123",
+        "channel_id": "chan_dm",
+        "message": "hello",
+        "root_id": "",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+    await adapter._handle_ws_event(event)
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.source.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_dm_root_and_reply_share_session_key():
+    """End-to-end: a DM root message and its thread reply produce the same
+    session key — the core invariant of DM session isolation."""
+    from gateway.session import SessionSource, build_session_key
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+
+    async def _send(post_id, root_id=""):
+        adapter.handle_message.reset_mock()
+        post_data = {
+            "id": post_id,
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": "msg",
+        }
+        if root_id:
+            post_data["root_id"] = root_id
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@alice",
+            },
+        }
+        await adapter._handle_ws_event(event)
+        return adapter.handle_message.call_args[0][0].source.thread_id
+
+    root_tid = await _send("root_123")
+    reply_tid = await _send("reply_456", root_id="root_123")
+
+    def session_key(thread_id):
+        src = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id="chan_dm",
+            chat_type="dm",
+            user_id="user_123",
+            thread_id=thread_id,
+        )
+        return build_session_key(src)
+
+    assert session_key(root_tid) == session_key(reply_tid)
+
+

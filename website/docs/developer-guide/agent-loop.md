@@ -6,20 +6,33 @@ description: "Detailed walkthrough of AIAgent execution, API modes, tools, callb
 
 # Agent Loop Internals
 
-The core orchestration engine is `run_agent.py`'s `AIAgent` class — a large file that handles everything from prompt assembly to tool dispatch to provider failover.
+The public agent interface is still `run_agent.py`'s `AIAgent` class, but the
+main per-turn loop now lives in `agent/conversation_loop.py`. `AIAgent.chat()`
+is the simple interface: it calls `AIAgent.run_conversation()` and returns only
+the final text response. `AIAgent.run_conversation()` sets conversation and
+accounting context, then forwards into
+`agent.conversation_loop.run_conversation(agent, ...)`.
+
+Inside `agent/conversation_loop.py`, the loop builds the turn context, calls the
+model, decides whether the response contains tool calls or final text, executes
+tools when needed, and finalizes the turn. Tool-call batches pass through
+`AIAgent._execute_tool_calls(...)`, which delegates sequential, concurrent, or
+segmented execution to `agent/tool_executor.py`. Registry-dispatched tool calls
+pass through `model_tools.handle_function_call(...)`. Agent-runtime tools, such
+as `session_search` and `delegate_task`, are handled inline by
+`agent/tool_executor.py` and do not reach `handle_function_call(...)`.
 
 ## Core Responsibilities
 
-`AIAgent` is responsible for:
+The agent loop is split across a few primary layers:
 
-- Assembling the effective system prompt and tool schemas via `prompt_builder.py`
-- Selecting the correct provider/API mode (chat_completions, codex_responses, anthropic_messages)
-- Making interruptible model calls with cancellation support
-- Executing tool calls (sequentially or concurrently via thread pool)
-- Maintaining conversation history in OpenAI message format
-- Handling compression, retries, and fallback model switching
-- Tracking iteration budgets across parent and child agents
-- Flushing persistent memory before context is lost
+- `run_agent.py` defines the stateful `AIAgent` facade, public entry points,
+  and helper methods used by the loop.
+- `agent/conversation_loop.py` contains the main per-turn API/tool loop.
+- `agent/turn_context.py` builds the per-turn context consumed by the loop.
+- `agent/tool_executor.py` executes tool-call batches sequentially,
+  concurrently, or in planned segments.
+- `model_tools.py` dispatches individual tool calls to registered Hermes tools.
 
 ## Two Entry Points
 
@@ -36,19 +49,30 @@ result = agent.run_conversation(
 )
 ```
 
-`chat()` is a thin wrapper around `run_conversation()` that extracts the `final_response` field from the result dict.
+`chat()` is a thin wrapper around `run_conversation()` that extracts the
+`final_response` field from the result dict. `AIAgent.run_conversation()` is
+also a facade method: after setting conversation and accounting context, it
+forwards to `agent.conversation_loop.run_conversation(agent, ...)`.
 
 ## API Modes
 
-Hermes supports three API execution modes, resolved from provider selection, explicit args, and base URL heuristics:
+Hermes supports several API execution modes, resolved from provider selection,
+explicit args, and base URL heuristics:
 
 | API mode | Used for | Client type |
 |----------|----------|-------------|
 | `chat_completions` | OpenAI-compatible endpoints (OpenRouter, custom, most providers) | `openai.OpenAI` |
 | `codex_responses` | OpenAI Codex / Responses API | `openai.OpenAI` with Responses format |
 | `anthropic_messages` | Native Anthropic Messages API | `anthropic.Anthropic` via adapter |
+| `bedrock_converse` | AWS Bedrock Converse-compatible Claude calls | Bedrock runtime client |
+| `codex_app_server` | Codex subprocess/app-server runtime | Codex app-server adapter |
 
-The mode determines how messages are formatted, how tool calls are structured, how responses are parsed, and how caching/streaming works. All three converge on the same internal message format (OpenAI-style `role`/`content`/`tool_calls` dicts) before and after API calls.
+The mode determines how messages are formatted, how tool calls are structured,
+how responses are parsed, and how caching/streaming works. Standard model-call
+modes converge on the same internal message format (OpenAI-style
+`role`/`content`/`tool_calls` dicts) before and after API calls;
+`codex_app_server` is an alternate runtime path that bypasses the standard
+API/tool loop for the turn.
 
 **Mode resolution order:**
 1. Explicit `api_mode` constructor arg (highest priority)
@@ -58,25 +82,28 @@ The mode determines how messages are formatted, how tool calls are structured, h
 
 ## Turn Lifecycle
 
-Each iteration of the agent loop follows this sequence:
+A useful way to navigate the current loop is:
 
 ```text
-run_conversation()
-  1. Generate task_id if not provided
-  2. Append user message to conversation history
-  3. Build or reuse cached system prompt (prompt_builder.py)
-  4. Check if preflight compression is needed (>50% context)
-  5. Build API messages from conversation history
-     - chat_completions: OpenAI format as-is
-     - codex_responses: convert to Responses API input items
-     - anthropic_messages: convert via anthropic_adapter.py
-  6. Inject ephemeral prompt layers (budget warnings, context pressure)
-  7. Apply prompt caching markers if on Anthropic
-  8. Make interruptible API call (_interruptible_api_call)
-  9. Parse response:
-     - If tool_calls: execute them, append results, loop back to step 5
-     - If text response: persist session, flush memory if needed, return
+AIAgent.chat(...)
+    ↓
+AIAgent.run_conversation(...)
+    ↓
+agent.conversation_loop.run_conversation(agent, ...)
+    ↓
+build_turn_context(...)
+    ↓
+API/tool loop
+    ↓
+model response
+    ├─ tool calls → AIAgent._execute_tool_calls(...) → agent/tool_executor.py
+    └─ final text → finalize_turn(...)
 ```
+
+Inside the API/tool loop, Hermes prepares the provider request, optionally
+applies compression and prompt-caching markers, calls the model through the
+configured runtime path, normalizes the response, and either executes tool calls
+or finalizes the assistant's text response.
 
 ### Message Format
 
@@ -105,7 +132,10 @@ Providers validate these sequences and will reject malformed histories.
 
 ## Interruptible API Calls
 
-API requests are wrapped in `_interruptible_api_call()` which runs the actual HTTP call in a background thread while monitoring an interrupt event:
+API requests are made through the interruptible API-call helpers. The loop uses
+`_interruptible_streaming_api_call(...)` when streaming is enabled and supported,
+and falls back to `_interruptible_api_call(...)` otherwise. Both paths monitor
+interrupt state so the agent can stop waiting on a provider response:
 
 ```text
 ┌────────────────────────────────────────────────────┐
@@ -125,31 +155,45 @@ When interrupted (user sends new message, `/stop` command, or signal):
 
 ## Tool Execution
 
-### Sequential vs Concurrent
+### Batch Planning
 
-When the model returns tool calls:
+When the model returns tool calls, the conversation loop passes the assistant
+message to `AIAgent._execute_tool_calls(...)`. That method plans the batch
+before execution:
 
-- **Single tool call** → executed directly in the main thread
-- **Multiple tool calls** → executed concurrently via `ThreadPoolExecutor`
-  - Exception: tools marked as interactive (e.g., `clarify`) force sequential execution
-  - Results are reinserted in the original tool call order regardless of completion order
+- **Single tool call** → sequential execution.
+- **Multiple parallel-safe tool calls** → concurrent execution.
+- **Multiple sequential or barrier tool calls** → sequential execution.
+- **Mixed batches** → segmented execution, preserving required ordering while
+  parallelizing safe runs.
+
+The sequential, concurrent, and segmented implementations live in
+`agent/tool_executor.py`.
 
 ### Execution Flow
 
 ```text
-for each tool_call in response.tool_calls:
-    1. Resolve handler from tools/registry.py
-    2. Fire pre_tool_call plugin hook
-    3. Check if dangerous command (tools/approval.py)
-       - If dangerous: invoke approval_callback, wait for user
-    4. Execute handler with args + task_id
-    5. Fire post_tool_call plugin hook
-    6. Append {"role": "tool", "content": result} to history
+assistant_message.tool_calls
+    ↓
+AIAgent._execute_tool_calls(...)
+    ↓
+agent/tool_executor.py
+    ├─ agent-runtime tools → handled inline
+    └─ registry-dispatched tools
+           ↓
+       model_tools.handle_function_call(...)
+           ↓
+       tools/registry.py dispatch
 ```
+
+For registry-dispatched tools, `model_tools.handle_function_call(...)` routes
+the call through `tools/registry.py` and returns the tool result. The executor
+appends results from either execution path to the conversation as tool messages.
 
 ### Agent-Level Tools
 
-Some tools are intercepted by `run_agent.py` *before* reaching `handle_function_call()`:
+Some agent-runtime tools are handled inline by `agent/tool_executor.py` instead
+of passing through `model_tools.handle_function_call(...)`:
 
 | Tool | Why intercepted |
 |------|--------------------|
@@ -222,13 +266,16 @@ After each turn:
 
 | File | Purpose |
 |------|---------|
-| `run_agent.py` | AIAgent class — the complete agent loop |
+| `run_agent.py` | Defines the `AIAgent` facade, public entry points, state, and helper forwarders |
+| `agent/conversation_loop.py` | Main per-turn conversation loop |
+| `agent/turn_context.py` | Builds per-turn context before the loop runs |
+| `agent/tool_executor.py` | Executes tool-call batches sequentially, concurrently, or in planned segments |
 | `agent/prompt_builder.py` | System prompt assembly from memory, skills, context files, personality |
 | `agent/context_engine.py` | ContextEngine ABC — pluggable context management |
 | `agent/context_compressor.py` | Default engine — lossy summarization algorithm |
 | `agent/prompt_caching.py` | Anthropic prompt caching markers and cache metrics |
 | `agent/auxiliary_client.py` | Auxiliary LLM client for side tasks (vision, summarization) |
-| `model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |
+| `model_tools.py` | Tool schema collection and individual tool-call dispatch |
 
 ## Related Docs
 

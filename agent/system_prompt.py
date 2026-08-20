@@ -62,6 +62,9 @@ _PLUGIN_SECTION_FRAME_RE = re.compile(
     re.MULTILINE,
 )
 
+# Warn-once latch for the context-files version-skew path below (#65868).
+_WARNED_CONTEXT_FILES_KWARG_SKEW = False
+
 
 def _ra():
     """Lazy reference to the ``run_agent`` module.
@@ -778,11 +781,47 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # (developing Hermes). Every other surface (desktop chat panel,
         # gateway daemons) self-spawns into the install tree, where the
         # fallback would inject this repo's contributor AGENTS.md (#64590).
-        context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
-            context_length=_ctx_len,
-            allow_install_tree_fallback=agent.platform in ("cli", "tui"),
-            home_override=_agent_home(agent))
+        try:
+            context_files_prompt = _r.build_context_files_prompt(
+                cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+                context_length=_ctx_len,
+                allow_install_tree_fallback=agent.platform in ("cli", "tui"),
+                home_override=_agent_home(agent))
+        except TypeError as exc:
+            # Version-skewed install (#65868): a long-running backend that
+            # imported an older prompt_builder whose build_context_files_prompt
+            # predates allow_install_tree_fallback (added in 244f70aa) or the
+            # later home_override kwarg, while this freshly-reloaded caller
+            # passes them. Seen when a Desktop auto-update lands mid-session and
+            # the system prompt is rebuilt at context compaction — before this
+            # guard the TypeError propagated out of the rebuild and took the
+            # whole backend down (SIGTERM). Retry without the new kwargs so
+            # context files still load (the stale callee just keeps its old
+            # fallback behavior), and say so once — silent version skew is how
+            # these bugs go unnoticed (#64333).
+            # Match CPython's exact unexpected-keyword diagnostic rather than a
+            # bare substring: a callee that *accepts* the parameter but raises an
+            # internal TypeError merely mentioning it must still propagate, not
+            # be retried and have its real failure masked.
+            if (
+                "unexpected keyword argument 'allow_install_tree_fallback'"
+                not in str(exc)
+                and "unexpected keyword argument 'home_override'" not in str(exc)
+            ):
+                raise
+            global _WARNED_CONTEXT_FILES_KWARG_SKEW
+            if not _WARNED_CONTEXT_FILES_KWARG_SKEW:
+                _WARNED_CONTEXT_FILES_KWARG_SKEW = True
+                logger.warning(
+                    "build_context_files_prompt() rejected a runtime kwarg "
+                    "(allow_install_tree_fallback/home_override) — mixed/stale "
+                    "install detected (#65868). Falling back to the pre-244f70aa "
+                    "call. Run `hermes update` (or reinstall the Desktop app) to "
+                    "resync the runtime."
+                )
+            context_files_prompt = _r.build_context_files_prompt(
+                cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+                context_length=_ctx_len)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

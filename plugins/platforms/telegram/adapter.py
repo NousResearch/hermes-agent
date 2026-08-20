@@ -4452,12 +4452,29 @@ class TelegramAdapter(BasePlatformAdapter):
                     },
                 )
             elif proxy_url:
-                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
+                logger.info("[%s] Proxy detected; passing to TelegramFallbackTransport: %s", self.name, proxy_url)
+                # PTB 22.8 + httpx 0.28.1: passing proxy= to HTTPXRequest
+                # crashes with "Any cannot be instantiated". Route the proxy
+                # through TelegramFallbackTransport instead.
+                _transport_kwargs: dict = {}
+                if _pool_limits is not None:
+                    _transport_kwargs["limits"] = _pool_limits
+                _transport_kwargs["proxy"] = proxy_url
                 request = HTTPXRequest(
-                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                    **request_kwargs,
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, **_transport_kwargs
+                        )
+                    },
                 )
                 get_updates_request = HTTPXRequest(
-                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                    **request_kwargs,
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, **_transport_kwargs
+                        )
+                    },
                 )
             else:
                 if disable_fallback:

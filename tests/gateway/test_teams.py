@@ -385,6 +385,74 @@ class TestTeamsSend:
         assert result.message_id == "msg-123"
         mock_app.send.assert_awaited_once_with("conv-id", "Hello")
 
+    def _adapter_with_cached_ref(self, chat_id="conv-id"):
+        """Adapter whose ``_conv_refs`` already holds a reference for ``chat_id``.
+
+        This is the state after any inbound activity: ``_on_message`` caches
+        ``ctx.conversation_ref``. Sends must then route through
+        ``activity_sender.send`` so the channel-specific serviceUrl is used
+        rather than the SDK's hardcoded Teams default.
+        """
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        mock_result = MagicMock()
+        mock_result.id = "msg-123"
+        mock_app = MagicMock()
+        mock_app.send = AsyncMock(return_value=mock_result)
+        mock_app.reply = AsyncMock(return_value=mock_result)
+        mock_app.activity_sender.send = AsyncMock(return_value=mock_result)
+        adapter._app = mock_app
+        conv_ref = SimpleNamespace(service_url="https://webchat.example/v3")
+        adapter._conv_refs[chat_id] = conv_ref
+        return adapter, mock_app, conv_ref
+
+    @pytest.mark.anyio
+    async def test_send_text_routes_via_cached_conversation_reference(self):
+        adapter, mock_app, conv_ref = self._adapter_with_cached_ref()
+
+        result = await adapter.send("conv-id", "Hello")
+
+        assert result.success is True
+        assert result.message_id == "msg-123"
+        mock_app.activity_sender.send.assert_awaited_once()
+        assert mock_app.activity_sender.send.await_args.args[1] is conv_ref
+        mock_app.send.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_reply_fallback_routes_via_cached_conversation_reference(self):
+        """A threaded reply that 400s must fall back to the routed flat send."""
+        adapter, mock_app, conv_ref = self._adapter_with_cached_ref()
+        mock_app.reply = AsyncMock(side_effect=RuntimeError("400 Bad Request"))
+
+        result = await adapter.send("conv-id", "Hello", reply_to="1700000000000")
+
+        assert result.success is True
+        mock_app.reply.assert_awaited_once()
+        mock_app.activity_sender.send.assert_awaited_once()
+        assert mock_app.activity_sender.send.await_args.args[1] is conv_ref
+        mock_app.send.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_send_typing_routes_via_cached_conversation_reference(self):
+        adapter, mock_app, conv_ref = self._adapter_with_cached_ref()
+
+        await adapter.send_typing("conv-id")
+
+        mock_app.activity_sender.send.assert_awaited_once()
+        assert mock_app.activity_sender.send.await_args.args[1] is conv_ref
+        mock_app.send.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_send_typing_falls_back_to_app_send_without_cached_ref(self):
+        adapter, mock_app, _ = self._adapter_with_cached_ref()
+        adapter._conv_refs.clear()
+
+        await adapter.send_typing("conv-id")
+
+        mock_app.send.assert_awaited_once()
+        mock_app.activity_sender.send.assert_not_awaited()
+
 
 def _make_summary_payload():
     return TeamsMeetingSummaryPayload(

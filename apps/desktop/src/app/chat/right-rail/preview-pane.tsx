@@ -28,6 +28,7 @@ import {
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
+import { registerPreviewInput, type PreviewInputEvent } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
@@ -53,6 +54,7 @@ type PreviewWebview = HTMLElement & {
   reloadIgnoringCache?: () => void
   replaceMisspelling?: (word: string) => void
   selectAll?: () => void
+  sendInputEvent?: (event: PreviewInputEvent) => void
 }
 
 /** The raw Chromium params riding the webview tag's `context-menu` event. */
@@ -457,7 +459,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
   // Publish the SCRIPT runner for this tab: the one channel into the guest
   // page, shared by the tour tool (injected driver.js walkthroughs) and the
-  // act_preview tool (clicking, typing, scrolling the page the user sees).
+  // drive_preview tool (clicking, typing, scrolling the page the user sees).
   useEffect(() => {
     if (!isWebPreview || !tabId) {
       return
@@ -473,6 +475,32 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       return webview.executeJavaScript(code)
     })
   }, [isWebPreview, tabId])
+
+  // Publish the INPUT channel for this tab. Same idea as the script runner, but
+  // it carries real Chromium input rather than script — the agent's clicks and
+  // keystrokes arrive as trusted events, so the page hovers, focuses and reacts
+  // exactly as it would under a human hand.
+  useEffect(() => {
+    if (!isWebPreview || isRemoteHtml || !tabId) {
+      return
+    }
+
+    return registerPreviewInput(tabId, {
+      focus: () => webviewRef.current?.focus?.(),
+      send: event => {
+        const webview = webviewRef.current
+
+        // Never optional-chain this call away: a missing method would make every
+        // agent click a silent no-op that still reports success, because the
+        // overlay and the read-back both run on the separate script channel.
+        if (typeof webview?.sendInputEvent !== 'function') {
+          throw new Error('preview webview cannot take input events')
+        }
+
+        webview.sendInputEvent(event)
+      }
+    })
+  }, [isRemoteHtml, isWebPreview, tabId])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {

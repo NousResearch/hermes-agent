@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ import httpx
 DEFAULT_GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 DEFAULT_GRAPH_AUTHORITY_URL = "https://login.microsoftonline.com"
 DEFAULT_TOKEN_SKEW_SECONDS = 120
+GRAPH_TOKEN_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 
 
 class MicrosoftGraphAuthError(RuntimeError):
@@ -177,21 +179,24 @@ class MicrosoftGraphTokenProvider:
             timeout=httpx.Timeout(self.timeout),
             transport=self._transport,
         ) as client:
-            response = await client.post(
+            async with client.stream(
+                "POST",
                 self.credentials.token_url,
                 data=data,
                 headers=headers,
-            )
+            ) as response:
+                status_code = response.status_code
+                body = await _read_token_response_body(response)
 
-        if response.status_code >= 400:
-            detail = _extract_error_detail(response)
+        if status_code >= 400:
+            detail = _extract_error_detail(body)
             raise MicrosoftGraphTokenError(
                 "Microsoft Graph token request failed with HTTP "
-                f"{response.status_code}: {detail}"
+                f"{status_code}: {detail}"
             )
 
         try:
-            payload = response.json()
+            payload = _parse_json_body(body)
         except ValueError as exc:
             raise MicrosoftGraphTokenError(
                 "Microsoft Graph token response was not valid JSON."
@@ -220,11 +225,33 @@ class MicrosoftGraphTokenProvider:
         )
 
 
-def _extract_error_detail(response: httpx.Response) -> str:
+async def _read_token_response_body(response: httpx.Response) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > GRAPH_TOKEN_RESPONSE_MAX_BYTES:
+            raise MicrosoftGraphTokenError(
+                "Microsoft Graph token response exceeded "
+                f"{GRAPH_TOKEN_RESPONSE_MAX_BYTES} bytes (got {total})."
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _parse_json_body(body: bytes) -> Any:
+    if not body:
+        raise ValueError("empty response")
+    return json.loads(body.decode("utf-8"))
+
+
+def _extract_error_detail(body: bytes) -> str:
     try:
-        payload = response.json()
+        payload = _parse_json_body(body)
     except ValueError:
-        text = response.text.strip()
+        text = body.decode("utf-8", errors="replace").strip()
         return text or "unknown error"
 
     if isinstance(payload, dict):

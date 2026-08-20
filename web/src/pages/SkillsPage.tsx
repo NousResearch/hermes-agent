@@ -42,6 +42,7 @@ import type {
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
+import { PendingSkillWrites } from "@/components/PendingSkillWrites";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -152,6 +153,13 @@ export default function SkillsPage() {
     profile: selectedProfile,
   } = useProfileScope();
 
+  const refreshSkills = useCallback(() => {
+    api
+      .getSkills(selectedProfile || undefined)
+      .then(setSkills)
+      .catch(() => {});
+  }, [selectedProfile]);
+
   useEffect(() => {
     // Promise-chain shape: setState fires only inside async callbacks so the
     // effect body stays lint-clean (react-hooks/set-state-in-effect). On a
@@ -251,14 +259,9 @@ export default function SkillsPage() {
   const handleEditorSaved = useCallback(
     (skillName: string) => {
       showToast(`${skillName} saved ✓`, "success");
-      // Reload the list so a newly created skill (or an edited description)
-      // shows up immediately.
-      api
-        .getSkills(selectedProfile || undefined)
-        .then(setSkills)
-        .catch(() => {});
+      refreshSkills();
     },
-    [selectedProfile, showToast],
+    [refreshSkills, showToast],
   );
 
   /* ---- Derived data ---- */
@@ -381,6 +384,12 @@ export default function SkillsPage() {
     <div className="flex flex-col gap-4">
       <PluginSlot name="skills:top" />
       <Toast toast={toast} />
+      <PendingSkillWrites
+        key={selectedProfile || "__default__"}
+        profile={selectedProfile || undefined}
+        onApproved={refreshSkills}
+        showToast={showToast}
+      />
 
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">

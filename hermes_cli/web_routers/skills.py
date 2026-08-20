@@ -427,6 +427,93 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     return result
 
 
+@router.get("/api/skills/pending")
+async def get_pending_skill_writes(profile: Optional[str] = None):
+    """List staged skill writes without exposing their full payloads."""
+    from tools import write_approval as wa
+
+    with _profile_scope(profile):
+        pending = []
+        for record in wa.list_pending(wa.SKILLS):
+            payload = record.get("payload") or {}
+            if not isinstance(payload, dict):
+                payload = {}
+            pending.append(
+                {
+                    "id": record.get("id", ""),
+                    "action": record.get("action", payload.get("action", "")),
+                    "summary": record.get("summary", ""),
+                    "origin": record.get("origin", "foreground"),
+                    "created_at": record.get("created_at", 0),
+                    "name": payload.get("name", ""),
+                    "file_path": payload.get("file_path", ""),
+                }
+            )
+    return {"pending": pending}
+
+
+@router.get("/api/skills/pending/{pending_id}/diff")
+async def get_pending_skill_diff(pending_id: str, profile: Optional[str] = None):
+    """Return the full diff for one staged skill write."""
+    from tools import write_approval as wa
+
+    with _profile_scope(profile):
+        record = wa.get_pending(wa.SKILLS, pending_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Pending skill write not found.")
+        return {
+            "id": record.get("id", pending_id),
+            "summary": record.get("summary", ""),
+            "diff": wa.skill_pending_diff(record),
+        }
+
+
+@router.post("/api/skills/pending/{pending_id}/approve")
+async def approve_pending_skill_write(pending_id: str, profile: Optional[str] = None):
+    """Apply one staged skill write and remove it only after a successful write."""
+    import json
+
+    from tools import write_approval as wa
+    from tools.skill_manager_tool import apply_skill_pending
+
+    with _profile_scope(profile):
+        record = wa.get_pending(wa.SKILLS, pending_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Pending skill write not found.")
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Pending skill write has an invalid payload.")
+        try:
+            result = json.loads(apply_skill_pending(payload))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to apply skill write: {exc}") from exc
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=409,
+                detail=result.get("error", "The staged skill write can no longer be applied."),
+            )
+        if not wa.discard_pending(wa.SKILLS, pending_id):
+            raise HTTPException(
+                status_code=500,
+                detail="Skill write was applied but its pending record could not be cleared. Do not retry.",
+            )
+    _clear_skills_prompt_cache()
+    return {"ok": True, "id": pending_id}
+
+
+@router.delete("/api/skills/pending/{pending_id}")
+async def reject_pending_skill_write(pending_id: str, profile: Optional[str] = None):
+    """Discard one staged skill write without applying it."""
+    from tools import write_approval as wa
+
+    with _profile_scope(profile):
+        if not wa.get_pending(wa.SKILLS, pending_id):
+            raise HTTPException(status_code=404, detail="Pending skill write not found.")
+        if not wa.discard_pending(wa.SKILLS, pending_id):
+            raise HTTPException(status_code=500, detail="Failed to discard pending skill write.")
+    return {"ok": True, "id": pending_id}
+
+
 @router.get("/api/skills")
 async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills

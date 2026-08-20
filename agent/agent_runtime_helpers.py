@@ -284,6 +284,38 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
 
 
 
+def _salvage_double_serialized_arguments(arguments: str) -> Optional[str]:
+    """Recover real tool-call arguments when a provider corrupts them by
+    prefixing an extra empty ``{}`` object (double serialization).
+
+    Observed live on DeepSeek-V4-Flash via the MARVIN OpenAI-compatible
+    proxy (and MiniMax via NVIDIA NIM): the model streams a leading ``{}``
+    chunk before the real JSON arguments, so the accumulated value becomes
+    ``'{}{"path": "/tmp/foo"}'`` — not valid JSON on its own.  Stripping the
+    leading ``{}`` recovers the actual tool intent.
+
+    Returns the recovered arguments text (verbatim, preserving the real
+    JSON) or ``None`` when nothing is recoverable — i.e. the string does not
+    begin with ``{}``, the remainder is empty, or the remainder is not a
+    JSON object (only object-valued arguments are salvageable; arrays,
+    scalars and fragments fall through to the drop-and-marker path)."""
+    if not isinstance(arguments, str):
+        return None
+    s = arguments.lstrip()
+    if not s.startswith("{}"):
+        return None
+    rest = s[2:].lstrip()
+    if not rest:
+        return None
+    try:
+        parsed = json.loads(rest)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return rest
+
+
 def sanitize_tool_call_arguments(
     messages: list,
     *,
@@ -378,6 +410,26 @@ def sanitize_tool_call_arguments(
             try:
                 json.loads(arguments)
             except json.JSONDecodeError:
+                # Provider corruption like ``'{}{"path": "/tmp"}`` (a leading
+                # ``{}`` chunk streamed before the real arguments) discards the
+                # actual tool intent if we nuke the whole string.  Try to
+                # recover the real object first; only fall through to the
+                # drop-and-marker path when nothing is salvageable.
+                salvaged = _salvage_double_serialized_arguments(arguments)
+                if salvaged is not None and salvaged != "{}":
+                    function["arguments"] = salvaged
+                    log.warning(
+                        "Corrupted tool_call arguments recovered from "
+                        "double-serialization (session=%s, message_index=%s, "
+                        "function=%s, preview=%r)",
+                        session_id or "-",
+                        message_index,
+                        function.get("name", "?"),
+                        arguments[:80],
+                    )
+                    repaired += 1
+                    continue
+
                 # Use the canonical ``call_id || id`` precedence so both the
                 # scan for an existing tool result and any inserted stub key
                 # on the same id the rest of the pipeline uses. Keying on bare

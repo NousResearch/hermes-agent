@@ -7010,6 +7010,19 @@ def run_conversation(
                     try:
                         json.loads(args)
                     except json.JSONDecodeError as e:
+                        # Repair before flagging: gateway proxies prepend a
+                        # complete JSON value to the arguments (e.g.
+                        # `{}{"city": "Paris"}`), which json.loads rejects as
+                        # "Extra data". _repair_tool_call_arguments recovers
+                        # that (and other common malformations); only fall
+                        # through to the whole-turn retry/recovery machinery
+                        # when the args are genuinely unrepairable.
+                        repaired = _repair_tool_call_arguments(
+                            args, tc.function.name
+                        )
+                        if repaired != "{}":
+                            tc.function.arguments = repaired
+                            continue
                         if (
                             _mixed_invalid_batch
                             and tc.function.name not in agent.valid_tool_names

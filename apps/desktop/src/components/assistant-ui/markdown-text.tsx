@@ -9,7 +9,7 @@ import {
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
 import { atom } from 'nanostores'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, memo, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -557,12 +557,14 @@ function MarkdownTextSurface({
   const isStreaming = status.type === 'running'
 
   // Mirror the opt-in `desktop.markdown_linkify_paths` setting into the
-  // module-scope flag consumed by preprocessWithTailRepair.
+  // module-scope flag consumed by preprocessWithTailRepair. useLayoutEffect
+  // (not useEffect) so the flag is already set before the first paint — a
+  // paint-timing effect would otherwise leave the first message unlinked.
   const { data: config } = useHermesConfigRecord()
   const linkifyPaths = Boolean(
     ((config?.desktop ?? {}) as { markdown_linkify_paths?: boolean }).markdown_linkify_paths
   )
-  useEffect(() => {
+  useLayoutEffect(() => {
     $linkifyFilePaths.set(linkifyPaths)
   }, [linkifyPaths])
 

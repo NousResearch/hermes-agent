@@ -735,10 +735,11 @@ DEFAULT_CONFIG = {
                                       # floored at 0.75 (raise-only) so compaction
                                       # doesn't fire with half the window still free;
                                       # set this above 0.75 to override the floor.
-        "threshold_tokens": None,     # absolute token cap — when set, compression
-                                      # triggers at the lower of the ratio-based
-                                      # threshold and this token count. Clamped to
-                                      # the model's context length at apply-time.
+        "threshold_tokens": 256_000,  # absolute token cap — compression triggers
+                                      # at the lower of the ratio-based threshold
+                                      # and this count. 256K preserves the existing
+                                      # 272K-window trigger while bounding 1M models.
+                                      # Set null to use ratio-only behavior.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "tail_mode": "legacy",        # tail retention policy (#87326):
                                       #   "legacy" — 0.20×window verbatim tail (default)

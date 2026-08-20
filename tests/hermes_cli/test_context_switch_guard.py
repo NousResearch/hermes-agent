@@ -22,7 +22,12 @@ def _result(*, model: str = "small-model") -> ModelSwitchResult:
     )
 
 
-def _compressor(monkeypatch, *, context_length: int = 200_000):
+def _compressor(
+    monkeypatch,
+    *,
+    context_length: int = 200_000,
+    threshold_tokens_cap: int | None = None,
+):
     from agent.context_compressor import ContextCompressor
 
     monkeypatch.setattr(
@@ -36,6 +41,7 @@ def _compressor(monkeypatch, *, context_length: int = 200_000):
         protect_last_n=20,
         quiet_mode=True,
         config_context_length=context_length,
+        threshold_tokens_cap=threshold_tokens_cap,
     )
 
 
@@ -62,6 +68,66 @@ def test_merge_appends_to_existing_warning(monkeypatch):
     merge_preflight_compression_warning(result, agent=agent)
     assert "expensive" in result.warning_message
     assert "preflight compression" in result.warning_message
+
+
+def test_default_cap_warns_before_large_window_ratio_threshold(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard._estimate_tokens",
+        lambda *a, **k: 300_000,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard.resolve_display_context_length",
+        lambda *a, **k: 1_000_000,
+    )
+    cc = _compressor(
+        monkeypatch,
+        context_length=200_000,
+        threshold_tokens_cap=256_000,
+    )
+    agent = SimpleNamespace(
+        context_compressor=cc,
+        compression_enabled=True,
+        base_url="",
+        api_key="",
+    )
+
+    result = _result(model="large-model")
+    merge_preflight_compression_warning(result, agent=agent)
+
+    assert "preflight compression" in result.warning_message
+    assert "auto-compress at ~256,000" in result.warning_message
+
+
+def test_warning_uses_context_engine_threshold_preview(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard._estimate_tokens",
+        lambda *a, **k: 50_000,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard.resolve_display_context_length",
+        lambda *a, **k: 128_000,
+    )
+    engine = SimpleNamespace(
+        context_length=200_000,
+        protect_first_n=3,
+        protect_last_n=20,
+        preview_threshold_tokens=lambda model, context_length: int(
+            context_length * 0.20
+        ),
+        _ineffective_compression_count=0,
+    )
+    agent = SimpleNamespace(
+        context_compressor=engine,
+        compression_enabled=True,
+        base_url="",
+        api_key="",
+    )
+
+    result = _result()
+    merge_preflight_compression_warning(result, agent=agent)
+
+    assert "preflight compression" in result.warning_message
+    assert "auto-compress at ~25,600" in result.warning_message
 
 
 

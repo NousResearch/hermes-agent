@@ -33,6 +33,9 @@ class StubEngine(ContextEngine):
         self.context_length = context_length
         self.threshold_tokens = int(context_length * 0.20)
 
+    def preview_threshold_tokens(self, model: str, context_length: int) -> int:
+        return int(context_length * 0.20)
+
     def update_from_response(self, usage: Dict[str, Any]) -> None:
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)

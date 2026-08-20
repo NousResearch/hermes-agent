@@ -2753,6 +2753,24 @@ class ContextCompressor(ContextEngine):
         except Exception as exc:
             logger.debug("compression failure cooldown clear failed (non-sqlite): %s", exc)
 
+    def preview_threshold_tokens(self, model: str, context_length: int) -> int:
+        """Return the post-switch trigger without mutating compressor state."""
+        config_percent = getattr(
+            self, "_config_threshold_percent", self.threshold_percent,
+        )
+        base_percent = resolve_model_threshold(
+            model, self.model_thresholds, config_percent,
+        )
+        threshold_percent = self._effective_threshold_percent(
+            context_length, base_percent,
+        )
+        threshold = self._compute_threshold_tokens(
+            context_length, threshold_percent, self.max_tokens,
+        )
+        if self.threshold_tokens_cap is not None:
+            threshold = min(threshold, self.threshold_tokens_cap, context_length)
+        return threshold
+
     def update_model(
         self,
         model: str,

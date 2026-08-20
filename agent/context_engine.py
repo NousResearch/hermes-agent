@@ -455,6 +455,22 @@ class ContextEngine(ABC):
 
     # -- Optional: model switch support ------------------------------------
 
+    def preview_threshold_tokens(self, model: str, context_length: int) -> int:
+        """Return the trigger that ``update_model`` will use without mutating state.
+
+        Engines whose ``update_model`` applies a custom threshold policy should
+        override this method alongside it so model-switch warnings stay exact.
+        """
+        from agent.context_compressor import resolve_model_threshold
+
+        config_percent = getattr(
+            self, "_config_threshold_percent", self.threshold_percent,
+        )
+        threshold_percent = resolve_model_threshold(
+            model, getattr(self, "model_thresholds", {}), config_percent,
+        )
+        return int(context_length * threshold_percent)
+
     def update_model(
         self,
         model: str,

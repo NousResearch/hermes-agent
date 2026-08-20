@@ -70,6 +70,39 @@ _CHANNEL_TYPE_MAP = {
 
 _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 
+# Reply modes the adapter understands. Every consumer of ``_reply_mode`` is an
+# equality test against "thread", so an unrecognised value behaves exactly like
+# "off" -- a typo, a stale value, or a mode copied from a newer build silently
+# disables threading with nothing in the logs to say so. Validate once at
+# construction instead, and name the valid set in one place so adding a mode
+# means editing this set, plugin.yaml, and the Mattermost guide together.
+_REPLY_MODES = frozenset({"off", "thread"})
+_DEFAULT_REPLY_MODE = "off"
+
+
+def _resolve_reply_mode(raw: str) -> str:
+    """Normalise a configured reply mode, warning on an unrecognised value.
+
+    Empty is the unset case and resolves to the documented default silently.
+    Surrounding whitespace is tolerated: a trailing space in a YAML value or a
+    Kubernetes env var would otherwise be indistinguishable from a typo.
+    """
+    mode = (raw or "").strip().lower()
+    if not mode:
+        return _DEFAULT_REPLY_MODE
+
+    if mode not in _REPLY_MODES:
+        logger.warning(
+            "Mattermost: unknown reply_mode %r — falling back to %r. Valid modes: %s. "
+            "Set mattermost.reply_mode in config.yaml or MATTERMOST_REPLY_MODE.",
+            raw,
+            _DEFAULT_REPLY_MODE,
+            ", ".join(sorted(_REPLY_MODES)),
+        )
+        return _DEFAULT_REPLY_MODE
+
+    return mode
+
 # Reconnect parameters (exponential backoff).
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
@@ -135,10 +168,10 @@ class MattermostAdapter(BasePlatformAdapter):
         self._closing = False
 
         # Reply mode: "thread" to nest replies, "off" for flat messages.
-        self._reply_mode: str = (
+        self._reply_mode: str = _resolve_reply_mode(
             config.extra.get("reply_mode", "")
-            or os.getenv("MATTERMOST_REPLY_MODE", "off")
-        ).lower()
+            or os.getenv("MATTERMOST_REPLY_MODE", _DEFAULT_REPLY_MODE)
+        )
 
         self._last_post_status: Optional[int] = None
         self._last_post_error: str = ""

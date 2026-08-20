@@ -1,5 +1,6 @@
 """Tests for Mattermost platform adapter."""
 import json
+import logging
 import os
 import time
 import pytest
@@ -594,3 +595,98 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.message_id == "top_post_123"
 
 
+@pytest.mark.asyncio
+async def test_mattermost_dm_post_does_not_seed_thread_root():
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "dm_post_123",
+        "user_id": "user_123",
+        "channel_id": "dm_chan",
+        "message": "hello",
+        "root_id": "",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+
+    await adapter._handle_ws_event(event)
+
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.source.thread_id is None
+    assert msg_event.source.message_id == "dm_post_123"
+
+
+# ----------------------------------------------------------------------
+# reply_mode validation
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("thread", "thread"),
+        ("off", "off"),
+        ("THREAD", "thread"),
+        ("  thread  ", "thread"),
+        ("", "off"),
+        (None, "off"),
+    ],
+)
+def test_resolve_reply_mode_accepts_known_values(raw, expected, caplog):
+    from plugins.platforms.mattermost.adapter import _resolve_reply_mode
+
+    with caplog.at_level(logging.WARNING):
+        assert _resolve_reply_mode(raw) == expected
+
+    assert "unknown reply_mode" not in caplog.text
+
+
+@pytest.mark.parametrize("raw", ["auto", "threaded", "on", "flat", "thread "*3])
+def test_resolve_reply_mode_warns_and_falls_back(raw, caplog):
+    """An unrecognised mode must not silently behave like "off".
+
+    Every consumer is an `== "thread"` equality test, so before this an invalid
+    value disabled threading with no signal at all -- indistinguishable from
+    deliberately configuring "off".
+    """
+    from plugins.platforms.mattermost.adapter import _resolve_reply_mode
+
+    with caplog.at_level(logging.WARNING):
+        assert _resolve_reply_mode(raw) == "off"
+
+    assert "unknown reply_mode" in caplog.text
+    assert repr(raw) in caplog.text          # echoes what was actually set
+    assert "off, thread" in caplog.text      # and what is valid
+
+
+def test_adapter_construction_validates_reply_mode(monkeypatch, caplog):
+    """The warning must fire through real construction, not just the helper."""
+    monkeypatch.setenv("MATTERMOST_REPLY_MODE", "auto")
+
+    with caplog.at_level(logging.WARNING):
+        adapter = _make_adapter()
+
+    assert adapter._reply_mode == "off"
+    assert "unknown reply_mode" in caplog.text
+
+
+def test_adapter_config_reply_mode_takes_precedence_over_env(monkeypatch):
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+    monkeypatch.setenv("MATTERMOST_REPLY_MODE", "off")
+    config = PlatformConfig(
+        enabled=True,
+        token="test-token",
+        extra={"url": "https://mm.example.com", "reply_mode": "thread"},
+    )
+
+    assert MattermostAdapter(config)._reply_mode == "thread"

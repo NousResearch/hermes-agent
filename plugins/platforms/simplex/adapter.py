@@ -359,7 +359,7 @@ class SimplexAdapter(BasePlatformAdapter):
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             if not self._running:
                 break
-            elapsed = time.time() - self._last_ws_activity
+            elapsed = time.monotonic() - self._last_ws_activity
             if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
                 logger.debug("SimpleX: WS application-idle for %.0fs", elapsed)
 

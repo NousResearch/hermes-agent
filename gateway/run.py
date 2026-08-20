@@ -8066,6 +8066,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         lists, desktop/dashboard details, and follow-up session tooling report the
         backend that actually answered the latest turn.
 
+        Writes through the SAME flat ``model_config`` keys (``provider``/
+        ``base_url``/``api_mode``) the explicit ``/model`` persist path
+        (``update_session_model``) writes — previously this wrote a separate
+        nested ``gateway_runtime`` dict that ``session_gateway_runtime()``'s
+        reader preferred unconditionally over those flat keys, so an
+        automatic fallback sync here could permanently shadow a user's
+        later, explicit ``/model`` choice on resume.
+
         Called from the ``run_sync`` closure, which executes off the event loop
         in the executor thread — so the synchronous ``SessionDB`` (``_db``) is
         used directly rather than awaiting the AsyncSessionDB forwarder.
@@ -8079,7 +8087,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "provider": getattr(agent, "provider", None),
             "base_url": getattr(agent, "base_url", None),
             "api_mode": getattr(agent, "api_mode", None),
-            "fallback_active": bool(getattr(agent, "_fallback_activated", False)),
         }
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
 
@@ -8096,13 +8103,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 config = {}
             if not isinstance(config, dict):
                 config = {}
-            gateway_runtime = dict(config.get("gateway_runtime") or {})
+            current_flat = {
+                k: config.get(k) for k in ("provider", "base_url", "api_mode")
+            }
             if current_model == model and all(
-                gateway_runtime.get(k) == v for k, v in runtime.items()
+                current_flat.get(k) == v for k, v in runtime.items()
             ):
                 return
-            config["gateway_runtime"] = runtime
-            db.update_session_meta(session_id, json.dumps(config), model=model)
+            db.update_session_gateway_runtime(session_id, model, **runtime)
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 

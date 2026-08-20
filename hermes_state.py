@@ -6928,6 +6928,56 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
+    def update_session_gateway_runtime(
+        self,
+        session_id: str,
+        model: str,
+        *,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_mode: Optional[str] = None,
+    ) -> None:
+        """Persist the model/provider a gateway turn actually ran with.
+
+        Sibling of ``update_session_model`` for the automatic case: provider
+        fallback can switch ``agent.model``/``agent.provider``/``base_url``/
+        ``api_mode`` mid-turn, after the session row was created. Writes the
+        SAME flat ``model_config`` keys (``provider``/``base_url``/
+        ``api_mode``) ``update_session_model``'s explicit ``/model`` persist
+        writes, through the shared merge discipline (lineage markers
+        survive), so ``session_gateway_runtime()``'s reader sees whichever
+        wrote most recently. Previously this wrote a separate nested
+        ``gateway_runtime`` dict that ``session_gateway_runtime()`` read with
+        unconditional priority over the flat keys — an automatic fallback
+        sync could permanently shadow the user's later, explicit ``/model``
+        choice on resume, routing it back to a stale fallback provider.
+
+        Unlike ``update_session_model``, this is a best-effort background
+        sync (not a user action): does not touch ``browser_model_lock`` or
+        ``system_prompt``, since a flaky provider can trigger this on every
+        turn and neither should be disturbed by an automatic resync.
+        """
+        if not session_id or not model:
+            return
+        self.flush_token_counts()
+
+        def _do(conn):
+            patch: Dict[str, Any] = {}
+            if provider:
+                patch["provider"] = provider
+            if base_url:
+                patch["base_url"] = base_url
+            if api_mode:
+                patch["api_mode"] = api_mode
+            merged = self._merge_model_config_json(conn, session_id, patch)
+            if merged is _MODEL_CONFIG_ROW_MISSING:
+                return
+            conn.execute(
+                "UPDATE sessions SET model = ?, model_config = ? WHERE id = ?",
+                (model, merged, session_id),
+            )
+        self._execute_write(_do)
+
     def _merge_model_config_json(
         self,
         conn,
@@ -7112,16 +7162,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Read the persisted runtime route off a session row dict.
 
         Accepts the dict returned by ``get_session`` (``model_config`` is a
-        JSON string) or an already-parsed dict. Prefers the nested
-        ``gateway_runtime`` key (written by the gateway's
-        ``_sync_session_model_from_agent`` and the CLI ``/model`` persist),
-        falling back to the top-level ``provider``/``base_url``/``api_mode``
-        keys the TUI gateway's ``_runtime_model_config`` writes. As a last
-        resort, falls back to the ``billing_provider`` column (written on
-        every session's first accounted API call) so sessions that never ran
-        ``/model`` still restore the provider that actually served them.
-        Returns an empty dict on any parse failure — resume falls back to
-        ambient config resolution.
+        JSON string) or an already-parsed dict. Prefers a nested
+        ``gateway_runtime`` key when present — legacy data only:
+        ``_sync_session_model_from_agent`` wrote this shape before it was
+        switched to the flat keys below (an automatic fallback sync could
+        otherwise permanently shadow a later, explicit ``/model`` choice,
+        since this nested blob was read with unconditional priority). New
+        writes never create it, but old rows can still carry one. Falls
+        back to the top-level ``provider``/``base_url``/``api_mode`` keys —
+        written by both ``update_session_model`` (explicit ``/model``
+        persist) and ``update_session_gateway_runtime`` (automatic fallback
+        sync) through the same merge discipline, so whichever wrote most
+        recently wins naturally. As a last resort, falls back to the
+        ``billing_provider`` column (written on every session's first
+        accounted API call) so sessions that never ran ``/model`` still
+        restore the provider that actually served them. Returns an empty
+        dict on any parse failure — resume falls back to ambient config
+        resolution.
         """
         raw = (session_meta or {}).get("model_config")
         if isinstance(raw, str):

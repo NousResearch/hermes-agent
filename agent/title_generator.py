@@ -154,21 +154,24 @@ def _summarize_user_message(user_message: str) -> str:
     """Text worth titling: describe a ``/skill`` invocation (it embeds the whole skill body), then strip wrappers."""
     if not user_message:
         return ""
+    # A speech-barge-in note (SPEECH_INTERRUPTED_NOTE) arrives as the first
+    # line of the model-bound message. It is scaffolding, not intent: drop it
+    # FIRST — before the skill-scaffolding parser — because a note-prefixed
+    # message no longer starts with the skill-invocation prefix, so
+    # describe_skill_invocation() returns None and the entire expanded skill
+    # body would flow into the title instead of the user's instruction.
+    text = user_message.lstrip()
+    if text.startswith(_SPEECH_INTERRUPTED_PREFIX):
+        text = text[len(_SPEECH_INTERRUPTED_PREFIX):].lstrip("\n").strip()
     described = None
     try:
         from agent.skill_commands import describe_skill_invocation
-        described = describe_skill_invocation(user_message)
+
+        described = describe_skill_invocation(text)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
-    text = described if described is not None else user_message
-    text = strip_control_wrappers(text)
-    # A speech-barge-in note (SPEECH_INTERRUPTED_NOTE) arrives as the first
-    # line of the model-bound message. It is scaffolding, not intent: drop it
-    # and title from the words the user actually typed after interrupting.
-    stripped = text.lstrip()
-    if stripped.startswith(_SPEECH_INTERRUPTED_PREFIX):
-        text = stripped[len(_SPEECH_INTERRUPTED_PREFIX):].lstrip("\n").strip()
-    return text
+    text = described if described is not None else text
+    return strip_control_wrappers(text)
 
 
 def is_titleable_user_message(user_message: str) -> bool:

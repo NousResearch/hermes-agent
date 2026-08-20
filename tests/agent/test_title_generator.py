@@ -664,3 +664,33 @@ class TestSpeechInterruptNoteNotTitleSource:
         assert title == "Fix login button"
         assert captured["user"] == "fix login button"
         assert "interrupted" not in captured["user"]
+
+    def test_note_before_skill_invocation_still_titles_from_skill(self):
+        """A barge-in note before a /skill invocation must not defeat the
+        skill-scaffolding summarizer.
+
+        The note is stripped BEFORE describe_skill_invocation(): a
+        note-prefixed message no longer starts with the skill-invocation
+        prefix, so the parser returns None and the whole expanded skill body
+        would become the title instead of the user's instruction. This test
+        was impossible to write against the old code — the note+skill
+        combination fell through to the raw-text path and produced the
+        skill's prose, which is exactly how the leak stayed masked.
+        """
+        from agent.title_generator import _summarize_user_message
+
+        skill_msg = (
+            '[IMPORTANT: The user has invoked the "work" skill, loading it as '
+            'active guidance for this turn.]\n\n'
+            "Kick off a task in a fresh isolated git worktree.\n\n"
+            "User instruction: fix the title leak"
+        )
+        summarized = _summarize_user_message(f"{self.NOTE}\n\n{skill_msg}")
+        # The skill-scaffolding parser reduces the expanded body to the
+        # invocation label ("/work"); the invariant that matters is that the
+        # title source is the SKILL, not the expanded skill prose — under the
+        # old code the note+skill combination fell through to the raw-text
+        # path and produced the skill's opening line.
+        assert summarized.startswith("/work")
+        assert "worktree" not in summarized
+        assert "interrupted" not in summarized

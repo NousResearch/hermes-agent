@@ -67,10 +67,14 @@ import {
   withSessionNotFoundResume
 } from './utils'
 
-// Manual compression is LLM-bound and routinely outlives the desktop's 30s
-// default WS request timeout on large sessions — give it the TUI client's
-// 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
-const SESSION_COMPRESS_TIMEOUT_MS = 120_000
+// Manual compression is LLM-bound: one summarisation call over the whole
+// session, routinely outliving the desktop's 30s default WS request timeout
+// on large histories or slow providers. The server-side auxiliary compression
+// timeout is floored at 300s, so a 120s client budget abandons the RPC while
+// the server keeps working — the user sees an error while the compression
+// actually lands. Give it 10 minutes, matching the server-side compute-host
+// wait (600s) and the auxiliary.compression.timeout default (600s).
+const SESSION_COMPRESS_TIMEOUT_MS = 600_000
 const WAKE_START_TIMEOUT_MS = 180_000
 
 const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {

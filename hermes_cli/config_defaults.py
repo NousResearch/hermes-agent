@@ -1063,7 +1063,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
+            "timeout": 600,        # seconds — compression summarises large contexts; increase for local models
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },

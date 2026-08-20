@@ -651,7 +651,7 @@ describe('usePromptActions /compress', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'session.compress',
       expect.objectContaining({ session_id: RUNTIME_SESSION_ID }),
-      120_000
+      600_000
     )
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
@@ -785,7 +785,7 @@ describe('usePromptActions /compress', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'session.compress',
       expect.objectContaining({ focus_topic: 'the auth refactor' }),
-      120_000
+      600_000
     )
   })
 
@@ -892,7 +892,7 @@ describe('usePromptActions /compress', () => {
     act(() => {
       submitted = handle!.submitTextRaw('/compress')
     })
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), 120_000))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), 600_000))
 
     // Switch to session B before compression resolves.
     activeSessionIdRef.current = RUNTIME_SESSION_B
@@ -951,7 +951,7 @@ describe('usePromptActions /compress', () => {
     act(() => {
       submitted = handle!.submitTextRaw('/compress')
     })
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), 120_000))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), 600_000))
     activeSessionIdRef.current = RUNTIME_SESSION_B
     storedSessionIdRef.current = 'stored-b'
     rejectCompress(new Error('compression failed'))

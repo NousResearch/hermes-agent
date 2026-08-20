@@ -364,6 +364,27 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
+def _add_empty_timeout_guidance(
+    result: SearchResult, path: str, file_glob: Optional[str]
+) -> SearchResult:
+    """Give a recovery action when a timed search emitted no usable results."""
+    if result.limit_reason != "search_timeout" or any(
+        (result.matches, result.files, result.counts)
+    ):
+        return result
+
+    guidance = (
+        f"Search timed out before any results were emitted from {path}. "
+        "Narrow path to a likely project or subdirectory"
+    )
+    if file_glob:
+        guidance += f" or use a more specific file_glob than {file_glob!r}"
+    else:
+        guidance += " or add file_glob (for example, '*.py')"
+    result.warning = guidance + "."
+    return result
+
+
 def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output.
 
@@ -2827,10 +2848,11 @@ class ShellFileOperations(FileOperations):
             )
         
         if target == "files":
-            return self._search_files(pattern, path, limit, offset)
+            result = self._search_files(pattern, path, limit, offset)
         else:
-            return self._search_content(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
+            result = self._search_content(pattern, path, file_glob, limit, offset,
+                                          output_mode, context)
+        return _add_empty_timeout_guidance(result, path, file_glob)
     
     def _try_multi_path_search(self, pattern: str, path: str, target: str,
                                file_glob: Optional[str], limit: int, offset: int,

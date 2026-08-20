@@ -63,6 +63,36 @@ def test_rg_timeout_returns_partial_results_without_marker(ops, monkeypatch, tar
         assert all("timed out" not in path for path in result.files)
 
 
+@pytest.mark.parametrize(
+    ("target", "output_mode"),
+    [
+        ("files", "content"),
+        ("content", "files_only"),
+        ("content", "count"),
+        ("content", "content"),
+    ],
+)
+def test_rg_timeout_without_partial_results_returns_scoping_guidance(
+    ops, monkeypatch, target, output_mode
+):
+    ops.env.execute.side_effect = path_exists_or(TIMEOUT)
+    monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "rg")
+
+    result = ops.search(
+        "campaign-id",
+        path="/Users/example",
+        target=target,
+        output_mode=output_mode,
+        file_glob="*.md" if target == "content" else None,
+    )
+
+    assert_timed_out(result)
+    assert result.warning is not None
+    assert "Narrow path" in result.warning
+    if target == "content":
+        assert "file_glob" in result.warning
+
+
 def test_real_rg_error_still_hard_fails(ops, monkeypatch):
     ops.env.execute.side_effect = path_exists_or("rg: regex parse error:", returncode=2)
     monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "rg")

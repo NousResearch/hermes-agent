@@ -3225,7 +3225,17 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # silently skipped forever; recompute next_run_at from the
                 # schedule so they pick up at their next scheduled tick.
                 if not recovered_next and kind in {"cron", "interval"}:
-                    recovered_next = compute_next_run(schedule, now.isoformat())
+                    # Anchor on the job's last real execution when one is
+                    # recorded: recomputing from ``now`` silently skips the
+                    # currently-due window — a weekly job whose next_run_at
+                    # was lost right around its slot waits a full extra week.
+                    # An anchor in the past simply makes the job due now; the
+                    # stale-grace handling below then collapses accumulated
+                    # backlog to a single catch-up run, exactly like a stale
+                    # (rather than missing) next_run_at already does.
+                    recovered_next = compute_next_run(
+                        schedule, job.get("last_run_at") or now.isoformat()
+                    )
                     if recovered_next:
                         recovery_kind = kind
 

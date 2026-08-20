@@ -66,7 +66,7 @@ test('routine mutation invalidates only its immutable owner cache', async () => 
 test('source contract: row mutations invalidate the profile that owned the request', () => {
   assert.match(
     pluginSource,
-    /function RoutineRow\(\{ job, profile \}\)[\s\S]*await host\.request\('cron\.manage', \{ action, name: job\.job_id, \.\.\.\(profile \? \{ profile \} : \{\}\) \}\)[\s\S]*await invalidateRoutineOwner\(profile\)/
+    /function RoutineRow\(\{ job, owner \}\)[\s\S]*await requestForBot\(owner, 'cron\.manage',[\s\S]*await invalidateRoutineOwner\(owner\)/
   )
   assert.doesNotMatch(pluginSource, /function RoutineRow\(\{ job, onChanged, profile \}\)/)
 })
@@ -74,11 +74,11 @@ test('source contract: row mutations invalidate the profile that owned the reque
 test('source contract: create mutations and dialog state retain one owner', () => {
   assert.match(
     pluginSource,
-    /function CreateRoutineDialog\(\{ bot, open, onClose \}\)[\s\S]*await host\.request\('cron\.manage', \{[\s\S]*\.\.\.\(bot \? \{ profile: bot \} : \{\}\)[\s\S]*await invalidateRoutineOwner\(bot\)/
+    /function CreateRoutineDialog\(\{ bot, open, onClose \}\)[\s\S]*await requestForBot\(bot, 'cron\.manage',[\s\S]*\.\.\.\(profile \? \{ profile \} : \{\}\)[\s\S]*await invalidateRoutineOwner\(bot\)/
   )
   assert.match(pluginSource, /const \[createOwner, setCreateOwner\] = useState\(null\)/)
-  assert.match(pluginSource, /const openCreate = \(\) => \{[\s\S]*setCreateOwner\(bot\)[\s\S]*setCreateOpen\(true\)/)
-  assert.match(pluginSource, /const createTarget = routineCreateTarget\(createOwner, bot\)/)
+  assert.match(pluginSource, /const openCreate = \(\) => \{[\s\S]*setCreateOwner\(owner\)[\s\S]*setCreateOpen\(true\)/)
+  assert.match(pluginSource, /const createTarget = owner \? routineCreateTarget\(createOwner, bot\) : null/)
   // key must be the jsx() THIRD argument (a `key:` prop is silently ignored
   // by the react/jsx-runtime and the dialog would keep stale per-bot state).
   assert.match(pluginSource, /jsx\(CreateRoutineDialog, \{[\s\S]*?\}, createTarget\)/)

@@ -6,7 +6,7 @@ import type {
   ProfilesResponse
 } from '@/types/hermes'
 
-import { hermesApi, STARTUP_REQUEST_TIMEOUT_MS } from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
 export function getProfiles(): Promise<ProfilesResponse> {
   return hermesApi<ProfilesResponse>({
@@ -31,9 +31,24 @@ export function renameProfile(name: string, newName: string): Promise<{ name: st
   })
 }
 
-export function deleteProfile(name: string): Promise<{ ok: boolean; path: string }> {
+export function deleteProfile(name: string, scope?: ProfileScope): Promise<{ ok: boolean; path: string }> {
+  const normalized = name.trim()
+  const scopedProfile = scope && typeof scope === 'object' ? scope.profile?.trim() : undefined
+
+  if (!normalized) {
+    return Promise.reject(new Error('Profile name required'))
+  }
+
+  if (normalized.toLowerCase() === 'default' || scopedProfile?.toLowerCase() === 'default') {
+    return Promise.reject(new Error('The default profile cannot be deleted.'))
+  }
+
   return hermesApi<{ ok: boolean; path: string }>({
-    path: `/api/profiles/${encodeURIComponent(name)}`,
+    ...capabilityScoped(scope),
+    ...(scope && typeof scope === 'object' && scope.connectionId?.trim() === 'local'
+      ? { connectionId: 'local' }
+      : {}),
+    path: `/api/profiles/${encodeURIComponent(normalized)}`,
     method: 'DELETE'
   })
 }

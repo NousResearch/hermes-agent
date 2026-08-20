@@ -128,14 +128,22 @@ test('groupChatMemberBots: seats local meta members plus stored remote descripto
 test('durableGroupChatMembers: retains active and remote source identities', () => {
   const { durableGroupChatMembers } = load()
   const members = durableGroupChatMembers([
-    { name: 'default', handle: 'noah', connectionId: 'noah', connectionKind: 'remote', connectionLabel: 'Noah' },
+    {
+      name: 'default',
+      handle: 'noah',
+      connectionId: 'noah',
+      connectionKind: 'remote',
+      connectionLabel: 'Noah',
+      sourceScoped: true
+    },
     {
       name: 'default',
       handle: 'maya',
       connectionId: 'maya',
       connectionKind: 'remote',
       connectionLabel: 'Maya',
-      remoteSource: true
+      remoteSource: true,
+      sourceScoped: true
     }
   ])
 
@@ -149,6 +157,8 @@ test('durableGroupChatMembers: retains active and remote source identities', () 
         connectionId: 'noah',
         connectionKind: 'remote',
         connectionLabel: 'Noah',
+        route: { connectionId: 'noah', mode: 'remote', profile: 'default', targetProfile: 'default' },
+        targetProfile: 'default',
         remoteSource: true,
         sourceScoped: true
       },
@@ -158,6 +168,8 @@ test('durableGroupChatMembers: retains active and remote source identities', () 
         connectionId: 'maya',
         connectionKind: 'remote',
         connectionLabel: 'Maya',
+        route: { connectionId: 'maya', mode: 'remote', profile: 'default', targetProfile: 'default' },
+        targetProfile: 'default',
         remoteSource: true,
         sourceScoped: true
       }

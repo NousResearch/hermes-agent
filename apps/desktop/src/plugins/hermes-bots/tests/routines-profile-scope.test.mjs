@@ -19,13 +19,13 @@ test('loadRoutines forwards a profile scope to cron.manage list + pause', () => 
 })
 
 test('useRoutines is bot-keyed so switching bots refetches', () => {
-  assert.match(source, /queryKey: \[\.\.\.ROUTINES_KEY, profile \|\| ''\]/)
-  assert.match(source, /queryFn: \(\) => loadRoutines\(profile\)/)
+  assert.match(source, /queryKey: \[\.\.\.ROUTINES_KEY, key\]/)
+  assert.match(source, /queryFn: \(\) => loadRoutines\(bot\)/)
 })
 
 test('RoutineRow toggle and create forward the profile scope', () => {
   // RoutineRow pause/resume
-  assert.match(source, /action, name: job\.job_id, \.\.\.\(profile \? \{ profile \} : \{\}\)/)
+  assert.match(source, /requestForBot\(owner, 'cron\.manage', \{ action, name: job\.job_id, \.\.\.\(profile \? \{ profile \} : \{\}\) \}\)/)
   // create
-  assert.match(source, /\.\.\.\(bot \? \{ profile: bot \} : \{\}\)/)
+  assert.match(source, /requestForBot\(bot, 'cron\.manage',[\s\S]*\.\.\.\(profile \? \{ profile \} : \{\}\)/)
 })

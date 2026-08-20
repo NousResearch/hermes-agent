@@ -28,6 +28,11 @@ function loadOpenPath({ openSession, request }) {
         return request(method, params)
       }
     },
+    backendTargetProfile: (route, name) => route?.targetProfile || name,
+    botOwner: owner => typeof owner === 'string'
+      ? { bot: { name: owner }, key: owner, name: owner, route: null }
+      : { bot: owner, key: owner.name, name: owner.name, route: owner.route || null },
+    requestForBot: (_bot, method, params) => context.host.request(method, params),
     saveBotMeta: (name, patch) => saved.push({ name, patch: JSON.parse(JSON.stringify(patch)) }),
     $hideBotChats: { get: () => false },
     window: { setTimeout: callback => callback() }

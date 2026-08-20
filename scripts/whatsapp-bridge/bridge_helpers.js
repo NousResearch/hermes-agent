@@ -486,7 +486,11 @@ export async function extractBridgeEvent({
     readReceiptKey: {
       remoteJid: msg.key.remoteJid || chatId,
       id: msg.key.id,
-      participant: msg.key.participant || senderId,
+      // (patch 004) participant only for group keys: WhatsApp silently
+      // ignores DM read receipts when a participant is present (the key
+      // looks group-shaped). Live-verified 2026-08-04: same DM key with
+      // participant -> no blue ticks; without -> ticks turn blue.
+      ...(isGroup ? { participant: msg.key.participant || senderId } : {}),
       fromMe: Boolean(msg.key.fromMe),
     },
     timestamp: msg.messageTimestamp,

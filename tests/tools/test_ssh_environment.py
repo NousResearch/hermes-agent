@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 from unittest.mock import MagicMock
 
@@ -189,6 +190,65 @@ class TestSSHPreflight:
         assert called["count"] == 1
         assert env.host == "example.com"
         assert env.user == "alice"
+
+
+def test_delegated_marker_reaches_clean_remote_shell(monkeypatch, tmp_path):
+    """SSH must carry delegated-child lineage into a clean remote shell."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
+
+    marker = DELEGATED_CHILD_ENV_MARKER
+    env = SSHEnvironment.__new__(SSHEnvironment)
+    env.cwd = str(tmp_path)
+    env.timeout = 30
+    env._profile_scoped_passthrough = False
+    env._snapshot_passthrough_names = set()
+    env._snapshot_path = str(tmp_path / "snapshot.sh")
+    env._cwd_file = str(tmp_path / "cwd.txt")
+    env._cwd_marker = "__HERMES_CWD_ssh_marker__"
+    env._snapshot_ready = True
+    env._build_ssh_command = lambda extra_args=None: ["ssh", "fake-remote"]
+    (tmp_path / "snapshot.sh").write_text("", encoding="utf-8")
+    captured: list[list[str]] = []
+
+    def _run_clean_remote(cmd: list[str], stdin_data=None):
+        captured.append(list(cmd))
+        remote_script = shlex.split(cmd[-1])[0]
+        return subprocess.Popen(
+            ["bash", "-c", remote_script],
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={
+                "HOME": str(tmp_path),
+                "LANG": "C.UTF-8",
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            },
+        )
+
+    monkeypatch.setattr(ssh_env, "_popen_bash", _run_clean_remote)
+    command = f'printf "[%s]" "${{{marker}:-absent}}"'
+
+    with delegated_child_context():
+        child_wrapped = env._wrap_command(command, str(tmp_path))
+        child_proc = env._run_bash(child_wrapped)
+        child_stdout, _ = child_proc.communicate(timeout=30)
+    ordinary_wrapped = env._wrap_command(command, str(tmp_path))
+    ordinary_proc = env._run_bash(ordinary_wrapped)
+    ordinary_stdout, _ = ordinary_proc.communicate(timeout=30)
+
+    child_output = child_stdout.split(env._cwd_marker, 1)[0].strip()
+    ordinary_output = ordinary_stdout.split(env._cwd_marker, 1)[0].strip()
+    assert child_proc.returncode == 0
+    assert child_output == "[1]"
+    assert f"export {marker}=1" in child_wrapped
+    assert ordinary_proc.returncode == 0
+    assert ordinary_output == "[absent]"
+    assert f"export {marker}=1" not in ordinary_wrapped
+    assert marker not in (tmp_path / "snapshot.sh").read_text(encoding="utf-8")
+    assert len(captured) == 2
 
 
 def _setup_ssh_env(monkeypatch, persistent: bool):

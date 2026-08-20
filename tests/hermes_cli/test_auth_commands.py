@@ -521,6 +521,64 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     assert entries[0]["priority"] == 0
 
 
+def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    now = time.time()
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "suppressed_sources": {"anthropic": ["claude_code", "hermes_pkce"]},
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "test-anthropic-key-primary",
+                        "last_status": "exhausted",
+                        "last_status_at": now,
+                        "last_error_code": 429,
+                        "last_error_reason": "rate_limit_error",
+                        "last_error_message": "Rate limit reached",
+                        "last_error_reset_at": now + 3600,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth_commands import auth_reset_command
+
+    assert load_pool("anthropic").has_available() is False
+
+    class _Args:
+        provider = "anthropic"
+
+    auth_reset_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "Reset status" in out
+
+    payload = json.loads(
+        (tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8")
+    )
+    entry = payload["credential_pool"]["anthropic"][0]
+    assert entry["last_status"] is None
+    assert entry["last_status_at"] is None
+    assert entry["last_error_code"] is None
+    assert entry["last_error_reason"] is None
+    assert entry["last_error_message"] is None
+    assert entry["last_error_reset_at"] is None
+
+    selected = load_pool("anthropic").select()
+    assert selected is not None
+    assert selected.id == "cred-1"
+
+
 def test_auth_remove_codex_migrates_legacy_dict_suppression(tmp_path, monkeypatch):
     """Removing a Codex credential must tolerate legacy dict suppression data."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

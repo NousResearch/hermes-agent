@@ -1717,6 +1717,7 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    reset_status_ids: Optional[Iterable[str]] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -1734,9 +1735,13 @@ def write_credential_pool(
     snapshot cannot erase a cooldown/quarantine another process just wrote.
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
-    merge does not resurrect them from the on-disk copy.
+    merge does not resurrect them from the on-disk copy. Pass
+    ``reset_status_ids`` when an operator explicitly cleared credential status;
+    those entries bypass cooldown merging so the write cannot resurrect the
+    exact state being reset.
     """
     removed = {rid for rid in (removed_ids or ()) if rid}
+    status_resets = {rid for rid in (reset_status_ids or ()) if rid}
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
@@ -1761,8 +1766,15 @@ def write_credential_pool(
             if isinstance(entry, dict) and entry.get("id")
         }
         merged: List[Dict[str, Any]] = [
-            _merge_disk_cooldown_state(
-                entry, existing_by_id.get(entry.get("id")), provider_id
+            (
+                entry
+                if (
+                    entry.get("id") in status_resets
+                    and all(entry.get(field) is None for field in _POOL_STATUS_FIELDS)
+                )
+                else _merge_disk_cooldown_state(
+                    entry, existing_by_id.get(entry.get("id")), provider_id
+                )
             )
             if isinstance(entry, dict)
             else entry

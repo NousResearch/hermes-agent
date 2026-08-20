@@ -256,12 +256,17 @@ class TestWebSearchTavily:
             assert result["data"]["web"][0]["title"] == "Result"
 
     def test_search_keyless_dispatch(self):
+        """Keyless Tavily routes through the ring; pinned tavily starts at
+        tavily and the ring searcher sends the keyless headers."""
+        from plugins.web import keyless_mcp
+
         mock_response = _ok_response({
             "results": [{"title": "Result", "url": "https://r.com", "content": "desc"}]
         })
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
-             patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post, \
+             patch.object(keyless_mcp, "_vendor_pinned", lambda n: n == "tavily"), \
+             patch("requests.post", return_value=mock_response) as mock_post, \
              patch("tools.interrupt.is_interrupted", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
             from tools.web_tools import web_search_tool

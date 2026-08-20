@@ -168,36 +168,40 @@ _LEGACY_PREFERENCE = (
 
 # Keyless free-tier walk — strictly LAST-resort, tried only after the
 # availability-filtered legacy walk finds nothing (i.e. the user has zero
-# web credentials and no importable ddgs). These providers expose public
-# anonymous MCP endpoints (see plugins/web/keyless_mcp.py). Like opencode,
-# unpinned keyless traffic is split 50/50 between Exa and Parallel per
-# process (see _keyless_preference()); an explicit `hermes tools` pick
-# (web.backend / web.<capability>_backend) bypasses this walk entirely.
+# web credentials and no importable ddgs). All five vendors expose public
+# anonymous free tiers (see plugins/web/keyless_mcp.py). Unpinned keyless
+# traffic round-robins across the ring per request (the ring cursor lives
+# in keyless_mcp; an explicit `hermes tools` pick bypasses this walk
+# entirely, and rate-limited requests fail over to the next ring vendor).
 # Disable the tier with ``web.keyless_fallback: false``.
 _KEYLESS_PREFERENCE = (
     "exa",
     "parallel",
+    "tavily",
+    "firecrawl",
+    "keenable",
 )
 
 
 def _keyless_preference() -> tuple:
-    """Return the keyless walk order, split 50/50 per process.
+    """Return the keyless walk order for resolution.
 
-    Mirrors opencode's session-checksum A/B split between Exa and
-    Parallel: the per-process random session id (also used as Parallel's
-    free-tier rate-limit token) picks which vendor goes first, so keyless
-    load spreads evenly across both free tiers fleet-wide while staying
-    stable within one process. The runner-up stays in the walk as a
-    fallback if the first isn't registered. Explicit user selection never
-    reaches this function — configured names resolve in step 1.
+    Delegates the entry-vendor choice to the ring cursor in
+    :mod:`plugins.web.keyless_mcp` (round-robin per request, seeded by the
+    per-process random session id) so resolution and dispatch agree on
+    which vendor a fresh install starts at. The remaining vendors follow
+    in ring order as fallbacks for registration gaps.
     """
     try:
-        from plugins.web.keyless_mcp import _SESSION_ID
+        from plugins.web.keyless_mcp import _KEYLESS_RING, _ring_cursor
 
-        if int(_SESSION_ID, 16) % 2:
-            return ("parallel", "exa")
-    except Exception as exc:  # noqa: BLE001 — split is best-effort
-        logger.debug("keyless 50/50 split unavailable: %s", exc)
+        start = _ring_cursor % len(_KEYLESS_RING)
+        return tuple(
+            _KEYLESS_RING[(start + i) % len(_KEYLESS_RING)]
+            for i in range(len(_KEYLESS_RING))
+        )
+    except Exception as exc:  # noqa: BLE001 — ring optional in stripped envs
+        logger.debug("keyless ring order unavailable: %s", exc)
     return _KEYLESS_PREFERENCE
 
 

@@ -102,6 +102,7 @@ vi.mock('@/store/gateway', async () => {
 const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile } = await import('@/hermes')
+
 const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
   await import('@/store/gateway')
 

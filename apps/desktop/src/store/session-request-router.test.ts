@@ -178,6 +178,7 @@ describe('requestForSessionProfile', () => {
       method,
       params
     }))
+
     const controller = new AbortController()
 
     await requestForSessionProfile(

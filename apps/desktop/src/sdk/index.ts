@@ -571,11 +571,13 @@ export const host = {
     const profile = (options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
     const expectHistory = options.expectHistory ?? false
+
     const plan = planPluginOpenSession({
       activeProfile: $activeGatewayProfile.get(),
       keepAllProfilesScope: options.keepAllProfilesScope,
       profile
     })
+
     // Wake-path phase timings. Logged ONLY on a hydration timeout (bridged
     // into desktop.log via the renderer-console tap), so a support bundle
     // pinpoints WHERE the budget went — profile activation vs hydration —

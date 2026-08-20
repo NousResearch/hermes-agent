@@ -232,6 +232,12 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        # Google only issues refresh tokens when offline access is requested.
+        # Re-consent upgrades grants previously created without it.
+        issuer = str(disco.get("issuer") or self._issuer).rstrip("/")
+        if issuer == "https://accounts.google.com":
+            params["access_type"] = "offline"
+            params["prompt"] = "consent"
         redirect_url = (
             f"{disco['authorization_endpoint']}?{urllib.parse.urlencode(params)}"
         )

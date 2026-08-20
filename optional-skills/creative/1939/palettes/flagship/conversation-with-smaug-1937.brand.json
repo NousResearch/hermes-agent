@@ -1,0 +1,205 @@
+{
+  "name": "Smaug",
+  "slug": "conversation-with-smaug-1937",
+  "year": 1937,
+  "collection": "1939-flagship",
+  "source": "Conversation with Smaug",
+  "source_type": "illustration",
+  "roles": {
+    "Background": {
+      "hex": "#4F4741",
+      "tints": [
+        "#786F69",
+        "#786F69",
+        "#716862",
+        "#605751",
+        "#4F4741",
+        "#453D37",
+        "#37302A",
+        "#2B231E",
+        "#1F1812",
+        "#130D08"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#C4C1B6",
+      "tints": [
+        "#FBF8ED",
+        "#EEEBE0",
+        "#DEDBD0",
+        "#D0CEC3",
+        "#C4C1B6",
+        "#DEDBD0",
+        "#AAA79D",
+        "#98958B",
+        "#868379",
+        "#747168"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#345971",
+      "tints": [
+        "#9AC2DE",
+        "#7BA3BD",
+        "#5E849E",
+        "#41677F",
+        "#345971",
+        "#345971",
+        "#0F354C",
+        "#002136",
+        "#000E21",
+        "#00000E"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#F56E62",
+      "tints": [
+        "#FFC9B8",
+        "#FFC0AF",
+        "#FF9F8F",
+        "#FF7E71",
+        "#F56E62",
+        "#C13E36",
+        "#C7443B",
+        "#AC2824",
+        "#900008",
+        "#750000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#AB5C45",
+      "tints": [
+        "#FFC8AE",
+        "#FFA88F",
+        "#DD8970",
+        "#BB6A53",
+        "#AB5C45",
+        "#8B3F29",
+        "#813620",
+        "#681F07",
+        "#4F0400",
+        "#370000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#FFE16A",
+      "tints": [
+        "#FFF27B",
+        "#FFF27B",
+        "#FFF27B",
+        "#FFF27B",
+        "#FFE16A",
+        "#E6B739",
+        "#E5B739",
+        "#CB9D08",
+        "#B28400",
+        "#986C00"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#6893B2",
+      "tints": [
+        "#D1FFFF",
+        "#B5E2FF",
+        "#96C2E2",
+        "#77A2C2",
+        "#6893B2",
+        "#638DAC",
+        "#436C89",
+        "#2C5572",
+        "#163F5A",
+        "#002A44"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#695C50",
+      "tints": [
+        "#9E9184",
+        "#8F8275",
+        "#807367",
+        "#74675B",
+        "#695C50",
+        "#726559",
+        "#5F5247",
+        "#5F5247",
+        "#5F5247",
+        "#5F5247"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.22,
+    "highlight_on_background": 3.16,
+    "highlight_on_canvas": 1.6,
+    "support_on_background": 1.88,
+    "chart1_on_background": 7.03,
+    "chart2_on_background": 2.77,
+    "canvas_on_background": 5.04
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00475
+}

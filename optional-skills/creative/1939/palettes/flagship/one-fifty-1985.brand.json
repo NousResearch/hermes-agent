@@ -1,0 +1,205 @@
+{
+  "name": "$1.50",
+  "slug": "one-fifty-1985",
+  "year": 1985,
+  "collection": "1939-flagship",
+  "source": "Costco $1.50 Hot Dog",
+  "source_type": "photograph",
+  "roles": {
+    "Background": {
+      "hex": "#281F1D",
+      "tints": [
+        "#746966",
+        "#5D5250",
+        "#473D3A",
+        "#372D2B",
+        "#281F1D",
+        "#1F1614",
+        "#130B09",
+        "#080302",
+        "#020000",
+        "#010000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#CDCAC0",
+      "tints": [
+        "#FBF8ED",
+        "#F8F5EA",
+        "#E8E5DA",
+        "#DAD7CD",
+        "#CDCAC0",
+        "#E8E5DA",
+        "#B4B1A6",
+        "#A19E94",
+        "#8F8C82",
+        "#7D7A70"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#1641A2",
+      "tints": [
+        "#79AFFF",
+        "#5C8FF6",
+        "#3F6FD3",
+        "#2351B2",
+        "#1641A2",
+        "#1642A2",
+        "#001778",
+        "#00005F",
+        "#070046",
+        "#0A002E"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#FF5D4B",
+      "tints": [
+        "#FFAE95",
+        "#FFAE95",
+        "#FF937B",
+        "#FF6F5B",
+        "#FF5D4B",
+        "#EE1710",
+        "#F5241A",
+        "#D70000",
+        "#BA0000",
+        "#9C0000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#815781",
+      "tints": [
+        "#F1C1F0",
+        "#D0A2CF",
+        "#B083AF",
+        "#906590",
+        "#815781",
+        "#643C64",
+        "#5B335B",
+        "#441F45",
+        "#2F0A30",
+        "#1A001C"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#EFC054",
+      "tints": [
+        "#FFF187",
+        "#FFF187",
+        "#FFF187",
+        "#FFD066",
+        "#EFC054",
+        "#C59721",
+        "#C49721",
+        "#AB7E00",
+        "#926600",
+        "#7A4F00"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#111A67",
+      "tints": [
+        "#6882D7",
+        "#4C64B6",
+        "#324695",
+        "#1B2976",
+        "#111A67",
+        "#0E1461",
+        "#050040",
+        "#060029",
+        "#050021",
+        "#050021"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#5A658C",
+      "tints": [
+        "#8E9AC5",
+        "#7F8BB5",
+        "#717CA5",
+        "#657099",
+        "#5A658C",
+        "#636E96",
+        "#485279",
+        "#485279",
+        "#485279",
+        "#485279"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.77,
+    "highlight_on_background": 5.31,
+    "highlight_on_canvas": 1.85,
+    "support_on_background": 2.77,
+    "chart1_on_background": 9.46,
+    "chart2_on_background": 1.05,
+    "canvas_on_background": 9.82
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00911
+}

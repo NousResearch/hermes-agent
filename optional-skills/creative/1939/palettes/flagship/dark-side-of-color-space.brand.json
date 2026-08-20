@@ -1,0 +1,205 @@
+{
+  "name": "Dark Side of Color Space",
+  "slug": "dark-side-of-color-space",
+  "year": 1973,
+  "collection": "1939-flagship",
+  "source": "The Dark Side of the Moon",
+  "source_type": "album_art",
+  "roles": {
+    "Background": {
+      "hex": "#0A0A0A",
+      "tints": [
+        "#4E4E4E",
+        "#393939",
+        "#252525",
+        "#171717",
+        "#0A0A0A",
+        "#040404",
+        "#000000",
+        "#000000",
+        "#000000",
+        "#000000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#C2C3C4",
+      "tints": [
+        "#F7F8F9",
+        "#ECEDEE",
+        "#DCDDDE",
+        "#CECFD0",
+        "#C2C3C4",
+        "#DCDDDE",
+        "#A8A9AA",
+        "#969798",
+        "#848586",
+        "#727374"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#3C4444",
+      "tints": [
+        "#A0A9A9",
+        "#828A8A",
+        "#646D6D",
+        "#495151",
+        "#3C4444",
+        "#3C4444",
+        "#1B2323",
+        "#091010",
+        "#000202",
+        "#000000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#F45CD0",
+      "tints": [
+        "#FFB6FF",
+        "#FFB0FF",
+        "#FF8FFF",
+        "#FF6DE0",
+        "#F45CD0",
+        "#C024A0",
+        "#C62CA6",
+        "#AB008D",
+        "#8F0074",
+        "#74005D"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#CD5448",
+      "tints": [
+        "#FFC4B3",
+        "#FFA393",
+        "#FF8375",
+        "#DE6357",
+        "#CD5448",
+        "#AB342C",
+        "#A02923",
+        "#850508",
+        "#6B0000",
+        "#500000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#FFFB4D",
+      "tints": [
+        "#FFFB4D",
+        "#FFFB4D",
+        "#FFFB4D",
+        "#FFFB4D",
+        "#FFFB4D",
+        "#F3DC14",
+        "#F2DC14",
+        "#D8C100",
+        "#BFA700",
+        "#A68E00"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#82BFCE",
+      "tints": [
+        "#C5FFFF",
+        "#C5FFFF",
+        "#B1F0FF",
+        "#91CFDE",
+        "#82BFCE",
+        "#7CB9C8",
+        "#5A96A5",
+        "#427E8C",
+        "#296674",
+        "#0B505D"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#6B8AA2",
+      "tints": [
+        "#A1C2DC",
+        "#92B3CB",
+        "#82A3BB",
+        "#7697AF",
+        "#6B8AA2",
+        "#7494AC",
+        "#54738A",
+        "#436178",
+        "#3A596F",
+        "#3A596F"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.98,
+    "highlight_on_background": 6.87,
+    "highlight_on_canvas": 1.63,
+    "support_on_background": 4.67,
+    "chart1_on_background": 18.06,
+    "chart2_on_background": 9.7,
+    "canvas_on_background": 11.22
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.01418
+}

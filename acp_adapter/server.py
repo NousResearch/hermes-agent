@@ -2158,7 +2158,10 @@ class HermesACPAgent(acp.Agent):
                     exc_info=True,
                 )
 
-        final_response = result.get("final_response", "")
+        final_response = result.get("final_response")
+        if final_response is None:
+            # Interrupted turns can legitimately complete without assistant text.
+            final_response = ""
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         interrupted = bool(result.get("interrupted")) or cancelled
         # Hermes' local "waiting for model response" interrupt status is metadata,

@@ -33,6 +33,7 @@ import difflib
 import hashlib
 import json
 import unicodedata
+import fnmatch
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
@@ -364,8 +365,13 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
+# Tools whose stderr is merged into the search stream by ``_exec``. ``find``
+# joins on the BusyBox grep path, where it supplies the eligible file set.
+_SEARCH_TOOL_PREFIXES = ("rg: ", "grep: ", "find: ")
+
+
 def _split_tool_diagnostics(output: str) -> tuple[str, str]:
-    """Separate rg/grep diagnostic lines from real match output.
+    """Separate rg/grep/find diagnostic lines from real match output.
 
     ``_exec`` runs commands with ``stderr=subprocess.STDOUT``, so error and
     warning text from ``rg``/``grep`` is interleaved with match lines in a
@@ -391,12 +397,13 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
             continue
         # Tool diagnostics always carry the "<tool>: " prefix (e.g.
         # "rg: <file>: Permission denied", "grep: Invalid regular
-        # expression", "rg: regex parse error:"). Check this first: a real
-        # match path can legitimately contain "-<digit>" (e.g. a tmp dir like
-        # ".../pytest-686/..."), which the shape regex would otherwise treat
-        # as a match line.
+        # expression", "find: <dir>: Permission denied"). Check this first: a
+        # real match path can legitimately contain "-<digit>" (e.g. a tmp dir
+        # like ".../pytest-686/..."), which the shape regex would otherwise
+        # treat as a match line -- and so would a diagnostic naming such a
+        # path, which is why the prefix check cannot be skipped.
         stripped = line.lstrip()
-        if stripped.startswith("rg: ") or stripped.startswith("grep: "):
+        if any(stripped.startswith(prefix) for prefix in _SEARCH_TOOL_PREFIXES):
             diagnostics.append(line)
             continue
         # Otherwise classify by output shape. rg's regex-parse-error block
@@ -964,7 +971,7 @@ class ShellFileOperations(FileOperations):
             result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
-    
+
     def _sample_file_bytes(self, path: str, length: int = 1000):
         """Fetch the first ``length`` raw bytes of a file through the terminal.
 
@@ -1030,6 +1037,45 @@ class ShellFileOperations(FileOperations):
                 except UnicodeDecodeError:
                     pass
             return True
+
+    # Markers emitted by BusyBox grep when it hits a GNU-only flag or is
+    # invoked with --help. Used both to feature-detect grep and to recognise
+    # a broken grep invocation that leaked its usage text into stdout.
+    _BUSYBOX_GREP_MARKERS = (
+        "unrecognized option",
+        "BusyBox v",
+        "Usage: grep",
+    )
+
+    def _grep_supports_exclude_dir(self) -> bool:
+        """Whether the host ``grep`` understands GNU-only flags.
+
+        ``--exclude-dir`` / ``--include`` are GNU extensions; BusyBox grep
+        (Alpine, musl, embedded) rejects them. Probe once and cache the
+        result in ``_command_cache`` under a sentinel key.
+        """
+        key = "__grep_gnu__"
+        if key not in self._command_cache:
+            # GNU grep exits quietly (no match); BusyBox prints usage text.
+            result = self._exec("grep --exclude-dir=.git -q xyzzy /dev/null 2>&1")
+            out = result.stdout or ""
+            self._command_cache[key] = not any(
+                marker in out for marker in self._BUSYBOX_GREP_MARKERS
+            )
+        return self._command_cache[key]
+
+    def _grep_output_looks_broken(self, diagnostics: str) -> bool:
+        """True if grep's diagnostics are a leaked usage/error message.
+
+        Defence in depth: a ``grep | head`` pipeline masks grep's non-zero
+        exit code, so a rejected flag would otherwise be parsed as results.
+
+        Takes the diagnostics half of :func:`_split_tool_diagnostics`, never
+        raw stdout — the markers are ordinary strings that a real match can
+        legitimately contain (a README quoting ``Usage: grep``).
+        """
+        head = (diagnostics or "")[:400]
+        return any(marker in head for marker in self._BUSYBOX_GREP_MARKERS)
 
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """
@@ -3274,55 +3320,101 @@ class ShellFileOperations(FileOperations):
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
-        """Fallback search using grep."""
+        """Fallback search using grep.
+
+        GNU grep gets the fast ``--exclude-dir`` / ``--include`` path. BusyBox
+        grep (Alpine, musl, embedded) rejects those flags, so on those hosts we
+        run a plain recursive grep and reproduce the flag behaviour in Python:
+        hidden-directory exclusion and ``file_glob`` filtering.
+        """
+        gnu_grep = self._grep_supports_exclude_dir()
+
         cmd_parts = ["grep", "-rnHE"]  # -H forces filenames; -E matches rg regex behavior
-        
+
+
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
-        cmd_parts.append("--exclude-dir='.*'")
-        
+        # GNU-only flag -- on BusyBox this is filtered in Python below.
+        if gnu_grep:
+            cmd_parts.append("--exclude-dir='.*'")
+
         # Add context if requested
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
-        
-        # Add file pattern filter (must be quoted to prevent shell expansion)
-        if file_glob:
+
+        # Add file pattern filter (must be quoted to prevent shell expansion).
+        # GNU-only flag -- on BusyBox this is filtered in Python below.
+        if file_glob and gnu_grep:
             cmd_parts.extend(["--include", self._escape_shell_arg(file_glob)])
-        
+
         # Output mode handling
         if output_mode == "files_only":
             cmd_parts.append("-l")
         elif output_mode == "count":
             cmd_parts.append("-c")
-        
-        # Add pattern and path. grep applies --exclude-dir to the command-line
-        # search root too, so passing the default relative root ``.`` causes
-        # ``.*`` to exclude the entire search. Anchor relative paths at the
-        # shell's live cwd; quoting $PWD separately keeps user paths escaped
-        # while working across local, container, and remote backends.
+
+        # Add pattern
         cmd_parts.append(self._escape_shell_arg(pattern))
-        is_absolute = path.startswith(("/", "\\\\")) or bool(
-            re.match(r"^[A-Za-z]:[\\/]", path)
-        )
-        if is_absolute:
-            search_root = self._escape_shell_arg(path)
+
+        # Target selection. GNU grep walks the tree itself. BusyBox grep can't
+        # express --exclude-dir/--include, so `find` supplies the eligible file
+        # set instead — the same approach `_search_files` takes, but with a
+        # narrower hidden-path scope: it prunes `-path '*/.*'` (hidden files
+        # too), while --exclude-dir parity requires pruning hidden
+        # *directories* only. Restricting the search up front — rather than
+        # post-filtering in Python — is what keeps the output cap from being
+        # spent on rows that are dropped afterwards, which would starve later
+        # eligible matches.
+        if gnu_grep:
+            # grep applies --exclude-dir to the command-line search root too,
+            # so passing the default relative root ``.`` causes ``.*`` to
+            # exclude the entire search. Anchor relative paths at the shell's
+            # live cwd; quoting $PWD separately keeps user paths escaped while
+            # working across local, container, and remote backends. The
+            # BusyBox branch below doesn't need this — `find` prunes with
+            # `.?*`, which already spares a `.` root.
+            is_absolute = path.startswith(("/", "\\\\")) or bool(
+                re.match(r"^[A-Za-z]:[\\/]", path)
+            )
+            if is_absolute:
+                grep_root = self._escape_shell_arg(path)
+            else:
+                relative_path = path[2:] if path.startswith("./") else path
+                grep_root = '"$PWD"'
+                if relative_path not in {"", "."}:
+                    grep_root += f"/{self._escape_shell_arg(relative_path)}"
+            cmd_parts.append(grep_root)
+            search_expr = " ".join(cmd_parts)
         else:
-            relative_path = path[2:] if path.startswith("./") else path
-            search_root = '"$PWD"'
-            if relative_path not in {"", "."}:
-                search_root += f"/{self._escape_shell_arg(relative_path)}"
-        cmd_parts.append(search_root)
-        
-        # Fetch generously so we can compute total before slicing
+            search_root = Path(path)
+            has_hidden_path_ancestor = any(
+                part not in {".", ".."} and part.startswith(".")
+                for part in search_root.parts
+            )
+            find_parts = ["find", self._escape_shell_arg(path)]
+            if not has_hidden_path_ancestor:
+                # Prune hidden *directories* only, mirroring --exclude-dir.
+                # `.?*` rather than `.*` so the `.`/`..` entries — and a `.`
+                # search root — are not pruned along with them. `-a` binds
+                # tighter than `-o`, so no parentheses are needed (BusyBox
+                # find builds may omit paren support).
+                find_parts.extend(["-type d", "-name '.?*'", "-prune", "-o"])
+            find_parts.append("-type f")
+            if file_glob:
+                find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
+            find_parts.append("-exec")
+            search_expr = " ".join(find_parts + cmd_parts + ["{}", "+"])
+
+        # Fetch generously so we can compute total before slicing. Both paths
+        # cap an already-eligible stream, so neither needs a pad.
         fetch_limit = limit + offset + (200 if context > 0 else 0)
-        cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
-        
+
         # `set -o pipefail` so grep's exit status propagates through `| head`
         # (without it the pipeline reports head's 0, masking grep's error 2).
         # A truncating head makes grep exit 141 (SIGPIPE) on an otherwise
-        # successful search; the strict `== 2` guard below ignores that, so
+        # successful search; the hard-error guard below ignores that, so
         # pipefail does not turn truncated results into false errors.
-        cmd = "set -o pipefail; " + " ".join(cmd_parts)
+        cmd = f"set -o pipefail; {search_expr} | head -n {fetch_limit}"
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
 
@@ -3332,17 +3424,65 @@ class ShellFileOperations(FileOperations):
         # clean message.
         diagnostics, payload = _split_tool_diagnostics(stdout)
 
+        # Defence in depth: a BusyBox grep handed a GNU-only flag leaks its
+        # usage text into stdout. We gate those flags on `gnu_grep` above so
+        # it shouldn't happen, but detect a leaked usage message directly in
+        # case a `grep | head` pipeline masked grep's exit code. Scan the
+        # diagnostics only: a match whose *content* quotes "Usage: grep" is a
+        # legitimate result, not a broken invocation.
+        if self._grep_output_looks_broken(diagnostics):
+            return SearchResult(
+                error="Search failed: grep rejected the search command "
+                      "(incompatible grep build).",
+                total_count=0,
+            )
+
         # grep exit codes: 0=matches found, 1=no matches, 2=error. grep
         # returns 2 on partial errors (e.g. an unreadable file) even when
-        # other files matched, so only surface an error when exit==2 AND no
-        # usable match payload remains.
-        if result.exit_code == 2 and not payload.strip():
+        # other files matched, so only surface an error when the failure is
+        # hard AND no usable match payload remains. `find -exec ... +`
+        # collapses grep's status (POSIX only promises "non-zero"), so the
+        # BusyBox path keys on diagnostics instead: a pure no-match exits
+        # non-zero with an empty diagnostics stream.
+        if gnu_grep:
+            is_hard_error = result.exit_code == 2
+        else:
+            is_hard_error = result.exit_code != 0 and bool(diagnostics.strip())
+
+        if is_hard_error and not payload.strip():
             error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
 
         stdout = payload
+
+        # BusyBox path: reproduce --exclude-dir / --include in Python.
+        # Drop matches under hidden directories (unless the search root is
+        # itself hidden) and enforce file_glob on the basename.
+        def _keep_path(file_path: str) -> bool:
+            if gnu_grep:
+                return True
+            if file_glob and not fnmatch.fnmatch(
+                os.path.basename(file_path), file_glob
+            ):
+                return False
+            try:
+                rel_parts = Path(file_path).resolve().relative_to(
+                    Path(path).resolve()
+                ).parts
+            except ValueError:
+                rel_parts = Path(file_path).parts
+            # Directory components only: `--exclude-dir='.*'` prunes hidden
+            # *directories*, so GNU grep still returns `src/.env`. Testing the
+            # basename here would make that result backend-dependent.
+            return not any(
+                part not in {".", ".."} and part.startswith(".")
+                for part in rel_parts[:-1]
+            )
+
         if output_mode == "files_only":
-            all_files = [f for f in stdout.strip().split('\n') if f]
+            all_files = [
+                f for f in stdout.strip().split('\n') if f and _keep_path(f)
+            ]
             total = len(all_files)
             page = all_files[offset:offset + limit]
             return SearchResult(
@@ -3351,7 +3491,7 @@ class ShellFileOperations(FileOperations):
                 truncated=bool(limit_reason),
                 limit_reason=limit_reason,
             )
-        
+
         elif output_mode == "count":
             counts = {}
             for line in stdout.strip().split('\n'):
@@ -3359,16 +3499,18 @@ class ShellFileOperations(FileOperations):
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
                         try:
-                            counts[parts[0]] = int(parts[1])
+                            count_val = int(parts[1])
                         except ValueError:
-                            pass
+                            continue
+                        if _keep_path(parts[0]):
+                            counts[parts[0]] = count_val
             return SearchResult(
                 counts=counts,
                 total_count=sum(counts.values()),
                 truncated=bool(limit_reason),
                 limit_reason=limit_reason,
             )
-        
+
         else:
             # grep match lines:   "file:lineno:content" (colon)
             # grep context lines: "file-lineno-content"  (dash)
@@ -3383,23 +3525,25 @@ class ShellFileOperations(FileOperations):
                 
                 m = _match_re.match(line)
                 if m:
-                    matches.append(SearchMatch(
-                        path=(m.group(1) or '') + m.group(2),
-                        line_number=int(m.group(3)),
-                        content=m.group(4)[:500]
-                    ))
+                    match_path = (m.group(1) or '') + m.group(2)
+                    if _keep_path(match_path):
+                        matches.append(SearchMatch(
+                            path=match_path,
+                            line_number=int(m.group(3)),
+                            content=m.group(4)[:500]
+                        ))
                     continue
-                
+
                 if context > 0:
                     parsed = _parse_search_context_line(line)
-                    if parsed:
+                    if parsed and _keep_path(parsed[0]):
                         matches.append(SearchMatch(
                             path=parsed[0],
                             line_number=parsed[1],
                             content=parsed[2][:500]
                         ))
 
-            
+
             total = len(matches)
             page = matches[offset:offset + limit]
             return SearchResult(

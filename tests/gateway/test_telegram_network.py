@@ -16,6 +16,9 @@ initialize — #87015), then fall through to the dual-stack hostname last,
 and "stick" to whichever path works.
 """
 
+import gzip
+import json
+
 import httpx
 import pytest
 
@@ -437,6 +440,19 @@ def _doh_answer(*ips: str) -> dict:
     return {"Answer": [{"type": 1, "data": ip} for ip in ips]}
 
 
+class _TrackedDoHStream(httpx.AsyncByteStream):
+    def __init__(self, body: bytes):
+        self.body = body
+        self.yielded = 0
+
+    async def __aiter__(self):
+        self.yielded += 1
+        yield self.body
+
+    async def aclose(self):
+        pass
+
+
 class FakeDoHClient:
     """Mock httpx.AsyncClient for DoH queries."""
 
@@ -449,17 +465,38 @@ class FakeDoHClient:
     def _make_response(status, body, url):
         """Build an httpx.Response with a request attached (needed for raise_for_status)."""
         request = httpx.Request("GET", url)
-        return httpx.Response(status, json=body, request=request)
+        raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+        return httpx.Response(
+            status,
+            headers={"Content-Type": "application/json"},
+            request=request,
+            stream=_TrackedDoHStream(raw),
+        )
 
-    async def get(self, url, *, params=None, headers=None, **kwargs):
-        self.requests_made.append({"url": url, "params": params, "headers": headers})
+    class _Stream:
+        def __init__(self, response):
+            self.response = response
+
+        async def __aenter__(self):
+            return self.response
+
+        async def __aexit__(self, *args):
+            await self.response.aclose()
+
+    def stream(self, method, url, *, params=None, headers=None, **kwargs):
+        self.requests_made.append({
+            "method": method,
+            "url": url,
+            "params": params,
+            "headers": headers,
+        })
         for prefix, action in self._responses.items():
             if url.startswith(prefix):
                 if isinstance(action, Exception):
                     raise action
                 status, body = action
-                return self._make_response(status, body, url)
-        return self._make_response(200, {}, url)
+                return self._Stream(self._make_response(status, body, url))
+        return self._Stream(self._make_response(200, {}, url))
 
     async def __aenter__(self):
         return self
@@ -521,6 +558,48 @@ class TestDiscoverFallbackIps:
 
         ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.167.220"]
+
+    @pytest.mark.asyncio
+    async def test_oversized_provider_does_not_block_healthy_provider(self, monkeypatch):
+        oversized = b"x" * (tnet._DOH_JSON_MAX_BYTES + 1)
+        self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, oversized),
+            "https://cloudflare-dns.com": (200, _doh_answer("149.154.167.222")),
+        }, system_dns_ips=["149.154.166.110"])
+
+        assert await tnet.discover_fallback_ips() == ["149.154.167.222"]
+
+    @pytest.mark.asyncio
+    async def test_gzip_bomb_is_rejected_without_decoding(self):
+        expanded = json.dumps(
+            {"Answer": [], "padding": "x" * (tnet._DOH_JSON_MAX_BYTES + 1)}
+        ).encode()
+        compressed = gzip.compress(expanded, compresslevel=9)
+        assert len(compressed) < 2_000
+        assert len(expanded) > tnet._DOH_JSON_MAX_BYTES
+
+        stream = _TrackedDoHStream(compressed)
+        requests: list[httpx.Request] = []
+
+        async def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                headers={"Content-Encoding": "gzip"},
+                request=request,
+                stream=stream,
+            )
+
+        provider = {
+            "url": "https://doh.invalid/query",
+            "params": {},
+            "headers": {},
+        }
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            assert await tnet._query_doh_provider(client, provider) == []
+
+        assert stream.yielded == 0
+        assert requests[0].headers["Accept-Encoding"] == "identity"
 
 
     @pytest.mark.asyncio

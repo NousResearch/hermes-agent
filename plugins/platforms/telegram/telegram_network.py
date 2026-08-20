@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import socket
 from typing import Iterable, Optional
 
 import httpx
+
+from agent.httpx_bounded_response import read_httpx_response_bytes_limited
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,7 @@ _TELEGRAM_API_HOST = "api.telegram.org"
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
 _DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
+_DOH_JSON_MAX_BYTES = 1_048_576
 
 _DOH_PROVIDERS: list[dict] = [
     {
@@ -249,11 +253,19 @@ async def _query_doh_provider(
 ) -> list[str]:
     """Query one DoH provider and return A-record IPs."""
     try:
-        resp = await client.get(
-            provider["url"], params=provider["params"], headers=provider["headers"]
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        headers = httpx.Headers(provider["headers"])
+        headers["Accept-Encoding"] = "identity"
+        async with client.stream(
+            "GET",
+            provider["url"],
+            params=provider["params"],
+            headers=headers,
+        ) as resp:
+            resp.raise_for_status()
+            body = await read_httpx_response_bytes_limited(
+                resp, max_bytes=_DOH_JSON_MAX_BYTES
+            )
+        data = json.loads(body) if body else {}
         ips: list[str] = []
         for answer in data.get("Answer", []):
             if answer.get("type") != 1:  # A record

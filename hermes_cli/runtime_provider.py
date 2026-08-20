@@ -867,12 +867,16 @@ def has_named_custom_provider(requested_provider: str) -> bool:
         return False
 
 
-def find_custom_provider_identity(base_url: str) -> Optional[str]:
+def find_custom_provider_identity(
+    base_url: str,
+    provider_key: Optional[str] = None,
+) -> Optional[str]:
     """Map an endpoint URL back to its canonical ``custom:<name>`` menu key.
 
-    Returns the ``custom:<normalized-name>`` slug of the first ``providers:``
-    / ``custom_providers:`` entry whose base_url matches, or ``None`` when no
-    entry owns the URL.
+    Returns the ``custom:<normalized-name>`` slug of the matching ``providers:``
+    / ``custom_providers:`` entry, or ``None`` when no entry owns the URL.
+    When ``provider_key`` is supplied, require that exact new-style config key
+    as well as the endpoint match so providers sharing one URL stay distinct.
 
     Session persistence stores the agent's *resolved* provider, and for every
     named custom endpoint that is the literal string ``"custom"`` — the entry
@@ -893,6 +897,25 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
 
     providers = config.get("providers")
     if isinstance(providers, dict):
+        requested_key = str(provider_key or "").strip().lower()
+        if requested_key:
+            from hermes_cli.config import is_provider_enabled
+
+            for ep_name, entry in providers.items():
+                if str(ep_name).strip().lower() != requested_key:
+                    continue
+                if not isinstance(entry, dict) or not is_provider_enabled(entry):
+                    return None
+                entry_url = (
+                    entry.get("api")
+                    or entry.get("url")
+                    or entry.get("base_url")
+                    or ""
+                )
+                if _normalize_base_url_for_match(entry_url) == target:
+                    return custom_provider_slug(str(ep_name), str(ep_name))
+                return None
+            return None
         for ep_name, entry in providers.items():
             if not isinstance(entry, dict):
                 continue

@@ -939,6 +939,40 @@ def sync_credential_pool_entry_id(agent) -> None:
         agent._credential_pool_entry_id = None
 
 
+def _credential_pool_provider_key(provider: str, base_url: str = "") -> str:
+    """Return the pool identity for a live runtime provider.
+
+    New-style ``providers.<name>`` entries intentionally keep their bare config
+    key as the runtime provider, while credential pools use ``custom:<name>``.
+    Canonicalize only configured custom providers so built-in provider pools
+    retain their exact identities.
+    """
+    provider_norm = str(provider or "").strip().lower()
+    if not provider_norm or provider_norm.startswith("custom:"):
+        return provider_norm
+
+    try:
+        from hermes_cli.runtime_provider import (
+            find_custom_provider_identity,
+            has_named_custom_provider,
+        )
+        from hermes_cli.providers import custom_provider_slug
+
+        if provider_norm == "custom":
+            return find_custom_provider_identity(base_url) or provider_norm
+        if has_named_custom_provider(provider_norm):
+            expected_identity = custom_provider_slug(provider_norm, provider_norm)
+            endpoint_identity = find_custom_provider_identity(
+                base_url,
+                provider_norm,
+            )
+            if endpoint_identity == expected_identity:
+                return expected_identity
+    except Exception:
+        pass
+    return provider_norm
+
+
 def recover_with_credential_pool(
     agent,
     *,
@@ -989,34 +1023,17 @@ def recover_with_credential_pool(
     # because swapping the pool's credentials would set base_url/api_key
     # without fixing the empty provider field, leaving the agent in a
     # corrupted state (provider="" model="").
-    if pool_provider and current_provider != pool_provider:
-        # Custom endpoints use two naming conventions for the SAME provider:
-        # the agent carries the generic ``custom`` label while the pool is
-        # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
-        # compare treats them as a mismatch and skips recovery for every
-        # custom-provider user — 401s/429s then burn the full retry cycle
-        # with no rotation or refresh. Accept the pair as matching only when
-        # the agent's CURRENT base_url actually resolves to this pool key,
-        # so a fallback provider (or a different custom endpoint) still
-        # triggers the guard.
-        _custom_match = False
-        if current_provider == "custom" and pool_provider.startswith("custom:"):
-            try:
-                from agent.credential_pool import get_custom_provider_pool_key
-                _agent_base = (getattr(agent, "base_url", "") or "").strip()
-                _custom_match = bool(_agent_base) and (
-                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
-                    == pool_provider
-                )
-            except Exception:
-                _custom_match = False
-        if not _custom_match:
-            _ra().logger.warning(
-                "Credential pool provider mismatch: pool=%s, agent=%s — "
-                "skipping pool mutation to avoid cross-provider contamination",
-                pool_provider, current_provider,
-            )
-            return False, has_retried_429
+    current_pool_provider = _credential_pool_provider_key(
+        current_provider,
+        str(getattr(agent, "base_url", "") or ""),
+    )
+    if pool_provider and current_pool_provider != pool_provider:
+        _ra().logger.warning(
+            "Credential pool provider mismatch: pool=%s, agent=%s — "
+            "skipping pool mutation to avoid cross-provider contamination",
+            pool_provider, current_provider,
+        )
+        return False, has_retried_429
 
     # Attribute the failure to the API key the agent actually dispatched the
     # request with, not to pool.current(). The current() pointer is shared,
@@ -2732,19 +2749,28 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # logged + swallowed: the switch itself must still complete.
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
-        if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
+        pool_provider = _credential_pool_provider_key(new_provider, agent.base_url)
+        current_pool = getattr(agent, "_credential_pool", None)
+        current_pool_provider = str(
+            getattr(current_pool, "provider", "") or ""
+        ).strip().lower()
+        if (
+            old_norm != new_norm
+            or current_pool is None
+            or current_pool_provider != pool_provider
+        ):
             # A pool bound to the old provider is worse than no pool: the
             # recovery guard rejects it and every later 401/429 skips rotation.
             agent._credential_pool = None
             agent._credential_pool_entry_id = None
             try:
                 from agent.credential_pool import load_pool
-                agent._credential_pool = load_pool(new_provider)
+                agent._credential_pool = load_pool(pool_provider)
             except Exception as _pool_exc:  # noqa: BLE001
                 logger.warning(
                     "switch_model: credential pool reload failed for %s (%s); "
                     "continuing without pool rotation this turn",
-                    new_provider, _pool_exc,
+                    pool_provider, _pool_exc,
                 )
         # ── Build new client ──
         if (new_provider or "").strip().lower() == "moa":

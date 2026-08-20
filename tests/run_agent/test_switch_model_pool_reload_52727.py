@@ -110,6 +110,75 @@ class TestSwitchModelReloadsCredentialPool:
         # load_pool MUST have been called with the new provider.
         load_pool_mock.assert_called_once_with("groq")
 
+    def test_switch_to_named_custom_provider_uses_canonical_pool_key(self):
+        """New-style ``providers.<name>`` entries expose a bare runtime id,
+        but their credential pool is scoped under ``custom:<name>``."""
+        old_pool = _make_pool("openrouter")
+        custom_pool = _make_pool("custom:sensenova")
+        agent = _make_agent("openrouter", "old-model", old_pool)
+
+        with (
+            patch(
+                "hermes_cli.runtime_provider.load_config",
+                return_value={
+                    "providers": {
+                        "sensenova": {
+                            "name": "SenseNova",
+                            "api": "https://token.sensenova.cn/v1",
+                        }
+                    }
+                },
+            ),
+            patch(
+                "agent.credential_pool.load_pool",
+                return_value=custom_pool,
+            ) as load_pool_mock,
+        ):
+            switch_model(
+                agent,
+                new_model="deepseek-v4-flash",
+                new_provider="sensenova",
+                api_key="sensenova-key",
+                base_url="https://token.sensenova.cn/v1",
+                api_mode="chat_completions",
+            )
+
+        assert agent._credential_pool is custom_pool
+        load_pool_mock.assert_called_once_with("custom:sensenova")
+
+    def test_switch_disambiguates_named_custom_providers_sharing_endpoint(self):
+        old_pool = _make_pool("openrouter")
+        custom_pool = _make_pool("custom:second")
+        agent = _make_agent("openrouter", "old-model", old_pool)
+        shared_url = "https://shared.example/v1"
+
+        with (
+            patch(
+                "hermes_cli.runtime_provider.load_config",
+                return_value={
+                    "providers": {
+                        "first": {"name": "First", "api": shared_url},
+                        "second": {"name": "Second", "api": shared_url},
+                    }
+                },
+            ),
+            patch(
+                "agent.credential_pool.load_pool",
+                return_value=custom_pool,
+            ) as load_pool_mock,
+        ):
+            switch_model(
+                agent,
+                new_model="second-model",
+                new_provider="second",
+                api_key="second-key",
+                base_url=shared_url,
+                api_mode="chat_completions",
+            )
+
+        assert agent._credential_pool is custom_pool
+        load_pool_mock.assert_called_once_with("custom:second")
+
     def test_switch_to_same_provider_does_not_reload_pool(self):
         """Re-selecting the current provider must NOT churn the pool reference."""
         existing_pool = _make_pool("opencode-go")

@@ -36,6 +36,88 @@ def _agent(provider, base_url, pool_provider):
 
 class TestCustomPoolMismatchGuard:
 
+    def test_named_custom_runtime_identity_can_recover_matching_pool(self):
+        """A new-style ``providers.<name>`` runtime keeps the bare config key,
+        while its pool uses the endpoint-scoped ``custom:<name>`` identity."""
+        agent, pool = _agent(
+            "sensenova", "https://token.sensenova.cn/v1", "custom:sensenova"
+        )
+        pool.current.return_value = None
+
+        with patch(
+            "hermes_cli.runtime_provider.load_config",
+            return_value={
+                "providers": {
+                    "sensenova": {
+                        "name": "SenseNova",
+                        "api": "https://token.sensenova.cn/v1",
+                    }
+                }
+            },
+        ):
+            recovered, retried = recover_with_credential_pool(
+                agent,
+                status_code=429,
+                has_retried_429=False,
+                classified_reason=FailoverReason.rate_limit,
+            )
+
+        assert recovered is False
+        assert retried is True
+        pool.current.assert_called_once_with()
+
+    def test_named_custom_runtime_identity_with_other_endpoint_is_guarded(self):
+        agent, pool = _agent(
+            "sensenova", "https://other-endpoint.example/v1", "custom:sensenova"
+        )
+
+        with patch(
+            "hermes_cli.runtime_provider.load_config",
+            return_value={
+                "providers": {
+                    "sensenova": {
+                        "name": "SenseNova",
+                        "api": "https://token.sensenova.cn/v1",
+                    }
+                }
+            },
+        ):
+            recovered, retried = recover_with_credential_pool(
+                agent,
+                status_code=429,
+                has_retried_429=False,
+                classified_reason=FailoverReason.rate_limit,
+            )
+
+        assert recovered is False
+        assert retried is False
+        assert not pool.method_calls
+
+    def test_named_custom_recovery_disambiguates_shared_endpoint(self):
+        shared_url = "https://shared.example/v1"
+        agent, pool = _agent("second", shared_url, "custom:second")
+        pool.current.return_value = None
+
+        with patch(
+            "hermes_cli.runtime_provider.load_config",
+            return_value={
+                "providers": {
+                    "first": {"name": "First", "api": shared_url},
+                    "second": {"name": "Second", "api": shared_url},
+                }
+            },
+        ):
+            recovered, retried = recover_with_credential_pool(
+                agent,
+                status_code=429,
+                has_retried_429=False,
+                classified_reason=FailoverReason.rate_limit,
+            )
+
+        assert recovered is False
+        assert retried is True
+        pool.current.assert_called_once_with()
+
     def test_unrelated_custom_pool_still_guarded(self):
         """agent=custom pointed at a DIFFERENT endpoint than the pool's
         custom provider must still skip pool mutation."""

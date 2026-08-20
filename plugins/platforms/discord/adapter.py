@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import traceback
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 from urllib.parse import quote, urljoin
@@ -575,6 +575,18 @@ class VoiceReceiver:
     MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
+    PCM_FRAME_DURATION = 0.02  # Discord/Opus frame duration in seconds
+    # A deliberately permissive floor (~-50 dBFS) excludes decoded comfort
+    # noise/silence without depending on the user's microphone route or gain.
+    ACTIVE_FRAME_RMS = 100
+    # Require sustained energy so a join-time pop/click cannot reach STT.
+    MIN_ACTIVE_SPEECH_DURATION = 0.1
+    # Post-NaCl payloads held per SSRC that DAVE cannot attribute yet:
+    # ~2 s of 20 ms frames.  Long enough to cover a late SPEAKING event,
+    # short enough that a phantom SSRC cannot grow without bound.
+    DAVE_PENDING_MAX_FRAMES = 100
+    # Forget a held ring whose SSRC has stayed quiet this long.
+    DAVE_PENDING_TTL = 5.0
 
     def __init__(self, voice_client, allowed_user_ids: set = None):
         self._vc = voice_client
@@ -596,6 +608,15 @@ class VoiceReceiver:
 
         # Opus decoder per SSRC (each user needs own decoder state)
         self._decoders: Dict[int, object] = {}
+
+        # Post-NaCl payloads held while DAVE is active and the sender SSRC
+        # is neither mapped nor inferable.  (monotonic_ts, payload) entries
+        # so the ring can expire on its own; replayed once the SSRC resolves.
+        self._dave_pending: Dict[int, deque] = {}
+
+        # Content-free counters: frames evicted from a full pending ring
+        # because the sender SSRC stayed unresolved (no user IDs).
+        self._dave_unresolved_drops: Dict[int, int] = {}
 
         # Pause flag: don't capture while bot is playing TTS
         self._paused = False
@@ -631,6 +652,8 @@ class VoiceReceiver:
             self._last_packet_time.clear()
             self._decoders.clear()
             self._ssrc_to_user.clear()
+            self._dave_pending.clear()
+            self._dave_unresolved_drops.clear()
         logger.info("VoiceReceiver stopped")
 
     def pause(self):
@@ -664,7 +687,7 @@ class VoiceReceiver:
                 ssrc = data.get("ssrc")
                 user_id = data.get("user_id")
                 if ssrc and user_id:
-                    logger.info("SPEAKING event: ssrc=%d -> user=%s", ssrc, user_id)
+                    logger.info("SPEAKING event: ssrc=%d mapped to user", ssrc)
                     receiver_self.map_ssrc(int(ssrc), int(user_id))
             if original_hook:
                 await original_hook(ws, msg)
@@ -790,27 +813,113 @@ class VoiceReceiver:
         if self._dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
+            if not user_id:
+                # SPEAKING can lag or be missing after a (re)join.  Resolve
+                # the sender now, at packet time: DAVE needs the sender's
+                # user_id to pick the right ratchet, and waiting for the
+                # silence flush is too late for the first utterance.
+                # NOTE: _infer_user_for_ssrc writes _ssrc_to_user without
+                # the lock — a single GIL-atomic dict store, idempotent,
+                # and _on_packet runs on the single SocketReader thread.
+                user_id = self._infer_user_for_ssrc(ssrc)
             if user_id:
-                try:
-                    import davey
-                    decrypted = self._dave_session.decrypt(
-                        user_id, davey.MediaType.audio, decrypted
-                    )
-                except Exception as e:
-                    # Unencrypted passthrough — use NaCl-decrypted data as-is
-                    if "Unencrypted" not in str(e):
-                        if self._packet_debug_count <= 10:
-                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
-                        return
-            # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
-            # Opus decode directly — audio may be in passthrough mode.
-            # Buffer will get a user_id when SPEAKING event arrives later.
+                # Resolved — reset the eviction counter so the dict only
+                # ever holds currently-unresolved SSRCs.
+                self._dave_unresolved_drops.pop(ssrc, None)
+                # Anything held for this SSRC predates the current packet:
+                # replay it first so the utterance keeps its temporal order.
+                self._replay_dave_pending(ssrc, user_id)
+                plaintext = self._dave_decrypt(ssrc, user_id, decrypted)
+                if plaintext is None:
+                    return
+                decrypted = plaintext
+            else:
+                # Sender unknown and not inferable.  Two payload shapes reach
+                # here and they cannot be told apart without the sender's
+                # ratchet: DAVE ciphertext, which must never reach the Opus
+                # decoder (it buffers noise that survives the energy gate and
+                # corrupts the first utterance — live repro), and unencrypted
+                # passthrough, which is legitimate audio we must not lose.
+                # So hold the bytes in a bounded ring instead of dropping
+                # them, and replay once SPEAKING/inference resolves the SSRC.
+                # No decoder is created, so a later mapping starts clean.
+                self._hold_dave_payload(ssrc, decrypted)
+                return
 
         # --- Opus decode -> PCM ---
+        self._decode_into_buffer(ssrc, decrypted)
+
+    def _dave_decrypt(self, ssrc: int, user_id: int, payload: bytes) -> Optional[bytes]:
+        """DAVE-decrypt one payload on behalf of a resolved sender.
+
+        Returns the Opus payload to decode, or None when the packet must be
+        discarded.  An "Unencrypted" failure is passthrough, not corruption:
+        the NaCl-decrypted bytes are already the Opus payload and are used
+        as-is.
+        """
+        session = self._dave_session
+        if session is None:
+            # Callers only reach here inside `if self._dave_session:`.  Stay
+            # explicit anyway: without a session the payload is already the
+            # Opus payload, and swallowing an AttributeError below would
+            # drop the packet with no usable diagnostic.
+            return payload
+        try:
+            import davey
+            return session.decrypt(
+                user_id, davey.MediaType.audio, payload
+            )
+        except Exception as e:
+            if "Unencrypted" in str(e):
+                return payload
+            if self._packet_debug_count <= 10:
+                logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
+            return None
+
+    def _hold_dave_payload(self, ssrc: int, payload: bytes):
+        """Hold a post-NaCl payload from an as-yet unattributable SSRC."""
+        with self._lock:
+            pending = self._dave_pending.get(ssrc)
+            if pending is None:
+                pending = deque(maxlen=self.DAVE_PENDING_MAX_FRAMES)
+                self._dave_pending[ssrc] = pending
+            evicting = len(pending) == pending.maxlen
+            pending.append((time.monotonic(), payload))
+        if evicting:
+            # The ring was full, so appending discarded the oldest frame.
+            # Count it: these are the only voice bytes this path can lose.
+            drops = self._dave_unresolved_drops.get(ssrc, 0) + 1
+            self._dave_unresolved_drops[ssrc] = drops
+            if drops == 1 or drops % 50 == 0:
+                logger.info(
+                    "DAVE active with unresolved sender: hold ring full, "
+                    "evicting oldest frames (ssrc=%d evicted=%d)",
+                    ssrc, drops,
+                )
+
+    def _replay_dave_pending(self, ssrc: int, user_id: int):
+        """Decode payloads held while this SSRC was unresolved, in order."""
+        with self._lock:
+            pending = self._dave_pending.pop(ssrc, None)
+        if not pending:
+            return
+        logger.info(
+            "Replaying held voice payloads after SSRC resolution "
+            "(ssrc=%d frames=%d)",
+            ssrc, len(pending),
+        )
+        for _held_at, payload in pending:
+            plaintext = self._dave_decrypt(ssrc, user_id, payload)
+            if plaintext is None:
+                continue
+            self._decode_into_buffer(ssrc, plaintext)
+
+    def _decode_into_buffer(self, ssrc: int, payload: bytes):
+        """Opus-decode one payload and append the PCM to the SSRC buffer."""
         try:
             if ssrc not in self._decoders:
                 self._decoders[ssrc] = discord.opus.Decoder()
-            pcm = self._decoders[ssrc].decode(decrypted)
+            pcm = self._decoders[ssrc].decode(payload)
             with self._lock:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
@@ -822,34 +931,106 @@ class VoiceReceiver:
                 ssrc,
                 e,
             )
-            return
 
     # ------------------------------------------------------------------
     # Silence detection
     # ------------------------------------------------------------------
 
+    @classmethod
+    def _pcm_speech_activity(cls, pcm_data: bytes) -> Tuple[bool, dict]:
+        """Classify structurally valid PCM using sustained frame energy.
+
+        This is not language/transcript filtering.  It rejects only segments
+        that contain too little acoustic activity to be speech, which prevents
+        OpenAI/Whisper from inventing text for Discord's join-time Opus comfort
+        frames while preserving the first real utterance regardless of order.
+
+        "Sustained" means contiguous: the gate requires
+        MIN_ACTIVE_SPEECH_DURATION of *uninterrupted* active frames.  The
+        streak resets on every inactive frame, so scattered pops totalling
+        the same active time never pass.
+        """
+        bytes_per_frame = int(
+            cls.SAMPLE_RATE * cls.CHANNELS * 2 * cls.PCM_FRAME_DURATION
+        )
+        active_frames = 0
+        contiguous_active_frames = 0
+        max_contiguous_active_frames = 0
+        total_frames = 0
+        peak = 0
+        sum_squares = 0
+        sample_count = 0
+
+        for offset in range(0, len(pcm_data), bytes_per_frame):
+            frame = pcm_data[offset:offset + bytes_per_frame]
+            # Ignore an odd trailing byte rather than treating malformed PCM
+            # as activity. pcm_to_wav uses the same signed 16-bit LE shape.
+            frame = frame[:len(frame) - (len(frame) % 2)]
+            if not frame:
+                continue
+            frame_sum_squares = 0
+            frame_samples = 0
+            for (sample,) in struct.iter_unpack("<h", frame):
+                magnitude = abs(sample)
+                peak = max(peak, magnitude)
+                square = sample * sample
+                frame_sum_squares += square
+                sum_squares += square
+                frame_samples += 1
+                sample_count += 1
+            total_frames += 1
+            frame_rms = math.sqrt(frame_sum_squares / frame_samples)
+            if frame_rms >= cls.ACTIVE_FRAME_RMS:
+                active_frames += 1
+                contiguous_active_frames += 1
+                max_contiguous_active_frames = max(
+                    max_contiguous_active_frames, contiguous_active_frames
+                )
+            else:
+                contiguous_active_frames = 0
+
+        required_active_frames = math.ceil(
+            cls.MIN_ACTIVE_SPEECH_DURATION / cls.PCM_FRAME_DURATION
+        )
+        total_rms = (
+            math.sqrt(sum_squares / sample_count) if sample_count else 0.0
+        )
+        stats = {
+            "duration_ms": round(total_frames * cls.PCM_FRAME_DURATION * 1000),
+            "active_ms": round(active_frames * cls.PCM_FRAME_DURATION * 1000),
+            "rms": round(total_rms),
+            "peak": peak,
+        }
+        return max_contiguous_active_frames >= required_active_frames, stats
+
     def _infer_user_for_ssrc(self, ssrc: int) -> int:
         """Try to infer user_id for an unmapped SSRC.
 
         When the bot rejoins a voice channel, Discord may not resend
-        SPEAKING events for users already speaking.  If exactly one
-        allowed user is in the channel, map the SSRC to them.
+        SPEAKING events for users already speaking.  Inference is only
+        safe when exactly one non-bot human is in the channel: with two
+        or more humans an unknown SSRC cannot be attributed without
+        risking cross-user misattribution — allowlist filtering does NOT
+        make it safe, because a non-allowed user's packets still arrive.
         """
         try:
             channel = self._vc.channel
             if not channel:
                 return 0
             bot_id = self._vc.user.id if self._vc.user else 0
+            humans = [m for m in channel.members if m.id != bot_id]
+            if len(humans) != 1:
+                return 0
+            member = humans[0]
             allowed = self._allowed_user_ids
-            candidates = [
-                m.id for m in channel.members
-                if m.id != bot_id and (not allowed or str(m.id) in allowed)
-            ]
-            if len(candidates) == 1:
-                uid = candidates[0]
-                self._ssrc_to_user[ssrc] = uid
-                logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
-                return uid
+            if allowed and str(member.id) not in allowed:
+                return 0
+            uid = member.id
+            self._ssrc_to_user[ssrc] = uid
+            logger.info(
+                "Auto-mapped ssrc=%d to sole channel member", ssrc,
+            )
+            return uid
         except Exception:
             pass
         return 0
@@ -860,6 +1041,13 @@ class VoiceReceiver:
         completed = []
 
         with self._lock:
+            # Forget held payloads whose SSRC went quiet without ever being
+            # attributed — otherwise a phantom SSRC holds its ring until stop().
+            for ssrc, pending in list(self._dave_pending.items()):
+                if not pending or now - pending[-1][0] >= self.DAVE_PENDING_TTL:
+                    self._dave_pending.pop(ssrc, None)
+                    self._dave_unresolved_drops.pop(ssrc, None)
+
             ssrc_user_map = dict(self._ssrc_to_user)
             ssrc_list = list(self._buffers.keys())
 
@@ -871,13 +1059,27 @@ class VoiceReceiver:
                 buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
 
                 if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
+                    pcm_data = bytes(buf)
+                    has_speech, stats = self._pcm_speech_activity(pcm_data)
+                    if not has_speech:
+                        logger.info(
+                            "Discarded non-speech PCM segment "
+                            "(duration_ms=%d active_ms=%d rms=%d peak=%d)",
+                            stats["duration_ms"],
+                            stats["active_ms"],
+                            stats["rms"],
+                            stats["peak"],
+                        )
+                        self._buffers[ssrc] = bytearray()
+                        self._last_packet_time.pop(ssrc, None)
+                        continue
                     user_id = ssrc_user_map.get(ssrc, 0)
                     if not user_id:
                         # SSRC not mapped (SPEAKING event missing after bot rejoin).
                         # Infer from allowed users in the voice channel.
                         user_id = self._infer_user_for_ssrc(ssrc)
                     if user_id:
-                        completed.append((user_id, bytes(buf)))
+                        completed.append((user_id, pcm_data))
                     self._buffers[ssrc] = bytearray()
                     self._last_packet_time.pop(ssrc, None)
                 elif silence_duration >= self.SILENCE_THRESHOLD * 2:
@@ -897,11 +1099,27 @@ class VoiceReceiver:
                 # 48kHz, 16-bit, stereo = 192000 bytes/sec
                 buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
                 if buf_duration >= self.MIN_SPEECH_DURATION:
+                    pcm_data = bytes(buf)
+                    # Same acoustic gate as the silence-flush path: a leave-time
+                    # flush must not carry comfort noise/join artifacts to STT.
+                    has_speech, stats = self._pcm_speech_activity(pcm_data)
+                    if not has_speech:
+                        logger.info(
+                            "Discarded non-speech PCM segment "
+                            "(duration_ms=%d active_ms=%d rms=%d peak=%d)",
+                            stats["duration_ms"],
+                            stats["active_ms"],
+                            stats["rms"],
+                            stats["peak"],
+                        )
+                        self._buffers.pop(ssrc, None)
+                        self._last_packet_time.pop(ssrc, None)
+                        continue
                     user_id = ssrc_user_map.get(ssrc, 0)
                     if not user_id:
                         user_id = self._infer_user_for_ssrc(ssrc)
                     if user_id:
-                        completed.append((user_id, bytes(buf)))
+                        completed.append((user_id, pcm_data))
                 self._buffers.pop(ssrc, None)
                 self._last_packet_time.pop(ssrc, None)
 

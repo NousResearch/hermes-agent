@@ -3757,7 +3757,7 @@ class TestCompressionSkipsWhenSummaryWouldInflate:
         # Pass current_tokens above threshold to trigger the guard.
         msgs = self._make_short_messages(8)
         original = msgs[:]
-        result = c.compress(msgs, current_tokens=110_000)
+        result = c.compress(msgs, current_tokens=160_000)
 
         # Must return unchanged (guard short-circuits before any mutation)
         assert result == original
@@ -3786,7 +3786,7 @@ class TestCompressionSkipsWhenSummaryWouldInflate:
             msgs.append({"role": role, "content": f"Message {i}: " + "x" * 580})
 
         with patch.object(c, "_generate_summary", return_value="Mock summary"):
-            result = c.compress(msgs, current_tokens=110_000)
+            result = c.compress(msgs, current_tokens=160_000)
 
         # Should have compressed (messages were dropped)
         assert len(result) < len(msgs)

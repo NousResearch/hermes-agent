@@ -6825,7 +6825,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     except subprocess.CalledProcessError as e:
         if _m()._is_windows():
-            print(f"⚠ Git update failed: {e}")
+            # The CalledProcessError can originate from the git pull OR from
+            # the Python-dependency install (``uv pip install -e .[all]``).
+            # Historically the message said "Git update failed" even when git
+            # had already succeeded and the failure was in the dependency
+            # sync — making the log useless for diagnosis (#85840).
+            print(f"⚠ Update step failed: {e}")
+            if getattr(e, "stderr", None):
+                stderr_tail = str(e.stderr)[-2000:]
+                if stderr_tail.strip():
+                    print("  Installer output (tail):")
+                    for line in stderr_tail.strip().splitlines()[-20:]:
+                        print(f"    {line}")
             print("→ Falling back to ZIP download...")
             print()
             desktop_build_ok = _update_via_zip(
@@ -6836,6 +6847,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _write_gateway_update_exit_code(desktop_build_ok)
         else:
             print(f"✗ Update failed: {e}")
+            if getattr(e, "stderr", None):
+                stderr_tail = str(e.stderr)[-2000:]
+                if stderr_tail.strip():
+                    print("  Installer output (tail):")
+                    for line in stderr_tail.strip().splitlines()[-20:]:
+                        print(f"    {line}")
             sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---

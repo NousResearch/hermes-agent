@@ -682,7 +682,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               />
             ))}
             {visibleJobs.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">{c.emptyTitleSearch}</p>
+              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+                {query.trim() ? c.emptyTitleSearch : c.emptyTitleNew}
+              </p>
             )}
             <PanelAddButton label={c.newCron} onClick={() => setEditor({ mode: 'create' })} />
             {visibleBlueprints.length > 0 && (
@@ -711,8 +713,13 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               onPauseResume={() => void handlePauseResume(selectedJob)}
               onTrigger={() => void handleTrigger(selectedJob)}
             />
-          ) : (
+          ) : query.trim() ? (
+            // A search with no selected job: search-flavored copy is right.
             <PanelEmpty description={c.emptyDescSearch} icon="search" />
+          ) : (
+            // No selection and no search — "Try a broader search query" here
+            // just confused people staring at an empty panel with zero jobs.
+            <PanelEmpty description={c.emptyDescNew} icon="watch" title={jobs.length === 0 ? c.emptyTitleNew : undefined} />
           )}
         </PanelBody>
       )}

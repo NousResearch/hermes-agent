@@ -175,6 +175,67 @@ async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter)
 
 
 @pytest.mark.asyncio
+async def test_auto_registers_missing_gateway_commands(adapter):
+    """Commands in COMMAND_REGISTRY that aren't explicitly registered should
+    be auto-registered by the dynamic catch-all block."""
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands.keys())
+
+    # These commands are gateway-available but were not in the original
+    # hardcoded registration list — they should be auto-registered.
+    # `clear` is a gateway-only alias of `new` and must surface natively.
+    expected_auto = {"clear", "debug", "yolo", "profile"}
+    for name in expected_auto:
+        assert name in tree_names, f"/{name} should be auto-registered on Discord"
+
+    # Regular aliases stay typed-only: the auto-loop must NOT turn them into
+    # native slashes, matching Telegram/Slack canonical-only menus and the
+    # internal-alias hiding in gateway_help_lines(). Only gateway_aliases
+    # (e.g. clear) surface. `bg` (alias of background) and the internal
+    # underscore variant `reload_mcp` are not hardcoded native commands, so
+    # their absence proves the auto-loop stays scoped to gateway_aliases.
+    assert "bg" not in tree_names, "/bg is a regular alias — must stay typed-only"
+    assert "reload_mcp" not in tree_names, "internal underscore alias must not surface"
+
+
+@pytest.mark.asyncio
+async def test_auto_registered_command_dispatches_correctly(adapter):
+    """Auto-registered commands should dispatch via _run_simple_slash."""
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    # /debug has no args — test parameterless dispatch
+    debug_cmd = adapter._client.tree.commands["debug"]
+    interaction = SimpleNamespace()
+    adapter._run_simple_slash.reset_mock()
+    await debug_cmd.callback(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/debug")
+
+    clear_cmd = adapter._client.tree.commands["clear"]
+    adapter._run_simple_slash.reset_mock()
+    await clear_cmd.callback(interaction, args="next")
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/clear next")
+
+
+@pytest.mark.asyncio
+async def test_auto_registered_command_with_args(adapter):
+    """Auto-registered commands with args_hint should accept an optional args param."""
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    # /branch has args_hint="[name]" — test dispatch with args
+    branch_cmd = adapter._client.tree.commands["branch"]
+    interaction = SimpleNamespace()
+    adapter._run_simple_slash.reset_mock()
+    await branch_cmd.callback(interaction, args="my-branch")
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/branch my-branch"
+    )
+
+
+@pytest.mark.asyncio
 async def test_auto_registers_plugin_commands_for_discord(adapter):
     """Plugin slash commands should appear as native Discord app commands."""
     adapter._run_simple_slash = AsyncMock()
@@ -600,5 +661,4 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         f"Flat /skill command payload is ~{len(payload)} bytes — the whole "
         f"point of this design is that it stays small regardless of skill count"
     )
-
 

@@ -9,8 +9,10 @@ Direct-SQL setup is used to construct that state deterministically.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 from pathlib import Path
+import time
 
 import pytest
 
@@ -61,6 +63,105 @@ def test_promote_stuck_todo_succeeds(conn):
     ok, err = kb.promote_task(conn, child, actor="tester")
     assert ok and err is None
     assert kb.get_task(conn, child).status == "ready"
+    kinds = [event.kind for event in kb.list_events(conn, child)]
+    assert kinds[-1] == "promoted_manual"
+    assert "unblocked" not in kinds
+
+
+def test_promote_dry_run_does_not_mutate_status_or_events(conn):
+    child, _ = _stuck_todo(conn, parents_done=True)
+    before = [event.kind for event in kb.list_events(conn, child)]
+
+    ok, err = kb.promote_task(conn, child, actor="tester", dry_run=True)
+
+    assert ok and err is None
+    assert kb.get_task(conn, child).status == "todo"
+    assert [event.kind for event in kb.list_events(conn, child)] == before
+
+
+def test_promote_refuses_open_parent_unless_forced(conn):
+    child, _ = _stuck_todo(conn, parents_done=False)
+    before = [event.kind for event in kb.list_events(conn, child)]
+
+    ok, err = kb.promote_task(conn, child, actor="tester")
+
+    assert ok is False
+    assert "unsatisfied parent dependencies" in (err or "")
+    assert kb.get_task(conn, child).status == "todo"
+    assert [event.kind for event in kb.list_events(conn, child)] == before
+
+    ok, err = kb.promote_task(conn, child, actor="tester", force=True)
+    assert ok and err is None
+    assert kb.get_task(conn, child).status == "ready"
+
+
+def test_promote_blocked_task_explicitly_releases_sticky_block(conn):
+    tid = kb.create_task(conn, title="blocked then promoted", assignee="worker")
+    assert kb.claim_task(conn, tid)
+    run_id = kb.get_task(conn, tid).current_run_id
+    assert kb.block_task(
+        conn,
+        tid,
+        reason="review-required: operator release needed",
+        expected_run_id=run_id,
+    )
+
+    ok, err = kb.promote_task(conn, tid, actor="operator")
+
+    assert ok and err is None
+    assert kb.get_task(conn, tid).status == "ready"
+    kinds = [event.kind for event in kb.list_events(conn, tid)]
+    assert kinds[-3:] == ["blocked", "unblocked", "promoted_manual"]
+
+    # A later recoverable circuit-breaker block must not inherit the earlier
+    # operator block after manual promotion explicitly released it.
+    conn.execute(
+        "UPDATE tasks SET status='blocked', consecutive_failures=1 "
+        "WHERE id=?",
+        (tid,),
+    )
+    conn.execute(
+        "INSERT INTO task_events (task_id, kind, payload, created_at) "
+        "VALUES (?, 'gave_up', NULL, ?)",
+        (tid, int(time.time())),
+    )
+    conn.commit()
+    assert kb.recompute_ready(conn) == 1
+    assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_promote_reads_status_inside_write_transaction(conn, monkeypatch):
+    tid = kb.create_task(conn, title="racing promotion", assignee="worker")
+    conn.execute("UPDATE tasks SET status='todo' WHERE id=?", (tid,))
+    conn.commit()
+
+    real_write_txn = kb.write_txn
+    injected = False
+
+    @contextmanager
+    def racing_write_txn(connection):
+        nonlocal injected
+        if not injected:
+            injected = True
+            connection.execute(
+                "UPDATE tasks SET status='blocked' WHERE id=?", (tid,),
+            )
+            connection.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'blocked', NULL, ?)",
+                (tid, int(time.time())),
+            )
+            connection.commit()
+        with real_write_txn(connection):
+            yield
+
+    monkeypatch.setattr(kb, "write_txn", racing_write_txn)
+
+    ok, err = kb.promote_task(conn, tid, actor="operator")
+
+    assert ok and err is None
+    kinds = [event.kind for event in kb.list_events(conn, tid)]
+    assert kinds[-3:] == ["blocked", "unblocked", "promoted_manual"]
 
 
 

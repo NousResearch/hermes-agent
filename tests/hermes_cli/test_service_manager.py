@@ -181,6 +181,54 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 
 
 # ---------------------------------------------------------------------------
+# GatewayNotRegisteredError — must not recommend `hermes profile create`
+# for a profile that already exists (issue #78803: split gateway/dashboard
+# deployment). The s6 slot can be missing locally while the profile itself
+# is real — e.g. the dashboard container never registers a local slot
+# (container_boot._is_dashboard_container), or registration was skipped on
+# a non-s6 host. Telling the operator to (re)create an existing profile is
+# actively wrong there.
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_not_registered_error_suggests_profile_create_when_missing() -> None:
+    """Genuinely-missing profile (the common typo case) keeps the original,
+    actionable advice."""
+    from hermes_cli.service_manager import GatewayNotRegisteredError
+
+    err = GatewayNotRegisteredError("typo", profile_exists=False)
+    assert "hermes profile create typo" in str(err)
+
+
+def test_gateway_not_registered_error_does_not_suggest_create_when_profile_exists() -> None:
+    """An existing profile with no local s6 slot must not be told to
+    `profile create` itself — that's impossible for `default` and
+    misleading for any other profile."""
+    from hermes_cli.service_manager import GatewayNotRegisteredError
+
+    err = GatewayNotRegisteredError("default", profile_exists=True)
+    message = str(err)
+    assert "profile create" not in message
+    assert "default" in message
+
+
+def test_run_svc_checks_profile_exists_before_raising(
+    s6_scandir, fake_subprocess_run, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_run_svc` must consult `profiles.profile_exists()` — not just
+    raise the missing-slot error blind — so a real profile without a
+    local slot gets the accurate message end to end, not just when the
+    caller happens to pass `profile_exists=True` by hand."""
+    from hermes_cli.service_manager import GatewayNotRegisteredError, S6ServiceManager
+
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    with pytest.raises(GatewayNotRegisteredError) as excinfo:
+        mgr.start("gateway-default")
+    assert "profile create" not in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # _seed_supervise_skeleton — unit tests
 # ---------------------------------------------------------------------------
 #

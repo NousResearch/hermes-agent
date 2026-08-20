@@ -56,6 +56,22 @@ class TestGetToolset:
         assert ts is not None
         assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
 
+    def test_merges_colliding_mcp_alias_into_builtin_toolset(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="mcp__memory__read_graph",
+            toolset="mcp-memory",
+            schema=_make_schema("mcp__memory__read_graph", "Read graph"),
+            handler=_dummy_handler,
+        )
+        reg.register_toolset_alias("memory", "mcp-memory")
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        tools = resolve_toolset("memory")
+        assert "memory" in tools
+        assert "mcp__memory__read_graph" in tools
+
 
 
 class TestResolveToolset:

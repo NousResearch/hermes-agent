@@ -693,9 +693,17 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
         return toolset if toolset else None
 
     if toolset:
+        registry_toolsets = {name}
+        alias_target = registry.get_toolset_alias_target(name)
+        if alias_target:
+            registry_toolsets.add(alias_target)
         merged_tools = sorted(
-            set(toolset.get("tools", []))
-            | set(registry.get_tool_names_for_toolset(name))
+            set(toolset.get("tools", [])).union(
+                *(
+                    registry.get_tool_names_for_toolset(toolset_name)
+                    for toolset_name in registry_toolsets
+                )
+            )
         )
         return {**toolset, "tools": merged_tools}
 

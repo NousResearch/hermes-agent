@@ -863,7 +863,12 @@ class TestNodeRuntimeNpmResolution:
 
         with (
             patch.object(
-                hm, "_desktop_packaged_executable", side_effect=[packaged_exe, None]
+                hm,
+                "_desktop_packaged_executable",
+                # Third consultation comes from the post-build
+                # _install_rebuilt_desktop_app hook in the successful-build
+                # branch; after a successful rebuild the package exists again.
+                side_effect=[packaged_exe, None, packaged_exe],
             ) as packaged,
             patch.object(hm, "_desktop_dist_exists", return_value=False),
             patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
@@ -877,7 +882,7 @@ class TestNodeRuntimeNpmResolution:
                 had_desktop_app_before_update=had_desktop_app_before_update,
             )
 
-        assert packaged.call_count == 2
+        assert packaged.call_count == 3
         desktop_build.assert_called_once_with(
             [hm.sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
             cwd=PROJECT_ROOT,

@@ -2,6 +2,8 @@
 
 Hermes Agent saves conversation trajectories in ShareGPT-compatible JSONL format
 for use as training data, debugging artifacts, and reinforcement learning datasets.
+For the review-first workflow that turns these trajectories into memory/skill
+proposals and SFT/DPO exports, see [Agent Learning Loop](/developer-guide/agent-learning-loop).
 
 Source files: `agent/trajectory.py`, `run_agent.py` (search for `_save_trajectory`), `batch_runner.py`
 

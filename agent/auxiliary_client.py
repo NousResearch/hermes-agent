@@ -4193,12 +4193,19 @@ def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    terminal_auth_exc: Optional[list] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
     provider and return None so the caller moves on. A capacity error (quota/rate-limit 429, 402,
     connection, route-incompatible model, malformed response) also quarantines and returns None so
     the ordered chain advances to the next configured entry (#106367); other errors raise.
+
+    When ``terminal_auth_exc`` is a list and the candidate is quarantined,
+    the terminal auth exception of THIS physical attempt is appended to it,
+    so a caller whose fallback chain exhausts can propagate the error that
+    belongs to the last physical wire attempt instead of the primary's
+    earlier ``first_err`` (#72636).
 
     ``effective_timeout`` is the task-level deadline; a configured-chain candidate with its own ``timeout``
     entry gets that instead, so a fallback tuned differently from the primary is allowed its own budget
@@ -4237,7 +4244,10 @@ def _call_fallback_candidate_sync(
             _quarantine_fallback_candidate(
                 task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
                 reason=capacity)
+            if terminal_auth_exc is not None:
+                terminal_auth_exc.append(fb_err)
             return None
+        terminal_exc = fb_err
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
         failed_destination = destination
@@ -4246,11 +4256,14 @@ def _call_fallback_candidate_sync(
             try:
                 return _send_recovering(*retry)
             except Exception as retry_err:
+                terminal_exc = retry_err
                 if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
         )
+        if terminal_auth_exc is not None:
+            terminal_auth_exc.append(terminal_exc)
         return None
 
 
@@ -8167,16 +8180,44 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
+        # Terminal auth exception of the most recent quarantined fallback
+        # candidate, if any. When the fallback chain exhausts, the route
+        # snapshot on the caller's side already identifies the LAST physical
+        # fallback attempt; the error propagated must belong to that same
+        # attempt or downstream diagnostics pair one attempt's identity with
+        # a different attempt's failure class (#72636).
+        _swallowed_auth: list = []
+        # Exceptions raised (not swallowed) by a fallback candidate itself. Their
+        # propagation is not a chain exhaustion: the ladder re-raises them as-is,
+        # and they must never be replaced by an earlier candidate's swallowed
+        # terminal error (#72636).
+        _candidate_raise: list = []
+
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
                 return _validate_llm_response(_relay_sync_completion(*args, **kw), task)
             if kind == "retry":
                 return _retry_same_provider_sync(**kw)
-            return _call_fallback_candidate_sync(*args, **kw)
-        return _drive_ladder(
-            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
-            _perform)
+            try:
+                return _call_fallback_candidate_sync(*args, terminal_auth_exc=_swallowed_auth, **kw)
+            except Exception as candidate_err:
+                _candidate_raise.append(candidate_err)
+                raise
+        try:
+            return _drive_ladder(
+                _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
+                _perform)
+        except Exception as exhausted_err:
+            if not _candidate_raise and _swallowed_auth:
+                # The last physical wire attempt was a fallback candidate whose
+                # credential was dead. The route snapshot already identifies that
+                # fallback, so propagate ITS terminal auth error (chained to the
+                # primary origin for context) instead of re-raising the primary's
+                # earlier error — otherwise the compression diagnostic pairs the
+                # fallback's endpoint with the primary's failure class (#72636).
+                raise _swallowed_auth[-1] from first_err
+            raise
 
 
 def _coerce_llm_message(response):

@@ -93,6 +93,27 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
     assert "openrouter.ai" in domains  # comes from the mapping
 
 
+def test_build_proxy_config_does_not_require_token_on_synthetic_connect(tmp_path):
+    """iron-proxy v0.39 must inspect the token after CONNECT MITM.
+
+    A ``require: true`` secrets rule is evaluated against the synthetic,
+    header-less CONNECT and rejects mapped HTTPS requests before the real
+    request can be transformed.
+    """
+
+    cfg = ip.build_proxy_config(
+        mappings=[_sample_mapping("OPENAI_API_KEY")],
+        ca_cert=tmp_path / "ca.crt",
+        ca_key=tmp_path / "ca.key",
+    )
+    secrets = next(
+        transform for transform in cfg["transforms"]
+        if transform["name"] == "secrets"
+    )
+    rule = secrets["config"]["secrets"][0]
+    assert rule["replace"]["require"] is False
+
+
 # ---------------------------------------------------------------------------
 # Default SSRF deny list (regression: docs promise cloud metadata is denied)
 # ---------------------------------------------------------------------------

@@ -17,7 +17,6 @@ import { openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { $archivedSessions } from '@/store/sidebar-archive'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -83,6 +82,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { $archivedSessions } from '@/store/sidebar-archive'
 import { dropTranscriptTail, loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'

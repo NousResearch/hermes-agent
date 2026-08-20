@@ -1251,6 +1251,50 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }
 
+# Extend PROVIDER_GROUPS with groups declared by provider profiles via
+# ``ProviderProfile.group = (group_id, label, description)``.  A plugin cannot
+# touch the dict above at import time — plugin modules execute inside
+# ``list_providers()`` in the auto-extend block, which runs before this
+# statement — so grouping is collected here instead.  Naming an existing
+# group_id joins that group (keeping its label/description); a new id creates
+# an entry.  Membership is restricted to slugs actually in CANONICAL_PROVIDERS,
+# and declaration order is preserved.  DISPLAY ONLY, exactly like the literals
+# above.
+def fold_profile_groups(profiles, canonical_slugs, groups) -> None:
+    """Merge ``ProviderProfile.group`` declarations into ``groups`` in place.
+
+    ``profiles`` is any iterable of provider profiles, ``canonical_slugs`` the
+    set of slugs the pickers actually render, and ``groups`` a ``PROVIDER_GROUPS``
+    shaped dict.  Malformed declarations are skipped rather than raised on: a
+    third-party plugin must not be able to break the picker.
+    """
+    for profile in profiles:
+        group = getattr(profile, "group", ()) or ()
+        slug = getattr(profile, "name", "")
+        if len(group) < 2 or slug not in canonical_slugs:
+            continue
+        gid = str(group[0] or "").strip()
+        if not gid:
+            continue
+        if gid in groups:
+            members = groups[gid][2]
+            if slug not in members:
+                members.append(slug)
+        else:
+            groups[gid] = (
+                str(group[1]),
+                str(group[2]) if len(group) > 2 else "",
+                [slug],
+            )
+
+
+try:
+    from providers import list_providers as _list_providers_for_groups
+
+    fold_profile_groups(_list_providers_for_groups(), _canonical_slugs, PROVIDER_GROUPS)
+except Exception:
+    pass
+
 # Reverse index: member slug -> group_id. Built once at import.
 _SLUG_TO_GROUP: dict[str, str] = {
     slug: gid for gid, (_label, _desc, members) in PROVIDER_GROUPS.items() for slug in members

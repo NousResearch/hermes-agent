@@ -90,25 +90,120 @@ async def test_read_loop_exit_fails_pending_futures_promptly():
 
 @pytest.mark.asyncio
 async def test_send_during_redial_window_fails_fast():
-    """While the reconnect supervisor is backing off, _ws still points at the
-    dead socket — a send must return an error dict immediately (no
-    RuntimeError, no 30s timeout on an unresolvable future)."""
-    t = WebSocketRelayTransport("ws://unused", "discord", "bot1", outbound_timeout_s=30.0)
-    t._ws = _DroppingWS()  # stale/dead socket left over from before the drop
-    t._supervisor = asyncio.create_task(asyncio.sleep(60))  # mid-redial backoff
+    """While the reconnect supervisor is backing off after a drop, a send must
+    return an error dict immediately (no RuntimeError, no 30s timeout on an
+    unresolvable future). Drives the REAL sequence — reader exit arms the
+    supervisor and clears _ws — rather than hand-crafting a stale-_ws state
+    the transport can no longer reach."""
+    t = WebSocketRelayTransport(
+        "ws://unused",
+        "discord",
+        "bot1",
+        reconnect=True,
+        reconnect_backoff_s=60.0,  # park the supervisor in backoff
+        outbound_timeout_s=30.0,
+    )
+    fake = _DroppingWS()
+    t._ws = fake
+    await _run_reader_to_exit(t, fake)
+    supervisor = t._supervisor
     try:
+        assert supervisor is not None and not supervisor.done(), (
+            "reader exit must arm the reconnect supervisor"
+        )
         result = await asyncio.wait_for(
             t.send_outbound({"op": "send_message", "text": "hi"}), timeout=1.0
         )
         assert result["success"] is False
-        assert "reconnect" in result["error"]
         assert t._pending == {}
     finally:
-        t._supervisor.cancel()
-        try:
-            await t._supervisor
-        except asyncio.CancelledError:
+        if supervisor is not None:
+            supervisor.cancel()
+            try:
+                await supervisor
+            except asyncio.CancelledError:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_send_allowed_once_redial_installs_fresh_socket(monkeypatch):
+    """The moment _dial_and_start() installs a fresh socket and its reader,
+    the transport is genuinely usable — even though the supervisor task has
+    not finished unwinding (it is still awaiting the hello sends). A send in
+    that window must be ACCEPTED, not rejected as 'reconnecting': gating
+    sends on supervisor state rejected real traffic on a live socket."""
+
+    class _LiveWS:
+        def __init__(self):
+            self.sent: list[str] = []
+            self.hello_seen = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def send(self, data):
+            self.sent.append(data)
+            if '"hello"' in data:
+                # Inside _dial_and_start, AFTER _ws and the reader are
+                # installed. Park here to hold the window open.
+                self.hello_seen.set()
+                await self.release.wait()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(3600)
+
+        async def close(self):
             pass
+
+    live = _LiveWS()
+
+    async def _fake_connect(url, **kwargs):
+        return live
+
+    monkeypatch.setattr(ws_transport_mod.websockets, "connect", _fake_connect)
+
+    t = WebSocketRelayTransport(
+        "ws://unused",
+        "discord",
+        "bot1",
+        reconnect=True,
+        reconnect_backoff_s=0.01,
+        outbound_timeout_s=5.0,
+    )
+    # Arm the supervisor exactly as the reader's fall-through does.
+    t._supervisor = asyncio.create_task(t._reconnect_loop())
+    await asyncio.wait_for(live.hello_seen.wait(), timeout=2.0)
+    try:
+        assert t._ws is live and not t._supervisor.done()
+
+        send_task = asyncio.create_task(
+            t.send_outbound({"op": "send_message", "text": "hi"})
+        )
+        # The send must reach the live socket (registered + frame written),
+        # not fail fast: wait for the outbound frame to land.
+        for _ in range(100):
+            if any('"outbound"' in s for s in live.sent):
+                break
+            await asyncio.sleep(0.01)
+        assert any('"outbound"' in s for s in live.sent), (
+            "send was rejected during the post-dial window despite a live "
+            "socket and running reader"
+        )
+
+        # Resolve it via the reader path shape: answer directly.
+        rid = next(iter(t._pending))
+        t._pending[rid].set_result({"success": True})
+        assert (await asyncio.wait_for(send_task, timeout=2.0)) == {"success": True}
+    finally:
+        live.release.set()
+        await asyncio.wait_for(t._supervisor, timeout=2.0)
+        if t._reader is not None:
+            t._reader.cancel()
+            try:
+                await t._reader
+            except asyncio.CancelledError:
+                pass
 
 
 @pytest.mark.asyncio

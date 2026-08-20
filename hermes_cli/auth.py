@@ -899,6 +899,60 @@ _POOL_STATUS_FIELDS = (
     "last_error_reset_at", "status_cleared_at")
 
 
+def reset_credential_pool_statuses(
+    provider_id: str,
+    *,
+    auth_file: Optional[Path] = None,
+    credential_ids: Optional[Iterable[str]] = None,
+) -> int:
+    """Clear one provider's cooldown state in exactly one auth store; return rows cleared.
+
+    ``read_credential_pool`` may return rows borrowed from the global-root fallback, while a
+    loaded :class:`~agent.credential_pool.CredentialPool` persists to the active profile, so
+    resetting through the pool could materialise borrowed rows in a named profile. This edits
+    the given store in place instead, letting ``hermes auth reset`` clear several profile stores
+    without copying credentials between them. Cleared rows get the same shape as
+    ``CredentialPool.reset_status``: status fields None, no model cooldowns or failure reason,
+    and a fresh ``status_cleared_at`` so a live session's next flush cannot write the old
+    cooldown back (#89415).
+
+    Without *credential_ids* only rows carrying error state are cleared; with it, exactly the
+    rows whose ids are listed are cleared whatever their state.
+    """
+    wanted = {cid for cid in credential_ids if cid} if credential_ids is not None else None
+    target_path = auth_file if auth_file is not None else _auth_file_path()
+    if not target_path.exists():
+        return 0
+    with _auth_store_lock(target_path=target_path):
+        auth_store = _load_auth_store(target_path)
+        pool = auth_store.get("credential_pool")
+        entries = pool.get(provider_id) if isinstance(pool, dict) else None
+        if not isinstance(entries, list):
+            return 0
+        cleared_at = time.time()
+        count = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if wanted is not None:
+                if entry.get("id") not in wanted:
+                    continue
+            elif not any(
+                entry.get(field) for field in (
+                    "last_status", "last_status_at", "last_error_code", "failure_reason", "model_cooldowns")
+            ):
+                continue
+            for field in _POOL_STATUS_FIELDS:
+                entry[field] = None
+            entry.pop("model_cooldowns", None)
+            entry.pop("failure_reason", None)
+            entry["status_cleared_at"] = cleared_at
+            count += 1
+        if count:
+            _save_auth_store(auth_store, target_path=target_path)
+        return count
+
+
 def _merge_disk_cooldown_state(
     entry: Dict[str, Any], disk_entry: Optional[Dict[str, Any]], provider_id: str,
 ) -> Dict[str, Any]:

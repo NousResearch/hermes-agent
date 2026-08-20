@@ -7,6 +7,7 @@ import math
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 import uuid
@@ -588,21 +589,95 @@ def auth_remove_command(args) -> None:
         print(line)
 
 
+def _iter_known_profile_homes() -> list[tuple[str, Path]]:
+    """Return the default and valid named profile homes without metadata scans."""
+    from hermes_constants import get_default_hermes_root
+
+    default_home = get_default_hermes_root()
+    targets: list[tuple[str, Path]] = [("default", default_home)]
+    profiles_root = default_home / "profiles"
+    try:
+        entries = sorted(profiles_root.iterdir()) if profiles_root.is_dir() else ()
+    except OSError:
+        return targets
+
+    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+    for entry in entries:
+        if not entry.is_dir() or entry.name == "default":
+            continue
+        try:
+            name = normalize_profile_name(entry.name)
+            validate_profile_name(name)
+        except ValueError:
+            continue
+        targets.append((name, entry))
+    return targets
+
+
+def _auth_reset_homes(*, all_profiles: bool, current_profile_only: bool) -> list[tuple[str, Path]]:
+    """Auth homes a ``hermes auth reset`` touches, current profile first, deduplicated.
+
+    Named profiles read a provider from the root ``auth.json`` when they have no rows of their
+    own, so the root store is in scope by default; from the root (or with ``--all-profiles``)
+    every named profile is too. ``--current-profile-only`` limits the reset to the active store.
+    """
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+
+    current_home = get_hermes_home()
+    default_home = get_default_hermes_root()
+    known_homes = _iter_known_profile_homes()
+    current_name = next(
+        (name for name, home in known_homes if auth_mod._same_path(home, current_home)), "current")
+    candidates = [(current_name, current_home)]
+    if not current_profile_only:
+        candidates.append(("default", default_home))
+        if all_profiles or auth_mod._same_path(current_home, default_home):
+            candidates.extend(known_homes)
+
+    homes: list[tuple[str, Path]] = []
+    for name, home in candidates:
+        if not any(auth_mod._same_path(home, seen) for _, seen in homes):
+            homes.append((name, home))
+    return homes
+
+
 def auth_reset_command(args) -> None:
+    """`hermes auth reset <provider> [target]`: clear persisted cooldown state.
+
+    Each store in scope is edited in place (``auth.reset_credential_pool_statuses``) rather than
+    through a loaded pool, whose persist would materialise root-borrowed rows in a named profile
+    while leaving the root row, which the profile actually reads, still exhausted.
+    """
     provider = _normalize_provider(getattr(args, "provider", ""))
     target = getattr(args, "target", None)
-    pool = load_pool(provider)
-    if target is None or not str(target).strip():
-        count = pool.reset_statuses()
-        print(f"Reset status on {count} {provider} credentials")
+    homes = _auth_reset_homes(
+        all_profiles=bool(getattr(args, "all_profiles", False)),
+        current_profile_only=bool(getattr(args, "current_profile_only", False)),
+    )
+    credential_ids = None
+    if target is not None and str(target).strip():
+        # Targets resolve against the active profile's view, root fallback included; the row's id
+        # then names the same credential in every store that holds it.
+        index, matched, error = load_pool(provider).resolve_target(target)
+        if matched is None or index is None:
+            raise SystemExit(f"{error} Provider: {provider}.")
+        credential_ids = [matched.id]
+
+    results = [
+        (name, auth_mod.reset_credential_pool_statuses(
+            provider, auth_file=home / "auth.json", credential_ids=credential_ids))
+        for name, home in homes
+    ]
+    total = sum(count for _, count in results)
+    touched = ", ".join(f"{name}:{count}" for name, count in results if count)
+    scope = f" across {len(results)} profiles ({touched or 'none'})" if len(results) > 1 else ""
+    if credential_ids is None:
+        print(f"Reset status on {total} {provider} credentials{scope}")
         return
-    index, matched, error = pool.resolve_target(target)
-    if matched is None or index is None:
-        raise SystemExit(f"{error} Provider: {provider}.")
-    cleared = pool.reset_status(matched.id)
-    if cleared is None:
+    if not total:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
-    print(f"Reset status on {provider} credential #{index} ({cleared.label})")
+    print(f"Reset status on {provider} credential #{index} ({matched.label}){scope}")
 
 
 def auth_refresh_command(args) -> None:
@@ -659,8 +734,6 @@ def auth_refresh_command(args) -> None:
         # A peer already rotated this grant and the pool adopted it without clearing status.
         print(f"Adopted current tokens for {provider} credential #{index} ({refreshed.label}); "
               f"status still: {status}")
-
-
 def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:

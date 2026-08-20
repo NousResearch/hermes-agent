@@ -216,25 +216,50 @@ class TestUnconfiguredErrorEnvelopeParity:
         assert "results" not in result
 
 
-    def test_explicit_firecrawl_unconfigured_emits_top_level_error(self, monkeypatch):
-        """``web.backend: firecrawl`` with no creds still uses the Firecrawl
-        error envelope — keyless Tavily must not silently take over.
+    def test_explicit_firecrawl_unconfigured_uses_firecrawl_keyless(self, monkeypatch):
+        """``web.backend: firecrawl`` with no creds routes through Firecrawl's
+        keyless cloud client (PR #50659 salvage) — keyless Tavily must not
+        silently take over, and the request must hit api.firecrawl.dev.
         """
         from tools import web_tools
+        from plugins.web.firecrawl import provider as fc
 
         self._clear_web_creds(monkeypatch)
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
+        monkeypatch.setattr(fc, "_load_web_config", lambda: {"backend": "firecrawl"}, raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
 
+        calls = {}
+
+        class _FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "success": True,
+                    "data": [
+                        {"url": "https://example.com", "title": "Example",
+                         "description": "desc"},
+                    ],
+                }
+
+        def _fake_post(url, **kwargs):
+            calls["url"] = url
+            return _FakeResponse()
+
+        monkeypatch.setattr(fc.httpx, "post", _fake_post)
+
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
-        assert "error" in result, f"expected top-level 'error' key, got {result}"
-        assert "Error searching web:" in result["error"]
-        assert "FIRECRAWL_API_KEY" in result["error"]
-        assert "results" not in result
+        assert result.get("success") is True, result
+        assert calls["url"].startswith("https://api.firecrawl.dev"), calls
+        assert result["data"]["web"], result
 
 
 class TestDispatchersTriggerPluginDiscovery:

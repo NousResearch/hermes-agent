@@ -600,8 +600,8 @@ class TestDialecticCadenceDefaults:
 class TestBaseContextSummary:
     """Base context injection should include session summary when available."""
 
-    def test_format_includes_summary(self):
-        """Session summary should appear first in the formatted context."""
+    def test_format_prioritizes_cards_then_summary_before_representations(self):
+        """Curated cards should survive before summary and secondary context."""
         provider = HonchoMemoryProvider()
         ctx = {
             "summary": "Testing Honcho tools and dialectic depth.",
@@ -610,7 +610,65 @@ class TestBaseContextSummary:
         }
         formatted = provider._format_first_turn_context(ctx)
         assert "## Session Summary" in formatted
-        assert formatted.index("Session Summary") < formatted.index("User Representation")
+        assert formatted.index("User Peer Card") < formatted.index("Session Summary")
+        assert "User Representation" not in formatted
+
+
+    def test_curated_cards_survive_when_summary_and_raw_representations_exhaust_budget(self):
+        provider = HonchoMemoryProvider()
+        provider._config = SimpleNamespace(context_tokens=60)  # type: ignore[assignment]
+        budget_chars = 240
+        ctx = {
+            "summary": "session event summary " * 100,
+            "representation": "episodic user observation " * 100,
+            "card": "Standing rule: one-off approvals are task-scoped only.",
+            "ai_representation": "episodic assistant observation " * 100,
+            "ai_card": "Identity rule: verify before claiming completion.",
+        }
+
+        formatted = provider._format_first_turn_context(ctx)
+        injected = provider._truncate_to_budget(formatted)
+
+        assert "User Peer Card" in formatted
+        assert "AI Identity Card" in formatted
+        assert "User Representation" not in formatted
+        assert "AI Self-Representation" not in formatted
+        assert "Standing rule: one-off approvals are task-scoped only." in injected
+        assert "Identity rule: verify before claiming completion." in injected
+        assert len(injected) <= budget_chars + 2
+
+    def test_whitespace_only_card_falls_back_to_representation(self):
+        provider = HonchoMemoryProvider()
+        formatted = provider._format_first_turn_context({
+            "card": "   \n  ",
+            "representation": "Real user context.",
+        })
+        assert "User Peer Card" not in formatted
+        assert "## User Representation (fallback context)" in formatted
+        assert "Real user context." in formatted
+
+    def test_mixed_state_user_card_only_keeps_ai_fallback(self):
+        provider = HonchoMemoryProvider()
+        formatted = provider._format_first_turn_context({
+            "card": "Standing fact.",
+            "representation": "Raw user rep.",
+            "ai_representation": "AI fallback rep.",
+        })
+        assert "## User Peer Card" in formatted
+        assert "User Representation" not in formatted
+        assert "## AI Self-Representation (fallback context)" in formatted
+
+    def test_representations_remain_cold_start_fallbacks_without_cards(self):
+        provider = HonchoMemoryProvider()
+        formatted = provider._format_first_turn_context({
+            "representation": "User fallback context.",
+            "ai_representation": "AI fallback context.",
+        })
+
+        assert "## User Representation (fallback context)" in formatted
+        assert "User fallback context." in formatted
+        assert "## AI Self-Representation (fallback context)" in formatted
+        assert "AI fallback context." in formatted
 
 
     def test_timed_out_first_turn_context_surfaces_next_turn(self):

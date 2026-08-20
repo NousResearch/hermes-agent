@@ -1090,6 +1090,22 @@ class SlackAdapter(BasePlatformAdapter):
         # Allow at least this long after (re)connect before treating a missing
         # first ping/pong as evidence of a wedged transport.
         self._socket_first_ping_grace_s = 60.0
+        # Socket Mode can remain connected while app events stop arriving.
+        # Polling is a bounded fallback for messages created after this process
+        # started; normal delivery remains the primary path.
+        self._socket_recovery_since = f"{time.time():.6f}"
+        self._socket_last_recovery_monotonic = 0.0
+        self._socket_recovery_interval_s = self._socket_watchdog_interval_s
+        self._socket_recovery_history_limit = 100
+        self._socket_recovery_cursors: Dict[Tuple[str, str], str] = {}
+        self._socket_thread_recovery_cursors: Dict[Tuple[str, str, str], str] = {}
+        self._SOCKET_RECOVERY_CURSOR_MAX = 5000
+        self._socket_recovery_lock = asyncio.Lock()
+        # Socket Mode handlers can enter concurrently even for one Slack
+        # thread.  Serialize only the shared session lane before it reaches
+        # the gateway's existing FIFO; this is a lock, not a second queue.
+        self._socket_message_locks: Dict[Tuple[str, str, str], asyncio.Lock] = {}
+        self._SOCKET_MESSAGE_LOCKS_MAX = 5000
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1329,6 +1345,321 @@ class SlackAdapter(BasePlatformAdapter):
             return False
         return (time.time() - last) > (ping_interval * self._socket_ping_stale_factor)
 
+    def _socket_message_lock_key(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> Optional[Tuple[str, str, str]]:
+        """Return the Slack conversation lane shared by one gateway session."""
+        channel_id = str(event.get("channel") or "")
+        thread_ts = str(event.get("thread_ts") or "")
+        if not channel_id or not thread_ts:
+            return None
+        return (self._event_team_id(event, payload), channel_id, thread_ts)
+
+    def _socket_message_lock(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> Optional[asyncio.Lock]:
+        key = self._socket_message_lock_key(event, payload)
+        if key is None:
+            return None
+        lock = self._socket_message_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._socket_message_locks[key] = lock
+            self._trim_oldest_dict_entries(
+                self._socket_message_locks, self._SOCKET_MESSAGE_LOCKS_MAX
+            )
+        return lock
+
+    async def _collect_socket_recovery_pages(
+        self,
+        fetch_page: Callable[..., Any],
+        *,
+        item_key: str,
+        request: Dict[str, Any],
+        description: str,
+    ) -> Tuple[List[dict], bool]:
+        """Collect every cursor page, retaining the recovery cursor if incomplete.
+
+        Slack may return a truncated page even when it contains fewer than the
+        requested number of items.  Advancing a timestamp cursor after only
+        that page would permanently skip older unseen events, so callers only
+        commit their timestamp cursor when this method reaches the end.
+        """
+        items: List[dict] = []
+        page_cursor: Optional[str] = None
+        seen_cursors: set[str] = set()
+
+        while True:
+            page_request = dict(request)
+            if page_cursor:
+                page_request["cursor"] = page_cursor
+            response = await fetch_page(**page_request)
+            response_get = getattr(response, "get", None)
+            if not callable(response_get):
+                logger.warning(
+                    "[Slack] Socket Mode recovery left %s incomplete: "
+                    "Slack returned a response without mapping access",
+                    description,
+                )
+                return items, False
+            items.extend(
+                item for item in response_get(item_key, ()) if isinstance(item, dict)
+            )
+
+            metadata = response_get("response_metadata") or {}
+            metadata_get = getattr(metadata, "get", None)
+            next_cursor = str(
+                (metadata_get("next_cursor") if callable(metadata_get) else "") or ""
+            ).strip()
+            if not next_cursor:
+                if response_get("has_more"):
+                    logger.warning(
+                        "[Slack] Socket Mode recovery left %s incomplete: "
+                        "Slack reported more results without a next cursor",
+                        description,
+                    )
+                    return items, False
+                return items, True
+            if next_cursor in seen_cursors:
+                logger.warning(
+                    "[Slack] Socket Mode recovery left %s incomplete: "
+                    "Slack repeated cursor %s",
+                    description,
+                    next_cursor,
+                )
+                return items, False
+            seen_cursors.add(next_cursor)
+            page_cursor = next_cursor
+
+    async def _recover_thread_messages_before_dispatch(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> None:
+        """Replay this thread's post-start history before a later Socket event.
+
+        Socket Mode may dispatch callbacks concurrently.  If Slack delivers a
+        later reply first, processing it immediately would advance the session
+        FIFO ahead of earlier replies.  Read that one thread while its lane is
+        locked and feed the existing handler in timestamp order instead.
+        """
+        key = self._socket_message_lock_key(event, payload)
+        if key is None:
+            return
+        team_id, channel_id, thread_ts = key
+        client = self._team_clients.get(team_id)
+        if client is None:
+            return
+        cursor = self._socket_thread_recovery_cursors.get(
+            key, self._socket_recovery_since
+        )
+        try:
+            messages, complete = await self._collect_socket_recovery_pages(
+                client.conversations_replies,
+                item_key="messages",
+                request={
+                    "channel": channel_id,
+                    "ts": thread_ts,
+                    "oldest": cursor,
+                    "limit": self._socket_recovery_history_limit,
+                    "inclusive": True,
+                },
+                description=f"thread {thread_ts} in {channel_id}",
+            )
+        except Exception as exc:
+            logger.debug(
+                "[Slack] Could not preflight thread history for %s in %s: %s",
+                thread_ts,
+                channel_id,
+                exc,
+            )
+            return
+
+        latest = cursor
+        for message in sorted(
+            messages,
+            key=lambda item: self._slack_timestamp_sort_key(item.get("ts", "")),
+        ):
+            message_ts = str(message.get("ts") or "")
+            if not message_ts or self._slack_timestamp_sort_key(message_ts) <= self._slack_timestamp_sort_key(cursor):
+                continue
+            recovered_event = dict(message)
+            recovered_event["channel"] = channel_id
+            recovered_event.setdefault("channel_type", "im")
+            recovered_event.setdefault("team", team_id)
+            recovered_event["_hermes_socket_recovery_replay"] = True
+            await self._handle_slack_message_inner(
+                recovered_event, {"team_id": team_id}
+            )
+            if self._slack_timestamp_sort_key(message_ts) > self._slack_timestamp_sort_key(latest):
+                latest = message_ts
+
+        if complete and self._slack_timestamp_sort_key(latest) > self._slack_timestamp_sort_key(cursor):
+            self._socket_thread_recovery_cursors[key] = latest
+            self._trim_oldest_dict_entries(
+                self._socket_thread_recovery_cursors,
+                self._SOCKET_RECOVERY_CURSOR_MAX,
+            )
+
+    async def _recover_missed_socket_messages(self) -> int:
+        """Backfill recent DM messages through the normal Slack event handler.
+
+        This is intentionally a watchdog fallback, not a second dispatch queue:
+        history entries are normalized with their Slack channel/workspace metadata
+        and then passed to ``_handle_slack_message``.  Its existing deduplicator,
+        authorization, thread routing, and dispatch remain authoritative.
+        """
+        now = time.monotonic()
+        if now - self._socket_last_recovery_monotonic < self._socket_recovery_interval_s:
+            return 0
+        self._socket_last_recovery_monotonic = now
+
+        recovered = 0
+        async with self._socket_recovery_lock:
+            for team_id, client in tuple(self._team_clients.items()):
+                bot_user_id = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+                try:
+                    conversations, complete = await self._collect_socket_recovery_pages(
+                        client.conversations_list,
+                        item_key="channels",
+                        request={
+                            "types": "im",
+                            "exclude_archived": True,
+                            "limit": 200,
+                        },
+                        description=f"DM list for workspace {team_id}",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[Slack] Socket Mode recovery could not list DMs for workspace %s: %s",
+                        team_id,
+                        exc,
+                    )
+                    continue
+
+                if not complete:
+                    continue
+
+                for conversation in conversations:
+                    channel_id = str((conversation or {}).get("id") or "")
+                    if not channel_id:
+                        continue
+                    key = (team_id, channel_id)
+                    cursor = self._socket_recovery_cursors.get(
+                        key, self._socket_recovery_since
+                    )
+                    try:
+                        messages, complete = await self._collect_socket_recovery_pages(
+                            client.conversations_history,
+                            item_key="messages",
+                            request={
+                                "channel": channel_id,
+                                "oldest": cursor,
+                                "limit": self._socket_recovery_history_limit,
+                                "inclusive": True,
+                            },
+                            description=f"DM history for {channel_id}",
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "[Slack] Socket Mode recovery could not read DM history for %s: %s",
+                            channel_id,
+                            exc,
+                        )
+                        continue
+
+                    channel_complete = complete
+                    latest = cursor
+                    messages = sorted(
+                        messages,
+                        key=lambda message: self._slack_timestamp_sort_key(message.get("ts", "")),
+                    )
+                    for message in messages:
+                        message_ts = str(message.get("ts") or "")
+                        latest_reply = str(message.get("latest_reply") or "")
+                        if message_ts and self._slack_timestamp_sort_key(message_ts) > self._slack_timestamp_sort_key(cursor):
+                            was_routed = message_ts in self._processed_message_ts
+                            recovered_event = dict(message)
+                            recovered_event["channel"] = channel_id
+                            recovered_event.setdefault("channel_type", "im")
+                            recovered_event.setdefault("team", team_id)
+                            recovered_event["_hermes_socket_recovery_replay"] = True
+                            await self._handle_slack_message(recovered_event, {"team_id": team_id})
+                            if (
+                                not was_routed
+                                and (
+                                    not bot_user_id
+                                    or str(message.get("user") or "") != str(bot_user_id)
+                                )
+                            ):
+                                recovered += 1
+                            latest = message_ts
+
+                        if not latest_reply or self._slack_timestamp_sort_key(latest_reply) <= self._slack_timestamp_sort_key(cursor):
+                            continue
+                        try:
+                            replies, replies_complete = await self._collect_socket_recovery_pages(
+                                client.conversations_replies,
+                                item_key="messages",
+                                request={
+                                    "channel": channel_id,
+                                    "ts": message_ts,
+                                    "oldest": cursor,
+                                    "limit": self._socket_recovery_history_limit,
+                                    "inclusive": True,
+                                },
+                                description=f"thread {message_ts} in {channel_id}",
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "[Slack] Socket Mode recovery could not read thread %s in %s: %s",
+                                message_ts,
+                                channel_id,
+                                exc,
+                            )
+                            channel_complete = False
+                            continue
+                        if not replies_complete:
+                            channel_complete = False
+                        for reply in sorted(
+                            replies,
+                            key=lambda item: self._slack_timestamp_sort_key(item.get("ts", "")),
+                        ):
+                            reply_ts = str(reply.get("ts") or "")
+                            if (
+                                not reply_ts
+                                or reply_ts == message_ts
+                                or self._slack_timestamp_sort_key(reply_ts)
+                                <= self._slack_timestamp_sort_key(cursor)
+                            ):
+                                continue
+                            was_routed = reply_ts in self._processed_message_ts
+                            recovered_event = dict(reply)
+                            recovered_event["channel"] = channel_id
+                            recovered_event.setdefault("channel_type", "im")
+                            recovered_event.setdefault("team", team_id)
+                            recovered_event["_hermes_socket_recovery_replay"] = True
+                            await self._handle_slack_message(recovered_event, {"team_id": team_id})
+                            if (
+                                not was_routed
+                                and (
+                                    not bot_user_id
+                                    or str(reply.get("user") or "") != str(bot_user_id)
+                                )
+                            ):
+                                recovered += 1
+                            if self._slack_timestamp_sort_key(reply_ts) > self._slack_timestamp_sort_key(latest):
+                                latest = reply_ts
+
+                    if (
+                        channel_complete
+                        and self._slack_timestamp_sort_key(latest)
+                        > self._slack_timestamp_sort_key(cursor)
+                    ):
+                        self._socket_recovery_cursors[key] = latest
+                        self._trim_oldest_dict_entries(
+                            self._socket_recovery_cursors, self._SOCKET_RECOVERY_CURSOR_MAX
+                        )
+        return recovered
+
     async def _restart_socket_mode(self, reason: str) -> None:
         """Reconnect Socket Mode without rebuilding adapter state."""
         if not self._running:
@@ -1378,6 +1709,13 @@ class SlackAdapter(BasePlatformAdapter):
                     # but the client keeps retrying; ping/pong staleness catches
                     # that wedged-zombie case that the bool check above misses.
                     await self._restart_socket_mode("ping/pong stale")
+                else:
+                    recovered = await self._recover_missed_socket_messages()
+                    if recovered:
+                        logger.warning(
+                            "[Slack] Socket Mode recovered %d missed DM message(s)",
+                            recovered,
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception:  # pragma: no cover - defensive logging
@@ -5745,6 +6083,19 @@ class SlackAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_slack_message(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> None:
+        """Serialize one Slack thread before dispatching it to the gateway FIFO."""
+        lock = self._socket_message_lock(event, payload)
+        if lock is None:
+            await self._handle_slack_message_inner(event, payload)
+            return
+        async with lock:
+            if not event.get("_hermes_socket_recovery_replay"):
+                await self._recover_thread_messages_before_dispatch(event, payload)
+            await self._handle_slack_message_inner(event, payload)
+
+    async def _handle_slack_message_inner(
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
         """Handle an incoming Slack message event."""

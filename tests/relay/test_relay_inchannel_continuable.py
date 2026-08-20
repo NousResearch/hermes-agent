@@ -169,9 +169,10 @@ class TestSurfaceKnobResolution:
         pconfig = SimpleNamespace(extra={})
         assert _resolve_cron_surface_mode(pconfig, "slack") == "thread"
 
-    def test_flat_key_wins_over_subblock(self):
-        """Legacy-fallback precedence mirrors _relay_slack_extra: an explicit
-        flat key keeps working when both are present."""
+    def test_subblock_wins_over_flat_key(self):
+        """Sub-block precedence: the per-logical-platform sub-block is the
+        documented relay shape and wins when both are present — matches
+        _relay_slack_extra (sub-dict preferred over flat extra)."""
         pconfig = SimpleNamespace(
             extra={
                 "cron_continuable_surface": "thread",

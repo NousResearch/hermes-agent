@@ -1510,6 +1510,15 @@ def _resolve_cron_surface_mode(pconfig, logical_platform_name: str) -> str:
       scoped to its logical platform so a ``slack:`` block cannot leak onto
       another fronted platform.
 
+    Precedence nuance vs _relay_slack_extra: that helper is all-or-nothing
+    (a sub-dict REPLACES the flat extra entirely), while this one falls back
+    to the flat key when the sub-block exists but omits the knob. The
+    difference is deliberate — the flat key is the legacy staging shape and
+    must keep working — but note a flat ``cron_continuable_surface`` then
+    applies to EVERY platform this relay fronts; only the per-platform D6
+    capability gate contains it. Scope the knob under the sub-block on
+    multi-platform relays.
+
     Field gap (2026-08-18): the scheduler read only the flat key, so on the
     relay lane — where pconfig is platforms.relay — operators had NO working
     location for the knob and briefs always threaded.

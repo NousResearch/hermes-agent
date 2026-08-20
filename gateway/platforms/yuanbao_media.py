@@ -107,7 +107,7 @@ def get_image_format(mime_type: str) -> int:
 
 def md5_hex(data: bytes) -> str:
     """计算 MD5 十六进制摘要。"""
-    return hashlib.md5(data).hexdigest()
+    return hashlib.md5(data, usedforsecurity=False).hexdigest()
 
 
 def generate_file_id() -> str:
@@ -328,7 +328,7 @@ def _cos_sign(
     ])
 
     # Step 3: StringToSign = sha1 hash of HttpString
-    sha1_of_http = hashlib.sha1(http_string.encode("utf-8")).hexdigest()
+    sha1_of_http = hashlib.sha1(http_string.encode("utf-8"), usedforsecurity=False).hexdigest()
     string_to_sign = "\n".join([
         "sha1",
         q_sign_time,

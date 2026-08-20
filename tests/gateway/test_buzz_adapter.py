@@ -24,6 +24,8 @@ validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
 _env_enablement = _buzz_mod._env_enablement
 _standalone_send = _buzz_mod._standalone_send
+_canonical_send_response = _buzz_mod._canonical_send_response
+_CanonicalChannelEvent = _buzz_mod._CanonicalChannelEvent
 
 # Real key pair (Chip's public identity — public information, not a secret)
 SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
@@ -440,9 +442,12 @@ class TestBuzzAdapterLifecycle:
             lambda platform, key: released.append((platform, key)),
         )
         adapter = _make_adapter()
-        adapter._lock_key = "wss://relay.example:" + SELF_PUBKEY
+        lock = "wss://relay.example:" + SELF_PUBKEY
+        adapter._lock_key = lock
+        adapter._platform_lock_scope = "buzz"
+        adapter._platform_lock_identity = lock
         await adapter.disconnect()
-        assert released == [("buzz", "wss://relay.example:" + SELF_PUBKEY)]
+        assert released == [("buzz", lock)]
         assert adapter._lock_key is None
 
     @pytest.mark.asyncio
@@ -451,7 +456,9 @@ class TestBuzzAdapterLifecycle:
         import gateway.status as gateway_status
 
         monkeypatch.setattr(
-            gateway_status, "acquire_scoped_lock", lambda platform, key: False
+            gateway_status,
+            "acquire_scoped_lock",
+            lambda platform, key, metadata=None: (False, {"pid": 99999}),
         )
         adapter = _make_adapter()
         adapter.cli_path = "/fake/buzz"
@@ -464,6 +471,7 @@ class TestBuzzAdapterLifecycle:
         adapter._run_cli = cli
         assert await adapter.connect() is False
         assert adapter._lock_key is None
+        assert adapter._platform_lock_identity is None
 
 
 # ── Credentials / requirements ────────────────────────────────────────────
@@ -537,4 +545,126 @@ class TestStandaloneSend:
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
+# ── Canonical event validation regression ─────────────────────────────────
+
+
+class TestCanonicalValidation:
+    """Prove malformed relay events do not mutate state (review feedback)."""
+
+    @pytest.fixture
+    def adapter(self):
+        a = _make_adapter()
+        a._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        return a
+
+    @pytest.mark.asyncio
+    async def test_malformed_event_id_does_not_mutate_state(self, adapter):
+        """A non-string event id must not enter seen or advance last_ts."""
+        bad_event = _event(42, content="@Chip hey", created_at=10)
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], bad_event)
+        state = adapter._channel_state[CHANNEL]
+        assert state["last_ts"] == 0
+        assert state["seen"] == {}
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_wrong_kind_does_not_dispatch(self, adapter):
+        """A non-kind-9 event must not reach the agent."""
+        event = _event("e1", content="@Chip hello", created_at=10, kind=1)
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_bool_timestamp_must_not_mutate_state(self, adapter):
+        """Truthy bool timestamp must not corrupt the high-water mark."""
+        bad = _event("e1", content="@Chip hi", created_at=True)
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], bad)
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 0
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_multiple_h_tags_rejected(self, adapter):
+        """An event with two h tags must not be attributed to either channel."""
+        event = _event("e1", content="@Chip hello", created_at=10)
+        event["tags"] = [["h", CHANNEL], ["h", "other-channel"]]
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+        assert adapter._dispatched == []
+        assert adapter._channel_state[CHANNEL]["last_ts"] == 0
+
+    @pytest.mark.asyncio
+    async def test_non_string_pubkey_rejected(self, adapter):
+        """Non-string pubkey must not enter dispatch."""
+        bad = _event("e1", pubkey=12345, content="@Chip hi", created_at=10)
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], bad)
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_non_string_content_rejected(self, adapter):
+        """Non-string content must not dispatch."""
+        bad = _event("e1", content=None, created_at=10)
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], bad)
+        assert adapter._dispatched == []
+
+
+# ── Send response validation regression ───────────────────────────────────
+
+
+class TestSendResponseValidation:
+    """Prove only literal accepted:true succeeds (review feedback)."""
+
+    def test_accepted_true_literal_succeeds(self):
+        resp = _canonical_send_response('{"accepted": true, "event_id": "evt1"}')
+        assert resp is not None
+        assert resp.event_id == "evt1"
+
+    def test_accepted_false_fails(self):
+        assert _canonical_send_response('{"accepted": false, "event_id": "evt1"}') is None
+
+    def test_accepted_string_false_fails(self):
+        """The truthy-string Python bug: 'false' must NOT pass."""
+        assert _canonical_send_response('{"accepted": "false", "event_id": "evt1"}') is None
+
+    def test_accepted_absent_fails(self):
+        assert _canonical_send_response('{"event_id": "evt1"}') is None
+
+    def test_accepted_string_true_fails(self):
+        assert _canonical_send_response('{"accepted": "true", "event_id": "evt1"}') is None
+
+    def test_accepted_integer_one_fails(self):
+        assert _canonical_send_response('{"accepted": 1, "event_id": "evt1"}') is None
+
+    def test_non_dict_response_fails(self):
+        assert _canonical_send_response('["accepted", true]') is None
+
+    def test_empty_response_fails(self):
+        assert _canonical_send_response("") is None
+
+
+# ── Name resolution fallback regression ───────────────────────────────────
+
+
+class TestNameResolutionFallback:
+    """Prove the name fallback works even when users get is unreachable."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_name_when_cli_fails(self):
+        """When users get --pubkey returns non-zero, use npub prefix fallback."""
+        a = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("users", "get", '[{"not": "valid"}]', code=2, stderr="relay offline")
+        a._run_cli = cli
+        name = await a._resolve_user_name(OTHER_PUBKEY)
+        assert name == (hex_to_npub(OTHER_PUBKEY) or OTHER_PUBKEY)[:16]
+        assert name != ""
 

@@ -23,6 +23,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -40,7 +41,7 @@ import yaml
 
 from tools.skills_guard import (
     ScanResult, build_install_attestation, content_hash,
-    full_content_hash_for_files, TRUSTED_REPOS,
+    full_content_hash, full_content_hash_for_files, TRUSTED_REPOS,
 )
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
@@ -86,7 +87,8 @@ def _override(name: str):
 
 
 def _hermes_home() -> Path:
-    return get_hermes_home()
+    forced = _override("HERMES_HOME")
+    return Path(forced) if forced is not None else get_hermes_home()
 
 
 def _skills_dir() -> Path:
@@ -4432,10 +4434,12 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         safe_rel_path = _validate_bundle_rel_path(rel_path)
         validated_files.append((safe_rel_path, file_content))
 
-    dest = _quarantine_dir() / skill_name
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
+    dest = Path(
+        tempfile.mkdtemp(
+            prefix=f"{skill_name}-",
+            dir=str(_quarantine_dir()),
+        )
+    )
 
     for rel_path, file_content in validated_files:
         file_dest = dest.joinpath(*rel_path.split("/"))
@@ -4489,6 +4493,17 @@ def install_from_quarantine(
     quarantine_root = _quarantine_dir().resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
+
+    expected_scan_hash = ""
+    if isinstance(scan_provenance, dict):
+        value = scan_provenance.get("bundle_hash")
+        if isinstance(value, str):
+            expected_scan_hash = value
+    if (
+        expected_scan_hash
+        and full_content_hash(quarantine_path) != expected_scan_hash
+    ):
+        raise ValueError("Quarantine content changed after security scan")
 
     if safe_category:
         install_rel_path = f"{safe_category}/{safe_skill_name}"
@@ -4577,8 +4592,31 @@ def install_from_quarantine(
             f"Installed skill contains symlinks, which is not allowed: {rel}"
         )
 
+    if (
+        expected_scan_hash
+        and full_content_hash(quarantine_path) != expected_scan_hash
+    ):
+        raise ValueError("Quarantine content changed after security scan")
+
+    if expected_scan_hash:
+        # Do not install from the shared filesystem object that was scanned.
+        # Re-materialize from the original in-memory bundle into a fresh,
+        # unpredictable directory and bind those bytes to the scanner hash.
+        if full_content_hash_for_files(bundle.files) != expected_scan_hash:
+            raise ValueError("Fetched bundle differs from security scan input")
+        scanned_path = quarantine_path
+        quarantine_path = quarantine_bundle(bundle)
+        if full_content_hash(quarantine_path) != expected_scan_hash:
+            shutil.rmtree(quarantine_path, ignore_errors=True)
+            raise ValueError("Verified install staging differs from security scan")
+        shutil.rmtree(scanned_path, ignore_errors=True)
+
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
+
+    if expected_scan_hash and full_content_hash(install_dir) != expected_scan_hash:
+        shutil.rmtree(install_dir, ignore_errors=True)
+        raise ValueError("Installed content changed after security scan")
 
     # Record in lock file
     lock = HubLockFile()

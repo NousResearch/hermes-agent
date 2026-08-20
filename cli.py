@@ -3313,9 +3313,7 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", plain)
-    plain = re.sub(r"(?<!\w)___([^_]+)___(?!\w)", r"\1", plain)
     plain = re.sub(r"\*\*([^*]+)\*\*", r"\1", plain)
-    plain = re.sub(r"(?<!\w)__([^_]+)__(?!\w)", r"\1", plain)
     # Only strip `*emphasis*` markers when the inner text is non-whitespace.
     # This avoids corrupting cron expressions like "* * * * *".
     plain = re.sub(r"\*([^\s*][^*]*?[^\s*])\*", r"\1", plain)

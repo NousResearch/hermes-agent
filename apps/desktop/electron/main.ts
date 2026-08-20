@@ -3269,7 +3269,20 @@ const backendOwnership = createBackendOwnership({
         return null
       }
     },
-    write: writeBackendOwnership
+    write: writeBackendOwnership,
+    // A corrupt ownership file is moved aside instead of being rewritten
+    // away by the reap sweep — its records are the only pointer to any
+    // still-running backends it described (#89298).
+    quarantine: () => {
+      const parked = `${DESKTOP_BACKEND_OWNERSHIP_PATH}.corrupt`
+
+      try {
+        fs.renameSync(DESKTOP_BACKEND_OWNERSHIP_PATH, parked)
+        rememberLog(`Backend ownership file was unreadable; moved to ${parked}`)
+      } catch {
+        // Nothing to move (or no permission) — the sweep already skipped.
+      }
+    }
   }
 })
 

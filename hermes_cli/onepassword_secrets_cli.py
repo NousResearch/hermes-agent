@@ -159,6 +159,18 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     token = (args.token or "").strip()
     if token:
+        console.print("  Verifying service-account token with `op whoami`…")
+        who = _op_whoami(
+            binary,
+            op_cfg.get("account", ""),
+            token_value=token,
+        )
+        if who is None:
+            console.print(
+                "  [red]✗ Token was rejected by op — nothing was changed.[/red]"
+            )
+            return 1
+        console.print(f"  [green]✓[/green] token accepted ({who})")
         save_env_value(token_env, token)
         os.environ[token_env] = token
         console.print(f"  [green]✓[/green] service-account token stored in "

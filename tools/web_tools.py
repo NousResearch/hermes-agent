@@ -287,6 +287,32 @@ def _get_backend() -> str:
         except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
             logger.debug("web provider %r.is_available() raised: %s", provider.name, exc)
 
+    # Keyless free-tier walk — zero credentials anywhere. Providers with a
+    # public anonymous endpoint (Parallel, Exa — see
+    # plugins/web/keyless_mcp.py) can still serve, unless the user disabled
+    # the tier via ``web.keyless_fallback: false``. Strictly last so it
+    # never pre-empts any keyed/importable backend above. Discovery must
+    # run first — this path is reachable from contexts that haven't loaded
+    # plugins yet (subprocess agent runs, delegate children, scripts).
+    try:
+        _ensure_web_plugins_loaded()
+        from agent.web_search_registry import _keyless_preference, _keyless_tier_enabled
+
+        if _keyless_tier_enabled():
+            for name in _keyless_preference():
+                provider = _registered_web_provider(name)
+                if provider is None:
+                    continue
+                try:
+                    if provider.is_keyless_available():
+                        return name
+                except Exception as exc:  # noqa: BLE001 — skip broken provider
+                    logger.debug(
+                        "web provider %r.is_keyless_available() raised: %s", name, exc
+                    )
+    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+        logger.debug("keyless fallback walk failed: %s", exc)
+
     return "firecrawl"  # default (backward compat)
 
 
@@ -1154,8 +1180,14 @@ def check_web_api_key() -> bool:
     # Any plugin-registered provider the registry considers active for either
     # capability. Delegating to the registry's own availability-filtered
     # resolvers keeps a single authority for "is a custom provider usable"
-    # rather than re-implementing the walk here.
+    # rather than re-implementing the walk here. This also covers the
+    # keyless free tier (Parallel/Exa anonymous MCP endpoints): the registry
+    # walk falls back to keyless-capable providers when nothing is keyed,
+    # so a zero-credential install still lights the web tools up. Discovery
+    # must run first — check_fn fires at tool-registration time, before any
+    # dispatch has populated the registry.
     try:
+        _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
             get_active_search_provider,
             get_active_extract_provider,

@@ -216,10 +216,16 @@ class TestBackendSelection:
             assert _get_backend() == "firecrawl"
 
     def test_fallback_no_keys_defaults_to_firecrawl(self):
-        """No keys, no config → 'firecrawl' (will fail at client init)."""
+        """No keys, no config, keyless tier off → 'firecrawl' sentinel.
+
+        With the keyless tier on (default), zero credentials resolves to
+        the Parallel/Exa free tier instead — covered in
+        test_web_keyless_fallback.py.
+        """
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False):
+             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_is_returned_verbatim(self):

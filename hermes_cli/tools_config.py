@@ -3129,18 +3129,29 @@ def _plugin_web_search_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        row = {
-            "name": schema.get("name", provider.display_name),
-            "badge": schema.get("badge", ""),
-            "tag": schema.get("tag", ""),
-            "env_vars": schema.get("env_vars", []),
-            "web_backend": name,
-            "web_search_plugin_name": name,
-        }
-        # Optional pass-through fields the schema can opt into.
-        if schema.get("post_setup"):
-            row["post_setup"] = schema["post_setup"]
-        rows.append(row)
+        # A schema may expose tier ``variants`` (e.g. Exa/Parallel free
+        # keyless endpoint vs paid SDK) — flatten the base row plus each
+        # variant into separate picker rows sharing the same backend name,
+        # distinguished by ``web_tier`` (persisted to
+        # ``web.provider_tier.<name>`` on selection).
+        schemas = [schema] + [
+            v for v in (schema.get("variants") or []) if isinstance(v, dict)
+        ]
+        for entry in schemas:
+            row = {
+                "name": entry.get("name", provider.display_name),
+                "badge": entry.get("badge", ""),
+                "tag": entry.get("tag", ""),
+                "env_vars": entry.get("env_vars", []),
+                "web_backend": name,
+                "web_search_plugin_name": name,
+            }
+            if entry.get("web_tier"):
+                row["web_tier"] = entry["web_tier"]
+            # Optional pass-through fields the schema can opt into.
+            if entry.get("post_setup"):
+                row["post_setup"] = entry["post_setup"]
+            rows.append(row)
     return rows
 
 
@@ -3788,6 +3799,44 @@ def _configure_tool_category(
         _configure_provider(providers[provider_idx], config, force_fresh=force_fresh)
 
 
+def _web_tier_matches(provider: dict, config: dict) -> bool:
+    """Return True when a web picker row's tier matches the configured tier.
+
+    Tiered rows (Exa/Parallel Free vs Paid) share one ``web_backend`` name
+    and differ only in ``web_tier``. The configured tier lives at
+    ``web.provider_tier.<backend>`` (set on selection). Matching rules:
+
+    - row has no ``web_tier`` → tier-agnostic row, matches (legacy rows)
+    - configured tier set     → must equal the row's tier
+    - configured tier unset   → "auto": the effective tier is paid when the
+      row's env vars are all present, free otherwise — highlight the row
+      the runtime would actually use
+    """
+    row_tier = provider.get("web_tier")
+    if not row_tier:
+        return True
+    web_cfg = config.get("web")
+    if not isinstance(web_cfg, dict):
+        web_cfg = {}
+    tiers = web_cfg.get("provider_tier")
+    if not isinstance(tiers, dict):
+        tiers = {}
+    configured = str(tiers.get(provider["web_backend"], "") or "").lower().strip()
+    if configured in ("free", "paid"):
+        return configured == row_tier
+    # Auto: mirror plugins.web.keyless_mcp.use_keyless — key present → paid.
+    try:
+        from agent.web_search_provider import get_provider_env
+
+        key_var = {"exa": "EXA_API_KEY", "parallel": "PARALLEL_API_KEY"}.get(
+            provider["web_backend"]
+        )
+        has_key = bool(get_provider_env(key_var)) if key_var else False
+    except Exception:
+        has_key = False
+    return row_tier == ("paid" if has_key else "free")
+
+
 def _is_provider_active(
     provider: dict,
     config: dict,
@@ -3868,10 +3917,11 @@ def _is_provider_active(
             }
         if provider.get("web_backend"):
             current = cfg_get(config, "web", "backend")
-            return feature.managed_by_nous and current in {
-                provider["web_backend"],
-                NOUS_MANAGED_PROVIDER,
-            }
+            return (
+                feature.managed_by_nous
+                and current in {provider["web_backend"], NOUS_MANAGED_PROVIDER}
+                and _web_tier_matches(provider, config)
+            )
         return feature.managed_by_nous
 
     if provider.get("tts_provider"):
@@ -3919,7 +3969,9 @@ def _is_provider_active(
             return False
     if provider.get("web_backend"):
         current = cfg_get(config, "web", "backend")
-        return current == provider["web_backend"]
+        if current != provider["web_backend"]:
+            return False
+        return _web_tier_matches(provider, config)
     if provider.get("computer_use_backend"):
         current = cfg_get(config, "computer_use", "backend")
         return current == provider["computer_use_backend"]
@@ -4406,6 +4458,16 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         _set_selection("web", "backend", provider["web_backend"])
+        web_cfg = config.get("web")
+        if isinstance(web_cfg, dict):
+            if provider.get("web_tier"):
+                tiers = web_cfg.setdefault("provider_tier", {})
+                if isinstance(tiers, dict):
+                    tiers[provider["web_backend"]] = provider["web_tier"]
+            else:
+                stale_tiers = web_cfg.get("provider_tier")
+                if isinstance(stale_tiers, dict):
+                    stale_tiers.pop(provider["web_backend"], None)
 
     # Set computer_use backend in config if applicable
     if provider.get("computer_use_backend"):
@@ -5132,7 +5194,19 @@ def _reconfigure_provider(
             NOUS_MANAGED_PROVIDER if managed_feature else provider["web_backend"]
         )
         web_cfg.pop("use_gateway", None)
-        _print_success(f"  Web backend set to: {provider['web_backend']}")
+        if provider.get("web_tier"):
+            tiers = web_cfg.setdefault("provider_tier", {})
+            if isinstance(tiers, dict):
+                tiers[provider["web_backend"]] = provider["web_tier"]
+            _print_success(
+                f"  Web backend set to: {provider['web_backend']} "
+                f"({provider['web_tier']} tier)"
+            )
+        else:
+            stale_tiers = web_cfg.get("provider_tier")
+            if isinstance(stale_tiers, dict):
+                stale_tiers.pop(provider["web_backend"], None)
+            _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     # Set computer_use backend in config if applicable
     if provider.get("computer_use_backend"):

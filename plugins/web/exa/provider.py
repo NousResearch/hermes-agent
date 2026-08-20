@@ -101,10 +101,26 @@ class ExaWebSearchProvider(WebSearchProvider):
         return "Exa"
 
     def is_available(self) -> bool:
-        """Return True when ``EXA_API_KEY`` is set to a non-empty value."""
+        """Return True when ``EXA_API_KEY`` is set to a non-empty value.
+
+        Deliberately does NOT consider the keyless free tier — that would
+        let the legacy preference walk route keyed users of lower-priority
+        backends onto Exa's anonymous tier. Keyless availability is a
+        separate, last-resort signal (:meth:`is_keyless_available`).
+        """
         from agent.web_search_provider import get_provider_env
 
         return bool(get_provider_env("EXA_API_KEY"))
+
+    def is_keyless_available(self) -> bool:
+        """Exa serves anonymous free-tier calls via its public MCP endpoint.
+
+        False when the user forced ``web.provider_tier.exa: paid`` — an
+        explicit paid selection must never silently resolve keyless.
+        """
+        from plugins.web.keyless_mcp import keyless_enabled, provider_tier
+
+        return keyless_enabled() and provider_tier("exa") != "paid"
 
     def supports_search(self) -> bool:
         return True
@@ -124,6 +140,17 @@ class ExaWebSearchProvider(WebSearchProvider):
 
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
+
+            from agent.web_search_provider import get_provider_env
+
+            from plugins.web.keyless_mcp import exa_search_keyless, use_keyless
+
+            if use_keyless("exa", get_provider_env("EXA_API_KEY")):
+                # Keyless free tier — public MCP endpoint, no SDK needed.
+                logger.info(
+                    "Exa keyless search: '%s' (limit=%d)", query, limit
+                )
+                return exa_search_keyless(query, limit)
 
             logger.info("Exa search: '%s' (limit=%d)", query, limit)
             response = _get_exa_client().search(
@@ -169,6 +196,15 @@ class ExaWebSearchProvider(WebSearchProvider):
                     {"url": u, "error": "Interrupted", "title": ""} for u in urls
                 ]
 
+            from agent.web_search_provider import get_provider_env
+
+            from plugins.web.keyless_mcp import exa_extract_keyless, use_keyless
+
+            if use_keyless("exa", get_provider_env("EXA_API_KEY")):
+                # Keyless free tier — public MCP endpoint, no SDK needed.
+                logger.info("Exa keyless extract: %d URL(s)", len(urls))
+                return exa_extract_keyless(list(urls))
+
             logger.info("Exa extract: %d URL(s)", len(urls))
             response = _get_exa_client().get_contents(urls, text=True)
 
@@ -203,14 +239,30 @@ class ExaWebSearchProvider(WebSearchProvider):
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
-            "name": "Exa",
-            "badge": "paid",
-            "tag": "Semantic + neural web search with content extraction.",
-            "env_vars": [
+            "name": "Exa · Free (keyless)",
+            "badge": "free · no key",
+            "tag": (
+                "Semantic + neural web search with content extraction on "
+                "Exa's anonymous free tier. Rate-limited under burst load."
+            ),
+            "env_vars": [],
+            "web_tier": "free",
+            "variants": [
                 {
-                    "key": "EXA_API_KEY",
-                    "prompt": "Exa API key",
-                    "url": "https://exa.ai",
+                    "name": "Exa · Paid (API key)",
+                    "badge": "paid",
+                    "tag": (
+                        "Semantic + neural web search with content extraction "
+                        "via the Exa SDK. Unthrottled, guaranteed service."
+                    ),
+                    "env_vars": [
+                        {
+                            "key": "EXA_API_KEY",
+                            "prompt": "Exa API key",
+                            "url": "https://exa.ai",
+                        },
+                    ],
+                    "web_tier": "paid",
                 },
             ],
         }

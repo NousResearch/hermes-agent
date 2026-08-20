@@ -2268,17 +2268,29 @@ web:
   # Or use per-capability keys to mix providers (e.g. free search + paid extract):
   search_backend: "searxng"
   extract_backend: "firecrawl"
+
+  # Keyless free-tier fallback (default: true). With no backend configured
+  # and no API keys present, web tools fall back to Parallel's / Exa's
+  # public anonymous endpoints (rate-limited). Set false to disable.
+  keyless_fallback: true
+
+  # Pin Exa/Parallel to a tier (set by the hermes tools Free/Paid rows).
+  # free = always the anonymous endpoint; paid = always the keyed SDK path;
+  # unset = auto (key present -> paid, otherwise free).
+  provider_tier:
+    parallel: free
+    exa: paid
 ```
 
 | Backend | Env Var | Search | Extract |
 |---------|---------|--------|---------|
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — |
-| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ |
+| **Parallel** | `PARALLEL_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ |
-| **Exa** | `EXA_API_KEY` | ✔ | ✔ |
+| **Exa** | `EXA_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 
-**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PARALLEL_API_KEY` is set, Parallel. Otherwise Firecrawl is the default. Once a selection exists, adding a key to `.env` does not change the route.
+**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PARALLEL_API_KEY` is set, Parallel. With **no selection and no credentials at all**, Hermes falls back to the Exa/Parallel keyless free tier (unpinned installs split 50/50 between the vendors) so web tools work on a fresh install — see the [Web Search guide](/user-guide/features/web-search) for details and limits. Once a selection exists, adding a key to `.env` does not change the route.
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 

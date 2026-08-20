@@ -492,6 +492,18 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
+        # Keyless free-tier fallback: with NO web backend configured or keyed,
+        # web_search/web_extract fall back to Parallel's / Exa's public
+        # anonymous MCP endpoints (rate-limited free tiers). Never pre-empts
+        # a configured or keyed backend. Set false to disable entirely.
+        "keyless_fallback": True,
+        # Per-provider tier selection for providers with both a keyless free
+        # endpoint and a keyed paid SDK path (exa, parallel). Set by the
+        # `hermes tools` picker's "Free (keyless)" / "Paid (API key)" rows.
+        #   free  — always use the anonymous free endpoint (even with a key)
+        #   paid  — always use the keyed SDK path (missing key = error)
+        #   unset — auto: keyed when the API key is present, else keyless
+        "provider_tier": {},
     },
 
     "browser": {

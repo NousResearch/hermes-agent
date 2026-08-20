@@ -300,6 +300,10 @@
       var(--ui-accent) var(--theme-row-active-accent-mix),
       color-mix(in srgb, var(--ui-base) 5%, transparent)
     );
+    /* Open in a pane, but not the FOCUSED one: the active band at reduced
+       strength, so every session on screen is marked and the one you're in
+       still wins. Mixed from the active token so a theme tunes both at once. */
+    --ui-row-open-background: color-mix(in srgb, var(--ui-row-active-background) 28%, transparent);
     --ui-control-hover-background: color-mix(
       in srgb,
       var(--ui-accent) var(--theme-control-hover-accent-mix),
@@ -1652,10 +1656,32 @@ body.guest-pointer-lock :is(webview, iframe) {
    much stronger over a light backdrop), full strength in dark mode. */
 :root {
   --dock-glow-scale: 0.55;
+  /* Unfocused chat surface (multi-pane): a pane the user isn't in recedes so
+     the focused conversation reads as the one being worked in. Light needs a
+     deeper cut — a dim over a bright surface loses contrast far more slowly
+     than the same dim over a dark one. Pairs with a grayscale pass on the same
+     element — one treatment for the whole pane, not per-part tuning. */
+  --chat-unfocused-opacity: 0.62;
 }
 
 .dark {
   --dock-glow-scale: 1;
+  --chat-unfocused-opacity: 0.72;
+}
+
+/* The whole surface recedes as ONE layer — thread, timeline rail, composer,
+   header — fading and desaturating together rather than each part taking its
+   own treatment. Both properties on the surface root also composite the
+   already-painted layer instead of repainting descendants. */
+[data-chat-surface][data-chat-unfocused] {
+  opacity: var(--chat-unfocused-opacity);
+  filter: grayscale(1);
+}
+
+[data-chat-surface] {
+  transition:
+    opacity 75ms ease-out,
+    filter 75ms ease-out;
 }
 
 /* Drag-region hatch — a diagonal ///// pattern (Photoshop-style) that fades into

@@ -51,6 +51,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+from hermes_constants import get_default_hermes_root
 
 
 def _get_scoped_secret(name, default=None):
@@ -95,6 +96,7 @@ _SEEN_CAP = 500
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
+_PROFILE_CHANNEL_SYNC_INTERVAL = 30.0
 
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
@@ -104,6 +106,7 @@ _CLI_TIMEOUT = 30.0
 # kind 44100 is Buzz's channel-membership event — used for live DM discovery.
 _WS_AUTH_TIMEOUT = 20.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
+_WS_SUBSCRIBE_DELAY = 0.15
 _WS_MEMBERSHIP_KIND = 44100
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 
@@ -344,6 +347,15 @@ def _parse_json_list(stdout: str) -> List[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _parse_json_object(stdout: str) -> Optional[dict]:
+    """Parse CLI stdout expected to be one JSON object."""
+    try:
+        data = json.loads(stdout or "{}")
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 # ---------------------------------------------------------------------------
 # Buzz Adapter
 # ---------------------------------------------------------------------------
@@ -391,6 +403,37 @@ class BuzzAdapter(BasePlatformAdapter):
         else:
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
+
+        # Optional lifecycle reconciliation between local Hermes profiles and
+        # same-named Buzz channels. Behavioral settings live in config.yaml;
+        # only the Buzz private key remains an environment secret.
+        self.profile_channel_sync = str(extra.get("profile_channel_sync", False)).strip().lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+        )
+        self.profile_channel_adopt_existing = str(
+            extra.get("profile_channel_adopt_existing", False)
+        ).strip().lower() in ("true", "1", "yes", "on")
+        self.profile_channel_archive_on_delete = str(
+            extra.get("profile_channel_archive_on_delete", True)
+        ).strip().lower() not in ("false", "0", "no", "off")
+        try:
+            self.profile_channel_sync_interval = max(
+                5.0,
+                float(extra.get("profile_channel_sync_interval", _PROFILE_CHANNEL_SYNC_INTERVAL)),
+            )
+        except (TypeError, ValueError):
+            self.profile_channel_sync_interval = _PROFILE_CHANNEL_SYNC_INTERVAL
+        profile_state_override = str(extra.get("profile_channel_state_file", "") or "").strip()
+        self._profile_channel_state_file = (
+            Path(profile_state_override).expanduser()
+            if profile_state_override
+            else get_default_hermes_root() / "shared" / "buzz" / "profile-channels.json"
+        )
+        self._profile_channel_sync_lock = asyncio.Lock()
+        self._profile_channel_last_sync = 0.0
 
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
@@ -440,6 +483,277 @@ class BuzzAdapter(BasePlatformAdapter):
     @property
     def name(self) -> str:
         return "Buzz"
+
+    def _profile_channel_scope_key(self) -> str:
+        return f"{self.relay_url}|{self._self_pubkey}"
+
+    def _read_profile_channel_state(self) -> dict:
+        try:
+            data = json.loads(self._profile_channel_state_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"version": 1, "scopes": {}}
+        except (OSError, ValueError) as exc:
+            logger.warning("Buzz: could not read profile-channel state: %s", exc)
+            return {"version": 1, "scopes": {}}
+        if not isinstance(data, dict) or not isinstance(data.get("scopes"), dict):
+            return {"version": 1, "scopes": {}}
+        return data
+
+    def _write_profile_channel_state(self, data: dict) -> bool:
+        tmp = self._profile_channel_state_file.with_name(
+            f".{self._profile_channel_state_file.name}.{os.getpid()}.tmp"
+        )
+        try:
+            self._profile_channel_state_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(tmp, 0o600)
+            tmp.replace(self._profile_channel_state_file)
+            return True
+        except OSError as exc:
+            logger.warning("Buzz: could not persist profile-channel state: %s", exc)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
+
+    @staticmethod
+    def _local_profiles() -> Optional[Dict[str, str]]:
+        """Return canonical profile IDs keyed to rename-stable directories."""
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+
+            entries = profiles_to_serve(True)
+        except Exception as exc:
+            logger.warning("Buzz: could not enumerate Hermes profiles: %s", exc)
+            return None
+
+        result: Dict[str, str] = {}
+        for name, path in entries:
+            try:
+                stat = Path(path).stat()
+                identity = f"{stat.st_dev}:{stat.st_ino}"
+            except OSError:
+                identity = ""
+            result[str(name)] = identity
+        return result
+
+    async def _find_profile_channel(self, name: str) -> Optional[dict]:
+        code, out, _err = await self._run_cli(
+            ["channels", "search", "--query", name, "--exact", "--include-archived"]
+        )
+        if code != 0:
+            return None
+        matches = [
+            item
+            for item in _parse_json_list(out)
+            if str(item.get("name") or "").casefold() == name.casefold()
+            and item.get("channel_id")
+        ]
+        if len(matches) > 1:
+            logger.warning("Buzz: multiple channels exactly match profile %s; skipping", name)
+            return None
+        return matches[0] if matches else None
+
+    async def _list_profile_channels(self) -> Optional[List[dict]]:
+        code, out, _err = await self._run_cli(
+            ["channels", "list", "--limit", "1000"]
+        )
+        return _parse_json_list(out) if code == 0 else None
+
+    async def _sync_profile_channels(self, *, force: bool = False, update_watch: bool = True) -> bool:
+        """Reconcile opt-in managed Buzz channels with local profiles.
+
+        Returns whether the adapter's watched channel set changed.
+        """
+        if not self.profile_channel_sync or not self._self_pubkey:
+            return False
+        now = time.monotonic()
+        if not force and now - self._profile_channel_last_sync < self.profile_channel_sync_interval:
+            return False
+
+        async with self._profile_channel_sync_lock:
+            now = time.monotonic()
+            if not force and now - self._profile_channel_last_sync < self.profile_channel_sync_interval:
+                return False
+            profiles = self._local_profiles()
+            if not profiles:
+                # Never interpret an enumeration failure or empty result as
+                # permission to archive every managed channel.
+                return False
+            listed = await self._list_profile_channels()
+            if listed is None:
+                return False
+            self._profile_channel_last_sync = now
+
+            listed_by_id = {
+                str(item.get("channel_id")): item for item in listed if item.get("channel_id")
+            }
+            listed_names: Dict[str, List[dict]] = {}
+            for item in listed:
+                name = str(item.get("name") or "").casefold()
+                if name:
+                    listed_names.setdefault(name, []).append(item)
+
+            data = self._read_profile_channel_state()
+            scopes = data.setdefault("scopes", {})
+            scope = scopes.setdefault(self._profile_channel_scope_key(), {"profiles": {}})
+            managed = scope.setdefault("profiles", {})
+            if not isinstance(managed, dict):
+                managed = scope["profiles"] = {}
+
+            # `hermes profile rename` preserves the directory identity. Move
+            # its registry entry before evaluating additions and removals.
+            by_identity = {
+                str(entry.get("identity")): old_name
+                for old_name, entry in managed.items()
+                if isinstance(entry, dict) and entry.get("identity")
+            }
+            changed = False
+            watch_changed = False
+            for new_name, identity in profiles.items():
+                old_name = by_identity.get(identity) if identity else None
+                if old_name and old_name != new_name and new_name not in managed:
+                    managed[new_name] = managed.pop(old_name)
+                    changed = True
+
+            for name, identity in profiles.items():
+                entry = managed.get(name)
+                channel: Optional[dict] = None
+                if isinstance(entry, dict) and entry.get("channel_id"):
+                    channel = listed_by_id.get(str(entry["channel_id"]))
+                    if channel is None:
+                        code, out, _err = await self._run_cli(
+                            ["channels", "get", "--channel", str(entry["channel_id"])]
+                        )
+                        if code == 0:
+                            channel = _parse_json_object(out)
+                else:
+                    exact_matches = listed_names.get(name.casefold(), [])
+                    if len(exact_matches) == 1:
+                        channel = exact_matches[0]
+                    elif len(exact_matches) > 1:
+                        logger.warning(
+                            "Buzz: multiple channels exactly match profile %s; skipping", name
+                        )
+                        continue
+                    if channel is None:
+                        channel = await self._find_profile_channel(name)
+                    if channel is not None and not self.profile_channel_adopt_existing:
+                        # Existing same-named channels remain human-managed
+                        # unless adoption is explicitly enabled.
+                        continue
+
+                if channel is None:
+                    code, out, err = await self._run_cli(
+                        [
+                            "channels",
+                            "create",
+                            "--name",
+                            name,
+                            "--type",
+                            "stream",
+                            "--visibility",
+                            "open",
+                            "--description",
+                            f"Hermes profile: {name}",
+                        ]
+                    )
+                    if code != 0:
+                        logger.warning(
+                            "Buzz: could not create channel for profile %s — %s",
+                            name,
+                            _cli_error_message(err, code),
+                        )
+                        continue
+                    created = _parse_json_object(out) or {}
+                    channel_id = str(created.get("channel_id") or "")
+                    if not channel_id:
+                        logger.warning("Buzz: channel create for profile %s returned no id", name)
+                        continue
+                    channel = {
+                        "channel_id": channel_id,
+                        "name": name,
+                        "archived": False,
+                    }
+                    logger.info("Buzz: created managed channel %s for profile %s", channel_id, name)
+
+                channel_id = str(channel.get("channel_id") or "")
+                if not channel_id:
+                    continue
+                if str(channel.get("name") or "") != name:
+                    code, _, err = await self._run_cli(
+                        ["channels", "update", "--channel", channel_id, "--name", name]
+                    )
+                    if code != 0:
+                        logger.warning(
+                            "Buzz: could not rename managed channel %s — %s",
+                            channel_id,
+                            _cli_error_message(err, code),
+                        )
+                        continue
+                was_archived = bool(
+                    channel.get("archived")
+                    or channel.get("is_archived")
+                    or (isinstance(entry, dict) and entry.get("archived"))
+                )
+                if was_archived:
+                    code, _, err = await self._run_cli(
+                        ["channels", "unarchive", "--channel", channel_id]
+                    )
+                    if code != 0:
+                        logger.warning(
+                            "Buzz: could not restore managed channel %s — %s",
+                            channel_id,
+                            _cli_error_message(err, code),
+                        )
+                        continue
+
+                next_entry = {
+                    "channel_id": channel_id,
+                    "identity": identity,
+                    "archived": False,
+                }
+                if managed.get(name) != next_entry:
+                    managed[name] = next_entry
+                    changed = True
+                self._channel_names[channel_id] = name
+                self._channel_meta[channel_id] = channel
+                if update_watch and channel_id not in self._channel_state:
+                    await self._seed_channel(channel_id, chat_type="group")
+                    watch_changed = True
+
+            if self.profile_channel_archive_on_delete:
+                for name, entry in list(managed.items()):
+                    if name in profiles or not isinstance(entry, dict) or entry.get("archived"):
+                        continue
+                    channel_id = str(entry.get("channel_id") or "")
+                    if not channel_id:
+                        continue
+                    code, _, err = await self._run_cli(
+                        ["channels", "archive", "--channel", channel_id]
+                    )
+                    if code != 0:
+                        logger.warning(
+                            "Buzz: could not archive channel for removed profile %s — %s",
+                            name,
+                            _cli_error_message(err, code),
+                        )
+                        continue
+                    entry["archived"] = True
+                    changed = True
+                    if update_watch and self._channel_state.pop(channel_id, None) is not None:
+                        watch_changed = True
+                    self._channel_names.pop(channel_id, None)
+                    self._channel_meta.pop(channel_id, None)
+                    logger.info("Buzz: archived managed channel for removed profile %s", name)
+
+            if changed:
+                self._write_profile_channel_state(data)
+            return watch_changed
 
     # ── buzz-cli plumbing ─────────────────────────────────────────────────
 
@@ -510,6 +824,10 @@ class BuzzAdapter(BasePlatformAdapter):
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
 
+        # Create, restore, or rename managed profile channels before building
+        # the initial watch set. Runtime channel state is populated below.
+        await self._sync_profile_channels(force=True, update_watch=False)
+
         # Map channel ids to names and pick the watch set.
         code, out, err = await self._run_cli(["channels", "list"])
         if code != 0:
@@ -526,7 +844,17 @@ class BuzzAdapter(BasePlatformAdapter):
         for ch in listed:
             if ch.get("channel_id"):
                 self._channel_meta[str(ch["channel_id"])] = ch
-        watch = self.channels or list(self._channel_names)
+        watch = list(self.channels or self._channel_names)
+        if self.profile_channel_sync:
+            state = self._read_profile_channel_state()
+            scope = (state.get("scopes") or {}).get(self._profile_channel_scope_key(), {})
+            managed = scope.get("profiles") if isinstance(scope, dict) else {}
+            for entry in (managed or {}).values():
+                if not isinstance(entry, dict) or entry.get("archived"):
+                    continue
+                channel_id = str(entry.get("channel_id") or "")
+                if channel_id and channel_id not in watch:
+                    watch.append(channel_id)
         if not watch:
             logger.error("Buzz: no channels to watch (configure BUZZ_CHANNELS or join a channel)")
             self._set_fatal_error("config_missing", "no Buzz channels to watch", retryable=False)
@@ -804,10 +1132,17 @@ class BuzzAdapter(BasePlatformAdapter):
         """Subscribe to every watched conversation plus membership events
         (kind 44100 p-tagged to us) for live DM discovery."""
         subscriptions: Dict[str, Optional[str]] = {}
-        for index, channel_id in enumerate(list(self._channel_state)):
-            subscription_id = f"hermes-buzz-{index}"
+        channel_ids = list(self._channel_state)
+        for index, channel_id in enumerate(channel_ids):
+            subscription_id = (
+                f"hermes-buzz-channel-{channel_id}"
+                if self.profile_channel_sync
+                else f"hermes-buzz-{index}"
+            )
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
+            if self.profile_channel_sync and index + 1 < len(channel_ids):
+                await asyncio.sleep(_WS_SUBSCRIBE_DELAY)
         if self._self_pubkey:
             request = [
                 "REQ",
@@ -822,6 +1157,31 @@ class BuzzAdapter(BasePlatformAdapter):
             subscriptions[_WS_MEMBERSHIP_SUB_ID] = None
         return subscriptions
 
+    async def _sync_ws_subscriptions(
+        self, websocket, subscriptions: Dict[str, Optional[str]]
+    ) -> None:
+        """Close removed channel REQs and add newly managed channels."""
+        current = set(self._channel_state)
+        channel_subscriptions = {
+            subscription_id: channel_id
+            for subscription_id, channel_id in subscriptions.items()
+            if channel_id is not None
+        }
+        for subscription_id, channel_id in channel_subscriptions.items():
+            if channel_id in current:
+                continue
+            await websocket.send(json.dumps(["CLOSE", subscription_id], separators=(",", ":")))
+            subscriptions.pop(subscription_id, None)
+
+        subscribed = {channel_id for channel_id in subscriptions.values() if channel_id is not None}
+        added = sorted(current - subscribed)
+        for index, channel_id in enumerate(added):
+            subscription_id = f"hermes-buzz-channel-{channel_id}"
+            subscriptions[subscription_id] = channel_id
+            await self._send_channel_subscription(websocket, subscription_id, channel_id)
+            if index + 1 < len(added):
+                await asyncio.sleep(_WS_SUBSCRIBE_DELAY)
+
     async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
         """A membership event p-tagged to us: rediscover conversations and
         subscribe to any new ones (fresh DMs dispatch from their beginning)."""
@@ -835,6 +1195,35 @@ class BuzzAdapter(BasePlatformAdapter):
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
             logger.info("Buzz: subscribed to new conversation %s", channel_id)
+
+    async def _handle_websocket_frame(
+        self, websocket, subscriptions: Dict[str, Optional[str]], raw: str | bytes
+    ) -> None:
+        try:
+            message = json.loads(raw)
+        except (ValueError, TypeError):
+            logger.warning("Buzz: ignoring malformed WebSocket frame")
+            return
+        if not isinstance(message, list) or not message:
+            return
+        if message[0] == "EVENT" and len(message) >= 3:
+            subscription_id = str(message[1])
+            event = message[2]
+            if not isinstance(event, dict):
+                return
+            if subscription_id == _WS_MEMBERSHIP_SUB_ID:
+                await self._handle_membership_event(websocket, subscriptions, event)
+                return
+            channel_id = subscriptions.get(subscription_id)
+            state = self._channel_state.get(channel_id or "")
+            if channel_id and state is not None:
+                await self._handle_event(channel_id, state, event)
+                self._trim_seen(state)
+        elif message[0] == "CLOSED":
+            detail = message[-1] if len(message) > 2 else "subscription closed"
+            raise ConnectionError(str(detail))
+        elif message[0] == "NOTICE":
+            logger.warning("Buzz: relay notice: %s", message[-1])
 
     async def _websocket_loop(self) -> None:
         """Persistent authenticated subscription with bounded reconnect
@@ -862,32 +1251,24 @@ class BuzzAdapter(BasePlatformAdapter):
                         if self._ws_ready is not None:
                             self._ws_ready.set()
                         backoff = 1.0
-                        async for raw in websocket:
+                        if not self.profile_channel_sync:
+                            async for raw in websocket:
+                                await self._handle_websocket_frame(websocket, subscriptions, raw)
+                            continue
+                        while True:
                             try:
-                                message = json.loads(raw)
-                            except (ValueError, TypeError):
-                                logger.warning("Buzz: ignoring malformed WebSocket frame")
+                                raw = await asyncio.wait_for(
+                                    websocket.recv(), timeout=self.profile_channel_sync_interval
+                                )
+                            except asyncio.TimeoutError:
+                                raw = None
+
+                            watch_changed = await self._sync_profile_channels()
+                            if watch_changed:
+                                await self._sync_ws_subscriptions(websocket, subscriptions)
+                            if raw is None:
                                 continue
-                            if not isinstance(message, list) or not message:
-                                continue
-                            if message[0] == "EVENT" and len(message) >= 3:
-                                subscription_id = str(message[1])
-                                event = message[2]
-                                if not isinstance(event, dict):
-                                    continue
-                                if subscription_id == _WS_MEMBERSHIP_SUB_ID:
-                                    await self._handle_membership_event(websocket, subscriptions, event)
-                                    continue
-                                channel_id = subscriptions.get(subscription_id)
-                                state = self._channel_state.get(channel_id or "")
-                                if channel_id and state is not None:
-                                    await self._handle_event(channel_id, state, event)
-                                    self._trim_seen(state)
-                            elif message[0] == "CLOSED":
-                                detail = message[-1] if len(message) > 2 else "subscription closed"
-                                raise ConnectionError(str(detail))
-                            elif message[0] == "NOTICE":
-                                logger.warning("Buzz: relay notice: %s", message[-1])
+                            await self._handle_websocket_frame(websocket, subscriptions, raw)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -907,6 +1288,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 await asyncio.sleep(self.poll_interval)
                 self._poll_count += 1
                 try:
+                    await self._sync_profile_channels()
                     if self._poll_count % _DM_DISCOVERY_EVERY == 0:
                         await self._discover_dms(seed=False)
                     for channel_id in list(self._channel_state):

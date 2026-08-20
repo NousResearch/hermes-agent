@@ -81,6 +81,10 @@ gateway:
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
         require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
         allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
+        profile_channel_sync: false       # opt in to same-named channels for local Hermes profiles
+        profile_channel_adopt_existing: false # do not manage an existing same-named channel unless explicitly enabled
+        profile_channel_archive_on_delete: true # archive, never delete, channels for removed profiles
+        profile_channel_sync_interval: 30 # seconds between profile lifecycle checks (minimum 5)
 ```
 
 **Why these defaults:**
@@ -91,9 +95,17 @@ gateway:
 - `allowed_users: []` + `allow_all_users: false` — private mode by default. Only listed users can interact. Set `allow_all_users: true` for community mode where everyone can chat (admin tier still restricted to the owner).
 - `require_mention: true` — in channels, the agent only responds when addressed. DMs always dispatch regardless of this setting.
 
+- `profile_channel_sync: false` keeps channel creation and lifecycle management explicitly opt-in.
+
 **Rationale:** Channels are for final results and conversation, not for the agent's internal tool execution log. Users see the final answer, not the steps taken to get there. This matches the behavior on Telegram and email, which already have these defaults.
 
 **Exception:** If you want users to see tool progress (e.g., for long-running operations), set `tool_progress: all` — but `interim_assistant_messages` should still be `false` to avoid spamming with every tool result.
+
+## Profile channel lifecycle sync
+
+Set `profile_channel_sync: true` when each local Hermes profile should have an open Buzz stream channel with the same canonical profile ID. The adapter creates missing channels, preserves the channel UUID across a profile rename, archives the managed channel when a profile is removed, and restores that same channel if the profile returns.
+
+The safety boundary is the local registry at `<default Hermes home>/shared/buzz/profile-channels.json`: only channels created by this feature or explicitly adopted with `profile_channel_adopt_existing: true` can be renamed or archived. An unrelated existing channel with the same name is left untouched by default, and managed channels are archived rather than permanently deleted.
 
 ## Mentions, channels, and DMs
 

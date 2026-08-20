@@ -425,6 +425,309 @@ class TestBuzzAdapterSend:
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
 
+class TestProfileChannelSync:
+
+    def _adapter(self, tmp_path, **extra):
+        return _make_adapter(
+            {
+                "profile_channel_sync": True,
+                "profile_channel_state_file": str(tmp_path / "profile-channels.json"),
+                **extra,
+            }
+        )
+
+    def test_real_profile_enumerator_uses_the_isolated_hermes_root(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / "hermes-home"
+        (hermes_home / "profiles" / "pikachu").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        adapter = self._adapter(tmp_path)
+
+        profiles = adapter._local_profiles()
+
+        assert profiles is not None
+        assert set(profiles) == {"default", "pikachu"}
+        assert profiles["default"]
+        assert profiles["pikachu"]
+
+    @pytest.mark.asyncio
+    async def test_connect_creates_and_watches_a_managed_channel(self, tmp_path, monkeypatch):
+        import gateway.status as gateway_status
+
+        adapter = self._adapter(tmp_path, transport="poll")
+        adapter.cli_path = "/fake/buzz"
+        adapter._local_profiles = lambda: {"default": "1:1"}
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1test")
+        monkeypatch.setattr(gateway_status, "acquire_scoped_lock", lambda *_args: True)
+        cli = _ScriptedCli()
+        cli.script("users", "get", [{"pubkey": SELF_PUBKEY, "display_name": "Chip"}])
+        cli.script("channels", "list", [])
+        cli.script("channels", "list", [{"channel_id": "default-channel", "name": "default"}])
+        cli.script("channels", "list", [{"channel_id": "default-channel", "name": "default"}])
+        cli.script("channels", "search", [])
+        cli.script("channels", "create", {"channel_id": "default-channel"})
+        cli.script("messages", "get", [])
+        cli.script("dms", "list", [])
+        adapter._run_cli = cli
+
+        try:
+            assert await adapter.connect() is True
+            assert "default-channel" in adapter._channel_state
+            assert adapter._channel_names["default-channel"] == "default"
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_creates_one_managed_channel_per_profile(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        adapter._local_profiles = lambda: {"default": "1:1", "pikachu": "1:2"}
+        cli = _ScriptedCli()
+        cli.script("channels", "create", {"channel_id": "default-channel"})
+        cli.script("channels", "create", {"channel_id": "pikachu-channel"})
+        adapter._run_cli = cli
+
+        await adapter._sync_profile_channels()
+
+        state = json.loads(adapter._profile_channel_state_file.read_text(encoding="utf-8"))
+        profiles = state["scopes"][adapter._profile_channel_scope_key()]["profiles"]
+        assert profiles["default"]["channel_id"] == "default-channel"
+        assert profiles["pikachu"]["channel_id"] == "pikachu-channel"
+        create_names = [
+            args[args.index("--name") + 1]
+            for args, _ in cli.calls
+            if args[:2] == ["channels", "create"]
+        ]
+        assert create_names == ["default", "pikachu"]
+        assert all(
+            not (args[:2] == ["channels", "search"] and args[3] == "")
+            for args, _ in cli.calls
+        )
+
+    @pytest.mark.asyncio
+    async def test_removed_profile_archives_only_registered_channel(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        adapter._local_profiles = lambda: {"default": "1:1"}
+        state = {
+            "version": 1,
+            "scopes": {
+                adapter._profile_channel_scope_key(): {
+                    "profiles": {
+                        "default": {
+                            "channel_id": "default-channel",
+                            "identity": "1:1",
+                            "archived": False,
+                        },
+                        "pikachu": {
+                            "channel_id": "pikachu-channel",
+                            "identity": "1:2",
+                            "archived": False,
+                        },
+                    }
+                }
+            },
+        }
+        adapter._write_profile_channel_state(state)
+        cli = _ScriptedCli()
+        cli.script("channels", "get", {"channel_id": "default-channel", "name": "default"})
+        cli.script("channels", "archive", {"accepted": True})
+        adapter._run_cli = cli
+
+        await adapter._sync_profile_channels()
+
+        archive_calls = [args for args, _ in cli.calls if args[:2] == ["channels", "archive"]]
+        assert archive_calls == [["channels", "archive", "--channel", "pikachu-channel"]]
+
+    @pytest.mark.asyncio
+    async def test_enumeration_failure_never_archives_channels(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        adapter._local_profiles = lambda: None
+        state = {
+            "version": 1,
+            "scopes": {
+                adapter._profile_channel_scope_key(): {
+                    "profiles": {
+                        "pikachu": {
+                            "channel_id": "pikachu-channel",
+                            "identity": "1:2",
+                            "archived": False,
+                        }
+                    }
+                }
+            },
+        }
+        adapter._write_profile_channel_state(state)
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+
+        await adapter._sync_profile_channels()
+
+        assert cli.calls == []
+        saved = json.loads(adapter._profile_channel_state_file.read_text(encoding="utf-8"))
+        entry = saved["scopes"][adapter._profile_channel_scope_key()]["profiles"]["pikachu"]
+        assert entry["archived"] is False
+
+    @pytest.mark.asyncio
+    async def test_readded_profile_restores_same_channel(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        adapter._local_profiles = lambda: {"pikachu": "2:9"}
+        state = {
+            "version": 1,
+            "scopes": {
+                adapter._profile_channel_scope_key(): {
+                    "profiles": {
+                        "pikachu": {
+                            "channel_id": "pikachu-channel",
+                            "identity": "1:2",
+                            "archived": True,
+                        }
+                    }
+                }
+            },
+        }
+        adapter._write_profile_channel_state(state)
+        cli = _ScriptedCli()
+        cli.script(
+            "channels",
+            "get",
+            {"channel_id": "pikachu-channel", "name": "pikachu", "archived": True},
+        )
+        cli.script("channels", "unarchive", {"accepted": True})
+        adapter._run_cli = cli
+
+        await adapter._sync_profile_channels()
+
+        assert any(args[:2] == ["channels", "unarchive"] for args, _ in cli.calls)
+        saved = json.loads(adapter._profile_channel_state_file.read_text(encoding="utf-8"))
+        entry = saved["scopes"][adapter._profile_channel_scope_key()]["profiles"]["pikachu"]
+        assert entry == {
+            "channel_id": "pikachu-channel",
+            "identity": "2:9",
+            "archived": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_profile_rename_preserves_channel_uuid(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        adapter._local_profiles = lambda: {"raichu": "1:2"}
+        state = {
+            "version": 1,
+            "scopes": {
+                adapter._profile_channel_scope_key(): {
+                    "profiles": {
+                        "pikachu": {
+                            "channel_id": "same-channel",
+                            "identity": "1:2",
+                            "archived": False,
+                        }
+                    }
+                }
+            },
+        }
+        adapter._write_profile_channel_state(state)
+        cli = _ScriptedCli()
+        cli.script(
+            "channels",
+            "get",
+            {"channel_id": "same-channel", "name": "pikachu", "archived": False},
+        )
+        cli.script("channels", "update", {"accepted": True})
+        adapter._run_cli = cli
+
+        await adapter._sync_profile_channels()
+
+        assert any(
+            args == ["channels", "update", "--channel", "same-channel", "--name", "raichu"]
+            for args, _ in cli.calls
+        )
+        saved = json.loads(adapter._profile_channel_state_file.read_text(encoding="utf-8"))
+        profiles = saved["scopes"][adapter._profile_channel_scope_key()]["profiles"]
+        assert "pikachu" not in profiles
+        assert profiles["raichu"]["channel_id"] == "same-channel"
+
+    @pytest.mark.asyncio
+    async def test_existing_channel_is_not_adopted_without_opt_in(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        adapter._local_profiles = lambda: {"pikachu": "1:2"}
+        cli = _ScriptedCli()
+        cli.script("channels", "list", [{"channel_id": "human-channel", "name": "pikachu"}])
+        adapter._run_cli = cli
+
+        await adapter._sync_profile_channels()
+
+        assert not any(args[:2] == ["channels", "create"] for args, _ in cli.calls)
+        assert not adapter._profile_channel_state_file.exists()
+
+
+class TestBuzzWebSocketSubscriptions:
+
+    @pytest.mark.asyncio
+    async def test_default_subscription_contract_is_unchanged(self):
+        adapter = _make_adapter()
+        adapter._channel_state = {CHANNEL: {"last_ts": 1000}}
+        websocket = MagicMock()
+        websocket.send = AsyncMock()
+
+        subscriptions = await adapter._subscribe_websocket(websocket)
+
+        assert subscriptions["hermes-buzz-0"] == CHANNEL
+        assert f"hermes-buzz-channel-{CHANNEL}" not in subscriptions
+
+    @pytest.mark.asyncio
+    async def test_each_channel_has_an_independent_paced_subscription(self, monkeypatch):
+        adapter = _make_adapter({"profile_channel_sync": True})
+        second_channel = "11111111-2222-3333-4444-555555555555"
+        adapter._channel_state = {
+            CHANNEL: {"last_ts": 1000},
+            second_channel: {"last_ts": 2000},
+        }
+        websocket = MagicMock()
+        websocket.send = AsyncMock()
+        sleep = AsyncMock()
+        monkeypatch.setattr(_buzz_mod.asyncio, "sleep", sleep)
+
+        subscriptions = await adapter._subscribe_websocket(websocket)
+
+        frames = [json.loads(call.args[0]) for call in websocket.send.await_args_list]
+        channel_frames = [
+            frame for frame in frames if frame[1].startswith("hermes-buzz-channel-")
+        ]
+        assert len(channel_frames) == 2
+        assert all(len(frame) == 3 for frame in channel_frames)
+        assert subscriptions[f"hermes-buzz-channel-{CHANNEL}"] == CHANNEL
+        assert subscriptions[f"hermes-buzz-channel-{second_channel}"] == second_channel
+        sleep.assert_awaited_once_with(_buzz_mod._WS_SUBSCRIBE_DELAY)
+
+    @pytest.mark.asyncio
+    async def test_sync_only_closes_removed_and_opens_added_channels(self):
+        adapter = _make_adapter()
+        removed_channel = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        added_channel = "11111111-2222-3333-4444-555555555555"
+        adapter._channel_state = {
+            CHANNEL: {"last_ts": 1000},
+            added_channel: {"last_ts": 2000},
+        }
+        subscriptions = {
+            f"hermes-buzz-channel-{CHANNEL}": CHANNEL,
+            f"hermes-buzz-channel-{removed_channel}": removed_channel,
+            "hermes-buzz-membership": None,
+        }
+        websocket = MagicMock()
+        websocket.send = AsyncMock()
+
+        await adapter._sync_ws_subscriptions(websocket, subscriptions)
+
+        frames = [json.loads(call.args[0]) for call in websocket.send.await_args_list]
+        assert ["CLOSE", f"hermes-buzz-channel-{removed_channel}"] in frames
+        assert any(
+            frame[0:2] == ["REQ", f"hermes-buzz-channel-{added_channel}"]
+            for frame in frames
+        )
+        assert subscriptions[f"hermes-buzz-channel-{CHANNEL}"] == CHANNEL
+        assert subscriptions[f"hermes-buzz-channel-{added_channel}"] == added_channel
+        assert f"hermes-buzz-channel-{removed_channel}" not in subscriptions
+
+
 class TestBuzzAdapterLifecycle:
 
 

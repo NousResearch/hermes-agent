@@ -41,7 +41,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -254,10 +253,25 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         logger.debug("Unclean-exit detection failed", exc_info=True)
 
     try:
+        # Same clock source as _pid_alive_with_start_time: get_process_start_time
+        # (Linux: /proc/<pid>/stat field 22, ticks since boot; macOS/Windows:
+        # psutil epoch-centiseconds). The previous time.time() (epoch seconds)
+        # never matched the Linux ticks value (~1.7e9 apart), so every
+        # --replace handoff misreported the previous gateway as an unclean exit.
+        from gateway.status import get_process_start_time
+
+        start_time = get_process_start_time(os.getpid())
+    except Exception:
+        # err on "alive" in _pid_alive_with_start_time; debug-log so a real
+        # regression in get_process_start_time is not silently masked
+        # (#86818 review).
+        logger.debug("Failed to read process start time", exc_info=True)
+        start_time = None
+    try:
         claim: Dict[str, Any] = {
             "phase": "running",
             "pid": os.getpid(),
-            "start_time": time.time(),
+            "start_time": start_time,
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
         # Carry the verdict on the PREVIOUS life forward on the new

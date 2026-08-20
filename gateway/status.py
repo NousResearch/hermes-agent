@@ -343,6 +343,27 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
+def _parse_proc_stat_start_time(stat_text: str) -> Optional[int]:
+    """Field 22 (start time in clock ticks) from ``/proc/<pid>/stat``.
+
+    ``comm`` (field 2, parenthesized) can contain spaces and right parens,
+    so plain whitespace splitting shifts every later field index — and if
+    the shifted index lands on a volatile field (e.g. the processor number,
+    which changes with CPU migration), two reads of the same live process
+    can yield different values. ``comm`` is the only parenthesized field, so
+    split on the LAST ``)`` and index the tail (the same approach
+    ``gateway/drain_control.py`` documents and uses).
+
+    Returns None on any malformed input.
+    """
+    try:
+        tail = stat_text.rsplit(")", 1)[1].split()
+        # tail starts at field 3, so field 22 == tail index 19.
+        return int(tail[19])
+    except (IndexError, ValueError):
+        return None
+
+
 def _get_process_start_time(pid: int) -> Optional[int]:
     """Return a stable per-process start-time fingerprint, or None.
 
@@ -363,9 +384,12 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])
-    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        parsed = _parse_proc_stat_start_time(
+            stat_path.read_text(encoding="utf-8")
+        )
+        if parsed is not None:
+            return parsed
+    except (FileNotFoundError, PermissionError, OSError):
         pass
 
     # No /proc (macOS / Windows): psutil is a hard dependency and exposes a

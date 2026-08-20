@@ -214,3 +214,69 @@ def test_prior_exit_label_survives_corrupt_sentinel(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("garbage", encoding="utf-8")
     assert read_prior_exit_label(tmp_path) == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# start_time clock-source consistency (#86469)
+# ---------------------------------------------------------------------------
+
+
+def test_record_startup_stores_same_clock_source_as_comparison(tmp_path: Path, monkeypatch) -> None:
+    """record_startup must persist get_process_start_time(os.getpid()) — the
+    same source _pid_alive_with_start_time reads back — not time.time()
+    (epoch seconds), which never matches Linux's /proc clock ticks and made
+    every --replace handoff look like an unclean exit."""
+    from gateway.lifecycle_ledger import _pid_alive_with_start_time
+
+    record_startup(home=tmp_path)
+    sentinel = _read_sentinel(tmp_path)
+
+    assert "start_time" in sentinel
+    assert sentinel["start_time"] is not None
+    # The stored value must equal what the comparison side reads for this
+    # same process — that is the invariant that keeps the ≤2s check honest.
+    from gateway.status import get_process_start_time
+
+    assert sentinel["start_time"] == get_process_start_time(os.getpid())
+    assert _pid_alive_with_start_time(os.getpid(), sentinel["start_time"]) is True
+
+
+def test_record_startup_falls_back_to_none_when_fingerprint_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A None start_time is the safe degraded state: _pid_alive_with_start_time
+    errs on 'alive' rather than reporting a live owner as dead."""
+    import gateway.lifecycle_ledger as ledger
+
+    monkeypatch.setattr(
+        "gateway.status.get_process_start_time", lambda pid: None
+    )
+    record_startup(home=tmp_path)
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["start_time"] is None
+
+    # A None stored value must not cause a false unclean-exit report for a
+    # live process: the takeover path treats it as "can't disambiguate —
+    # assume alive".
+    from gateway.lifecycle_ledger import _pid_alive_with_start_time
+
+    assert _pid_alive_with_start_time(os.getpid(), None) is True
+
+
+def test_mismatched_clock_sources_fail_the_two_second_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Shape of #86469: time.time() (epoch seconds) and /proc clock ticks are
+    ~1.7e9 apart, so a sentinel written from a different clock source than the
+    comparison reads fails the ≤2s check and a live owner is misreported as
+    an unclean exit. Same-source values must match within tolerance."""
+    from gateway.lifecycle_ledger import _pid_alive_with_start_time
+
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    # Comparison side reads a ticks-like fingerprint (Linux /proc field 22).
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 1755200000)
+
+    # Epoch seconds (the pre-fix record_startup value): far apart → dead.
+    assert _pid_alive_with_start_time(os.getpid(), 1755200000.0 + 1000.0) is False
+    # Same-source value → alive (planned takeover, not an unclean death).
+    assert _pid_alive_with_start_time(os.getpid(), 1755200000) is True

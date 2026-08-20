@@ -366,6 +366,45 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_message"] is None
 
 
+class TestParseProcStatStartTime:
+    """Field 22 of /proc/<pid>/stat is start time (clock ticks since boot).
+
+    comm (field 2, parenthesized) can contain spaces and right parens, so a
+    plain whitespace split shifts every later field index — parsing must
+    split on the LAST ')' and index the tail (drain_control.py convention).
+    """
+
+    @staticmethod
+    def _stat_line(comm: str, starttime: int) -> str:
+        # Fields 3..21 (19 values: state … itrealvalue), then field 22.
+        tail = [
+            "S", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+            "10", "11", "12", "13", "14", "15", "16", "17", "18",
+        ]
+        return f"42 ({comm}) " + " ".join(tail) + f" {starttime} 23"
+
+    def test_plain_comm(self):
+        stat = self._stat_line("python", 12345)
+        assert status._parse_proc_stat_start_time(stat) == 12345
+
+    def test_comm_with_spaces(self):
+        # Whitespace-splitting would read field 22 as "77777" shifted to an
+        # earlier index (or worse, land on the volatile processor field).
+        stat = self._stat_line("my agent (worker)", 77777)
+        assert status._parse_proc_stat_start_time(stat) == 77777
+
+    def test_comm_with_parens_and_spaces(self):
+        stat = self._stat_line("cmd (sub) proc) )", 99999)
+        assert status._parse_proc_stat_start_time(stat) == 99999
+
+    def test_malformed_returns_none(self):
+        assert status._parse_proc_stat_start_time("no parens at all") is None
+        assert status._parse_proc_stat_start_time("42 (x) S 1 2") is None  # too short
+        # tail[19] (field 22) is not an int → ValueError path
+        stat = "42 (x) S " + " ".join(["1"] * 18) + " nope 23"
+        assert status._parse_proc_stat_start_time(stat) is None
+
+
 class TestGetProcessStartTime:
     """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).
 

@@ -11,6 +11,19 @@ can be unit-tested without importing the whole CLI runtime.
 
 from __future__ import annotations
 
+# kitty CSI-u ORs lock-key state into the modifier parameter of every key
+# event while a lock is on: CapsLock=64, NumLock=128, both=192 (#88221,
+# #89651).  Every fixed-modifier CSI-u (and legacy CSI-tilde / CSI-letter)
+# registration therefore needs lock-offset twins, or those events leak into
+# the prompt as literal text.  The xterm modifyOtherKeys ``ESC[27;N;CP~``
+# encoding never carries lock bits, so it never gets the twins.
+_LOCK_BIT_OFFSETS = (0, 64, 128, 192)
+
+
+def _lock_variants(modifier: int) -> tuple[int, ...]:
+    """Return ``modifier`` plus its CapsLock/NumLock/both twins."""
+    return tuple(modifier + off for off in _LOCK_BIT_OFFSETS)
+
 
 def _clear_vt100_prefix_cache() -> None:
     """Drop prompt_toolkit's memoized "is this a prefix of a longer match?"
@@ -62,7 +75,9 @@ def install_shift_enter_alias() -> int:
 
     alt_enter = (Keys.Escape, Keys.ControlM)
     changed = 0
-    for seq in ("\x1b[13;2u", "\x1b[27;2;13~", "\x1b[27;2;13u"):
+    seqs = [f"\x1b[13;{m}u" for m in _lock_variants(2)]
+    seqs += ["\x1b[27;2;13~", "\x1b[27;2;13u"]
+    for seq in seqs:
         if ANSI_SEQUENCES.get(seq) != alt_enter:
             ANSI_SEQUENCES[seq] = alt_enter
             changed += 1
@@ -96,7 +111,9 @@ def install_ctrl_enter_alias() -> int:
 
     alt_enter = (Keys.Escape, Keys.ControlM)
     changed = 0
-    for seq in ("\x1b[13;5u", "\x1b[27;5;13~", "\x1b[27;5;13u"):
+    seqs = [f"\x1b[13;{m}u" for m in _lock_variants(5)]
+    seqs += ["\x1b[27;5;13~", "\x1b[27;5;13u"]
+    for seq in seqs:
         if ANSI_SEQUENCES.get(seq) != alt_enter:
             ANSI_SEQUENCES[seq] = alt_enter
             changed += 1
@@ -133,13 +150,12 @@ def install_cmd_backspace_alias() -> int:
     except Exception:
         return 0
 
-    aliases = {
-        "\x1b[127;9u": Keys.ControlU,
-        "\x1b[127;10u": Keys.ControlU,
-        "\x1b[27;9;127~": Keys.ControlU,
-        "\x1b[3;9~": Keys.ControlK,
-        "\x1b[3;10~": Keys.ControlK,
-    }
+    aliases: dict[str, object] = {}
+    for base in (9, 10):  # super / super+shift
+        for mod in _lock_variants(base):
+            aliases[f"\x1b[127;{mod}u"] = Keys.ControlU
+            aliases[f"\x1b[3;{mod}~"] = Keys.ControlK
+    aliases["\x1b[27;9;127~"] = Keys.ControlU
     changed = 0
     for seq, key in aliases.items():
         if ANSI_SEQUENCES.get(seq) != key:
@@ -256,16 +272,14 @@ def install_modify_other_keys_aliases() -> int:
     # a lock is on (#89651) unless the lock variants are mapped too. The
     # xterm modifyOtherKeys encoding never carries the lock bits, so only
     # the CSI-u form needs them.
-    _CSI_U_LOCK_BIT_VARIANTS = (0, 64, 128, 192)
-
     def _install_paired(modifier: int, mapping: dict) -> None:
         """Install both modifyOtherKeys (ESC[27;N;CP~) and CSI-u (ESC[CP;Nu)
         mappings for the given modifier and codepoint→key mapping."""
         nonlocal changed
         for codepoint, key_val in mapping.items():
             seqs = [f"\x1b[27;{modifier};{codepoint}~"]
-            for lock_bits in _CSI_U_LOCK_BIT_VARIANTS:
-                seqs.append(f"\x1b[{codepoint};{modifier + lock_bits}u")
+            for mod in _lock_variants(modifier):
+                seqs.append(f"\x1b[{codepoint};{mod}u")
             for seq in seqs:
                 if seq not in ANSI_SEQUENCES:
                     ANSI_SEQUENCES[seq] = key_val
@@ -341,7 +355,7 @@ def install_modify_other_keys_aliases() -> int:
     for seq in ["\x1b[27u"] + [
         f"\x1b[27;{m + lock_bits}u"
         for m in range(1, 17)
-        for lock_bits in _CSI_U_LOCK_BIT_VARIANTS
+        for lock_bits in _LOCK_BIT_OFFSETS
     ]:
         if seq not in ANSI_SEQUENCES:
             ANSI_SEQUENCES[seq] = Keys.Escape
@@ -366,55 +380,55 @@ def install_modify_other_keys_aliases() -> int:
                                             # matching Ink TUI + Desktop (#78285)
     })
 
-    # -- Lock-key modifier bits (NumLock=128, CapsLock=64) under the kitty
-    # disambiguate push: kitty encodes lock state into the CSI sequence, so
-    # a plain Down with NumLock on arrives as ESC[1;129B (NumLock), ESC[1;65B
-    # (CapsLock) or ESC[1;193B (both) instead of the legacy ESC[B that stock
-    # prompt_toolkit maps. Those fall through the parser and leak as literal
-    # text ("[1;129B") in the input line. Map them to the plain key; the
-    # +shift variants (130/66/194) to the Shift* keys.
-    lock_plain = (129, 65, 193)
-    lock_shift = (130, 66, 194)
-    for mod in lock_plain:
-        for trailer, key in (
-            ("A", Keys.Up), ("B", Keys.Down), ("C", Keys.Right), ("D", Keys.Left),
-            ("H", Keys.Home), ("F", Keys.End),
-        ):
-            seq = f"\x1b[1;{mod}{trailer}"
-            if seq not in ANSI_SEQUENCES:
-                ANSI_SEQUENCES[seq] = key
-                changed += 1
-        for num, key in (
-            (2, Keys.Insert), (3, Keys.Delete), (5, Keys.PageUp), (6, Keys.PageDown),
-        ):
-            seq = f"\x1b[{num};{mod}~"
-            if seq not in ANSI_SEQUENCES:
-                ANSI_SEQUENCES[seq] = key
-                changed += 1
-        for cp, key in (
-            (13, Keys.ControlM),   # Enter
-            (9, Keys.Tab),         # Tab
-            (127, Keys.Backspace),  # Backspace
-            (32, " "),             # Space
-        ):
-            seq = f"\x1b[{cp};{mod}u"
-            if seq not in ANSI_SEQUENCES:
-                ANSI_SEQUENCES[seq] = key
-                changed += 1
-    for mod in lock_shift:
-        for trailer, key in (
-            ("A", Keys.ShiftUp), ("B", Keys.ShiftDown), ("C", Keys.ShiftRight),
-            ("D", Keys.ShiftLeft), ("H", Keys.ShiftHome), ("F", Keys.ShiftEnd),
-        ):
-            seq = f"\x1b[1;{mod}{trailer}"
-            if seq not in ANSI_SEQUENCES:
-                ANSI_SEQUENCES[seq] = key
-                changed += 1
-        for num, key in ((2, Keys.ShiftInsert), (3, Keys.ShiftDelete)):
-            seq = f"\x1b[{num};{mod}~"
-            if seq not in ANSI_SEQUENCES:
-                ANSI_SEQUENCES[seq] = key
-                changed += 1
+    # -- Unmodified keys with a lock bit set (kitty modifier 1 = "none") --
+    # With a lock on, kitty stamps the lock bit onto keys pressed with NO
+    # real modifier too, so plain Backspace arrives as ESC[127;129u
+    # (1 + 128) rather than \x7f. _install_paired(1, ...) registers the
+    # bare mod-1 spelling and its lock twins. Only keys kitty CSI-u-encodes
+    # on their own are listed; plain text characters are still delivered
+    # as UTF-8, lock bits or not.
+    _install_paired(1, {
+        9: Keys.ControlI,     # Tab
+        13: Keys.ControlM,    # Enter
+        32: " ",              # Space
+        127: Keys.ControlH,   # Backspace
+    })
+
+    # -- Lock-key modifier bits (NumLock=128, CapsLock=64) on the legacy
+    # CSI-letter / CSI-tilde forms kitty keeps using under the disambiguate
+    # push: kitty encodes lock state into the modifier parameter, so a
+    # plain Down with NumLock on arrives as ESC[1;129B (NumLock), ESC[1;65B
+    # (CapsLock) or ESC[1;193B (both) instead of the legacy ESC[B — and a
+    # modified one shifts the same way (Alt+Left → ESC[1;131D). Those fall
+    # through the parser and leak as literal text ("[1;129B") in the input
+    # line. Derive the lock twins from whatever the table already maps for
+    # the base modifier (stock prompt_toolkit entries included), so every
+    # modifier the terminal can report keeps working under a lock.
+    for m in range(1, 17):
+        for lock in _LOCK_BIT_OFFSETS[1:]:
+            # CSI-letter navigation: Up/Down/Right/Left/End/Home + F1-F4
+            for trailer in "ABCDFHPQRS":
+                base_seq = f"\x1b[1;{m}{trailer}" if m > 1 else f"\x1b[{trailer}"
+                key = ANSI_SEQUENCES.get(base_seq)
+                if key is None and m == 1:
+                    # Plain F1-F4 live in the table as SS3 (ESC O P) forms.
+                    key = ANSI_SEQUENCES.get(f"\x1bO{trailer}")
+                if key is None:
+                    continue
+                seq = f"\x1b[1;{m + lock}{trailer}"
+                if seq not in ANSI_SEQUENCES:
+                    ANSI_SEQUENCES[seq] = key
+                    changed += 1
+            # CSI-tilde navigation: Insert/Delete/PageUp/PageDown/Home/End
+            for num in (1, 2, 3, 4, 5, 6, 7, 8):
+                base_seq = f"\x1b[{num};{m}~" if m > 1 else f"\x1b[{num}~"
+                key = ANSI_SEQUENCES.get(base_seq)
+                if key is None:
+                    continue
+                seq = f"\x1b[{num};{m + lock}~"
+                if seq not in ANSI_SEQUENCES:
+                    ANSI_SEQUENCES[seq] = key
+                    changed += 1
 
     # -- Kitty functional keys (Private Use Area codepoints) ----
     # kitty emits these CSI-u encodings even in LEGACY mode for keys that
@@ -450,6 +464,12 @@ def install_modify_other_keys_aliases() -> int:
         if seq not in ANSI_SEQUENCES:
             ANSI_SEQUENCES[seq] = key_val
             changed += 1
+        # Lock twins: with a lock on these arrive as ESC[<code>;129u etc.
+        for mod in _lock_variants(1)[1:]:
+            seq = f"\x1b[{code};{mod}u"
+            if seq not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq] = key_val
+                changed += 1
 
     # New longer sequences can flip "is this a prefix of a longer match?"
     # answers the VT100 parser already cached — drop the cache so parsers

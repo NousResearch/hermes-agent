@@ -492,3 +492,71 @@ def test_modify_other_keys_tilde_form_has_no_lock_variants():
     +64/+128 variants of the ESC[27;N;CP~ form may be installed."""
     for seq in ("\x1b[27;69;99~", "\x1b[27;133;99~", "\x1b[27;197;99~"):
         assert seq not in ANSI_SEQUENCES
+
+
+# ---------------------------------------------------------------------------
+# Follow-up widening: lock twins on the alias installers, legacy CSI-letter /
+# CSI-tilde navigation, unmodified CSI-u keys, and PUA functional keys.
+# ---------------------------------------------------------------------------
+
+
+def test_lock_bits_on_legacy_cursor_keys_map_to_plain_keys():
+    """kitty stamps lock bits onto legacy CSI-letter arrows too:
+    plain Down + NumLock = ESC[1;129B, CapsLock = ESC[1;65B, both = 193."""
+    for mod, key in ((129, Keys.Down), (65, Keys.Down), (193, Keys.Down)):
+        assert _parse(f"\x1b[1;{mod}B") == [key]
+    assert _parse("\x1b[1;130B") == [Keys.ShiftDown]   # Shift + NumLock
+    assert _parse("\x1b[1;131D") == [Keys.Escape, Keys.Left]  # Alt + NumLock
+    assert _parse("\x1b[1;133D") == [Keys.ControlLeft]        # Ctrl + NumLock
+
+
+def test_lock_bits_on_tilde_navigation_keys():
+    """Delete/PageUp/etc. carry the modifier in CSI-tilde form."""
+    assert _parse("\x1b[3;129~") == [Keys.Delete]
+    assert _parse("\x1b[3;69~") == [Keys.ControlDelete]   # Ctrl+Delete + Caps
+    assert _parse("\x1b[5;193~") == [Keys.PageUp]         # both locks
+
+
+def test_lock_bits_on_plain_f1_through_f4():
+    """Plain F1-F4 base mappings are SS3 (ESC O P); their CSI lock twins
+    must still resolve (ESC[1;129P etc.)."""
+    base = _parse("\x1bOP")
+    assert _parse("\x1b[1;129P") == base
+    assert _parse("\x1b[1;65P") == base
+
+
+def test_lock_bits_on_unmodified_csi_u_keys():
+    """Tab/Enter/Space/Backspace with only a lock held (modifier 1+lock)."""
+    assert _parse("\x1b[9;65u") == _parse("\t")
+    assert _parse("\x1b[13;193u") == _parse("\r")
+    assert _parse("\x1b[32;129u") == _parse(" ")
+    assert _parse("\x1b[127;129u") == _parse("\x7f")
+
+
+def test_lock_bits_on_pua_functional_keys():
+    """Kitty PUA functional keys (keypad, F13+) keep working under locks —
+    NumLock especially matters because it gates the keypad itself."""
+    assert _parse("\x1b[57399;129u") == ["0"]        # KP_0 + NumLock
+    assert _parse("\x1b[57376;129u") == [Keys.F13]   # F13 + NumLock
+    assert _parse("\x1b[57427;129u") == [Keys.Ignore]  # KP_BEGIN + NumLock
+
+
+def test_lock_bits_on_shift_enter_and_ctrl_enter_aliases():
+    from hermes_cli.pt_input_extras import (
+        install_ctrl_enter_alias,
+        install_shift_enter_alias,
+    )
+    install_shift_enter_alias()
+    install_ctrl_enter_alias()
+    newline = _parse("\x1b\r")
+    assert _parse("\x1b[13;130u") == newline   # Shift+Enter + NumLock
+    assert _parse("\x1b[13;66u") == newline    # Shift+Enter + CapsLock
+    assert _parse("\x1b[13;133u") == newline   # Ctrl+Enter + NumLock
+
+
+def test_lock_bits_on_cmd_backspace_alias():
+    from hermes_cli.pt_input_extras import install_cmd_backspace_alias
+    install_cmd_backspace_alias()
+    assert _parse("\x1b[127;137u") == [Keys.ControlU]  # Cmd+Backspace + NumLock
+    assert _parse("\x1b[127;73u") == [Keys.ControlU]   # Cmd+Backspace + Caps
+    assert _parse("\x1b[3;137~") == [Keys.ControlK]    # Cmd+FwdDel + NumLock

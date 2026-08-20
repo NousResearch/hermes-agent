@@ -4432,6 +4432,41 @@ class SlackAdapter(BasePlatformAdapter):
             )
         return text
 
+    def _own_bot_name(self, team_id: str = "") -> str:
+        """This bot's display name in ``team_id`` (empty when not resolved yet).
+
+        Workspace-scoped: :attr:`_team_bot_names` is filled per team at connect
+        time, with :attr:`_bot_display_name` as the primary-workspace fallback.
+        No Slack call — both are already in memory.
+        """
+        return (
+            (team_id and self._team_bot_names.get(team_id))
+            or self._bot_display_name
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _render_own_mention(text: str, bot_uid: str, bot_name: str) -> str:
+        """Render this bot's own ``<@id>`` tokens as ``@DisplayName``, in place.
+
+        Used when ``strip_bot_mentions`` is off: the mention stays where the
+        author put it, in the same shape :meth:`_humanize_user_mentions` gives
+        mentions of other participants, so the agent reads an ordinary tag
+        rather than a synthetic marker. Handles the labelled ``<@U123|name>``
+        form too. With no known display name the raw token is left untouched —
+        an unresolved id still beats a deleted mention.
+        """
+        if not text or not bot_uid or not bot_name:
+            return text
+        # Callable replacement: a display name is arbitrary user data, and a
+        # backslash in it would be read as a group reference and raise
+        # re.error, dropping the message.
+        return re.sub(
+            rf"<@{re.escape(bot_uid)}(?:\|[^>]*)?>",
+            lambda _m: f"@{bot_name}",
+            text,
+        ).strip()
+
     def _build_identity_prompt(self, team_id: str = "") -> str:
         """Return an ephemeral system-prompt line grounding the bot's identity.
 
@@ -4445,11 +4480,7 @@ class SlackAdapter(BasePlatformAdapter):
         (see :meth:`_humanize_user_mentions`), so naming the bot's own display
         name here gives the agent a positive anchor for "that's me."
         """
-        name = (
-            (team_id and self._team_bot_names.get(team_id))
-            or self._bot_display_name
-            or ""
-        ).strip()
+        name = self._own_bot_name(team_id)
         if not name:
             return ""
         return (
@@ -6238,8 +6269,17 @@ class SlackAdapter(BasePlatformAdapter):
                     return
 
         if is_mentioned:
-            # Strip the bot mention from the text
-            text = text.replace(f"<@{bot_uid}>", "").strip()
+            if self._slack_strip_bot_mentions():
+                # Strip the bot mention from the text
+                text = text.replace(f"<@{bot_uid}>", "").strip()
+            else:
+                # Keep it, rendered like any other participant's mention
+                # (@DisplayName), so the agent can tell an explicit tag from a
+                # channel/thread-routed wake-up. Routing already happened above
+                # and is unaffected.
+                text = self._render_own_mention(
+                    text, bot_uid, self._own_bot_name(team_id)
+                )
             # Re-run command normalization against the canonical Slack text,
             # not the block-augmented agent text. Otherwise quoted/forwarded
             # rich-text payload can become accidental command arguments.
@@ -6787,10 +6827,12 @@ class SlackAdapter(BasePlatformAdapter):
                 reply_to_text = None
 
         # Humanize remaining user mentions: the bot's own mention was already
-        # stripped above, so any ``<@UID>`` left in the trigger text refers to
-        # OTHER participants. Render them as ``@DisplayName`` so the agent can
-        # tell who is being addressed and never mistakes a human's mention for
-        # a mention of itself (the "bot thinks it's @someone-else" bug).
+        # stripped (or rendered as ``@DisplayName``) above, so any ``<@UID>``
+        # left in the trigger text refers to OTHER participants — except the
+        # bot's own token when its display name is not resolved yet. Render
+        # them as ``@DisplayName`` so the agent can tell who is being addressed
+        # and never mistakes a human's mention for a mention of itself (the
+        # "bot thinks it's @someone-else" bug).
         # Mirrors Discord's clean_content. channel_context (thread backfill)
         # already renders senders by display name via _format_thread_context.
         text = await self._humanize_user_mentions(
@@ -7638,7 +7680,12 @@ class SlackAdapter(BasePlatformAdapter):
     # ----- Thread context fetching -----
 
     @staticmethod
-    def _render_message_text(msg: dict, bot_uid: str = "") -> str:
+    def _render_message_text(
+        msg: dict,
+        bot_uid: str = "",
+        strip_bot_mention: bool = True,
+        bot_name: str = "",
+    ) -> str:
         """Return bounded display text for a Slack message, surfacing Block Kit content.
 
         Starts with ``text``, strips bot mentions, then appends rich-text
@@ -7648,16 +7695,27 @@ class SlackAdapter(BasePlatformAdapter):
         readable text and URL list needed by thread-context and parent-
         text rendering — bounded by what the blocks actually contain,
         not a JSON dump.
+
+        With ``strip_bot_mention=False`` the bot's own mention is rendered as
+        ``@bot_name`` instead of deleted. Block content is then compared
+        against the text as written, since the blocks carry the raw token.
         """
-        msg_text = (msg.get("text") or "").strip()
+        raw_text = (msg.get("text") or "").strip()
+        msg_text = raw_text
         if bot_uid:
-            msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+            if strip_bot_mention:
+                msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+            else:
+                msg_text = SlackAdapter._render_own_mention(
+                    msg_text, bot_uid, bot_name
+                )
+        dedupe_text = msg_text if strip_bot_mention else raw_text
 
         blocks = msg.get("blocks")
         extras: list[str] = []
         if blocks:
             rich_text = _extract_text_from_slack_blocks(blocks).strip()
-            if rich_text and rich_text not in msg_text:
+            if rich_text and rich_text not in dedupe_text:
                 extras.append(rich_text)
             for block in blocks:
                 block_type = (block or {}).get("type", "")
@@ -7665,7 +7723,7 @@ class SlackAdapter(BasePlatformAdapter):
                     text_obj = block.get("text") or {}
                     if isinstance(text_obj, dict):
                         section_text = (text_obj.get("text") or "").strip()
-                        if section_text and section_text not in msg_text and all(section_text not in e for e in extras):
+                        if section_text and section_text not in dedupe_text and all(section_text not in e for e in extras):
                             extras.append(section_text)
         # Legacy ``attachments`` (Alertmanager, Grafana, PagerDuty, CI bots):
         # apps often post with an empty ``text`` and the real content in
@@ -7673,13 +7731,13 @@ class SlackAdapter(BasePlatformAdapter):
         attachments_text = _extract_text_from_slack_attachments(
             msg.get("attachments") or []
         ).strip()
-        if attachments_text and attachments_text not in msg_text and all(
+        if attachments_text and attachments_text not in dedupe_text and all(
             attachments_text not in e for e in extras
         ):
             extras.append(attachments_text)
         if blocks:
             urls = _extract_urls_from_slack_blocks(blocks)
-            new_urls = [u for u in urls if u not in msg_text and all(u not in e for e in extras)]
+            new_urls = [u for u in urls if u not in dedupe_text and all(u not in e for e in extras)]
             if new_urls:
                 extras.append("URLs: " + ", ".join(new_urls))
         # Surface file/image attachments as compact text markers. The
@@ -7869,6 +7927,10 @@ class SlackAdapter(BasePlatformAdapter):
         from gateway.session import neutralize_untrusted_inline_text
 
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        # Thread history follows the same mention policy as the current
+        # message, otherwise past turns read as "nobody ever tagged me".
+        strip_bot_mention = self._slack_strip_bot_mentions()
+        bot_name = "" if strip_bot_mention else self._own_bot_name(team_id)
         context_parts = []
         parent_text = ""
         for msg in messages:
@@ -7912,13 +7974,22 @@ class SlackAdapter(BasePlatformAdapter):
                 and msg_user == self_bot_uid
             )
 
-            msg_text = self._render_message_text(msg, bot_uid=bot_uid)
+            msg_text = self._render_message_text(
+                msg,
+                bot_uid=bot_uid,
+                strip_bot_mention=strip_bot_mention,
+                bot_name=bot_name,
+            )
             if not msg_text:
                 continue
 
-            # Strip bot mentions from context messages
+            # Strip bot mentions from context messages (Block Kit extras can
+            # still carry the raw token past the render above).
             if bot_uid:
-                msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+                if strip_bot_mention:
+                    msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+                else:
+                    msg_text = self._render_own_mention(msg_text, bot_uid, bot_name)
 
             if is_parent:
                 parent_text = msg_text
@@ -8012,6 +8083,8 @@ class SlackAdapter(BasePlatformAdapter):
         Used for reply_to_text injection (mention stripped) and for the
         parent-mentioned-bot wake check (#24848 — pass
         ``strip_bot_mention=False`` so the ``<@bot>`` token is preserved).
+        That caller searches for the raw ``<@id>``, so ``strip_bot_mentions:
+        false`` must not rewrite it into ``@BotName`` here either.
 
         Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
         hitting ``conversations.replies`` twice. Falls back to a cheap single-
@@ -8048,7 +8121,13 @@ class SlackAdapter(BasePlatformAdapter):
             if parent.get("ts", "") != thread_ts:
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            text = self._render_message_text(parent, bot_uid=bot_uid or "")
+            # Forward the caller's intent, so a cold cache still yields the
+            # raw token the root-mention check looks for.
+            text = self._render_message_text(
+                parent,
+                bot_uid=bot_uid or "",
+                strip_bot_mention=strip_bot_mention,
+            )
             if strip_bot_mention and bot_uid:
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text
@@ -8830,6 +8909,29 @@ class SlackAdapter(BasePlatformAdapter):
             "on",
         }
 
+    def _slack_strip_bot_mentions(self) -> bool:
+        """Whether the bot's own ``<@id>`` is deleted from the agent-visible text.
+
+        Default True is the historical behaviour. False keeps the mention,
+        rendered as ``@BotName`` like any other participant's, so the agent can
+        tell an explicit tag from a channel/thread-routed wake-up. Routing is
+        unaffected either way — this changes only the text.
+
+        Explicit-false parsing (like :meth:`_slack_require_mention`), since the
+        safe default is True; unrecognised or empty values keep stripping on.
+        """
+        configured = self.config.extra.get("strip_bot_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("SLACK_STRIP_BOT_MENTIONS", "true").lower() not in {
+            "false",
+            "0",
+            "no",
+            "off",
+        }
+
     def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
         """Return True when ``text`` opens by @-mentioning a non-bot user.
 
@@ -9514,6 +9616,12 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     ):
         os.environ["SLACK_THREAD_REQUIRE_MENTION"] = str(
             slack_cfg["thread_require_mention"]
+        ).lower()
+    if "strip_bot_mentions" in slack_cfg and not os.getenv(
+        "SLACK_STRIP_BOT_MENTIONS"
+    ):
+        os.environ["SLACK_STRIP_BOT_MENTIONS"] = str(
+            slack_cfg["strip_bot_mentions"]
         ).lower()
     if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
         os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()

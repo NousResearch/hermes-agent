@@ -2181,6 +2181,12 @@ DEFAULT_CONFIG = {
         "ignore_other_user_mentions": False,
         # If True, require @mention in Slack thread replies too.
         "thread_require_mention": False,
+        # If False, the bot's own <@id> mention is NOT deleted from the text the
+        # agent receives — it is rendered as @BotName (like mentions of other
+        # participants) so the agent can tell an explicit tag from a
+        # thread-routed wake-up. Default True keeps the historical strip.
+        # Env: SLACK_STRIP_BOT_MENTIONS.
+        "strip_bot_mentions": True,
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 

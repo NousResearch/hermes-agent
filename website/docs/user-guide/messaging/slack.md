@@ -625,6 +625,14 @@ slack:
   # Env: SLACK_REQUIRE_MENTION_CHANNELS.
   require_mention_channels: ""
 
+  # Delete the bot's own @mention from the text the agent receives.
+  # Default true (historical behavior): "@bot what's up?" arrives as
+  # "what's up?". Set false to keep it, rendered as @BotName like any
+  # other participant's mention, so the agent can tell an explicit tag
+  # from a thread-routed wake-up. Text only — routing and commands are
+  # unchanged. Env: SLACK_STRIP_BOT_MENTIONS.
+  strip_bot_mentions: true
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -665,6 +673,27 @@ The gating options compose — each answers a different question:
 | `ignore_other_user_mentions` | Should a message that **opens by @mentioning someone else** (`@rasha can you take this?`) be skipped? Overrides free-response and thread auto-follow; mid-sentence references still reach the bot. | `false` | Channels + group DMs |
 
 Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
+
+#### Letting the agent see its own mention (`strip_bot_mentions`)
+
+The options above decide **who wakes the bot**. `strip_bot_mentions` decides something different: whether the agent can see that it was tagged.
+
+By default the adapter deletes the bot's own mention before the agent reads the message — `@hermes what's up?` arrives as `what's up?`. Because a thread keeps waking the bot after the first mention, every delivered turn then looks the same, and an agent that decides for itself whether to answer has nothing to go on.
+
+Set `strip_bot_mentions: false` to keep the mention, rendered as `@BotName` in its original position — the same shape mentions of other participants already get:
+
+```yaml
+slack:
+  strip_bot_mentions: false
+```
+
+| | `true` (default) | `false` |
+|---|---|---|
+| `hey @hermes look` | `hey look` | `hey @Hermes look` |
+| thread reply with no mention | unchanged | unchanged — the absence *is* the signal |
+| thread context / thread parent | mention removed | mention shown, matching the current message |
+
+What it does **not** change: who wakes the bot (all the gating options above keep their meaning), and command handling — `@hermes /status` and `@hermes !status` still dispatch as `/status` in both states. Env mirror: `SLACK_STRIP_BOT_MENTIONS`; `config.yaml` is the canonical place.
 
 ### Accepting messages from other bots (`allow_bots`)
 

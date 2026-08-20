@@ -43,3 +43,11 @@ optional_env:
       top-level free response channels
     prompt: "Require mentions in Slack threads? (true/false)"
     password: false
+  - name: SLACK_STRIP_BOT_MENTIONS
+    description: >-
+      Delete the bot's own @mention from the text the agent sees (default true).
+      Set false to keep it, rendered as @BotName, so the agent can tell an
+      explicit tag from a thread-routed wake-up. Canonical setting:
+      slack.strip_bot_mentions in config.yaml
+    prompt: "Strip the bot's own mention from Slack text? (true/false)"
+    password: false

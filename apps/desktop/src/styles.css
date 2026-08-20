@@ -399,6 +399,11 @@
     --ui-tab-hover-darken: 2.5%;
     --dt-ring: var(--ui-stroke-primary);
     --dt-midground: var(--theme-midground);
+    /* Scrollbars carry no theme colour: the accent-tinted thumb read as a
+       coloured element in the corner of every list. Same lightness as the
+       midground so each theme still gets a thumb that sits right against its
+       own surfaces — chroma 0 is the only thing removed. */
+    --dt-scrollbar-thumb: oklch(from var(--dt-midground) l 0 h);
     --dt-composer-ring: var(--ui-base);
     --dt-destructive: #cf2d56;
     --dt-destructive-foreground: #ffffff;
@@ -1300,14 +1305,14 @@ body.guest-pointer-lock :is(webview, iframe) {
 
   .scrollbar-dt::-webkit-scrollbar-thumb,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb {
-    background: color-mix(in srgb, var(--dt-midground) 18%, transparent);
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent);
     border-radius: 9999rem;
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb:hover,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb:hover {
-    background: color-mix(in srgb, var(--dt-midground) 40%, transparent);
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 40%, transparent);
     background-clip: padding-box;
   }
 
@@ -1328,12 +1333,12 @@ body.guest-pointer-lock :is(webview, iframe) {
 
   .scrollbar-fade:hover::-webkit-scrollbar-thumb,
   .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb {
-    background-color: color-mix(in srgb, var(--dt-midground) 18%, transparent);
+    background-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent);
   }
 
   .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover,
   .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover {
-    background-color: color-mix(in srgb, var(--dt-midground) 40%, transparent);
+    background-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 40%, transparent);
   }
 
   /* Hover marquee: a truncated line that scrolls its overflow into view while
@@ -1380,13 +1385,13 @@ body.guest-pointer-lock :is(webview, iframe) {
   }
 
   .dt-portal-scrollbar::-webkit-scrollbar-thumb {
-    background: color-mix(in srgb, var(--dt-midground) 28%, transparent);
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent);
     border-radius: 9999rem;
     background-clip: padding-box;
   }
 
   .dt-portal-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: color-mix(in srgb, var(--dt-midground) 50%, transparent);
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 50%, transparent);
     background-clip: padding-box;
   }
 
@@ -1398,19 +1403,19 @@ body.guest-pointer-lock :is(webview, iframe) {
     .scrollbar-dt,
     .scrollbar-dt *:not(.scrollbar-overlay) {
       scrollbar-width: thin;
-      scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
+      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent) transparent;
     }
 
     .dt-portal-scrollbar {
       scrollbar-width: thin;
-      scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent) transparent;
     }
 
     /* Firefox has no real overlay mode; thin + transparent track is the closest
        match to the Chromium overlay opt-out above. */
     .scrollbar-overlay {
       scrollbar-width: thin;
-      scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent) transparent;
     }
 
     /* No transition — Firefox doesn't animate scrollbar-color. */
@@ -1419,7 +1424,7 @@ body.guest-pointer-lock :is(webview, iframe) {
     }
 
     .scrollbar-fade:hover {
-      scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
+      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent) transparent;
     }
   }
 }

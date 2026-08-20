@@ -16,6 +16,13 @@ from tools.environments.ssh import SSHEnvironment
 # ── SSH helpers ──────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _reset_ssh_control_socket_refcounts():
+    ssh_env._control_socket_refcounts.clear()
+    yield
+    ssh_env._control_socket_refcounts.clear()
+
+
 @pytest.fixture
 def ssh_mock_env(monkeypatch):
     """Create an SSHEnvironment with mocked connection/sync."""
@@ -204,6 +211,78 @@ class TestSSHCleanup:
             env.cleanup()
 
         assert call_order.index("sync_back") < call_order.index("control_exit")
+
+    def test_ssh_shared_control_socket_skips_mux_teardown_until_last_holder(
+        self, monkeypatch,
+    ):
+        """cleanup() of one SSHEnvironment must not exit a mux still held by another."""
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/u")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(
+            ssh_env, "FileSyncManager",
+            lambda **kw: type("M", (), {
+                "sync": lambda self, **k: None,
+                "sync_back": lambda self: None,
+            })(),
+        )
+
+        first = SSHEnvironment(host="h", user="u")
+        second = SSHEnvironment(host="h", user="u")
+        shared_socket = first.control_socket
+        assert shared_socket == second.control_socket
+
+        shared_socket.parent.mkdir(parents=True, exist_ok=True)
+        shared_socket.touch()
+
+        exit_calls = []
+
+        def mock_run(cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "-O" in cmd and "exit" in cmd_str:
+                exit_calls.append(cmd_str)
+            return subprocess.CompletedProcess([], 0)
+
+        with patch.object(subprocess, "run", side_effect=mock_run):
+            first.cleanup()
+            assert exit_calls == []
+            second.cleanup()
+            assert len(exit_calls) == 1
+
+    def test_ssh_cleanup_is_idempotent_for_control_socket(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/u")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(
+            ssh_env, "FileSyncManager",
+            lambda **kw: type("M", (), {
+                "sync": lambda self, **k: None,
+                "sync_back": lambda self: None,
+            })(),
+        )
+
+        env = SSHEnvironment(host="h", user="u")
+
+        env.control_socket.parent.mkdir(parents=True, exist_ok=True)
+        env.control_socket.touch()
+
+        exit_calls = []
+
+        def mock_run(cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "-O" in cmd and "exit" in cmd_str:
+                exit_calls.append(cmd_str)
+            return subprocess.CompletedProcess([], 0)
+
+        with patch.object(subprocess, "run", side_effect=mock_run):
+            env.cleanup()
+            env.cleanup()
+
+        assert len(exit_calls) == 1
 
 
 # =====================================================================

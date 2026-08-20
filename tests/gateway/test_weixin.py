@@ -72,6 +72,18 @@ class TestWeixinFormatting:
         assert " ".join(formatted.split()) == " ".join(content.split())
 
 
+    @pytest.mark.parametrize("marker", ["- ", "10. "])
+    def test_format_message_leaves_long_list_items_for_native_client_wrapping(
+        self, marker
+    ):
+        adapter = _make_adapter()
+        content = marker + " ".join(
+            f"knowledge-base-detail-{index}" for index in range(18)
+        )
+
+        assert adapter.format_message(content) == content
+
+
 class TestWeixinChunking:
 
 

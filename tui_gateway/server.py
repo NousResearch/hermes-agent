@@ -10387,14 +10387,34 @@ def _wire_agent_terminal_output() -> None:
         return
 
     def _owner_sid_for_process(session) -> str:
+        # The tab that started the command is the exact owner. Several live
+        # tabs can share one durable session_key, so a bare key match hands
+        # background output to whichever of them happens to be first in
+        # iteration order. Prefer the recorded origin whenever it is still
+        # live. If that tab closes, route to the most recently active live
+        # continuation with the same durable key; originless processes from
+        # older checkpoints and CLI sessions use the same deterministic path.
+        origin_ui_session_id = str(getattr(session, "origin_ui_session_id", "") or "")
         session_key = str(getattr(session, "session_key", "") or "")
-        if not session_key:
-            return ""
         with _sessions_lock:
+            if origin_ui_session_id:
+                owner = _sessions.get(origin_ui_session_id)
+                if owner is not None and not owner.get("_finalized"):
+                    return origin_ui_session_id
+            if not session_key:
+                return ""
+            live_matches: list[tuple[float, str]] = []
             for sid, tui_session in _sessions.items():
-                if str(tui_session.get("session_key") or "") == session_key:
-                    return sid
-        return ""
+                if str(tui_session.get("session_key") or "") != session_key:
+                    continue
+                if not tui_session.get("_finalized"):
+                    last_active = float(
+                        tui_session.get("last_active")
+                        or tui_session.get("created_at")
+                        or 0.0
+                    )
+                    live_matches.append((last_active, sid))
+            return max(live_matches)[1] if live_matches else ""
 
     def _emit_agent_terminal_output(session, chunk):
         _emit(

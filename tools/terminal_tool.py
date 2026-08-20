@@ -3073,6 +3073,14 @@ def terminal_tool(
                 session_key=session_key,
                 env_type=env_type,
             )
+            # Pin the commissioning UI tab for BOTH live output and later
+            # notifications. Several tabs can share one durable session_key, so
+            # the key alone cannot say which window started this command.
+            # Delegated children swap session_key for their temporary child
+            # session but inherit HERMES_UI_SESSION_ID from the parent chat.
+            from gateway.session_context import get_session_env
+
+            origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -3082,6 +3090,7 @@ def terminal_tool(
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
+                        origin_ui_session_id=origin_ui_session_id,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -3090,6 +3099,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        origin_ui_session_id=origin_ui_session_id,
                     )
 
                 result_data = {

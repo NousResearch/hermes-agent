@@ -435,3 +435,48 @@ def test_non_ci_background_command_does_not_emit_homebrew_hint(monkeypatch, tmp_
     assert "hint" not in result, (
         f"Non-CI command using awk must not be flagged as homebrew CI poller, got: {result.get('hint')!r}"
     )
+
+
+def test_background_spawn_pins_the_commissioning_ui_tab(monkeypatch, tmp_path):
+    """Every background spawn records the tab that started it — not just
+    notify/watch ones.
+
+    Live ``agent.terminal.output`` needs the same return address as completion
+    notifications. Several tabs can share one durable ``session_key``, so
+    without this the gateway routes streamed output to whichever tab it finds
+    first and a user sees output from a command they never ran.
+    """
+    from types import SimpleNamespace
+
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from tools import process_registry as process_registry_module
+
+    captured = {}
+
+    def capturing_spawn_local(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id="proc_origin_test",
+            pid=4242,
+            notify_on_complete=False,
+            watcher_platform="",
+            watcher_chat_id="",
+            watcher_user_id="",
+            watcher_user_name="",
+            watcher_thread_id="",
+            watcher_message_id="",
+            watcher_interval=0,
+        )
+
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        process_registry_module.process_registry, "spawn_local", capturing_spawn_local
+    )
+
+    tokens = set_session_vars(ui_session_id="tab_origin", session_key="shared-key")
+    try:
+        tt.terminal_tool(command="sleep 30", background=True)
+    finally:
+        clear_session_vars(tokens)
+
+    assert captured.get("origin_ui_session_id") == "tab_origin"

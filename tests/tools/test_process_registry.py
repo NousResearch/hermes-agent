@@ -2352,6 +2352,88 @@ class TestNotificationRedaction:
         assert "ghp_" not in text or "REDACTED" in text
 
 
+# =========================================================================
+# Background-process ownership (origin_ui_session_id)
+# =========================================================================
+
+class TestOriginUiSessionOwnership:
+    """The commissioning UI tab must survive into notifications and restarts.
+
+    ``session_key`` is the durable conversation key and several live tabs can
+    share one, so it cannot identify the window a command was started from.
+    """
+
+    def test_completion_notification_carries_the_origin_tab(self, registry):
+        s = _make_session(sid="proc_owner_completion", exited=True, exit_code=0)
+        s.session_key = "shared-key"
+        s.origin_ui_session_id = "tab_origin"
+        s.notify_on_complete = True
+        registry._running[s.id] = s
+
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        results = registry.drain_notifications(
+            owns_event=lambda event: event.get("origin_ui_session_id") == "tab_origin"
+        )
+        assert len(results) == 1
+        event, formatted = results[0]
+        assert event["type"] == "completion"
+        assert event["origin_ui_session_id"] == "tab_origin"
+        assert event["session_key"] == "shared-key"
+        assert "proc_owner_completion" in formatted
+
+    def test_watch_match_notification_carries_the_origin_tab(self, registry):
+        s = _make_session(sid="proc_owner_watch")
+        s.session_key = "shared-key"
+        s.origin_ui_session_id = "tab_origin"
+        s.watch_patterns = ["ready"]
+        registry._running[s.id] = s
+
+        registry._check_watch_patterns(s, "server ready\n")
+
+        event = registry.completion_queue.get_nowait()
+        assert event["type"] == "watch_match"
+        assert event["origin_ui_session_id"] == "tab_origin"
+
+    def test_spawn_records_the_origin_tab(self, registry):
+        with patch("subprocess.Popen") as mock_popen, \
+             patch("threading.Thread"), \
+             patch.object(registry, "_write_checkpoint"):
+            mock_popen.return_value = MagicMock(pid=4321, poll=lambda: None)
+            session = registry.spawn_local(
+                "sleep 1",
+                cwd="/tmp",
+                session_key="shared-key",
+                origin_ui_session_id="tab_origin",
+            )
+
+        assert session.origin_ui_session_id == "tab_origin"
+
+    def test_origin_tab_survives_checkpoint_recovery(self, registry, tmp_path):
+        """A gateway restart must not forget which tab owns a live process."""
+        checkpoint = tmp_path / "procs.json"
+        s = _make_session(sid="proc_owner_ckpt")
+        s.pid = os.getpid()  # a PID that is definitely alive
+        s.pid_scope = "host"
+        s.session_key = "shared-key"
+        s.origin_ui_session_id = "tab_origin"
+        registry._running[s.id] = s
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            registry._write_checkpoint()
+            written = json.loads(checkpoint.read_text())
+            assert written[0]["origin_ui_session_id"] == "tab_origin"
+
+            fresh = ProcessRegistry()
+            with patch.object(fresh, "_host_pid_is_ours", lambda *_a: True), \
+                 patch.object(fresh, "_is_host_pid_alive", lambda *_a: True), \
+                 patch.object(fresh, "_write_checkpoint"):
+                assert fresh.recover_from_checkpoint() == 1
+
+        assert fresh._running["proc_owner_ckpt"].origin_ui_session_id == "tab_origin"
+
+
 # ── Prefix resolution (Factory Droid-inspired task-ID prefixes) ──────────────
 
 

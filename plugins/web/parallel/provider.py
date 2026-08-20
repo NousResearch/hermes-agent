@@ -17,13 +17,14 @@ Config keys this provider responds to::
       search_backend: "parallel"      # explicit per-capability
       extract_backend: "parallel"     # explicit per-capability
       backend: "parallel"             # shared fallback
-      # Optional: v1 search mode (turbo|fast|basic|advanced) via the
-      # PARALLEL_SEARCH_MODE env var. Legacy values remain accepted.
+      # Optional: search mode via PARALLEL_SEARCH_MODE. Legacy agentic,
+      # one-shot, and fast values retain their Beta semantics; explicit v1
+      # values are basic, advanced, turbo, and v1-fast.
 
 Env vars::
 
     PARALLEL_API_KEY=...             # https://parallel.ai (required)
-    PARALLEL_SEARCH_MODE=basic       # optional: turbo|fast|basic|advanced
+    PARALLEL_SEARCH_MODE=agentic     # optional; maps to v1 advanced
 """
 
 from __future__ import annotations
@@ -137,17 +138,23 @@ _get_async_parallel_client = _get_async_client
 
 
 _V1_SEARCH_MODES = {"turbo", "fast", "basic", "advanced"}
-_LEGACY_SEARCH_MODES = {
-    "agentic": "basic",
-    "one-shot": "advanced",
+_SEARCH_MODE_ALIASES = {
+    "agentic": "advanced",
+    "one-shot": "basic",
+    "fast": "basic",
+    "v1-fast": "fast",
 }
 
 
 def _resolve_search_mode() -> str:
-    """Return a validated v1 mode, translating legacy configuration values."""
+    """Translate configured modes to their semantically equivalent v1 value.
+
+    Bare ``fast`` retains its legacy Beta meaning (v1 ``basic``). The new v1
+    ``fast`` mode is available only through the explicit ``v1-fast`` alias.
+    """
     mode = os.getenv("PARALLEL_SEARCH_MODE", "agentic").lower().strip()
-    mode = _LEGACY_SEARCH_MODES.get(mode, mode)
-    return mode if mode in _V1_SEARCH_MODES else "basic"
+    mode = _SEARCH_MODE_ALIASES.get(mode, mode)
+    return mode if mode in _V1_SEARCH_MODES else "advanced"
 
 
 class ParallelWebSearchProvider(WebSearchProvider):

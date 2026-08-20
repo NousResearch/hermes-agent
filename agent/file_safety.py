@@ -7,6 +7,71 @@ from pathlib import Path
 from typing import Optional
 
 
+# Shell startup files are execution-bearing user configuration. Keep this
+# inventory shared with the terminal approval detector so file writes and
+# shell commands cannot silently drift into different allowlists.
+SHELL_RC_RELATIVE_PATHS: tuple[str, ...] = (
+    ".bashrc",
+    ".bash_aliases",
+    ".profile",
+    ".bash_profile",
+    ".zshenv",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".config/fish/config.fish",
+)
+SHELL_RC_ZSH_FILENAMES: tuple[str, ...] = (
+    ".zshenv",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+)
+
+
+def _resolve_configured_path(value: str, home: str) -> str:
+    """Resolve a path-valued shell environment variable against ``home``."""
+    expanded = os.path.expanduser(os.path.expandvars(value))
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(home, expanded)
+    return os.path.realpath(expanded)
+
+
+def build_shell_rc_approval_paths(home: str) -> set[str]:
+    """Return default and environment-relocated shell startup file paths."""
+    paths = {
+        os.path.realpath(os.path.join(home, relative))
+        for relative in SHELL_RC_RELATIVE_PATHS
+    }
+
+    zdotdir = os.getenv("ZDOTDIR")
+    if zdotdir:
+        zsh_dir = _resolve_configured_path(zdotdir, home)
+        paths.update(
+            os.path.join(zsh_dir, filename)
+            for filename in SHELL_RC_ZSH_FILENAMES
+        )
+
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        paths.add(
+            os.path.join(
+                _resolve_configured_path(xdg_config_home, home),
+                "fish",
+                "config.fish",
+            )
+        )
+
+    for variable in ("BASH_ENV", "ENV"):
+        configured = os.getenv(variable)
+        if configured:
+            paths.add(_resolve_configured_path(configured, home))
+
+    return {os.path.realpath(path) for path in paths}
+
+
 def _hermes_home_path() -> Path:
     """Resolve the active HERMES_HOME (profile-aware) without circular imports."""
     try:
@@ -122,18 +187,8 @@ def build_write_approval_paths(home: str) -> set[str]:
     approval-required path as denied and fail closed.
     """
     return {
-        os.path.realpath(p)
-        for p in [
-            os.path.join(home, ".ssh", "config"),
-            # Pair write_file/patch with the terminal shell-rc gate (#85321).
-            # These files are routinely edited, but they run at login — same
-            # approval contract as ~/.ssh/config, not a hard credential deny.
-            os.path.join(home, ".bashrc"),
-            os.path.join(home, ".zshrc"),
-            os.path.join(home, ".profile"),
-            os.path.join(home, ".bash_profile"),
-            os.path.join(home, ".zprofile"),
-        ]
+        os.path.realpath(os.path.join(home, ".ssh", "config")),
+        *build_shell_rc_approval_paths(home),
     }
 
 

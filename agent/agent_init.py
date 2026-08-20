@@ -1743,7 +1743,17 @@ def init_agent(
     # Load config once for memory, skills, and compression sections
     try:
         from hermes_cli.config import load_config_readonly as _load_agent_config
-        _agent_cfg = _load_agent_config()
+        if os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+            # --safe-mode / --ignore-user-config: config.yaml IS user
+            # customization, so its memory/skills/compression sections must
+            # come back empty here. memory.provider in particular must not
+            # spin up external providers (e.g. Honcho) in a mode documented
+            # as "disable ALL customizations" — see #62406, where a
+            # --safe-mode run still issued live HTTP calls to the Honcho
+            # backend because this read ignored the flag.
+            _agent_cfg = {}
+        else:
+            _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
 

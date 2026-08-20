@@ -28,6 +28,7 @@ from tui_gateway import server
 from tui_gateway.turn_marker import (
     clear_turn_marker,
     read_turn_marker,
+    record_auto_continue_attempt,
     record_turn_start,
 )
 
@@ -125,6 +126,26 @@ def test_marker_survives_corrupt_sidecar(tmp_path):
     assert read_turn_marker(tmp_path, "abc") is None
     record_turn_start(tmp_path, "abc", "prompt")
     assert read_turn_marker(tmp_path, "abc")["prompt"] == "prompt"
+
+
+def test_attempt_update_does_not_overwrite_a_newer_turn(tmp_path):
+    record_turn_start(tmp_path, "abc", "interrupted prompt")
+    interrupted = read_turn_marker(tmp_path, "abc")
+    assert interrupted is not None
+    record_turn_start(tmp_path, "abc", "new user prompt")
+
+    updated = record_auto_continue_attempt(
+        tmp_path,
+        "abc",
+        prompt=interrupted["prompt"],
+        started_at=interrupted["started_at"],
+        attempts=1,
+    )
+
+    assert updated is False
+    marker = read_turn_marker(tmp_path, "abc")
+    assert marker["prompt"] == "new user prompt"
+    assert marker["attempts"] == 0
 
 
 # ── Turn lifecycle owns the marker ─────────────────────────────────────
@@ -352,7 +373,7 @@ def test_double_schedule_is_guarded(emits, schedule_env, marker_home):
     assert len(schedule_env) == 1
 
 
-def test_failed_agent_build_leaves_marker_for_retry(
+def test_failed_agent_build_counts_toward_crash_loop_limit(
     emits, schedule_env, marker_home, monkeypatch
 ):
     record_turn_start(marker_home, "session-key", "prompt")
@@ -361,14 +382,34 @@ def test_failed_agent_build_leaves_marker_for_retry(
         "_wait_agent",
         lambda session, rid, timeout=30.0: {"error": {"message": "boom"}},
     )
-    session = _session()
 
-    result = server._maybe_schedule_auto_continue("sid", session, "session-key")
+    first_session = _session()
+    first = server._maybe_schedule_auto_continue("sid-1", first_session, "session-key")
 
-    assert result is not None
+    assert first is not None
     assert not schedule_env
-    assert session["_auto_continue_scheduled"] is False
-    assert read_turn_marker(marker_home, "session-key") is not None
+    assert first_session["_auto_continue_scheduled"] is False
+    marker = read_turn_marker(marker_home, "session-key")
+    assert marker is not None
+    assert marker["attempts"] == 1
+
+    second = server._maybe_schedule_auto_continue(
+        "sid-2", _session(), "session-key"
+    )
+
+    assert second is not None
+    marker = read_turn_marker(marker_home, "session-key")
+    assert marker is not None
+    assert marker["attempts"] == 2
+
+    # A fresh backend process/session must now honor max_attempts instead of
+    # retrying agent initialization forever with the original zero count.
+    third = server._maybe_schedule_auto_continue(
+        "sid-3", _session(), "session-key"
+    )
+
+    assert third is None
+    assert read_turn_marker(marker_home, "session-key") is None
 
 
 # ── End to end: continuation runs a real turn and clears the marker ────

@@ -237,6 +237,11 @@ class Qwen3TTSMLXStreamer(StreamingTTSProvider):
     _WORKER = os.path.expanduser("~/.hermes/tts/mlx_stream_worker.py")
     _VENV = os.path.expanduser("~/work/mlx-tts-venv/bin/python3")
 
+    # Upper bound for a single PCM frame (24000 Hz × 2 bytes ≈ 48 KB/s, so 1
+    # MiB is ~21 s of audio). A corrupt/oversized length header must not make
+    # out.read(n) block indefinitely waiting for bytes the worker never sends.
+    _MAX_FRAME_BYTES = 1024 * 1024
+
     @staticmethod
     def available() -> bool:
         return os.path.exists(Qwen3TTSMLXStreamer._VENV) and os.path.exists(
@@ -268,26 +273,40 @@ class Qwen3TTSMLXStreamer(StreamingTTSProvider):
             text=False,
         )
         try:
-            proc.stdin.write(text.encode("utf-8"))
-            proc.stdin.close()
-        except BrokenPipeError:
-            pass
-        out = proc.stdout
-        while True:
-            head = out.read(4)
-            if not head or len(head) < 4:
-                break
-            (n,) = struct.unpack("<I", head)
-            if n <= 0:
-                continue
-            pcm = out.read(n)
-            if not pcm:
-                break
-            yield pcm
-        rc = proc.wait(timeout=30)
-        if rc != 0:
-            err = proc.stderr.read().decode("utf-8", "replace")[-500:]
-            raise RuntimeError(f"qwen3tts-mlx worker exited {rc}: {err}")
+            try:
+                proc.stdin.write(text.encode("utf-8"))
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+            out = proc.stdout
+            while True:
+                head = out.read(4)
+                if not head or len(head) < 4:
+                    break
+                (n,) = struct.unpack("<I", head)
+                # A corrupt/oversized frame header must not make read(n) block
+                # forever; treat it as a worker error and stop consuming.
+                if n <= 0 or n > self._MAX_FRAME_BYTES:
+                    break
+                pcm = out.read(n)
+                if not pcm:
+                    break
+                yield pcm
+            try:
+                rc = proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise RuntimeError("qwen3tts-mlx worker timed out")
+            if rc != 0:
+                err = proc.stderr.read().decode("utf-8", "replace")[-500:]
+                raise RuntimeError(f"qwen3tts-mlx worker exited {rc}: {err}")
+        finally:
+            # A caller that stops iterating early (break / exception / barge)
+            # must not leak the worker subprocess.
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
 
 
 def _openai_config_api_key() -> str:

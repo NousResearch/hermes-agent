@@ -107,6 +107,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -5139,18 +5140,55 @@ _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
 def _snapshot_child_pids() -> set:
     """Return a set of current child process PIDs.
 
-    Uses /proc on Linux, falls back to psutil, then empty set.
-    Used by _run_stdio to identify the subprocess spawned by stdio_client.
+    Uses /proc on Linux, falls back to `ps --ppid`, then psutil, then
+    empty set.  Used by _run_stdio to identify the subprocess spawned by
+    stdio_client.
     """
     my_pid = os.getpid()
 
-    # Linux: read from /proc
+    # Linux: read from /proc.  Some kernels (notably WSL2) can return a
+    # readable but EMPTY children file — treat that as "no data" rather
+    # than "no children" and fall through to the ps/psutil fallbacks.
     try:
         children_path = f"/proc/{my_pid}/task/{my_pid}/children"
         with open(children_path, encoding="utf-8") as f:
-            return {int(p) for p in f.read().split() if p.strip()}
+            pids = {int(p) for p in f.read().split() if p.strip()}
+        if pids:
+            return pids
     except (FileNotFoundError, OSError, ValueError):
         pass
+
+    # Fallback: ps --ppid (works where /proc children data is missing or
+    # empty, including WSL2 kernels that do not maintain that file).
+    # Spawned via Popen so the ps subprocess's own PID is known: ps lists
+    # itself (its PPID is my_pid), so subtract it from the result — a
+    # snapshot consumer must never see a transient pid that is already
+    # gone by the time it inspects the set.
+    ps_proc = None
+    try:
+        ps_proc = subprocess.Popen(
+            ["ps", "--ppid", str(my_pid), "-o", "pid="],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        out, _ = ps_proc.communicate(timeout=5)
+        if ps_proc.returncode == 0:
+            # ps lists itself (its PPID is the caller) — subtract the ps
+            # subprocess's own pid.  If nothing remains, fall through to
+            # psutil for a second opinion (matches the pre-fallback
+            # semantics of treating an empty answer as "no data").
+            pids = {int(p) for p in out.split() if p.strip()} - {ps_proc.pid}
+            if pids:
+                return pids
+    except Exception:
+        # Reap the child on timeout/decode errors so it cannot linger as
+        # a zombie (best-effort; the snapshot itself stays best-effort).
+        if ps_proc is not None:
+            try:
+                ps_proc.kill()
+                ps_proc.communicate(timeout=1)
+            except Exception:
+                pass
 
     # Fallback: psutil
     try:

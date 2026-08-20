@@ -13,9 +13,6 @@ import logging
 import sys
 from unittest.mock import MagicMock
 
-import pytest
-
-
 def _ensure_telegram_mock():
     if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
         return

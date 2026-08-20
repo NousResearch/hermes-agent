@@ -10,6 +10,7 @@ The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 ``TelegramAdapter`` and wire a mock bot.
 """
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -387,12 +388,9 @@ def test_prefers_fresh_final_streaming_stays_disabled_when_rich_enabled():
 
 @pytest.mark.asyncio
 async def test_legacy_draft_stream_finalizes_with_persistent_rich_message():
-    """A MarkdownV2 draft must not force the persistent final to MarkdownV2."""
+    """A plain draft must not force the persistent final to MarkdownV2."""
     adapter = _make_adapter()  # rich messages on, rich drafts off
-    # With the gate in supports_draft_streaming, draft streaming is declined
-    # when rich_drafts is off.  The test force-enables it to verify that even
-    # a legacy MDV2 draft still finalizes as a rich message.
-    assert adapter.supports_draft_streaming(chat_type="dm") is False
+    assert adapter.supports_draft_streaming(chat_type="dm") is True
 
     consumer = GatewayStreamConsumer(
         adapter,
@@ -412,16 +410,64 @@ async def test_legacy_draft_stream_finalizes_with_persistent_rich_message():
 
 
 # ----------------------------------------------------------------------
-# supports_draft_streaming: rich_messages without rich_drafts must NOT use
-# MDV2 sendMessageDraft previews that later snap to sendRichMessage (wiki)
-# finals — that is the "first bubble crooked, second bubble beautiful" bug.
+# supports_draft_streaming: rich_drafts controls draft rendering, not whether
+# Telegram's ephemeral DM draft transport is available.  Keeping that transport
+# lets the persistent final use sendRichMessage instead of relying on an
+# edit-in-place conversion from a plain message.
 # ----------------------------------------------------------------------
 
 
-def test_supports_draft_streaming_disabled_when_rich_without_rich_drafts():
+def test_supports_plain_draft_streaming_when_rich_without_rich_drafts():
     adapter = _make_adapter()  # rich_messages True, rich_drafts default False
-    assert adapter.supports_draft_streaming(chat_type="dm") is False
-    assert adapter.supports_draft_streaming(chat_type="private") is False
+    assert adapter.supports_draft_streaming(chat_type="dm") is True
+    assert adapter.supports_draft_streaming(chat_type="private") is True
+
+
+@pytest.mark.asyncio
+async def test_rich_table_uses_raw_plain_draft_before_persistent_rich_final():
+    adapter = _make_adapter()  # rich messages on, rich drafts off
+
+    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once_with(
+        chat_id=12345,
+        draft_id=7,
+        text=RICH_CONTENT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dm_table_stream_persists_through_send_rich_message():
+    """Exercise the reporter's transport: ephemeral DM draft, then rich final."""
+    adapter = _make_adapter()  # rich messages on, rich drafts off
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "12345",
+        StreamConsumerConfig(
+            transport="auto",
+            chat_type="dm",
+            edit_interval=0.01,
+            buffer_threshold=1,
+            cursor="",
+        ),
+    )
+
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta(RICH_CONTENT)
+    await asyncio.sleep(0.05)
+    consumer.finish()
+    await task
+
+    adapter._bot.send_message_draft.assert_awaited()
+    draft_kwargs = adapter._bot.send_message_draft.call_args.kwargs
+    assert draft_kwargs["text"] == RICH_CONTENT
+    assert "parse_mode" not in draft_kwargs
+    rich_endpoints = [call.args[0] for call in adapter._bot.do_api_request.await_args_list]
+    assert rich_endpoints == ["sendRichMessage"]
+    adapter._bot.edit_message_text.assert_not_called()
+    adapter._bot.send_message.assert_not_called()
 
 
 def test_supports_draft_streaming_enabled_when_rich_drafts_opt_in():
@@ -604,5 +650,3 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
-
-

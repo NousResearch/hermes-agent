@@ -154,6 +154,23 @@ class TestGetProcessHermesHome:
 
 
 
+    def test_wsl_ignores_windows_drive_letter_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        """WSL inheriting a Windows HERMES_HOME (issue #71826) should fall
+        back to the platform default instead of using the leaked value."""
+        monkeypatch.setenv("HERMES_HOME", "D:\\hermes-desktop\\hermes")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Simulate WSL environment
+        monkeypatch.setattr(hermes_constants, "_wsl_detected", True)
+        assert get_process_hermes_home() == tmp_path / ".hermes"
+
+    def test_non_wsl_keeps_windows_path(self, tmp_path, monkeypatch):
+        """Outside WSL, a Windows HERMES_HOME should be honoured."""
+        monkeypatch.setenv("HERMES_HOME", "D:\\hermes-desktop\\hermes")
+        monkeypatch.setattr(hermes_constants, "_wsl_detected", False)
+        assert get_process_hermes_home() == Path("D:\\hermes-desktop\\hermes")
+
 
 class TestHermesManagedNode:
     @pytest.mark.windows_only

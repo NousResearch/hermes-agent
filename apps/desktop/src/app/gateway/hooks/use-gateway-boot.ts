@@ -1,4 +1,4 @@
-import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
+import { isGatewayReauthRequired, JsonRpcGatewayError, resolveGatewayWsUrl } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
@@ -74,6 +74,13 @@ import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './ga
 // flaps, sleep/wake, Wi‑Fi blips that self-heal in 1–3 minutes — never even
 // toast. Chat stays readable/draftable the whole time either way.
 const RECONNECT_ESCALATE_AFTER_MS = 300_000
+
+// Bound for the sleep/wake liveness probe (see reconnectNow): long enough to
+// ride out a busy-but-healthy backend's scheduling jitter, short enough that a
+// half-open socket fails fast instead of hanging the wake path. Independent of
+// PROMPT_SUBMIT_REQUEST_TIMEOUT_MS (30 min) — that long timeout is correct for
+// an in-flight turn, but must never be what a dead connection burns.
+const GATEWAY_LIVENESS_PROBE_TIMEOUT_MS = 5_000
 
 // Bounded self-heal for a failed REMOTE boot (#82679): when the primary boot
 // fails on a transient remote fault (dropped SSH/HTTP registered connection,
@@ -357,6 +364,30 @@ export function useGatewayBoot({
 
       if (!gatewayOpen()) {
         await attemptReconnect()
+        return
+      }
+
+      // The socket reports open, but sleep/wake (or a silent network drop)
+      // can leave a half-open TCP connection: no close event fires, so
+      // connectionState stays 'open' while every RPC hangs until its per-call
+      // timeout — prompt.submit's is 30 minutes, which reads as "enter does
+      // nothing until I restart the app". Probe liveness with a short-bounded
+      // ping; on failure force the socket down so the onState handler above
+      // schedules a reconnect (and resetTileRuntimeBindings re-resumes tiles),
+      // instead of letting the user's next submit hang against a dead socket.
+      try {
+        await gateway.request('ping', {}, GATEWAY_LIVENESS_PROBE_TIMEOUT_MS)
+      } catch (probeErr) {
+        // A version-skewed backend that predates the ping method answers
+        // -32601 (method not found) — a HEALTHY response, not a dead socket.
+        // Force-closing on it would spin the reconnect loop forever. Every
+        // other failure (timeout on a swallowed ping, transport error) means
+        // the socket is not actually alive and must be rebuilt.
+        if (probeErr instanceof JsonRpcGatewayError && probeErr.code === -32601) {
+          return
+        }
+
+        gateway.close()
       }
     }
 

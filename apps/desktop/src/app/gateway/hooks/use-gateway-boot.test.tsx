@@ -49,6 +49,12 @@ class FakeWebSocket {
   // errors (a dead remote). Mirrors a VPS going away after the first connect.
   static mode: 'open' | 'fail' = 'open'
   static instances: FakeWebSocket[] = []
+  // Ping behavior: 'pong' answers with a healthy pong frame; 'silent' swallows
+  // the request (the half-open-socket simulation — connection looks OPEN but
+  // every RPC hangs until its per-call timeout); 'method-not-found' answers
+  // the JSON-RPC error a PRE-ping backend returns (a healthy, version-skewed
+  // response that must NOT trigger a reconnect).
+  static pingMode: 'pong' | 'silent' | 'method-not-found' = 'pong'
 
   readyState = 0
   private listeners: Record<string, Set<Listener>> = {}
@@ -86,6 +92,35 @@ class FakeWebSocket {
   drop() {
     this.readyState = FakeWebSocket.CLOSED
     this.emit('close', {})
+  }
+
+  send(data: string) {
+    let frame: { id?: unknown; method?: string }
+
+    try {
+      frame = JSON.parse(data) as { id?: unknown; method?: string }
+    } catch {
+      return
+    }
+
+    if (frame.method !== 'ping') {
+      return
+    }
+
+    if (FakeWebSocket.pingMode === 'pong') {
+      this.emit('message', {
+        data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { pong: true } })
+      })
+    } else if (FakeWebSocket.pingMode === 'method-not-found') {
+      this.emit('message', {
+        data: JSON.stringify({
+          jsonrpc: '2.0',
+          id: frame.id,
+          error: { code: -32601, message: 'Method not found' }
+        })
+      })
+    }
+    // 'silent': swallow — a healthy socket answers, a half-open one never does.
   }
 
   private emit(type: string, ev: unknown) {
@@ -204,6 +239,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  FakeWebSocket.pingMode = 'pong'
   connectionApplied = null
   powerResume = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
@@ -760,5 +796,67 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // Still no retry later: a missing capability is not a transient failure.
     await advanceBackoff()
     expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it('wake probe: an open-looking but unresponsive socket is force-closed and reconnected', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    // Half-open socket: connectionState reads 'open' (no close event) but the
+    // backend never answers — the sleep/wake TCP black hole.
+    FakeWebSocket.pingMode = 'silent'
+
+    // A wake signal (power resume / network online / window visible) nudges
+    // reconnectNow. With the socket still reporting open it must PROBE rather
+    // than skip; the swallowed ping times out and forces the socket down.
+    act(() => window.dispatchEvent(new Event('online')))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100)
+    })
+    // The probe timeout (5s) force-closed the socket → 'closed' → the backoff
+    // timer schedules a reconnect; let it fire and re-dial.
+    await advanceBackoff()
+
+    // A fresh socket was dialed.
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('wake probe: a healthy socket answers the ping and stays untouched', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    // Default FakeWebSocket behavior: answer pings with a pong frame.
+    act(() => window.dispatchEvent(new Event('online')))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100)
+    })
+
+    // Probe succeeded → no forced close, no reconnect, connection untouched.
+    expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('wake probe: a pre-ping backend (-32601) is healthy, not reconnected', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    // Version skew: this gateway predates the ping method. The error response
+    // proves the socket is alive; forcing a reconnect would loop forever.
+    FakeWebSocket.pingMode = 'method-not-found'
+
+    act(() => window.dispatchEvent(new Event('online')))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100)
+    })
+
+    expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
   })
 })

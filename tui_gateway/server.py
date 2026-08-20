@@ -15318,6 +15318,21 @@ def _persist_wake_enabled(enabled: bool) -> bool:
         return False
 
 
+@method("ping")
+def _(rid, params: dict) -> dict:
+    """Cheapest possible liveness probe for the desktop client.
+
+    Answered synchronously on the WS reader thread, so it works even while
+    every agent is mid-turn or the GIL is contended — the round-trip only
+    measures socket health, not backend load. A desktop client uses it after
+    sleep/wake to distinguish a half-open TCP connection (no close event, so
+    ``connectionState`` still reads ``open`` while every RPC hangs until its
+    per-call timeout) from a genuinely healthy socket, and forces a reconnect
+    in the former case instead of letting the next ``prompt.submit`` hang.
+    """
+    return _ok(rid, {"pong": True})
+
+
 @method("wake.start")
 def _(rid, params: dict) -> dict:
     """Arm the wake-word listener for the calling surface ("tui" | "gui").

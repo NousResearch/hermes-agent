@@ -78,6 +78,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "max_retries": t.max_retries,
         "model_override": t.model_override,
         "provider_override": t.provider_override,
+        "reasoning_effort": t.reasoning_effort,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
@@ -380,6 +381,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Provider the --model belongs to (passed as "
                                "--provider <name> to the worker). Requires "
                                "--model.")
+    p_create.add_argument(
+        "--reasoning",
+        default=None,
+        dest="reasoning_effort",
+        metavar="LEVEL",
+        help="Pin the worker's reasoning effort for this task (none, minimal, "
+             "low, medium, high, xhigh, max, or ultra). Omit to inherit the "
+             "assignee profile default.",
+    )
     p_create.add_argument("--goal", action="store_true", dest="goal_mode",
                           help="Run the worker in a goal loop: after each "
                                "turn a judge checks the response against the "
@@ -1583,6 +1593,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_retries=max_retries,
             model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
+            reasoning_effort=getattr(args, "reasoning_effort", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
@@ -1762,6 +1773,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.model_override:
         _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
         print(f"  model:     {task.model_override}{_prov}")
+    print(f"  reasoning: {task.reasoning_effort or 'inherit'}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see

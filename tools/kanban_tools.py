@@ -34,6 +34,7 @@ import os
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
@@ -503,6 +504,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
         "provider_override": task.provider_override,
+        "reasoning_effort": task.reasoning_effort,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -549,6 +551,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
                     "provider_override": t.provider_override,
+                    "reasoning_effort": t.reasoning_effort,
                 }
 
             def _run_dict(r):
@@ -1411,6 +1414,7 @@ def _handle_create(args: dict, **kw) -> str:
     goal_max_turns = args.get("goal_max_turns")
     model_override = args.get("model")
     provider_override = args.get("provider")
+    reasoning_effort = args.get("reasoning_effort")
     if provider_override and not model_override:
         return tool_error("'provider' requires 'model' to be set as well")
     if isinstance(parents, str):
@@ -1454,6 +1458,7 @@ def _handle_create(args: dict, **kw) -> str:
                 skills=skills,
                 model_override=model_override,
                 provider_override=provider_override,
+                reasoning_effort=reasoning_effort,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -1470,6 +1475,7 @@ def _handle_create(args: dict, **kw) -> str:
                 workspace_kind=new_task.workspace_kind if new_task else None,
                 workspace_path=new_task.workspace_path if new_task else None,
                 project_id=new_task.project_id if new_task else None,
+                reasoning_effort=(new_task.reasoning_effort if new_task else None),
                 subscribed=subscribed,
             )
         finally:
@@ -2301,6 +2307,15 @@ KANBAN_CREATE_SCHEMA = {
                     "provider — a model name alone is resolved against "
                     "the profile's provider and will fail if it belongs "
                     "to a different one. Requires 'model'."
+                ),
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "enum": ["", "none", *VALID_REASONING_EFFORTS],
+                "description": (
+                    "Pin the dispatched worker's reasoning effort for this "
+                    "task. Use 'none' to disable reasoning. Omit or pass an "
+                    "empty value to inherit the assignee profile default."
                 ),
             },
             "board": _board_schema_prop(),

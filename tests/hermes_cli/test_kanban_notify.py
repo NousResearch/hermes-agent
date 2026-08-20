@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 
 from pathlib import Path
@@ -810,12 +811,20 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # companion test for the full explanation.
     monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
 
-    real_pdf = tmp_path / "real.pdf"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_pdf = workspace / "real.pdf"
     real_pdf.write_bytes(b"%PDF-fake")
 
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="t", assignee="worker1")
+        tid = kb.create_task(
+            conn,
+            title="t",
+            assignee="worker1",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
     finally:
         conn.close()
@@ -825,10 +834,32 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     try:
         kt._handle_complete({
             "summary": "one real, one ghost",
-            "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+            "artifacts": [str(real_pdf)],
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+
+    # Simulate a stale completed event whose durable attachment disappeared
+    # before the notifier tick. New completions reject missing declarations;
+    # the notifier still skips a file that vanishes after staging.
+    conn = kb.connect()
+    try:
+        row = conn.execute(
+            "SELECT id, payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'completed' "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        payload = json.loads(row["payload"])
+        missing = kb.task_attachments_dir(tid) / "vanished.pdf"
+        payload["artifacts"].append(str(missing))
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_events SET payload = ? WHERE id = ?",
+                (json.dumps(payload), row["id"]),
+            )
+    finally:
+        conn.close()
 
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True

@@ -704,6 +704,7 @@ class GatewayKanbanWatchersMixin:
                                         metadata=metadata,
                                         event_payload=getattr(ev, "payload", None),
                                         task=task,
+                                        board=board_slug,
                                     )
                                 except Exception as art_exc:
                                     logger.debug(
@@ -1078,6 +1079,7 @@ class GatewayKanbanWatchersMixin:
         metadata: dict,
         event_payload: Optional[dict],
         task,
+        board: Optional[str] = None,
     ) -> None:
         """Upload artifact files referenced by a completed kanban task.
 
@@ -1091,9 +1093,11 @@ class GatewayKanbanWatchersMixin:
           2. ``event_payload['summary']`` (truncated first line)
           3. ``task.result`` (legacy fallback)
 
-        Files are deduplicated, missing files are silently skipped (the
-        path may have been mentioned for reference only), and delivery
-        errors are logged but do not break the notifier loop.
+        Files are restricted to the task's durable attachment directory,
+        deduplicated, and silently skipped when missing. Completion stages
+        workspace artifacts there before this notifier runs, so adapters never
+        receive a worker-mutable workspace path. Delivery errors are logged but
+        do not break the notifier loop.
         """
         from pathlib import Path as _Path
 
@@ -1138,6 +1142,47 @@ class GatewayKanbanWatchersMixin:
 
         from gateway.platforms.base import BasePlatformAdapter
         candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
+        if not candidates:
+            return
+
+        allowed_roots: list[_Path] = []
+        task_id = getattr(task, "id", None) if task is not None else None
+        if task_id:
+            try:
+                from hermes_cli import kanban_db as _kb
+
+                declared_root = _kb.task_attachments_dir(
+                    str(task_id), board=board
+                ).expanduser()
+                lexical_root = _Path(os.path.abspath(os.fspath(declared_root)))
+                resolved_root = declared_root.resolve(strict=True)
+                # The durable root is an authority boundary, not just a
+                # containment hint. Refuse any symlinked component instead of
+                # resolving it into an attacker-selected external directory.
+                if lexical_root == resolved_root and resolved_root.is_dir():
+                    allowed_roots.append(resolved_root)
+                else:
+                    logger.warning(
+                        "kanban notifier: refusing unsafe task attachment root: %s",
+                        declared_root,
+                    )
+            except (OSError, RuntimeError, ValueError):
+                pass
+
+        confined: list[str] = []
+        for candidate in candidates:
+            try:
+                resolved = _Path(candidate).resolve(strict=True)
+                if any(resolved.is_relative_to(root) for root in allowed_roots):
+                    confined.append(str(resolved))
+                else:
+                    logger.warning(
+                        "kanban notifier: skipping unstaged task artifact: %s",
+                        candidate,
+                    )
+            except (OSError, RuntimeError):
+                continue
+        candidates = confined
         if not candidates:
             return
 

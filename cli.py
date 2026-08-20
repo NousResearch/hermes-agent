@@ -9175,6 +9175,50 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         model = getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
 
+        # Reasoning level (C-02): resolve the effective effort for display.
+        reasoning_label = None
+        try:
+            rc = getattr(agent, "reasoning_config", None) or getattr(self, "reasoning_config", None)
+            if isinstance(rc, dict):
+                if rc.get("enabled") is False:
+                    reasoning_label = "off"
+                elif rc.get("effort"):
+                    reasoning_label = str(rc.get("effort"))
+            show_r = getattr(self, "show_reasoning", None)
+            if reasoning_label:
+                reasoning_label += f" (display: {'on' if show_r else 'off'})" if show_r is not None else ""
+        except Exception:
+            reasoning_label = None
+
+        # Approval mode (C-02).
+        approval_label = None
+        try:
+            from tools.approval import _get_approval_mode, is_approval_bypass_active_for_session
+            approval_label = _get_approval_mode()
+            try:
+                if is_approval_bypass_active_for_session(getattr(self, "session_key", "") or ""):
+                    approval_label += " (YOLO bypass active)"
+            except Exception:
+                pass
+        except Exception:
+            approval_label = None
+
+        # Context window usage (C-02): reuse the status-bar snapshot which
+        # already computes tokens / max / percent.
+        ctx_label = None
+        try:
+            snap = self._get_status_bar_snapshot()
+            ctx_tokens = snap.get("context_tokens") or 0
+            ctx_max = snap.get("context_length")
+            ctx_pct = snap.get("context_percent")
+            if ctx_max:
+                left = ""
+                if isinstance(ctx_pct, (int, float)):
+                    left = f"{max(0, 100 - int(ctx_pct))}% left · "
+                ctx_label = f"{left}{ctx_tokens:,} / {ctx_max:,} tokens used"
+        except Exception:
+            ctx_label = None
+
         lines = [
             "Hermes CLI Status",
             "",
@@ -9183,8 +9227,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ]
         if title:
             lines.append(f"Title: {title}")
+        lines.append(f"Model: {model} ({provider})")
+        if reasoning_label:
+            lines.append(f"Reasoning: {reasoning_label}")
+        if approval_label:
+            lines.append(f"Approvals: {approval_label}")
+        if ctx_label:
+            lines.append(f"Context: {ctx_label}")
         lines.extend([
-            f"Model: {model} ({provider})",
             f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
             f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {total_tokens:,}",

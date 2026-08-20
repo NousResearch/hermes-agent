@@ -833,6 +833,10 @@ class WebSocketRelayTransport:
 
     async def _read_loop(self) -> None:
         assert self._ws is not None
+        # Bind the socket this reader serves: the finally below must only
+        # clear _ws if it still points at THIS socket (a supervisor re-dial
+        # may have already installed a fresh one by the time we unwind).
+        ws = self._ws
         buf = ""
         try:
             try:
@@ -878,6 +882,19 @@ class WebSocketRelayTransport:
                     self._reconnect_loop(), name="relay-ws-reconnect"
                 )
         finally:
+            # The socket this reader served is dead. Drop the handle (identity-
+            # guarded: a re-dial that already installed a FRESH socket must not
+            # be clobbered) so every `self._ws is None` liveness check — send,
+            # _request_response, go_idle, go_dormant — reports "not connected"
+            # for the whole outage. Without this, _ws kept pointing at the dead
+            # socket on every reader exit that arms NO supervisor (terminal
+            # 4401 revocation, reconnect=False transports), and a send there
+            # registered a future nothing could resolve: a full
+            # _outbound_timeout_s (~30s) wedge — including the revocation
+            # path's own fatal-error notification. disconnect() owns the
+            # handle during deliberate teardown, so leave it alone then.
+            if self._ws is ws and not self._closing:
+                self._ws = None
             # The reader is the ONLY thing that can resolve a pending
             # outbound_result future — once it exits (socket dropped, error,
             # or cancellation cleanup) every in-flight _request_response waiter

@@ -36,11 +36,12 @@ class _DroppingWS:
     """Fake socket: accepts sends, then the read loop dies mid-iteration —
     the shape of an unexpected close (e.g. 1011 keepalive ping timeout)."""
 
-    def __init__(self):
+    def __init__(self, close_code: int | None = None):
         self.sent: list[str] = []
         # Reader blocks here until the test releases it, so the outbound
         # future is registered BEFORE the "socket" drops.
         self.drop = asyncio.Event()
+        self._close_code = close_code
 
     async def send(self, data):
         self.sent.append(data)
@@ -50,6 +51,10 @@ class _DroppingWS:
 
     async def __anext__(self):
         await self.drop.wait()
+        if self._close_code is not None:
+            from websockets.frames import Close
+
+            raise ConnectionClosedError(Close(self._close_code, ""), None)
         raise ConnectionClosedError(None, None)
 
     async def close(self):
@@ -152,3 +157,59 @@ async def test_connect_passes_wan_keepalive_tuning(monkeypatch):
     for kwargs in captured:
         assert kwargs.get("ping_interval") == 30
         assert kwargs.get("ping_timeout") == 60
+
+
+async def _run_reader_to_exit(t: WebSocketRelayTransport, fake: _DroppingWS) -> None:
+    """Start the reader on ``fake``, drop the socket, and wait for the reader
+    to fully unwind — the state every post-drop assertion depends on."""
+    t._reader = asyncio.create_task(t._read_loop())
+    await asyncio.sleep(0)
+    fake.drop.set()
+    await t._reader
+
+
+@pytest.mark.asyncio
+async def test_send_after_terminal_4401_revocation_fails_fast():
+    """A terminal 4401 revocation deliberately arms NO reconnect supervisor,
+    so the reader's exit is the LAST liveness transition this transport will
+    ever make. If _ws still points at the dead socket afterwards, the
+    revocation path's own fatal-error notification send wedges for the full
+    _outbound_timeout_s. The reader must leave _ws cleared so the
+    not-connected guard answers instantly."""
+    t = WebSocketRelayTransport(
+        "ws://unused", "discord", "bot1", reconnect=True, outbound_timeout_s=30.0
+    )
+    fake = _DroppingWS(close_code=4401)
+    t._ws = fake
+    t._handshake_succeeded = True  # prior handshake -> 4401 is a revocation
+    await _run_reader_to_exit(t, fake)
+
+    assert t._auth_revoked is True
+    assert t._supervisor is None  # revocation must not re-dial
+    assert t._ws is None, "dead socket handle must not survive the reader"
+
+    result = await asyncio.wait_for(
+        t.send_outbound({"op": "send_message", "text": "hi"}), timeout=2.0
+    )
+    assert result["success"] is False
+    assert t._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_send_after_drop_with_reconnect_disabled_fails_fast():
+    """reconnect=False transports never arm a supervisor either — the same
+    stranded-_ws wedge as the revocation path, reachable by configuration."""
+    t = WebSocketRelayTransport(
+        "ws://unused", "discord", "bot1", reconnect=False, outbound_timeout_s=30.0
+    )
+    fake = _DroppingWS()
+    t._ws = fake
+    await _run_reader_to_exit(t, fake)
+
+    assert t._ws is None, "dead socket handle must not survive the reader"
+
+    result = await asyncio.wait_for(
+        t.send_outbound({"op": "send_message", "text": "hi"}), timeout=2.0
+    )
+    assert result["success"] is False
+    assert t._pending == {}

@@ -2171,6 +2171,15 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
 
+    # Strip raw chat-template special tokens (<|open|>, <|close|>, <|sep|>,
+    # <|im_start|>, etc.) that some providers (e.g. Kimi K3 via Fireworks)
+    # intermittently leak as assistant content instead of processing them
+    # as template instructions.  These tokens are not user-facing text and
+    # must be removed before persisting to session history, delivering to
+    # messaging platforms, or replaying as API context.  (#73491)
+    if isinstance(_san_content, str) and _san_content:
+        _san_content = re.sub(r'<\|[a-z_]+\|>', '', _san_content).strip()
+
     # Defence-in-depth: redact credentials (PATs, API keys, Bearer tokens)
     # from assistant content BEFORE the message enters conversation history.
     # If the model accidentally inlines a secret in its natural-language

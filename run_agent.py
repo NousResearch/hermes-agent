@@ -1728,6 +1728,11 @@ class AIAgent:
 
         # Remove all reasoning tag variants (must match _strip_think_blocks)
         cleaned = self._strip_think_blocks(content)
+        # Also remove raw chat-template tokens (e.g. <|open|>, <|close|>, <|sep|>)
+        # that providers like Kimi K3 via Fireworks may leak as assistant content.
+        # These are not user-facing text and should not count as "actual content"
+        # for thinking-exhaustion detection.  (#73491)
+        cleaned = re.sub(r'<\|[a-z_]+\|>', '', cleaned)
 
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())

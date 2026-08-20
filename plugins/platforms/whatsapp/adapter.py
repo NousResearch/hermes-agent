@@ -398,7 +398,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     - session_path: Path to store WhatsApp session data
     - dm_policy: "open" | "allowlist" | "disabled" | "pairing" — how DMs are handled (default: "pairing")
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
-    - group_policy: "open" | "allowlist" | "disabled" | "pairing" — which groups are processed (default: "pairing")
+    - group_policy: "open" | "allowlist" | "disabled" | "pairing" — which groups are processed (default: "open")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
     - send_read_receipts: Mark accepted inbound WhatsApp messages as read
 
@@ -448,7 +448,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._dm_allowlist_source = None
             allow_raw = None
         self._allow_from = self._coerce_allow_list(allow_raw)
-        self._group_policy = str(config.extra.get("group_policy") or _wenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
+        # Groups do not have a useful pairing handshake. Keep the default
+        # open here and let the gateway's normal authorization layer enforce
+        # the configured sender allowlist; an explicit ``pairing`` policy is
+        # still available when an operator wants to disable group intake.
+        self._group_policy = str(config.extra.get("group_policy") or _wenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
         read_receipts = config.extra.get("send_read_receipts", False)
         self._send_read_receipts = (

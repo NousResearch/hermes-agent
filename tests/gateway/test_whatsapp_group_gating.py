@@ -1,4 +1,5 @@
 import json
+import logging
 from unittest.mock import AsyncMock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
@@ -30,7 +31,7 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
     adapter._message_handler = AsyncMock()
     adapter._dm_policy = str(extra.get("dm_policy", "pairing")).strip().lower()
     adapter._allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("allow_from"))
-    adapter._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
+    adapter._group_policy = str(extra.get("group_policy", "open")).strip().lower()
     adapter._group_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("group_allow_from"))
     adapter._mention_patterns = adapter._compile_mention_patterns()
     adapter._free_response_chats = adapter._whatsapp_free_response_chats()
@@ -151,6 +152,29 @@ def test_dm_policy_disabled_still_allows_groups():
 
 
 # --- New group_policy tests ---
+
+
+def test_group_policy_defaults_to_open(monkeypatch, tmp_path):
+    """The Baileys adapter must not silently reject every group by default."""
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.delenv("WHATSAPP_GROUP_POLICY", raising=False)
+    monkeypatch.setattr(WhatsAppAdapter, "_DEFAULT_BRIDGE_DIR", tmp_path)
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
+
+    assert adapter._group_policy == "open"
+    assert adapter._should_process_message(_group_message("hello")) is True
+
+
+def test_group_policy_pairing_drop_is_logged(caplog):
+    adapter = _make_adapter(group_policy="pairing", require_mention=False)
+
+    with caplog.at_level(logging.INFO, logger="gateway.platforms.whatsapp_common"):
+        assert adapter._should_process_message(_group_message("hello")) is False
+
+    assert "Dropping WhatsApp group message" in caplog.text
+    assert "group_policy=pairing" in caplog.text
+    assert "120363001234567890@g.us" in caplog.text
 
 
 # --- Config bridging tests ---

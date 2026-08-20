@@ -130,6 +130,20 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+Group messages use `group_policy: open` at the WhatsApp intake by default, so
+configured group chats are not discarded before the gateway can authorize them.
+The gateway still applies the normal WhatsApp/global allowlist, or an explicit
+allow-all opt-in. To restrict groups further, configure their JIDs explicitly:
+
+```yaml
+whatsapp:
+  group_policy: allowlist
+  group_allow_from:
+    - "120363001234567890@g.us"
+```
+
+Use `group_policy: disabled` to ignore all group messages.
+
 Then start the gateway:
 
 ```bash

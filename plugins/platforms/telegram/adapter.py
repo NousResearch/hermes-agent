@@ -1192,11 +1192,11 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 from gateway.session import SessionSource
 
-                normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-                if normalized_chat_type == "private":
-                    normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
+                normalized_chat_type = self._classify_telegram_chat_type(
+                    chat_type or "dm",
+                    thread_id=thread_id,
+                    is_forum=thread_id is not None,
+                )
 
                 source = SessionSource(
                     platform=Platform.TELEGRAM,
@@ -1223,6 +1223,57 @@ class TelegramAdapter(BasePlatformAdapter):
             return _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
+
+    @staticmethod
+    def _classify_telegram_chat_type(
+        chat_type: str,
+        *,
+        thread_id=None,
+        is_topic_message: bool = False,
+        is_forum: bool = False,
+    ) -> str:
+        """Normalize a Telegram ``chat.type`` string into the gateway's
+        ``dm | group | forum | channel`` vocabulary.
+
+        Callers that have different signals available pass them as keyword
+        arguments; the classifier preserves each call site's intent rather
+        than collapsing to one predicate:
+
+        * **thread_id-only** (callback auth): ``forum`` when ``thread_id``
+          is not ``None``, else ``group``.
+        * **thread_id + topic signals** (message auth): ``forum`` when
+          ``thread_id`` is not ``None`` and (``is_topic_message`` or
+          ``is_forum``), else ``group``.
+        * **is_forum only** (reaction auth): ``forum`` when
+          ``is_forum``, else ``group``.
+
+        The ``is_topic_message`` flag is only consulted when ``thread_id``
+        is not ``None``, matching the message-auth caller's predicate.
+
+        Note: the pre-refactor code at each site only matched
+        ``"supergroup"`` for forum promotion. This helper treats
+        ``"group"`` and ``"supergroup"`` identically (both can carry a
+        thread_id), which is an intentional widening verified by the
+        existing auth tests. Unknown chat types fall through to ``"dm"``
+        (fail-safe) rather than passing through verbatim.
+        """
+        raw = str(chat_type or "").strip().lower()
+        if raw == "private":
+            return "dm"
+        if raw in {"group", "supergroup"}:
+            if thread_id is not None:
+                return "forum" if (is_topic_message or is_forum) else "group"
+            return "forum" if is_forum else "group"
+        if raw == "channel":
+            return "channel"
+        if raw:
+            # Fail-safe routing, but visible: a new Telegram chat.type must
+            # show up in debug logs instead of silently becoming a DM.
+            logger.debug(
+                "[Telegram] Unknown chat.type %r classified as dm",
+                raw,
+            )
+        return "dm"
 
     def _source_from_message_for_auth(self, message: Message):
         """Build the same Telegram source shape the gateway auth path expects.
@@ -1252,24 +1303,22 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
 
         chat_id = str(getattr(chat, "id", "")).strip() or user_id
-        chat_type = str(getattr(chat, "type", "dm")).strip().lower() or "dm"
-        if chat_type == "private":
-            chat_type = "dm"
-        elif chat_type == "supergroup":
-            thread_id_raw = getattr(message, "message_thread_id", None)
-            is_topic_message = bool(getattr(message, "is_topic_message", False))
-            is_forum_group = getattr(chat, "is_forum", False) is True
-            chat_type = (
-                "forum"
-                if thread_id_raw is not None and (is_topic_message or is_forum_group)
-                else "group"
-            )
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        is_topic_message = bool(getattr(message, "is_topic_message", False))
+        is_forum_group = getattr(chat, "is_forum", False) is True
+        # Match the original predicate exactly: is_forum only matters when
+        # a thread_id is present. Without thread_id, the original AND
+        # short-circuited to "group" even for forum supergroups (General
+        # topic messages where Telegram omits message_thread_id).
+        chat_type = self._classify_telegram_chat_type(
+            str(getattr(chat, "type", "dm")),
+            thread_id=thread_id_raw,
+            is_topic_message=is_topic_message,
+            is_forum=is_forum_group if thread_id_raw is not None else False,
+        )
 
         thread_id = None
-        thread_id_raw = getattr(message, "message_thread_id", None)
         if thread_id_raw is not None:
-            is_topic_message = bool(getattr(message, "is_topic_message", False))
-            is_forum_group = getattr(chat, "is_forum", False) is True
             if chat_type == "forum" and (is_topic_message or is_forum_group):
                 thread_id = str(thread_id_raw)
             elif chat_type == "dm" and is_topic_message:
@@ -1321,13 +1370,10 @@ class TelegramAdapter(BasePlatformAdapter):
             raise ValueError(
                 "gateway_platform_event reaction requires actor, chat, and message identities"
             )
-        chat_type = str(getattr(chat, "type", "dm")).strip().lower() or "dm"
-        if chat_type == "private":
-            chat_type = "dm"
-        elif chat_type == "supergroup":
-            # Reactions carry no message_thread_id; a forum supergroup is the
-            # only forum signal available without the underlying message.
-            chat_type = "forum" if getattr(chat, "is_forum", False) is True else "group"
+        chat_type = self._classify_telegram_chat_type(
+            str(getattr(chat, "type", "dm")),
+            is_forum=getattr(chat, "is_forum", False) is True,
+        )
 
         return self.build_source(
             chat_id=chat_id,

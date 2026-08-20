@@ -14,11 +14,11 @@ seen-set drops them. Fail-open: events without a message_id never dedupe
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, SessionSource
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from tests.gateway.relay.stub_connector import StubConnector
@@ -78,9 +78,19 @@ class TestInboundReplayDedupe:
     after a WS re-handshake must not re-run the turn."""
 
     def _event(self, message_id="1700.100", chat_id="C1", text="hi"):
-        return SimpleNamespace(
-            message_id=message_id, chat_id=chat_id, text=text, media=None
+        # A REAL MessageEvent, shaped exactly as _event_from_wire produces it:
+        # chat identity lives on event.source, NOT as a top-level attribute.
+        # (The first version of these tests used a SimpleNamespace with a
+        # top-level chat_id — a shape no production code path produces — and
+        # green-lit a dedupe key that read the wrong field.)
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id=chat_id,
+            chat_type="channel",
+            user_id="U1",
+            message_id=message_id,
         )
+        return MessageEvent(text=text, source=source, message_id=message_id)
 
     def _tap(self, adapter, handled):
         adapter.handle_message = lambda e: _record(handled, e)

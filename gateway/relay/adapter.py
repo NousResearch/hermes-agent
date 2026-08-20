@@ -396,18 +396,26 @@ class RelayAdapter(BasePlatformAdapter):
     _SEEN_INBOUND_MAX = 512
 
     def _inbound_dedupe_key(self, event) -> Optional[str]:
-        """Stable replay identity: (chat, platform message id).
+        """Stable replay identity: (platform, chat, platform message id).
+
+        Chat identity lives on ``event.source`` (MessageEvent has no top-level
+        ``chat_id``), and this adapter can front SEVERAL platforms over one
+        relay socket (Phase 1.5 multiplex), so the underlying platform joins
+        the key — two platforms' numeric chat/message ids must never collide
+        into one identity.
 
         Returns None when the event carries no platform message id (synthetic
         events, some prompt responses) — those never dedupe, fail-open by
         design: dropping a real user message is strictly worse than rerunning
         one, so only dedupe when identity is certain.
         """
+        source = getattr(event, "source", None)
         message_id = getattr(event, "message_id", None)
-        chat_id = getattr(event, "chat_id", None)
+        chat_id = getattr(source, "chat_id", None)
         if not message_id or not chat_id:
             return None
-        return f"{chat_id}:{message_id}"
+        platform = getattr(getattr(source, "platform", None), "value", "")
+        return f"{platform}:{chat_id}:{message_id}"
 
     def _relay_slack_extra(self) -> Dict[str, Any]:
         """The Slack-behavior subset of the RELAY platform config.

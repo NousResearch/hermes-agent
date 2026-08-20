@@ -31,19 +31,17 @@ def _open_session_db():
         return None
 
 
-def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
+def _react_to_message_with_db(
+    emoji: str,
+    message_row_id=None,
+    messages_back=None,
+    *,
+    db,
+    session_key: str,
+) -> str:
     """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
-    emoji = (emoji or "").strip()
-    session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env(
-        "HERMES_SESSION_ID", ""
-    )
-
     if not session_key:
         return tool_error("No active session — reactions need a persisted conversation.")
-
-    db = _open_session_db()
-    if db is None:
-        return tool_error("Session storage is unavailable.")
 
     row_id = message_row_id
     target_role = "user"
@@ -87,6 +85,35 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
     return json.dumps(
         {"success": True, "row_id": int(row_id), "reactions": reactions}, ensure_ascii=False
     )
+
+
+def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
+    """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
+    emoji = (emoji or "").strip()
+    session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env(
+        "HERMES_SESSION_ID", ""
+    )
+
+    if not session_key:
+        return tool_error("No active session — reactions need a persisted conversation.")
+
+    db = _open_session_db()
+    if db is None:
+        return tool_error("Session storage is unavailable.")
+
+    try:
+        return _react_to_message_with_db(
+            emoji,
+            message_row_id,
+            messages_back,
+            db=db,
+            session_key=session_key,
+        )
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 def check_react_requirements() -> bool:

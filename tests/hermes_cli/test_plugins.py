@@ -16,6 +16,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    _dispatch_pre_tool_call_hooks,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -24,6 +25,7 @@ from hermes_cli.plugins import (
     resolve_plugin_command_result,
     _portable_skill_namespace,
 )
+from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
 from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
     apply_llm_request_middleware,
@@ -118,6 +120,43 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
+
+    def test_removed_relay_plugin_identity_cannot_be_reloaded(
+        self, monkeypatch, caplog
+    ):
+        from hermes_cli import plugins as plugins_mod
+
+        manifest = PluginManifest(
+            name="nemo_relay",
+            key="observability/nemo_relay",
+            source="user",
+        )
+        manager = PluginManager()
+        monkeypatch.setattr(
+            manager,
+            "_collect_directory_manifests",
+            lambda: [manifest],
+        )
+        monkeypatch.setattr(manager, "_scan_entry_points", lambda: [])
+        monkeypatch.setattr(
+            plugins_mod,
+            "_get_enabled_plugins",
+            lambda: {"observability/nemo_relay"},
+        )
+        monkeypatch.setattr(plugins_mod, "_get_disabled_plugins", lambda: set())
+        loaded: list[PluginManifest] = []
+        monkeypatch.setattr(manager, "_load_plugin", loaded.append)
+
+        with caplog.at_level(logging.WARNING):
+            manager.discover_and_load()
+
+        state = manager._plugins["observability/nemo_relay"]
+        assert loaded == []
+        assert not state.enabled
+        assert state.error is not None
+        assert "Relay lifecycle is owned by Hermes core" in state.error
+        assert RELAY_PLUGINS_CONFIG_ENV in state.error
+        assert "Refusing to load removed Hermes Relay plugin" in caplog.text
 
     def test_enabled_portable_plugin_registers_components(
         self, tmp_path, monkeypatch
@@ -466,6 +505,274 @@ class TestPluginLoading:
         assert not entry.enabled
         assert entry.module is None
         assert "exclusive" in (entry.error or "").lower()
+
+    def test_entrypoint_memory_provider_auto_coerced_to_exclusive(
+        self, tmp_path, monkeypatch
+    ):
+        """Pip entry-point memory-provider plugins must NOT be imported by
+        the general PluginManager.
+
+        Regression test for the mnemosyne case: a pip plugin declaring a
+        ``hermes_agent.plugins`` entry point but exposing
+        ``register_memory_provider`` (not ``register()``) used to be
+        eagerly imported in every process, pulling heavy deps (fastembed
+        → onnxruntime, ~60 MB RSS) even though the import registered
+        nothing. Entry-point manifests now get the same source-scan
+        classification as directory plugins: recorded, never imported.
+        Activation stays with plugins/memory discovery via
+        ``memory.provider`` config.
+        """
+        from importlib.metadata import EntryPoint
+        from types import SimpleNamespace
+
+        module_path = tmp_path / "mempalace_ep.py"
+        module_path.write_text(
+            "class MemPalaceProvider:\n"
+            "    pass\n"
+            "def register_memory_provider(name, cls):\n"
+            "    pass\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        ep = EntryPoint(
+            name="mempalace_ep",
+            value="mempalace_ep:register",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.importlib.metadata.entry_points",
+            lambda: SimpleNamespace(
+                select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
+            ),
+        )
+
+        # Even if the user explicitly enables it, the loader must treat it
+        # as exclusive and skip the import (the bug: eager import of a
+        # module with no register() function).
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["mempalace_ep"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "mempalace_ep" in mgr._plugins
+        entry = mgr._plugins["mempalace_ep"]
+        assert entry.manifest.kind == "exclusive", (
+            f"Expected auto-coerced kind='exclusive', got {entry.manifest.kind}"
+        )
+        assert not entry.enabled
+        assert entry.module is None
+        assert "exclusive" in (entry.error or "").lower()
+        # The whole point: the module was never imported.
+        assert "mempalace_ep" not in sys.modules
+
+    def test_entrypoint_model_provider_auto_coerced_to_model_provider(
+        self, tmp_path, monkeypatch
+    ):
+        """Pip entry-point model-provider plugins are routed to the
+        providers/ discovery system instead of being imported by the
+        general manager (which would double-instantiate ProviderProfile)."""
+        from importlib.metadata import EntryPoint
+        from types import SimpleNamespace
+
+        module_path = tmp_path / "fakeprovider.py"
+        module_path.write_text(
+            "class ProviderProfile:\n"
+            "    pass\n"
+            "def register_provider(profile):\n"
+            "    pass\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        ep = EntryPoint(
+            name="fakeprovider",
+            value="fakeprovider:register",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.importlib.metadata.entry_points",
+            lambda: SimpleNamespace(
+                select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
+            ),
+        )
+
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["fakeprovider"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        entry = mgr._plugins["fakeprovider"]
+        assert entry.manifest.kind == "model-provider", (
+            f"Expected auto-coerced kind='model-provider', "
+            f"got {entry.manifest.kind}"
+        )
+        assert entry.module is None
+        assert "fakeprovider" not in sys.modules
+        # Routing contract: classification records the manifest but does
+        # not fabricate activation. providers/ discovery is directory-based
+        # today, so a pip-only provider is not activatable via
+        # get_provider_profile() — and it must not leak into sys.modules
+        # through the providers path either (no double import).
+        from providers import get_provider_profile
+
+        assert get_provider_profile("fakeprovider") is None
+        assert "fakeprovider" not in sys.modules
+
+    def test_entrypoint_duplicate_does_not_block_directory_provider_activation(
+        self, tmp_path, monkeypatch
+    ):
+        """The mnemosyne shape: a pip entry point duplicating a same-name
+        directory provider.
+
+        The pip copy is classified ``exclusive`` (recorded, never
+        imported); the directory copy must still activate through
+        memory-provider discovery, exactly once. Classification must not
+        interfere with the real activation path.
+        """
+        from importlib.metadata import EntryPoint
+        from types import SimpleNamespace
+
+        # Same-name pip entry point (the duplicate).
+        ep_dir = tmp_path / "ep_modules"
+        ep_dir.mkdir()
+        (ep_dir / "mempalace_dup.py").write_text(
+            "class MemPalaceProvider:\n"
+            "    pass\n"
+            "def register_memory_provider(name, cls):\n"
+            "    pass\n"
+        )
+        monkeypatch.syspath_prepend(str(ep_dir))
+        ep = EntryPoint(
+            name="mempalace_dup",
+            value="mempalace_dup:register",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.importlib.metadata.entry_points",
+            lambda: SimpleNamespace(
+                select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
+            ),
+        )
+
+        # Same-name directory provider under $HERMES_HOME/plugins/.
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        provider_dir = plugins_dir / "mempalace_dup"
+        provider_dir.mkdir(parents=True)
+        (provider_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class MyProvider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'mempalace_dup'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        (provider_dir / "plugin.yaml").write_text(
+            "name: mempalace_dup\ndescription: dup\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["mempalace_dup"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir", lambda: plugins_dir
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        # Pip duplicate: classified exclusive, recorded, never imported.
+        entry = mgr._plugins["mempalace_dup"]
+        assert entry.manifest.kind == "exclusive", (
+            f"Expected auto-coerced kind='exclusive', got {entry.manifest.kind}"
+        )
+        assert entry.module is None
+        assert "mempalace_dup" not in sys.modules
+
+        # Directory copy still activates through memory-provider discovery,
+        # exactly once.
+        from plugins.memory import discover_memory_providers, load_memory_provider
+
+        names = [n for n, _, _ in discover_memory_providers()]
+        assert names.count("mempalace_dup") == 1
+        p = load_memory_provider("mempalace_dup")
+        assert p is not None
+        assert p.name == "mempalace_dup"
+        assert p.is_available()
+
+    def test_entrypoint_dotted_name_never_imports_parent_package(
+        self, tmp_path, monkeypatch
+    ):
+        """A dotted entry point (pkg.mod:register) must NOT import the
+        parent package during classification.
+
+        ``importlib.util.find_spec`` on a dotted name imports the parent
+        first — executing its ``__init__.py``, which is where a provider's
+        heavy imports typically live. The classifier must resolve the
+        module path by hand so the parent's initialization code never
+        runs and neither the parent nor the child enters ``sys.modules``.
+        """
+        from importlib.metadata import EntryPoint
+        from types import SimpleNamespace
+
+        marker = tmp_path / "parent_executed"
+        pkg_dir = tmp_path / "mempalace_pkg"
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text(
+            "# If this ever executes, the no-import property is broken.\n"
+            f"from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('executed')\n"
+            "from .provider import register_memory_provider\n"
+        )
+        (pkg_dir / "provider.py").write_text(
+            "class MemPalaceProvider:\n"
+            "    pass\n"
+            "def register_memory_provider(name, cls):\n"
+            "    pass\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        ep = EntryPoint(
+            name="mempalace_dotted",
+            value="mempalace_pkg.provider:register",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.importlib.metadata.entry_points",
+            lambda: SimpleNamespace(
+                select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
+            ),
+        )
+
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["mempalace_dotted"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        entry = mgr._plugins["mempalace_dotted"]
+        assert entry.manifest.kind == "exclusive", (
+            f"Expected auto-coerced kind='exclusive', got {entry.manifest.kind}"
+        )
+        assert entry.module is None
+        # Neither the parent package nor the child module was imported.
+        assert "mempalace_pkg" not in sys.modules
+        assert "mempalace_pkg.provider" not in sys.modules
+        # And the parent's __init__.py never executed.
+        assert not marker.exists()
 
 
 # ── TestPluginHooks ────────────────────────────────────────────────────────
@@ -852,6 +1159,122 @@ class TestResolvePreToolBlock:
         monkeypatch.setattr("tools.approval.request_tool_approval", _boom)
         msg = resolve_pre_tool_block("terminal", {})
         assert msg is not None and "gate failed" in msg  # fail-closed
+
+
+class TestPreToolCallModify:
+    """Tests for the modify action — transforming tool args before dispatch."""
+
+    def test_modify_returns_merged_args(self, monkeypatch):
+        """A single modify hook should return merged args."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe/dir"}}
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/unsafe/dir", "content": "x"}
+        )
+        assert block_msg is None
+        assert modified == {"path": "/safe/dir", "content": "x"}
+
+    def test_modify_accumulates_multiple_hooks(self, monkeypatch):
+        """Multiple modify hooks should accumulate — hook A + hook B both survive."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe"}},
+                {"action": "modify", "args": {"content": "fixed"}},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/unsafe", "content": "original"}
+        )
+        assert block_msg is None
+        assert modified == {"path": "/safe", "content": "fixed"}
+
+    def test_modify_last_wins_on_same_key(self, monkeypatch):
+        """When two hooks modify the same key, the later hook wins."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/first"}},
+                {"action": "modify", "args": {"path": "/second"}},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/original"}
+        )
+        assert modified == {"path": "/second"}
+
+    def test_modify_with_block_returns_both(self, monkeypatch):
+        """When a modify precedes a block, both are returned."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe"}},
+                {"action": "block", "message": "still blocked"},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/unsafe"}
+        )
+        assert block_msg == "still blocked"
+        assert modified == {"path": "/safe"}
+
+    def test_modify_after_block_is_invisible(self, monkeypatch):
+        """A modify after a block is never reached — first block wins."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block", "message": "stopped"},
+                {"action": "modify", "args": {"path": "/invisible"}},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/original"}
+        )
+        assert block_msg == "stopped"
+        assert modified is None
+
+    def test_modify_with_none_args(self, monkeypatch):
+        """Modify should handle None args gracefully."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"path": "/safe"}}
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks("write_file", None)
+        assert block_msg is None
+        assert modified == {"path": "/safe"}
+
+    def test_modify_none_when_no_hooks(self, monkeypatch):
+        """No hooks → both return values are None."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "terminal", {"cmd": "ls"}
+        )
+        assert block_msg is None
+        assert modified is None
+
+    def test_modify_invalid_args_ignored(self, monkeypatch):
+        """Non-dict args and empty dicts should be silently ignored."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": "not a dict"},
+                {"action": "modify", "args": {}},          # empty
+                {"action": "modify", "args": {"path": "/real"}},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/original"}
+        )
+        assert modified == {"path": "/real"}
 
 
 class TestGetPreVerifyContinueMessage:

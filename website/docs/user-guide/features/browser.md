@@ -62,6 +62,10 @@ BROWSER_USE_API_KEY=***
 
 Get your API key at [browser-use.com](https://browser-use.com).
 
+:::note Selecting the provider
+The `.env` keys above supply **credentials only**. The active cloud browser is chosen by the `browser.cloud_provider` selection written by `hermes tools` → Browser Automation (`browserbase`, `browser-use`, `camofox`, or `nous` for the Nous Subscription). Once a selection exists, adding or removing a key does not switch providers — and a selected provider with a missing key errors with guidance to run `hermes tools` instead of silently rerouting. Never-configured setups still autodetect from available credentials.
+:::
+
 ### Browser Use mode (default)
 
 Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) — a new browser harness that is state-of-the-art at web tasks — instead of the built-in browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages.
@@ -69,6 +73,8 @@ Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/b
 **This is the default browser mode**: when `browser.backend` is unset and the `browser-use` CLI is runnable (installed, or available through `uvx`), the agent gets the single `browser_exec` tool. If the CLI can't run, Hermes falls back to the built-in browser tools automatically.
 
 The mode is a **driver** that composes with your configured browser backend: it drives your local Chrome, a Nous-subscription cloud browser, Browserbase, Firecrawl, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools.
+
+**Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that isolates browser work per name on every backend. Each name gets its own harness daemon (its own IPC socket, log, and state), and on cloud backends its own browser — so parallel subagents or simultaneous chats no longer clobber a single shared connection. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
 
 To opt out and force the built-in browser tools, use `/browser use off`, or:
 
@@ -235,7 +241,7 @@ The rewrite only applies to page navigation URLs with loopback hosts (`localhost
 
 Or configure via `hermes tools` → Browser Automation → Camofox.
 
-When `CAMOFOX_URL` is set, all browser tools automatically route through Camofox instead of Browserbase or agent-browser.
+Camofox is selected like any other browser backend: pick **Camofox** in `hermes tools` → Browser Automation, which writes `browser.cloud_provider: camofox` to `config.yaml`. `CAMOFOX_URL` is only the server address — setting it no longer selects the backend by itself once a browser selection exists (never-configured setups still autodetect it).
 
 #### Persistent browser sessions
 
@@ -472,10 +478,12 @@ AGENT_BROWSER_ARGS=--no-sandbox
 
 ### Install agent-browser CLI
 
+You don't need to install anything — `agent-browser` resolves automatically via
+`npx agent-browser` on first browser-tool use. To avoid the one-time npx fetch,
+you can install it globally ahead of time (optional):
+
 ```bash
 npm install -g agent-browser
-# Or install locally in the repo:
-npm install
 ```
 
 :::info

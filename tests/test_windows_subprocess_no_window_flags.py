@@ -189,13 +189,38 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
     assert "process_group" not in captured[0][1]
 
 
+def test_agent_browser_npx_warmup_hides_npx_window(monkeypatch):
+    """warm_agent_browser_npx_cache spawns via subprocess.Popen (not .run,
+    since the T3 security-hardening rewrite added process-tree containment
+    via Popen + communicate()) — the console-hiding flag must still survive
+    that rewrite. On Windows the real implementation now ORs in
+    CREATE_NEW_PROCESS_GROUP alongside windows_hide_flags()'s bits (for
+    _kill_process_tree's taskkill /T to have a coherent tree to kill), so
+    this checks the CREATE_NO_WINDOW bit is present rather than exact
+    equality with the whole creationflags value."""
+    from tools import browser_tool
 
+    captured = []
 
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            self.returncode = 0
 
+        def communicate(self, timeout=None):
+            return ("1.2.3\n", "")
 
+    monkeypatch.setattr(
+        browser_tool.shutil, "which",
+        lambda name, path=None: "/usr/bin/npx",
+    )
+    monkeypatch.setattr(browser_tool, "node_tool_runnable", lambda p: True)
+    monkeypatch.setattr(browser_tool, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(browser_tool.subprocess, "Popen", _FakePopen)
 
-
-
+    assert browser_tool.warm_agent_browser_npx_cache() is True
+    assert captured[0][0][0] == "/usr/bin/npx"
+    assert captured[0][1]["creationflags"] & _CREATE_NO_WINDOW == _CREATE_NO_WINDOW
 
 
 

@@ -44,11 +44,15 @@ __all__ = [
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
     "bounded_git_probe",
+    "bounded_probe_run",
     "noninteractive_git_env",
 ]
 
 
 IS_WINDOWS = sys.platform == "win32"
+
+# Private launcher-to-child metadata. This is diagnostic state, not user config.
+_WINDOWS_GATEWAY_BREAKAWAY_ENV = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 def split_command_line(line: str) -> list[str]:
@@ -439,6 +443,67 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
             pass
 
 
+def bounded_probe_run(
+    argv: Sequence[str],
+    *,
+    timeout: float,
+    errors: str = "replace",
+) -> "subprocess.CompletedProcess[str] | None":
+    """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=...)``
+    for fail-open probe call sites. Returns a ``CompletedProcess`` when the
+    child finished within *timeout* (any exit code), or ``None`` on spawn
+    failure or timeout.
+
+    Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup
+    calls an *unbounded* ``communicate()`` after killing the direct child.
+    Killing it can leave a descendant (``git.exe`` under a launcher shim,
+    ``conhost.exe`` under wmic/powershell) holding duplicates of the captured
+    stdout/stderr handles, so the pipes never reach EOF and the reader-thread
+    join blocks forever. The wmic / ``Get-CimInstance Win32_Process`` gateway
+    scan hit exactly this during ``hermes update`` on slow-WMI machines
+    (#87134); the git probes hit it first (#68609 / #66037).
+
+    The bounded flow: an explicit ``communicate(timeout)``, then on any
+    failure a tree-kill (see :func:`kill_process_tree`) plus a bounded 1s
+    post-kill drain; if the pipes are still held after that, they're abandoned
+    (the orphaned reader threads are daemonic and cost nothing).
+
+    The spawn contract mirrors the ``run`` calls it replaces: PIPE/PIPE/DEVNULL,
+    ``text`` with UTF-8 decoding (*errors* configurable — the process scans use
+    ``"ignore"``), and the hidden-window ``creationflags`` on Windows only. On
+    POSIX the child is placed in its own process group (``process_group=0``,
+    Python ≥3.11) so timeout cleanup can take down descendants with the
+    launcher instead of orphaning them.
+    """
+    _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    try:
+        proc = subprocess.Popen(
+            list(argv),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors=errors,
+            **_popen_kwargs,
+        )
+    except Exception:
+        return None
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except Exception:
+        # Timeout OR any other communicate() failure (torn-down pipe, decode
+        # error): terminate the child + descendants and drain bounded. Leaving
+        # it running would leak the same suspended-descendant class this guards.
+        kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=1)
+        except Exception:
+            pass
+        return None
+    return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
+
+
 def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     """Run a short, throwaway ``git`` probe and return stripped stdout, or ``""``
     on ANY failure (nonzero exit, timeout, spawn error, decode error).
@@ -471,33 +536,10 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child
     belongs to; it does not detach the terminal or alter the fast path.
     """
-    _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
-    try:
-        proc = subprocess.Popen(
-            list(argv),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **_popen_kwargs,
-        )
-    except Exception:
+    result = bounded_probe_run(argv, timeout=timeout)
+    if result is None or result.returncode != 0:
         return ""
-    try:
-        stdout, _ = proc.communicate(timeout=timeout)
-    except Exception:
-        # Timeout OR any other communicate() failure (torn-down pipe, decode
-        # error): terminate the child + descendants and drain bounded. Leaving
-        # it running would leak the same suspended-descendant class this guards.
-        kill_process_tree(proc)
-        try:
-            proc.communicate(timeout=1)
-        except Exception:
-            pass
-        return ""
-    return stdout.strip() if proc.returncode == 0 else ""
+    return (result.stdout or "").strip()
 
 
 # Backward-compat alias — existing call sites/tests import the historical name.

@@ -1303,6 +1303,88 @@ def test_direct_runtime_fake_enforces_lifo_scope_contract(direct_runtime):
     runtime.run_in_session(session, direct_runtime.scope.pop, first)
 
 
+def test_close_session_drains_orphaned_scopes_before_session_pop(direct_runtime):
+    """Orphaned physical scopes must not permanently wedge session close (#81521)."""
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "orphan-drain"})
+    assert session is not None
+    session_handle = session.handle
+
+    orphan = runtime.run_in_session(
+        session,
+        direct_runtime.scope.push,
+        "orphaned-physical-llm",
+        direct_runtime.ScopeType.Function,
+        handle=session_handle,
+    )
+    assert orphan is not None
+
+    # Without drain, popping the session while the orphan is on top fails
+    # with "scope handle is not at the top of the stack".
+    runtime.close_session({"session_id": "orphan-drain"})
+
+    assert runtime.get_session("orphan-drain") is None
+    rejected = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop.rejected" and event[1] == session_handle
+    ]
+    # First attempt may reject; drain + retry must succeed so the session
+    # handle is eventually popped (not left rejected-only).
+    session_pops = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == session_handle
+    ]
+    orphan_pops = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == orphan
+    ]
+    assert orphan_pops, "orphaned physical scope was not drained"
+    assert session_pops, f"session scope never closed (rejected={rejected!r})"
+
+
+def test_real_binding_drains_orphaned_scope_before_session_pop(
+    real_binding_runtime,
+):
+    """Orphan drain must work against the pinned native binding (#81521).
+
+    Regression guard for the #81601 review finding: the native binding's
+    ``get_scope_stack()`` returns a ``ScopeStack`` object (not a list and
+    not a ``ScopeHandle``), and ``scope.pop`` rejects it with TypeError.
+    The drain path must use the version-correct top accessor
+    (``scope.get_handle()``) and compare handles by uuid, because native
+    ``ScopeHandle`` instances do not compare equal by value.
+    """
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "native-orphan-drain"})
+    assert session is not None
+
+    orphan = runtime.run_in_session(
+        session,
+        real_binding_runtime.scope.push,
+        "orphaned-physical-llm",
+        real_binding_runtime.ScopeType.Function,
+        handle=session.handle,
+    )
+    assert orphan is not None
+
+    # Without the drain fix this fails: the direct session pop raises
+    # "scope handle is not at the top of the stack", and the pre-fix
+    # drain retried with a ScopeStack object that pop() rejects.
+    failure = runtime._close_scope_handle(
+        session,
+        session.handle,
+        output={},
+        allow_closing=True,
+        failure_label="session scope close failed",
+    )
+    assert failure is None, failure
+
+
 def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
     direct_runtime,
 ):

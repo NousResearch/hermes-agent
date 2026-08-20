@@ -53,44 +53,6 @@ export const parseSlashCommand = (cmd: string) => {
   return { arg: rest.join(' '), cmd, name: name.toLowerCase() }
 }
 
-// A skill referenced mid-prose in a message that's already been sent
-// ("clean this up with /clean"). The composer offers it as a completion, so
-// the transcript marks it as one rather than flattening it into the body text.
-//
-// Unlike the caret-anchored trigger above this scans finished text, so it has
-// to reject a token that continues into a path: `/usr/local/bin` would
-// otherwise mark `/usr`. `(?![\w-]*\/)` requires the token to end at something
-// other than another slash. A leading `/` is excluded too — that's a command
-// invocation, which never reaches the transcript as a user message.
-const SLASH_SKILL_REF_RE = /(?<=\s)\/[a-zA-Z][\w-]*(?![\w-]*\/)/g
-
-/**
- * Split `text` into alternating plain and `/skill` reference runs. Always
- * returns at least one segment, and concatenating every `text` reproduces the
- * input exactly — the transcript styles the reference without rewriting it.
- */
-export const splitSlashSkillRefs = (text: string): { ref: boolean; text: string }[] => {
-  const out: { ref: boolean; text: string }[] = []
-  let last = 0
-
-  for (const match of text.matchAll(SLASH_SKILL_REF_RE)) {
-    const start = match.index ?? 0
-
-    if (start > last) {
-      out.push({ ref: false, text: text.slice(last, start) })
-    }
-
-    out.push({ ref: true, text: match[0] })
-    last = start + match[0].length
-  }
-
-  if (last < text.length || !out.length) {
-    out.push({ ref: false, text: text.slice(last) })
-  }
-
-  return out
-}
-
 /**
  * Apply a completion row to the current input, mirroring the editor's
  * replace semantics: replace from `compReplace` with the row text, dropping

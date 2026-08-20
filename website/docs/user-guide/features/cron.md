@@ -26,7 +26,7 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 
 - **Per-job pin** — set by *you* via the dashboard, `hermes cron create/edit --model … --provider …`, or by editing `~/.hermes/cron/jobs.json`. Once set, it sticks until you change it. The agent's `cronjob` tool cannot set or change per-job models — inference pins are user-owned.
 - **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
-- **Global default** — only when neither of the above is set does a job follow `hermes model`. In this case Hermes **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you to pin the provider/model explicitly (#44585). This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
+- **Global default** — only when neither of the above is set does a job follow `hermes model`. In this case Hermes **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you **once** — the job stays skipped (and silent) on subsequent ticks until you act or the config is restored (#44585). For recurring or otherwise repeatable jobs, pin the provider/model explicitly (`hermes cron edit <job_id> --provider <provider> --model <model>`) to proceed. A consumed finite one-shot cannot be updated; create a new future one-shot with an explicit provider and model instead. This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
 
 `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
@@ -258,6 +258,35 @@ What they do:
 
 **Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
+## Agent-managed scheduling (cron jobs that manage cron jobs)
+
+By default, agents launched *by* the scheduler cannot use the `cronjob` tool —
+a scheduled job cannot create, edit, or remove other jobs. Opt in via
+`config.yaml`:
+
+```yaml
+cron:
+  allow_agent_scheduling: true   # default: false
+```
+
+When enabled, a scheduled agent can manage the cron table like any chat
+session: schedule follow-up one-shots from within scheduled work, tune its own
+cadence, or run a "cron librarian" job that reconciles the whole table
+(list, then update/remove/create as needed). Two properties keep this sane:
+
+- **One flat, user-owned table.** Jobs created from a cron run land in the
+  same `jobs.json` as every other job with no special ownership — you can
+  list, edit, or remove them exactly as if you had created them yourself.
+- **No dangling delivery.** A cron run is ephemeral, so `deliver: origin`
+  from inside one is resolved **at create time** to the creating job's own
+  concrete target (`platform:chat_id[:thread_id]`, or `local` if the creating
+  job delivers nowhere). A job created by a scheduled agent can never point
+  its output at a session that no longer exists. Explicit targets
+  (`local`, `all`, `telegram:<chat_id>`) are honored verbatim.
+
+Prefer prompts that update existing jobs (list first, then update by ID)
+over ones that create new jobs each run.
+
 ## How it works
 
 **Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions.
@@ -298,6 +327,21 @@ automatically rerun.
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The
 ledger is included in quick backups.
+
+### Repeated-failure review nudge
+
+Each job tracks a `failure_streak` — consecutive runs where the agent failed
+(delivery failures don't count). When a *recurring* job's streak reaches the
+threshold, the failure message delivered to chat gains a review nudge telling
+you the job has failed N runs in a row and suggesting you fix, pause
+(`hermes cron pause <job>`), or remove it. Any successful run resets the
+streak, and `hermes cron list` shows the streak alongside a failing job's last
+run. One-shot jobs never nudge.
+
+```yaml
+cron:
+  failure_nudge_threshold: 3   # default; 0 disables the nudge
+```
 
 ## Delivery options
 
@@ -487,6 +531,28 @@ cron:
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 3600s default.
 
+Cron also bounds post-run session and agent-resource cleanup. This happens after the LLM turn returns, so it is separate from the inactivity timeout. The default is 10 seconds per cleanup operation. If a storage or client finalizer stops returning, the scheduler logs an error, releases the job's in-flight guard, and allows later runs to dispatch instead of skipping that job forever.
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  cleanup_timeout_seconds: 10
+```
+
+Set `cleanup_timeout_seconds: 0` only to restore the legacy unbounded cleanup behavior.
+
+## Media send timeout
+
+When a cron delivery includes media attachments (a generated PDF, TTS audio, an exported report) sent through a live gateway adapter, each attachment upload is bounded by a timeout — 300 seconds by default. Large files on slow uplinks can need more:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  media_send_timeout_seconds: 600   # 10 minutes per attachment
+```
+
+Or set the `HERMES_CRON_MEDIA_SEND_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 300s default. A timed-out attachment is recorded in the job's run status as a partial delivery failure (the text still delivers).
+
 ## No-agent mode (script-only jobs)
 
 For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/memory alerts, heartbeats, CI pings — pass `no_agent=True` at creation time. The scheduler runs your script on schedule and delivers its stdout directly, skipping the agent entirely:
@@ -578,11 +644,30 @@ cronjob(
 
 Outputs are concatenated in the order listed.
 
+**Continuity: carry the previous run's output**
+
+Set `continuity=true` and the job injects its *own* most recent output into each run. Recurring jobs normally start every run with amnesia — a news scout re-reports the same stories, a monitor re-alerts on the same condition. With continuity on, the job wakes up seeing what it reported last time and can dedupe and continue where it left off:
+
+```python
+cronjob(
+    action="create",
+    prompt="Scan HN and arXiv for new agent-tooling papers. Report only items NOT already covered in your previous run's output.",
+    schedule="every 6h",
+    continuity=True,
+    name="Agent Tooling Scout",
+)
+```
+
+The first run has no previous output, so the prompt runs as-is. On later runs the previous output is prepended with continuity framing ("avoid repeating what was already reported"). It combines freely with upstream jobs (`context_from=["<other_job_id>"]` plus `continuity=true`), and `continuity=false` on update turns it off while preserving other `context_from` entries. Internally the flag is stored as the reserved `self` entry in `context_from`.
+
+From the CLI: `hermes cron create "every 6h" "Scan for news" --continuity`, and `hermes cron edit <job_id> --continuity` / `--no-continuity` to toggle it on an existing job. The same toggle appears in the dashboard's cron editor and the desktop Bot Mode routine dialog.
+
 **When to use it:**
 
 - Multi-stage pipelines (collect → filter → format → deliver)
 - Dependent tasks where step N's work depends on step N−1's output
 - Fan-out/fan-in patterns where one job aggregates results from several others
+- Recurring scouts/monitors that should dedupe against their own previous report (`continuity=true`)
 
 ## Provider recovery
 
@@ -592,6 +677,30 @@ Cron jobs inherit your configured fallback providers and credential pool rotatio
 - **Rotate to the next credential** in your [credential pool](/user-guide/configuration#credential-pool-strategies) for the same provider
 
 This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
+
+## Missed scheduled fires (`last_fire_error`)
+
+On hosted (managed-cron) deployments, a scheduled fire travels from the platform scheduler through the dashboard to the gateway's internal API server. If that final hand-off fails — the gateway process is down, or its API-server listener never started — the run never begins, so there is no execution record and no `last_status` to inspect. The tell-tale shape: the job works every time you trigger it manually, but never auto-fires.
+
+These misses are stamped on the job record as `last_fire_error` (timestamp + reason) and surfaced by:
+
+- `cronjob` tool → `action: "list"` — the `last_fire_error` field
+- `hermes cron list` — a red `⚠ Missed scheduled fire:` line under the job
+- The dashboard job view
+
+The stamp always reflects **current** auto-fire health: it is overwritten by newer misses and cleared automatically by the next successful run. If you see it, the job and its schedule are fine — the gateway side of the fire path needs attention (most commonly, restart the gateway through its supervisor so it loads the full profile environment: `hermes gateway restart`).
+
+### Misfire catch-up
+
+When an external scheduler provider is active (managed cron on hosted deployments), the gateway also runs a catch-up sweep: a job whose scheduled time passed with no fire delivered — and whose grace window has elapsed — is claimed and run locally, so an outage in the fire hand-off costs minutes instead of the whole day. The sweep is de-duplicated against late scheduler retries by the same store claim used for normal fires.
+
+```yaml
+cron:
+  misfire_grace_minutes: 10   # wait this long for the scheduler's own retries
+                              # before catching up locally; 0 disables catch-up
+```
+
+Local (built-in ticker) deployments don't need this — the ticker already picks up past-due jobs on its next tick.
 
 ## Schedule formats
 

@@ -47,6 +47,12 @@ Wire protocol
     # Inject context for pre_llm_call:
     {"context": "Today is Friday"}
 
+    # Modify tool input for pre_tool_call (Hermes-canonical):
+    {"action": "modify", "args": {"new_string": "fixed content"}}
+
+    # Modify tool input for pre_tool_call (Claude-Code-style):
+    {"decision": "modify", "tool_input": {"new_string": "fixed content"}}
+
     # Silent no-op:
     <empty or any non-matching JSON object>
 
@@ -369,7 +375,7 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     Malformed entries warn-and-skip — we never raise from config parsing
     because a broken hook must not crash the agent.
     """
-    from hermes_cli.plugins import VALID_HOOKS
+    from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
 
     if not isinstance(hooks_cfg, dict):
         return []
@@ -382,6 +388,17 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
         # functionality (e.g. output-spill budgets, outbound webhooks —
         # the latter parsed by agent/outbound_webhooks.py).
         if event_name in ("output_spill", "outbound"):
+            continue
+        if event_name in SHELL_UNSUPPORTED_HOOKS:
+            # Registering would "succeed" while the hook's return value is
+            # silently dropped (_parse_response has no channel for these
+            # events' directives) — refuse loudly instead.
+            logger.warning(
+                "hook event %r is Python-plugin-only: shell hooks cannot "
+                "return its directive, so this registration is refused "
+                "rather than silently ignored",
+                event_name,
+            )
             continue
         if event_name not in VALID_HOOKS:
             suggestion = difflib.get_close_matches(
@@ -763,6 +780,12 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     skipping the translation silently breaks every ``pre_tool_call``
     block directive.
 
+    For ``pre_tool_call`` the ``modify`` action (canonical: ``{"action":
+    "modify", "args": {...}}``, Claude-Code-style: ``{"decision":
+    "modify", "tool_input": {...}}``) is translated to
+    ``{"action": "modify", "args": {...}}`` so callers can merge the
+    returned fields into the tool's ``args`` before dispatch.
+
     For ``pre_llm_call``, ``{"context": "..."}`` is passed through
     unchanged to match the existing plugin-hook contract.
 
@@ -789,6 +812,15 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
         if data.get("decision") == "block":
             return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
+        # "modify" action — transform tool_input before dispatch
+        if data.get("action") == "modify":
+            new_args = data.get("args")
+            if isinstance(new_args, dict):
+                return {"action": "modify", "args": new_args}
+        if data.get("decision") == "modify":
+            new_args = data.get("tool_input")
+            if isinstance(new_args, dict):
+                return {"action": "modify", "args": new_args}
         return None
 
     if event == "pre_verify":

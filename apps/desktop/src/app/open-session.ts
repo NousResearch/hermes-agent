@@ -14,7 +14,7 @@
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
 import {
   focusedSessionNeedsRoute,
   focusOpenSession,
@@ -25,7 +25,7 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
 
-export type OpenSessionIntent = 'in-place' | 'stack' | 'tab' | 'window'
+export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
 
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
 
@@ -78,6 +78,12 @@ export function openSession(
     return
   }
 
+  // Any explicit open/focus means the user has seen the finished-turn marker.
+  // Must run BEFORE the focus short-circuits below: clicking a session that is
+  // already on screen (open tile, or the main session) would otherwise return
+  // at focusOpenSession and never clear its unread dot.
+  markSessionRead(storedSessionId)
+
   let resolved: OpenSessionIntent = intent
 
   if (resolved === 'window') {
@@ -89,6 +95,15 @@ export function openSession(
 
     // No pop-out support → treat like a new tab.
     resolved = 'tab'
+  }
+
+  if (resolved === 'main') {
+    // Canonical relationship chats explicitly own the main workspace. Route
+    // even when the session is already open as a tile; resumeSession removes
+    // that redundant tile when the main surface binds.
+    navigate(sessionRoute(storedSessionId))
+
+    return
   }
 
   // A `stack` open arrives from outside the workspace, so unlike a sidebar

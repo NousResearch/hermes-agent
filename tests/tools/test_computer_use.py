@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, cast
 from unittest.mock import MagicMock, patch
 
@@ -79,7 +80,7 @@ class TestRegistration:
         from tools.computer_use import cua_backend
 
         driver = tmp_path / "custom-cua-driver"
-        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         driver.chmod(0o755)
 
         monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(driver))
@@ -768,12 +769,34 @@ class TestLazyMcpInstall:
 
     def test_start_lazy_installs_mcp(self):
         from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "_maybe_nudge_update"), \
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value={"ready": True},
+             ), \
+             patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure") as mock_ensure, \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             cua_backend.CuaDriverBackend().start()
         mock_ensure.assert_called_once_with("tool.computer_use", prompt=False)
         mock_sess_start.assert_called_once()
+
+    def test_start_reports_incompatible_existing_driver_before_mcp_setup(self):
+        from tools.computer_use import cua_backend
+
+        state = {
+            "ready": False,
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=state,
+             ), patch("tools.lazy_deps.ensure") as mock_ensure:
+            with pytest.raises(RuntimeError, match="hermes computer-use install"):
+                cua_backend.CuaDriverBackend().start()
+
+        mock_ensure.assert_not_called()
 
     def test_start_propagates_feature_unavailable(self):
         """When mcp can't be installed (lazy installs off / network), start()
@@ -784,12 +807,133 @@ class TestLazyMcpInstall:
         unavailable = FeatureUnavailable(
             "tool.computer_use", ("mcp==1.28.1",), "lazy installs disabled"
         )
-        with patch.object(cua_backend, "_maybe_nudge_update"), \
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value={"ready": True},
+             ), \
+             patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure", side_effect=unavailable), \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             with pytest.raises(FeatureUnavailable):
                 cua_backend.CuaDriverBackend().start()
         mock_sess_start.assert_not_called()  # never reaches the MCP session
+
+
+class TestContractAutoRepair:
+    """An installed-but-incompatible driver is repaired automatically, once.
+
+    The 0.20 runtime-contract gate fails closed; when the failure is an old
+    installed driver (a state Hermes' own version-floor bump created),
+    start() runs the standard install/repair path once instead of failing
+    every computer_use call until the user runs the CLI by hand.
+    """
+
+    def _incompatible(self):
+        return {
+            "ready": False,
+            "binary": "/usr/local/bin/cua-driver",
+            "version": "0.19.3",
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+
+    def test_start_auto_repairs_incompatible_driver(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        backend = cua_backend.CuaDriverBackend()
+        backend._session = MagicMock()
+
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 side_effect=[self._incompatible(), {"ready": True}],
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver",
+                   return_value=True) as installer, \
+             patch.object(cua_backend, "_maybe_nudge_update"), \
+             patch("tools.lazy_deps.ensure"):
+            backend.start()
+
+        installer.assert_called_once_with(
+            upgrade=False, show_installer_progress=False
+        )
+        backend._session.start.assert_called_once()
+
+    def test_failed_repair_surfaces_original_error(self, monkeypatch):
+        from unittest.mock import patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=self._incompatible(),
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver",
+                   return_value=False), \
+             patch("tools.lazy_deps.ensure") as mock_ensure:
+            with pytest.raises(RuntimeError, match="0.20.0 or newer"):
+                cua_backend.CuaDriverBackend().start()
+        mock_ensure.assert_not_called()
+
+    def test_repair_is_attempted_once_per_process(self, monkeypatch):
+        from unittest.mock import patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=self._incompatible(),
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver",
+                   return_value=False) as installer, \
+             patch("tools.lazy_deps.ensure"):
+            for _ in range(2):
+                with pytest.raises(RuntimeError):
+                    cua_backend.CuaDriverBackend().start()
+        installer.assert_called_once()
+
+    def test_explicit_override_is_never_repaired(self, monkeypatch):
+        from unittest.mock import patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/opt/custom/cua-driver")
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=self._incompatible(),
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver") as installer, \
+             patch("tools.lazy_deps.ensure"):
+            with pytest.raises(RuntimeError, match="HERMES_CUA_DRIVER_CMD"):
+                cua_backend.CuaDriverBackend().start()
+        installer.assert_not_called()
+
+    def test_missing_binary_is_not_repaired(self, monkeypatch):
+        from unittest.mock import patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        state = {
+            "ready": False,
+            "binary": None,
+            "version": None,
+            "reason": "cua-driver is not installed",
+        }
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=state,
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver") as installer, \
+             patch("tools.lazy_deps.ensure"):
+            with pytest.raises(RuntimeError, match="not installed"):
+                cua_backend.CuaDriverBackend().start()
+        installer.assert_not_called()
 
 
 class TestCaptureAfterAppContext:
@@ -1088,6 +1232,77 @@ class TestCuaDriverSessionReconnect:
         assert session._reconnect_log == ["stop", "start"]
         assert bridge.calls[1][0] == ("call", "list_apps", {})
         assert len(bridge.calls) == 2
+
+    def test_mutation_is_not_replayed_after_closed_transport(self):
+        """A lost response cannot prove whether a click already happened."""
+        from anyio import ClosedResourceError
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise ClosedResourceError()
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        result = session.call_tool("click", {"x": 20, "y": 30})
+
+        assert result["isError"] is True
+        assert result["structuredContent"]["code"] == "transport_outcome_unknown"
+        assert result["structuredContent"]["next_step"] == "fresh_state"
+        assert session._reconnect_log == ["stop", "start"]
+        assert len(bridge.calls) == 1
+
+    def test_mutation_does_not_cross_to_cli_on_transient_proxy_error(self):
+        class FakeBridge:
+            def run(self, value, timeout=None):
+                raise RuntimeError("daemon proxy: Resource temporarily unavailable")
+
+        session = self._make_session(FakeBridge())
+        session._call_tool_via_cli = MagicMock()
+        reset = MagicMock()
+        session._transport_reset_callback = reset
+
+        result = session.call_tool("type_text", {"text": "hello"})
+
+        assert result["structuredContent"]["code"] == "transport_outcome_unknown"
+        session._call_tool_via_cli.assert_not_called()
+        reset.assert_called_once_with()
+
+    def test_reconnect_restores_public_label_before_replaying_read(self):
+        from anyio import ClosedResourceError
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                self.effects = [
+                    ClosedResourceError(),
+                    {"isError": False},
+                    {"isError": False, "structuredContent": {"apps": []}},
+                ]
+
+            def run(self, value, timeout=None):
+                self.calls.append(value)
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+        session._declared_session_id = "hermes-label"
+
+        result = session.call_tool("list_apps", {})
+
+        assert result["isError"] is False
+        assert bridge.calls == [
+            ("call", "list_apps", {}),
+            ("call", "start_session", {"session": "hermes-label"}),
+            ("call", "list_apps", {}),
+        ]
 
 
     def test_cli_fallback_reads_screenshot_from_file(self, tmp_path, monkeypatch):
@@ -1647,11 +1862,11 @@ class TestImageMimeTypePropagation:
         image_part = MagicMock()
         image_part.type = "image"
         image_part.data = "iVBORw0K..."
-        image_part.mimeType = "image/png"
+        image_part.mime_type = "image/png"
 
         result = MagicMock()
-        result.isError = False
-        result.structuredContent = None
+        result.is_error = False
+        result.structured_content = None
         result.content = [image_part]
 
         out = _extract_tool_result(result)
@@ -2000,7 +2215,10 @@ class TestSessionLifecycle:
 
         # Stub the optional-dep lazy-install so start() runs end-to-end
         # without trying to pip-install anything.
-        with patch("tools.lazy_deps.ensure"):
+        with patch(
+            "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
+            return_value={"ready": True},
+        ), patch("tools.lazy_deps.ensure"):
             backend.start()
 
         # First call_tool after _session.start() must be start_session
@@ -2012,9 +2230,7 @@ class TestSessionLifecycle:
 
 
     def test_session_lifecycle_failures_are_non_fatal(self):
-        """If start_session raises (older cua-driver build, anonymous
-        path), backend.start() must still succeed — the rest of the
-        wrapper works fine in anonymous mode."""
+        """A lifecycle-label failure does not discard an otherwise valid runtime."""
         from unittest.mock import MagicMock, patch
         from tools.computer_use.cua_backend import CuaDriverBackend
 
@@ -2026,7 +2242,10 @@ class TestSessionLifecycle:
             RuntimeError("older cua-driver — start_session unknown"),
         ]
 
-        with patch("tools.lazy_deps.ensure"):
+        with patch(
+            "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
+            return_value={"ready": True},
+        ), patch("tools.lazy_deps.ensure"):
             backend.start()  # must not raise
 
 
@@ -2333,6 +2552,55 @@ class TestElementSpillFile:
         # Capture still succeeds and stays budget-capped without the file.
         assert out["truncated_elements"] == 20
         assert "elements_file" not in out
+
+
+class TestCaptureScreenshotPersistence:
+    """Image captures expose a bounded file for explicit user delivery."""
+
+    _PNG_B64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76L"
+        "AAAADUlEQVR4nGNgGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
+    )
+
+    def _capture(self):
+        from tools.computer_use.backend import CaptureResult
+
+        return CaptureResult(
+            mode="vision",
+            width=8,
+            height=8,
+            png_b64=self._PNG_B64,
+            image_mime_type="image/png",
+            png_bytes_len=len(base64.b64decode(self._PNG_B64)),
+        )
+
+    def test_multimodal_capture_exposes_shareable_screenshot(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setattr(
+            cu_tool, "_should_route_through_aux_vision", lambda: False,
+        )
+        out = cu_tool._capture_response(self._capture())
+
+        screenshot_path = out["meta"]["screenshot_path"]
+        assert screenshot_path in out["text_summary"]
+        assert "MEDIA:" not in out["text_summary"]
+        assert screenshot_path.startswith(str(tmp_path / "cache" / "images"))
+        assert Path(screenshot_path).read_bytes() == base64.b64decode(self._PNG_B64)
+
+    def test_capture_cache_is_bounded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setattr(cu_tool, "_MAX_CAPTURE_FILES", 2)
+        for _ in range(3):
+            assert cu_tool._persist_capture_image(self._capture()) is not None
+
+        captures = list((tmp_path / "cache" / "images").glob("computer_use_*.*"))
+        assert len(captures) == 2
 
 
 class TestBoundsScaleField:

@@ -9,6 +9,7 @@ import {
   desktopGitRoot,
   readDesktopDir,
   readDesktopFileDataUrl,
+  readDesktopFileDataUrlLocalFirst,
   readDesktopFileText,
   selectDesktopPaths,
   setDesktopFsRemotePicker
@@ -111,6 +112,26 @@ describe('desktop filesystem facade', () => {
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(gitRoot).not.toHaveBeenCalled()
+  })
+
+  it('does not retry the same unreadable path through the local facade', async () => {
+    const error = new Error('not readable')
+
+    $connection.set({ mode: 'local' } as never)
+    readFileDataUrl.mockRejectedValueOnce(error)
+
+    await expect(readDesktopFileDataUrlLocalFirst('/missing.png')).rejects.toBe(error)
+    expect(readFileDataUrl).toHaveBeenCalledOnce()
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('falls back from local disk to the active gateway in remote mode', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    readFileDataUrl.mockRejectedValueOnce(new Error('not on host'))
+
+    await expect(readDesktopFileDataUrlLocalFirst('/remote/image.png')).resolves.toBe('data:text/plain;base64,cmVtb3Rl')
+    expect(readFileDataUrl).toHaveBeenCalledOnce()
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fremote%2Fimage.png' })
   })
 
   it('targets the active profile backend so a remote profile never reads local disk', async () => {

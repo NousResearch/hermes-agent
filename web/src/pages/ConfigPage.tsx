@@ -132,6 +132,18 @@ export default function ConfigPage() {
   const profileGenerationRef = useRef(0);
   const ownsForm =
     configLoadedProfile === profile && schemaLoadedProfile === profile;
+  const visibleSchema = useMemo(() => {
+    if (!schema || !config) return null;
+    const selectedBackend = String(
+      getNestedValue(config, "terminal.backend") ?? "local",
+    );
+    return Object.fromEntries(
+      Object.entries(schema).filter(([, field]) => {
+        const owner = field.terminal_backend;
+        return owner === undefined || owner === selectedBackend;
+      }),
+    );
+  }, [config, schema]);
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
 
@@ -205,7 +217,7 @@ export default function ConfigPage() {
       })
       .catch(() => {});
     api
-      .getSchema()
+      .getSchema(profile)
       .then((resp) => {
         if (cancelled) return;
         // memory.provider has a dedicated management UI on the Plugins page
@@ -293,35 +305,35 @@ export default function ConfigPage() {
 
   /* ---- Categories ---- */
   const categories = useMemo(() => {
-    if (!schema) return [];
+    if (!visibleSchema) return [];
     const allCats = [
       ...new Set(
-        Object.values(schema).map((s) => String(s.category ?? "general")),
+        Object.values(visibleSchema).map((s) => String(s.category ?? "general")),
       ),
     ];
     const ordered = categoryOrder.filter((c) => allCats.includes(c));
     const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
     return [...ordered, ...extra];
-  }, [schema, categoryOrder]);
+  }, [visibleSchema, categoryOrder]);
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {
-    if (!schema) return {};
+    if (!visibleSchema) return {};
     const counts: Record<string, number> = {};
-    for (const s of Object.values(schema)) {
+    for (const s of Object.values(visibleSchema)) {
       const cat = String(s.category ?? "general");
       counts[cat] = (counts[cat] || 0) + 1;
     }
     return counts;
-  }, [schema]);
+  }, [visibleSchema]);
 
   /* ---- Search ---- */
   const isSearching = searchQuery.trim().length > 0;
   const lowerSearch = searchQuery.toLowerCase();
 
   const searchMatchedFields = useMemo(() => {
-    if (!isSearching || !schema) return [];
-    return Object.entries(schema).filter(([key, s]) => {
+    if (!isSearching || !visibleSchema) return [];
+    return Object.entries(visibleSchema).filter(([key, s]) => {
       const label = key.split(".").pop() ?? key;
       const humanLabel = label.replace(/_/g, " ");
       return (
@@ -335,15 +347,15 @@ export default function ConfigPage() {
           .includes(lowerSearch)
       );
     });
-  }, [isSearching, lowerSearch, schema]);
+  }, [isSearching, lowerSearch, visibleSchema]);
 
   /* ---- Active tab fields ---- */
   const activeFields = useMemo(() => {
-    if (!schema || isSearching) return [];
-    return Object.entries(schema).filter(
+    if (!visibleSchema || isSearching) return [];
+    return Object.entries(visibleSchema).filter(
       ([, s]) => String(s.category ?? "general") === activeCategory,
     );
-  }, [schema, activeCategory, isSearching]);
+  }, [visibleSchema, activeCategory, isSearching]);
 
   /* ---- Handlers ---- */
   const handleSave = async () => {

@@ -24,6 +24,7 @@ import {
   type ApprovalRequest,
   clearApprovalRequest,
   registerApprovalInlineAnchor,
+  replayPendingApproval,
   sessionApprovalInlineVisible,
   sessionApprovalRequest
 } from '@/store/prompts'
@@ -144,16 +145,18 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       try {
         await gateway.request<{ resolved?: boolean }>('approval.respond', {
           choice,
+          request_id: request.requestId,
           session_id: request.sessionId ?? undefined
         })
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
-        clearApprovalRequest(request.sessionId)
+        clearApprovalRequest(request.sessionId, request.requestId)
+        void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
       } catch (error) {
         notifyError(error, copy.sendFailed)
         setSubmitting(null)
       }
     },
-    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.sessionId]
+    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.requestId, request.sessionId]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.

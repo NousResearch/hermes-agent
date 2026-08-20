@@ -50,7 +50,7 @@ import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerSubmit } from './hooks/use-composer-submit'
-import { useComposerTrigger } from './hooks/use-composer-trigger'
+import { triggerKeyUpHandler, useComposerTrigger } from './hooks/use-composer-trigger'
 import { useComposerUndo } from './hooks/use-composer-undo'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
@@ -321,7 +321,7 @@ export function ChatBar({
     return onCancel()
   }, [activeQueueSessionKeyRef, onCancel])
 
-  const { compactPill, stacked } = useComposerMetrics({
+  const { compactPill, foldVoice, minimal, stacked } = useComposerMetrics({
     composerDockRef,
     composerRef,
     composerSurfaceRef,
@@ -551,12 +551,33 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Self-heal a stale composition flag before the guard below reads it.
+    // compositionend can be missed (focus jumps, input-source switches, or a
+    // programmatic DOM swap mid-preedit abort the composition without the
+    // event reaching us), and a wedged composingRef silently swallows every
+    // Enter — and, via the form onSubmit guard, the Send button — until the
+    // component remounts (#44135). Chromium stamps isComposing on every
+    // keydown of a genuine composition, so when the native flag says we're
+    // not composing, trust it and recover.
+    if (composingRef.current && !event.nativeEvent.isComposing) {
+      composingRef.current = false
+    }
+
     // IME composition: Enter confirms composed text, not a message submission.
     // We check both composingRef (set by compositionstart/compositionend, robust
     // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
     // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
     // preedit fires submitDraft() and splits the message mid-word.
     if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
+    // macOS Chinese IME (and some 3rd-party IMEs on Windows) emit Enter with
+    // keyCode 229 (legacy VK_PROCESSKEY) while isComposing is already false.
+    // The compositionend has fired but the keydown still carries 229, signalling
+    // "this Enter is an IME commit, not a user send".  If we let it through,
+    // the message fires before the committed text is fully in the DOM.
+    if (event.key === 'Enter' && event.keyCode === 229) {
       return
     }
 
@@ -883,21 +904,7 @@ export function ChatBar({
     }
   }
 
-  const handleEditorKeyUp = () => {
-    // If this keyup belongs to a key the open trigger popover already consumed
-    // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
-    // edit text, and for Escape the keydown already closed the menu — a refresh
-    // here would re-detect the still-present `/` and instantly reopen it. We
-    // read a ref set during keydown rather than `trigger`, because by keyup
-    // time React has re-rendered and `trigger` may already be null.
-    if (triggerKeyConsumedRef.current) {
-      triggerKeyConsumedRef.current = false
-
-      return
-    }
-
-    window.setTimeout(refreshTrigger, 0)
-  }
+  const handleEditorKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
 
   const {
     dragActive,
@@ -977,7 +984,9 @@ export function ChatBar({
         status: conversation.status
       }}
       disabled={disabled}
+      foldVoice={foldVoice}
       hasComposerPayload={hasComposerPayload}
+      minimal={minimal}
       onDictate={dictate}
       onQueue={queueDraft}
       onToggleAutoSpeak={handleToggleAutoSpeak}
@@ -1003,7 +1012,15 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBeforeInput={handleEditorBeforeInput}
-        onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onBlur={() => {
+          // A composition never survives focus loss (Chromium commits the
+          // preedit and fires compositionend on blur) — but if that event is
+          // missed, the wedged flag would block the Send button's form-submit
+          // guard forever (#44135). Clear unconditionally: by the time blur
+          // runs there is nothing left composing in this editor.
+          composingRef.current = false
+          window.setTimeout(closeTrigger, 80)
+        }}
         onCompositionEnd={event => {
           composingRef.current = false
 
@@ -1227,7 +1244,13 @@ export function ChatBar({
               {hudMode && busy && <span aria-hidden className="arc-border arc-composer" />}
               <div
                 className={cn(
-                  'group/composer-surface relative z-4 isolate grid grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
+                  // grid-cols-[minmax(0,1fr)]: the implicit `auto` column sized
+                  // itself to its items' min-content, so a status row whose
+                  // content out-measured a narrow pane silently widened the
+                  // track past the surface — and every `w-full` child (the fade,
+                  // the input/controls row) laid out against that phantom width
+                  // and got clipped by overflow-hidden, send button first.
+                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
                   COMPOSER_DROP_FADE_CLASS,
                   dragActive && COMPOSER_DROP_ACTIVE_CLASS
                 )}
@@ -1249,7 +1272,7 @@ export function ChatBar({
                   // A tile's rail reviews ITS worktree: pin the pane's scope to
                   // this surface's cwd. Main keeps the classic follow-the-
                   // active-session scope (null).
-                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null))}
+                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null), scope.target)}
                   onOpenWorktree={openInWorktree}
                   onSwitchBranch={handleSwitchBranch}
                   repoPath={cwd}
@@ -1307,7 +1330,7 @@ export function ChatBar({
                       <ContribSlot area={COMPOSER_AREAS.leading} />
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
-                    <div className="flex items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
+                    <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
                       <ContribSlot area={COMPOSER_AREAS.actions} />
                       {controls}
                     </div>

@@ -15,12 +15,14 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
+  cookiesHavePrivyAccessToken,
   cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
@@ -29,18 +31,24 @@ import {
   localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  pathWithProfileScope,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  remoteRequestMatchesBaseUrl,
   resolveAuthMode,
+  resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
-  tokenPreview
+  tokenPreview,
+  translateSelfProfileQuery
 } from './connection-config'
 
 // --- connectionScopeKey / normAuthMode ---
@@ -52,11 +60,60 @@ test('connectionScopeKey trims to a name or null for the global scope', () => {
   assert.equal(connectionScopeKey(undefined), null)
 })
 
+test('resolveRemoteSshDashboardProfile never sends a conn: pool key to the remote', () => {
+  // Clicking Mac Mini / Spark default used `remoteProfile || poolKey`, which
+  // spawned a dashboard for the fictional profile "conn:mac-mini::default".
+  assert.equal(resolveRemoteSshDashboardProfile('', 'conn:mac-mini::default'), '')
+  assert.equal(resolveRemoteSshDashboardProfile(undefined, 'conn:spark::default'), '')
+  assert.equal(resolveRemoteSshDashboardProfile('', 'conn:mac-mini::dixie'), 'dixie')
+  assert.equal(resolveRemoteSshDashboardProfile('', 'bob'), 'bob')
+  assert.equal(resolveRemoteSshDashboardProfile('', 'default'), '')
+  assert.equal(resolveRemoteSshDashboardProfile('writer', 'conn:mac-mini::default'), 'writer')
+})
+
 test('normAuthMode coerces to token unless explicitly oauth', () => {
   assert.equal(normAuthMode('oauth'), 'oauth')
   assert.equal(normAuthMode('token'), 'token')
   assert.equal(normAuthMode(undefined), 'token')
   assert.equal(normAuthMode('weird'), 'token')
+})
+
+test('normalizeRemoteHeaders keeps safe proxy headers and drops transport/auth headers', () => {
+  assert.deepEqual(
+    normalizeRemoteHeaders({
+      ' CF-Access-Client-Id ': { encoding: 'plain', value: 'id' },
+      'CF-Access-Client-Secret': 'secret',
+      Authorization: { encoding: 'plain', value: 'bearer' },
+      Cookie: { encoding: 'plain', value: 'a=b' },
+      Host: { encoding: 'plain', value: 'example.com' },
+      'X-Hermes-Session-Token': { encoding: 'plain', value: 'token' },
+      'Bad Header': { encoding: 'plain', value: 'bad' },
+      Empty: { encoding: 'plain', value: '' }
+    }),
+    {
+      'CF-Access-Client-Id': { encoding: 'plain', value: 'id' },
+      'CF-Access-Client-Secret': { encoding: 'plain', value: 'secret' }
+    }
+  )
+})
+
+test('remoteRequestMatchesBaseUrl treats HTTPS and WSS as the same gateway origin', () => {
+  assert.equal(
+    remoteRequestMatchesBaseUrl(
+      'wss://hermes.example.com/gateway/api/ws?ticket=abc',
+      'https://hermes.example.com/gateway'
+    ),
+    true
+  )
+  assert.equal(remoteRequestMatchesBaseUrl('ws://hermes.example.com/api/ws', 'http://hermes.example.com'), true)
+  assert.equal(
+    remoteRequestMatchesBaseUrl('wss://hermes.example.com/other/api/ws', 'https://hermes.example.com/gateway'),
+    false
+  )
+  assert.equal(
+    remoteRequestMatchesBaseUrl('wss://other.example.com/gateway/api/ws', 'https://hermes.example.com/gateway'),
+    false
+  )
 })
 
 // --- modeIsRemoteLike ---
@@ -109,6 +166,30 @@ test('profileRemoteOverride returns the per-profile remote with defaulted auth m
 test('profileRemoteOverride preserves an explicit oauth auth mode', () => {
   const config = { profiles: { coder: { mode: 'remote', url: 'https://x', authMode: 'oauth' } } }
   assert.equal(profileRemoteOverride(config, 'coder').authMode, 'oauth')
+})
+
+test('profileRemoteOverride preserves normalized remote headers', () => {
+  const config = {
+    profiles: {
+      coder: {
+        mode: 'remote',
+        url: 'https://x',
+        headers: {
+          'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'encrypted-id' },
+          Authorization: { encoding: 'plain', value: 'blocked' }
+        }
+      }
+    }
+  }
+
+  assert.deepEqual(profileRemoteOverride(config, 'coder'), {
+    url: 'https://x',
+    authMode: 'token',
+    token: undefined,
+    headers: {
+      'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'encrypted-id' }
+    }
+  })
 })
 
 test('profileRemoteOverride treats a cloud entry as a remote override', () => {
@@ -197,6 +278,27 @@ test('normalizeSshConfig handles IPv6 and strict port bounds', () => {
   })
 })
 
+test('normalizeSshConfig strips a pasted "ssh " command prefix', () => {
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'ssh root@box' }), {
+    mode: 'ssh',
+    host: 'box',
+    user: 'root'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'SSH root@box:2222' }), {
+    mode: 'ssh',
+    host: 'box',
+    user: 'root',
+    port: 2222
+  })
+  // "ssh " with no destination trims to a bare "ssh" host — same as the
+  // legitimately-named case below; the strip only fires on "ssh <dest>".
+  // A host legitimately named "ssh" (no space) is untouched.
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'ssh' }), {
+    mode: 'ssh',
+    host: 'ssh'
+  })
+})
+
 test('localProfileEntry preserves inactive SSH drafts but drops Cloud state', () => {
   const ssh = { mode: 'ssh', host: 'box', user: 'alice', remoteHermesPath: '/hermes' }
   assert.deepEqual(localProfileEntry(ssh), { mode: 'local', savedSsh: ssh })
@@ -253,9 +355,77 @@ const ROUTES = [
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'a local non-primary profile gets its own pooled backend',
+    name: 'an unscoped local profile request keeps its pooled backend',
     profile: 'coder',
-    opts: { primaryProfile: 'default', globalRemote: false, profileRemoteOverride: false },
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/memory/reset'
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a remote sub-profile without a local entry routes through the primary remote gateway',
+    profile: 'pm',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      primaryRemoteActive: true,
+      ownEntry: false
+    },
+    expected: { backend: 'primary', descriptorProfile: 'pm', scopePath: true }
+  },
+  {
+    name: 'a sub-profile with its own local entry still pools locally under a remote primary',
+    profile: 'pm',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      primaryRemoteActive: true,
+      ownEntry: true
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a profile-aware local REST request reuses the primary backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/config'
+    },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
+    name: 'a profile-management request uses the primary without a query scope',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'DELETE',
+      requestPath: '/api/profiles/worker'
+    },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a stored local profile never reuses a remote primary for an eligible REST route',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      primaryRemoteActive: true,
+      ownEntry: true,
+      requestMethod: 'GET',
+      requestPath: '/api/config'
+    },
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   }
 ]
@@ -276,6 +446,40 @@ test('resolveProfileBackendRoute only tags a descriptor when the backend is shar
     assert.equal(Boolean(resolved.descriptorProfile), resolved.scopePath)
     assert.ok(!resolved.descriptorProfile || resolved.backend === 'primary')
   }
+})
+
+// --- registry-pinned REST routing (cron run history on remote gateways, #87882) ---
+
+test('apiRequestRegistryConnectionId extracts a genuinely non-local connection id', () => {
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'gw-tailscale', path: '/api/cron/jobs' }), 'gw-tailscale')
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: '  gw-1  ', path: '/x' }), 'gw-1')
+})
+
+test('apiRequestRegistryConnectionId preserves an explicit local registry route', () => {
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'local', path: '/x' }), 'local')
+})
+
+test('apiRequestRegistryConnectionId resolves null for unscoped legacy routes', () => {
+  assert.equal(apiRequestRegistryConnectionId({ path: '/api/cron/jobs' }), null)
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: '', path: '/x' }), null)
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: null, path: '/x' }), null)
+  assert.equal(apiRequestRegistryConnectionId(null), null)
+  assert.equal(apiRequestRegistryConnectionId(undefined), null)
+})
+
+test('pathWithProfileScope scopes shared-remote requests to the profile unconditionally', () => {
+  // A sharedRemote registry gateway serves every profile from one host; the
+  // run-history read must land on the profile that owns the job's sessions.
+  assert.equal(
+    pathWithProfileScope('/api/cron/jobs/job-1/runs?limit=20', 'research'),
+    '/api/cron/jobs/job-1/runs?limit=20&profile=research'
+  )
+})
+
+test('pathWithProfileScope keeps an explicit profile query and no-ops on empty profile', () => {
+  assert.equal(pathWithProfileScope('/api/cron/jobs?profile=all', 'research'), '/api/cron/jobs?profile=all')
+  assert.equal(pathWithProfileScope('/api/cron/jobs', ''), '/api/cron/jobs')
+  assert.equal(pathWithProfileScope('/api/cron/jobs', null), '/api/cron/jobs')
 })
 
 // --- pathWithGlobalRemoteProfile ---
@@ -338,6 +542,80 @@ test('pathWithGlobalRemoteProfile skips local and per-profile remote override pa
   )
 })
 
+test('pathWithGlobalRemoteProfile translates a desktop SSH alias in an explicit profile query', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=mara', 'mara', {
+      globalRemote: false,
+      profileRemoteOverride: true,
+      backendProfile: 'default'
+    }),
+    '/api/cron/jobs?profile=default'
+  )
+})
+
+test('pathWithGlobalRemoteProfile preserves cross-profile selectors when translating an SSH alias', () => {
+  const opts = {
+    globalRemote: false,
+    profileRemoteOverride: true,
+    backendProfile: 'default'
+  }
+
+  assert.equal(pathWithGlobalRemoteProfile('/api/cron/jobs?profile=all', 'mara', opts), '/api/cron/jobs?profile=all')
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=worker', 'mara', opts),
+    '/api/cron/jobs?profile=worker'
+  )
+})
+
+// --- translateSelfProfileQuery (registry SSH-scoped hermes:api contract) ---
+
+test('translateSelfProfileQuery rewrites the self-profile filter into the backend namespace', () => {
+  assert.equal(
+    translateSelfProfileQuery('/api/cron/jobs?profile=mara', 'mara', 'default'),
+    '/api/cron/jobs?profile=default'
+  )
+  assert.equal(
+    translateSelfProfileQuery('/api/cron/blueprints/instantiate?profile=mara', 'mara', 'default'),
+    '/api/cron/blueprints/instantiate?profile=default'
+  )
+})
+
+test('translateSelfProfileQuery leaves cross-profile and unfiltered paths untouched', () => {
+  assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=all', 'mara', 'default'), '/api/cron/jobs?profile=all')
+  assert.equal(
+    translateSelfProfileQuery('/api/cron/jobs?profile=worker', 'mara', 'default'),
+    '/api/cron/jobs?profile=worker'
+  )
+  assert.equal(translateSelfProfileQuery('/api/cron/jobs', 'mara', 'default'), '/api/cron/jobs')
+})
+
+test('translateSelfProfileQuery no-ops when alias and backend profile agree or are missing', () => {
+  assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=mara', 'mara', 'mara'), '/api/cron/jobs?profile=mara')
+  assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=mara', 'mara', ''), '/api/cron/jobs?profile=mara')
+  assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=mara', '', 'default'), '/api/cron/jobs?profile=mara')
+})
+
+test('pathWithGlobalRemoteProfile appends local-primary profile scope only for eligible routes', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/config', 'iris', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/config'
+    }),
+    '/api/config?profile=iris'
+  )
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/memory/reset', 'iris', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/memory/reset'
+    }),
+    '/api/memory/reset'
+  )
+})
+
 test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', '', {
@@ -352,6 +630,161 @@ test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
       profileRemoteOverride: false
     }),
     ''
+  )
+})
+
+// --- resolveProfileApiRequest ---
+
+test('resolveProfileApiRequest keeps eligible local REST on the primary backend', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config?view=desktop', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/config?view=desktop&profile=iris'
+    }
+  )
+})
+
+test('resolveProfileApiRequest keeps unscoped destructive routes on the profile backend', () => {
+  for (const [method, path] of [
+    ['POST', '/api/memory/reset'],
+    ['POST', '/api/curator/run'],
+    ['PUT', '/api/curator/paused'],
+    ['POST', '/api/webhooks']
+  ]) {
+    assert.deepEqual(
+      resolveProfileApiRequest('iris', path, {
+        globalRemote: false,
+        profileRemoteOverride: false,
+        requestMethod: method
+      }),
+      { backendProfile: 'iris', requestPath: path }
+    )
+  }
+})
+
+test('resolveProfileApiRequest uses exact method and path eligibility for mixed families', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/skills', {
+      requestMethod: 'GET'
+    }),
+    { backendProfile: null, requestPath: '/api/skills?profile=iris' }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/skills', {
+      requestMethod: 'POST'
+    }),
+    { backendProfile: 'iris', requestPath: '/api/skills' }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config/defaults', {
+      requestMethod: 'GET'
+    }),
+    { backendProfile: 'iris', requestPath: '/api/config/defaults' }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/model/recommended-default?provider=nous', {
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: 'iris',
+      requestPath: '/api/model/recommended-default?provider=nous'
+    }
+  )
+})
+
+test('resolveProfileApiRequest scopes complete safe families according to their contracts', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/tools/toolsets/image_gen/config', {
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/tools/toolsets/image_gen/config?profile=iris'
+    }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/profiles/worker', {
+      requestMethod: 'DELETE'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/profiles/worker'
+    }
+  )
+})
+
+test('resolveProfileApiRequest routes action-status polls with the action-spawning routes', () => {
+  // /api/actions/{name}/status must land on the SAME backend as the endpoints
+  // that spawn actions (skills hub install/uninstall/update, mcp catalog
+  // install): _spawn_hermes_action registers the dynamic action name only in
+  // the spawning process. Splitting the pair 404s the poll with
+  // "Unknown action: skills-install-<slug>-<hash>".
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/actions/skills-install-ascii-art-dd7bccf1/status?lines=200', {
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/actions/skills-install-ascii-art-dd7bccf1/status?lines=200&profile=iris'
+    }
+  )
+  // The spawn side (hub install) and the poll side must agree on the backend.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/skills/hub/install', {
+      requestMethod: 'POST'
+    }),
+    { backendProfile: null, requestPath: '/api/skills/hub/install?profile=iris' }
+  )
+  // MCP catalog installs spawn background actions too — same pairing rule.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/mcp/catalog/install', {
+      requestMethod: 'POST'
+    }),
+    { backendProfile: null, requestPath: '/api/mcp/catalog/install?profile=iris' }
+  )
+})
+
+test('resolveProfileApiRequest preserves remote routing precedence', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/memory/reset', {
+      globalRemote: true,
+      profileRemoteOverride: false,
+      requestMethod: 'POST'
+    }),
+    {
+      backendProfile: null,
+      requestPath: '/api/memory/reset?profile=iris'
+    }
+  )
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config', {
+      globalRemote: true,
+      profileRemoteOverride: true,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: 'iris',
+      requestPath: '/api/config'
+    }
+  )
+})
+
+test('resolveProfileApiRequest keeps a stored local profile off a remote primary', () => {
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/config', {
+      primaryRemoteActive: true,
+      ownEntry: true,
+      requestMethod: 'GET'
+    }),
+    {
+      backendProfile: 'iris',
+      requestPath: '/api/config'
+    }
   )
 })
 
@@ -569,6 +1002,42 @@ test('cookiesHavePrivySession is false for unrelated cookies and non-arrays', ()
   assert.equal(cookiesHavePrivySession(null), false)
   assert.equal(cookiesHavePrivySession(undefined), false)
   assert.equal(cookiesHavePrivySession([]), false)
+})
+
+test('cookiesHavePrivySession treats refresh-token material as a (renewable) session', () => {
+  // #73495: after a restart the ~1h `privy-token` is often gone while the
+  // 30-day renewal cookies survive. That jar is still SIGNED IN (renewable),
+  // so the session check must accept it — the access check below is what
+  // distinguishes "can discovery succeed right now".
+  assert.equal(cookiesHavePrivySession([{ name: 'privy-refresh-token', value: 'x' }]), true)
+})
+
+// --- cookiesHavePrivyAccessToken (short-lived access state for /api/agents) ---
+
+test('cookiesHavePrivyAccessToken detects privy-token and its secured prefixes', () => {
+  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: 'jwt' }]), true)
+  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Host-privy-token', value: 'x' }]), true)
+  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Secure-privy-token', value: 'x' }]), true)
+})
+
+test('cookiesHavePrivyAccessToken rejects renewal-only jars (the #73495 cold-start state)', () => {
+  // Session/refresh material present, access token absent: signed in but
+  // discovery would 401 → the silent-renewal path must trigger, not re-login.
+  const renewalOnly = [
+    { name: 'privy-session', value: 'x' },
+    { name: 'privy-refresh-token', value: 'x' }
+  ]
+
+  assert.equal(cookiesHavePrivySession(renewalOnly), true)
+  assert.equal(cookiesHavePrivyAccessToken(renewalOnly), false)
+})
+
+test('cookiesHavePrivyAccessToken is false for empty values, gateway cookies, and non-arrays', () => {
+  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: '' }]), false)
+  assert.equal(cookiesHavePrivyAccessToken([{ name: 'hermes_session_at', value: 'x' }]), false)
+  assert.equal(cookiesHavePrivyAccessToken(null), false)
+  assert.equal(cookiesHavePrivyAccessToken(undefined), false)
+  assert.equal(cookiesHavePrivyAccessToken([]), false)
 })
 
 // --- tokenPreview ---

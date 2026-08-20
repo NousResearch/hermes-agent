@@ -240,6 +240,20 @@ memory:
   write_approval: false     # false = write freely (default) | true = require approval
 ```
 
+Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the
+built-in stores off completely: the `memory` tool is dropped from the schema and
+its guidance block is dropped from the system prompt, so the model is never told
+about a tool it cannot use. An external provider set via `memory.provider`
+(Hindsight, Mem0, Honcho, …) is unaffected and keeps its own tools — use this
+when you want a third-party memory backend *instead of* the built-in files.
+Listing `memory` under `agent.disabled_toolsets` is the heavier switch: it hides
+external provider tools too.
+
+With only `memory_enabled: false` (user profile still on), the tool stays —
+it backs the profile store — but the system prompt swaps the full memory
+guidance for a narrower profile-only block, so the model is only instructed to
+save user-profile facts and never steered at the disabled notes store.
+
 ## Controlling memory writes (`write_approval`)
 
 By default the agent saves memory freely — including from the background
@@ -252,7 +266,7 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 | `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
 | `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
-> To turn memory off entirely (not just gate it), set `memory_enabled: false`.
+> To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
 
 Review staged writes from the CLI or any messaging platform:
 
@@ -316,6 +330,24 @@ identical and skill capture near-identical to the main-model review.
 
 Leave it at `auto` (or set it to your main model) and nothing changes — the
 review keeps running on the main model with the full warm-cache replay.
+
+### Disabling automatic reviews (`enabled`)
+
+The review fork can burn a meaningful share of total tokens on busy hosts.
+Operators can disable it without zeroing nudge intervals:
+
+```yaml
+auxiliary:
+  background_review:
+    enabled: true              # false = skip automatic post-turn forks
+```
+
+With `enabled: false`, automatic post-turn forks do not spawn; manual
+`/refine` still works.
+
+Fork usage is persisted in `session_model_usage` with `task='background_review'`
+and a completion line is written to `agent.log`
+(`Background review complete: thread=bg-review calls=… in=… out=… result=…`).
 
 ## Controlling skill writes (`skills.write_approval`)
 

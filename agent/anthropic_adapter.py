@@ -474,6 +474,11 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
 
 
+def _is_opencode_endpoint(base_url: str | None) -> bool:
+    """Return True for OpenCode's Zen/Go relay (opencode.ai)."""
+    return base_url_host_matches(base_url or "", "opencode.ai")
+
+
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
 # - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
 # - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``,
@@ -620,6 +625,10 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         # Hostname match (not substring) so e.g. evil.com/palantirfoundry
         # paths don't trigger Bearer auth.
         or base_url_host_matches(normalized, "palantirfoundry.com")
+        # CommandCode's /provider/v1/messages endpoint uses Bearer auth,
+        # not Anthropic's native x-api-key header. Hostname match for the
+        # same reason as above.
+        or base_url_host_matches(normalized, "api.commandcode.ai")
     )
 
 
@@ -912,6 +921,18 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    if _is_opencode_endpoint(base_url):
+        # OpenCode identifies clients by request headers, like OpenRouter does.
+        # The OpenAI-wire paths pick these up from profile.default_headers
+        # (plugins/model-providers/opencode-zen), but the Anthropic Messages
+        # route builds its client right here and never sees the profile. Merge
+        # the same set on top of whatever auth branch ran above.
+        headers = dict(kwargs.get("default_headers") or {})
+        headers.setdefault("HTTP-Referer", "https://hermes-agent.nousresearch.com")
+        headers.setdefault("X-Title", "Hermes Agent")
+        headers.setdefault("User-Agent", f"HermesAgent/{_HERMES_VERSION}")
+        kwargs["default_headers"] = headers
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it
@@ -2797,7 +2818,26 @@ def convert_messages_to_anthropic(
                     p.get("cache_control") for p in content if isinstance(p, dict)
                 )
                 if has_cache:
-                    system = [p for p in content if isinstance(p, dict)]
+                    # Copy blocks before coercing so the caller's message
+                    # dicts are never mutated, then replace blank/whitespace
+                    # text with the shared non-whitespace placeholder —
+                    # Anthropic rejects a blank system text block with the
+                    # same HTTP 400 as message blocks ("text content blocks
+                    # must contain non-whitespace text"), and a blank block
+                    # carrying a cache_control breakpoint cannot simply be
+                    # dropped (#70909).
+                    system = []
+                    for p in content:
+                        if not isinstance(p, dict):
+                            continue
+                        if (
+                            p.get("type") == "text"
+                            and isinstance(p.get("text"), str)
+                            and not p["text"].strip()
+                        ):
+                            p = dict(p)
+                            p["text"] = _EMPTY_TEXT_PLACEHOLDER
+                        system.append(p)
                 else:
                     system = "\n".join(
                         p["text"] for p in content if p.get("type") == "text"

@@ -185,9 +185,10 @@ def test_terminal_uses_declared_filesystem_semantics_for_task_cwd(
 
     assert result["exit_code"] == 0
     expected_cwd = (
-        "~"
-        if (semantics is FilesystemSemantics.ISOLATED or requires_sandbox_cwd)
-        else "/opt/host-only/project"
+        "/opt/host-only/project"
+        if semantics is FilesystemSemantics.HOST
+        or (accepts_host_cwd and semantics is not FilesystemSemantics.ISOLATED)
+        else "~"
     )
     assert calls == [
         ("pwd", {"timeout": 60, "cwd": expected_cwd, "bounded_capture": True})

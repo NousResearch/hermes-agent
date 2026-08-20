@@ -167,3 +167,76 @@ def test_release_orphaned_leases_reclaims_only_unowned_own_pid_entries(tmp_path,
         for entry in active_sessions.active_session_registry_snapshot()
     ) == ["kept", "other"]
     assert orphan is not None
+
+
+def test_release_under_profile_home_override_targets_acquisition_registry(
+    tmp_path, monkeypatch
+):
+    """Regression for #85431: a lease acquired against the root HERMES_HOME
+    must release from the root registry even when ``release()`` runs inside a
+    profile home override (native multiplex runs agent cleanup under
+    ``_profile_runtime_scope``). Before the fix the root entry survived and
+    the session cap filled with phantom leases."""
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    lease, error = active_sessions.try_acquire_active_session(
+        session_id="agent:worker:telegram:dm:synthetic",
+        surface="gateway:telegram",
+        config={"max_concurrent_sessions": 2},
+    )
+    assert lease is not None and error is None
+    root_registry = root / "runtime" / "active_sessions.json"
+    assert root_registry.exists()
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        lease.release()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert lease.released is True
+    remaining = active_sessions._read_entries(root_registry)
+    assert remaining == []
+    # No phantom registry created under the profile home.
+    assert not (profile / "runtime" / "active_sessions.json").exists()
+
+
+def test_transfer_under_profile_home_override_targets_acquisition_registry(
+    tmp_path, monkeypatch
+):
+    """Sibling site of #85431: transfer must also update the registry the
+    lease was acquired against, not one resolved from the current override."""
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    lease, error = active_sessions.try_acquire_active_session(
+        session_id="before",
+        surface="gateway:telegram",
+        config={"max_concurrent_sessions": 2},
+    )
+    assert lease is not None and error is None
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        assert active_sessions.transfer_active_session(lease, session_id="after")
+    finally:
+        reset_hermes_home_override(token)
+
+    root_registry = root / "runtime" / "active_sessions.json"
+    entries = active_sessions._read_entries(root_registry)
+    assert [entry["session_id"] for entry in entries] == ["after"]

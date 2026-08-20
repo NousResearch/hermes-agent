@@ -33,8 +33,23 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    "session": {
+        # Per-terminal `hermes -c`: each CLI session drops a breadcrumb file
+        # under $HERMES_HOME/terminal-sessions/<terminal-id>, and a bare
+        # -c/--continue resumes THIS terminal's session (tmux pane, kitty
+        # window, wezterm pane, plain tty, ...) instead of the globally
+        # most-recent one. Set false to restore the old latest-session
+        # behavior everywhere.
+        "terminal_continue": True,
+    },
     "agent": {
         "max_turns": 500,
+        # Optional wall-clock budget in seconds per conversation run.
+        # null/absent = feature fully off (zero behavior change). When set,
+        # the agent gets a one-time wrap-up notice at 80% elapsed and
+        # implicit provider stale timeouts are capped to the remaining
+        # budget. CLI one-shot equivalent: `hermes chat --run-budget N`.
+        "run_budget_seconds": None,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -78,13 +93,25 @@ DEFAULT_CONFIG = {
         # (/restart, SIGUSR1), prefer restart_after_turn_timeout below so
         # active turns finish *before* stop() begins (#77184).
         "restart_drain_timeout": 0,
+        # Cron-only floor under the stop()/drain wait (seconds). A chat turn
+        # interrupted by a restart is announced to the user and resumed on
+        # their next message; an interrupted cron run is written to jobs.json
+        # as a permanent failure that nobody is waiting on, so it must not
+        # inherit restart_drain_timeout's 0 (#82161). Clamped at runtime to
+        # the shutdown-watchdog leash minus teardown headroom, so raising it
+        # past ~50s has no effect unless TimeoutStopSec is raised too.
+        # 0 = opt out (cron drains on restart_drain_timeout, legacy).
+        "cron_drain_timeout": 30,
         # In-band restart wait for active turns to finish before stop()
         # (seconds). /restart and SIGUSR1 refuse new work, then wait up to
         # this cap for in-flight agents/cron/api runs to complete naturally
         # so the requesting turn is not amputated by restart_drain_timeout.
         # 0 = legacy behaviour (enter stop()/drain immediately). Default
-        # 6h is a safety valve for wedged agents, not a target latency.
-        "restart_after_turn_timeout": 21600,
+        # 30 min is a safety valve for wedged agents, not a target latency —
+        # an interactive `hermes gateway restart` must never block for hours
+        # on a turn that wedged (#79133). Long unattended turns can raise
+        # this in config.yaml.
+        "restart_after_turn_timeout": 1800,
         # Upper bound (seconds) a submitted prompt waits for the deferred
         # agent build (MCP discovery, model metadata, skills scan) before
         # failing with a visible error (#63078). The gateway's wait is
@@ -102,6 +129,22 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Empty-response retry guard (NS-503).  The empty-retry loop
+        # re-sends the full conversation input at full price on every
+        # attempt; these settings stop it from re-billing *deterministic*
+        # empties (unsignaled provider refusals with zero output tokens)
+        # while failing open on any ambiguous evidence (missing usage,
+        # any generated tokens, model/provider change mid-streak).
+        "empty_response_guard": {
+            # Master switch for both guards below. False restores the
+            # legacy fixed 3-retry behaviour unconditionally.
+            "enabled": True,
+            # When the estimated input cost of a single empty attempt
+            # meets or exceeds this many USD, the retry budget for the
+            # streak drops from 3 to 1. Unknown pricing or missing usage
+            # leaves the budget untouched.
+            "cost_threshold_usd": 0.25,
+        },
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -109,6 +152,15 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Execution-discipline guidance: injects a system prompt block covering
+        # tool persistence, mandatory tool use for arithmetic/system facts,
+        # external-write read-back, count reconciliation, literal preservation
+        # of identifiers, and verification-gated completion.  Chosen once at
+        # session start keyed on model name (prompt stays byte-stable).
+        # Values: "auto" (default — applies to gpt/codex/grok/deepseek/kimi/
+        # qwen/glm/minimax/mimo/mistral models), true/false (force on/off for
+        # all models), or a list of model-name substrings to match.
+        "execution_guidance": "auto",
         # Intent-ack continuation: when the model opens a turn by narrating an
         # action it will take ("I'll go check the logs...") but emits no tool
         # call, intercept the turn-end, inject a "continue now, execute the
@@ -119,6 +171,15 @@ DEFAULT_CONFIG = {
         # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
         # false (never), or a list of model-name substrings to match.
         "intent_ack_continuation": "auto",
+        # Runtime anti-stall guards. When True (default), two conservative
+        # guards run: (1) an identical-call loop breaker that appends a short
+        # notice to the tool result when the same tool is called 3+ consecutive
+        # times with identical arguments AND identical results (never blocks;
+        # pollers like `process` are exempt), and (2) a continue-intent
+        # extension of the empty-response recovery that re-prompts once when
+        # the model ends its turn saying it will continue but takes no action.
+        # Set False to disable both.
+        "stall_guards": True,
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating
@@ -142,6 +203,9 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # Bot Mode teammate-messaging protocol section (silent unless a
+        # profile is managed by the desktop's Bot Mode).
+        "bot_mode_protocol": True,
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Hermes
         # (sandbox runner, managed platform) explain the runtime environment
@@ -288,6 +352,20 @@ DEFAULT_CONFIG = {
         # matches a key in this dict.
         # Edit directly in config.yaml (no CLI support due to dots in keys).
         "reasoning_overrides": {},
+
+        # Per-provider opt-in to preserve assistant ``reasoning_content``
+        # when replaying history.  The built-in echo families (DeepSeek,
+        # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name
+        # and base-URL host.  Custom providers and OpenAI-compatible
+        # gateways that proxy those same models (or other thinking-mode
+        # backends) are not covered by the host-based rules.
+        #
+        # Set ``reasoning_echo: true`` on a ``model:`` entry (primary) or a
+        # ``fallback_providers:`` entry (per-fallback) to preserve
+        # ``reasoning_content`` on replay for that provider only.  Default
+        # ``false`` keeps the historical strict-provider behavior (Mistral,
+        # Groq, Cerebras reject the field with HTTP 400).
+        "reasoning_echo": False,
     },
 
     "terminal": {
@@ -414,6 +492,18 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
+        # Keyless free-tier fallback: with NO web backend configured or keyed,
+        # web_search/web_extract fall back to Parallel's / Exa's public
+        # anonymous MCP endpoints (rate-limited free tiers). Never pre-empts
+        # a configured or keyed backend. Set false to disable entirely.
+        "keyless_fallback": True,
+        # Per-provider tier selection for providers with both a keyless free
+        # endpoint and a keyed paid SDK path (exa, parallel). Set by the
+        # `hermes tools` picker's "Free (keyless)" / "Paid (API key)" rows.
+        #   free  — always use the anonymous free endpoint (even with a key)
+        #   paid  — always use the keyed SDK path (missing key = error)
+        #   unset — auto: keyed when the API key is present, else keyless
+        "provider_tier": {},
     },
 
     "browser": {
@@ -638,6 +728,17 @@ DEFAULT_CONFIG = {
                                       # threshold and this token count. Clamped to
                                       # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        "tail_mode": "legacy",        # tail retention policy (#87326):
+                                      #   "legacy" — 0.20×window verbatim tail (default)
+                                      #   "lean"   — clamped 2.5%-of-window tail
+                                      #              (10K floor / 25K cap) plus chunked
+                                      #              digests, a mechanical anchor index,
+                                      #              verbatim user messages, and
+                                      #              session_search recovery pointers in
+                                      #              the summary. ~3x fewer retained
+                                      #              tokens after compaction; costs a few
+                                      #              extra summarizer calls at the
+                                      #              compaction boundary.
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
                                       # survive in the uncompressed tail. 1 = existing
@@ -1108,6 +1209,9 @@ DEFAULT_CONFIG = {
         # replay; different model = digest. Quality holds (memory capture
         # identical, skill near-identical in benchmarks).
         "background_review": {
+            # Master switch for automatic post-turn memory/skill review forks.
+            # false = skip automatic spawns (manual /refine still works).
+            "enabled": True,
             "provider": "auto",
             "model": "",
             "base_url": "",
@@ -1161,6 +1265,13 @@ DEFAULT_CONFIG = {
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.
         "busy_steer_ack_enabled": True,
+        # Classic CLI multiline fallbacks beyond Alt+Enter.
+        # Default true matches Claude Code / Codex / OpenCode: Ctrl+J inserts
+        # a newline, a trailing backslash followed by Enter continues the draft,
+        # and supported terminals are asked to report Shift+Enter distinctly.
+        # Set false to restore the legacy c-j submit fallback on unusual POSIX
+        # PTYs whose plain Enter arrives as LF instead of CR.
+        "cli_multiline_shortcuts": True,
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)
@@ -1193,8 +1304,17 @@ DEFAULT_CONFIG = {
         #   "verbose" — include a compact content preview of what changed
         # Per-platform overrides via display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
+        # Gateway notifications when a terminal(background=true) process
+        # finishes:
+        #   "concise" — one-line status message; failures append a short
+        #               output tail (default)
+        #   "all"     — running-output updates + final raw-output message
+        #   "result"  — final raw-output message only
+        #   "error"   — final raw-output message only on non-zero exit
+        #   "off"     — no watcher messages at all
+        "background_process_notifications": "concise",
         "streaming": False,
-        "timestamps": False,      # Show timestamp on user and assistant labels
+        "timestamps": False,      # Show message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
@@ -1202,6 +1322,12 @@ DEFAULT_CONFIG = {
         # behaves badly with replayed scrollback.
         "persistent_output": True,
         "persistent_output_max_lines": 200,
+        # Clear terminal scrollback as well as the visible viewport when the
+        # classic CLI performs a full redraw/resize recovery. Disabled by
+        # default because some users prefer preserving terminal history;
+        # enable when a terminal/tmux stack stamps stale prompt chrome into
+        # scrollback during fullscreen/restore window transitions.
+        "cli_rebuild_scrollback_on_redraw": False,
         # Print a one-line summary of resolved modal prompts (approval /
         # clarify) into scrollback so the question and decision survive the
         # panel repaint. Set false to keep scrollback untouched.
@@ -1577,7 +1703,11 @@ DEFAULT_CONFIG = {
         # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
+        # NOTE: no seeded "provider" key. Strict selection semantics treat a
+        # stored stt.provider as an explicit user pick; seeding "local" here
+        # made a fresh install indistinguishable from a user choice. The
+        # autodetect ladder covers unset. Valid values when set:
+        # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
         # Global language hint applied to EVERY provider unless a per-provider
         # language overrides it. Defaults to "en" — Whisper auto-detection
         # frequently misidentifies short/accented clips, which reads as
@@ -1735,6 +1865,10 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Periodic built-in memory review. External providers with automatic
+        # turn/session extraction can set this to 0 and keep the small local
+        # store reserved for explicit high-frequency operational facts.
+        "nudge_interval": 10,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
@@ -1761,7 +1895,7 @@ DEFAULT_CONFIG = {
         # extras" without silently stripping MCP tools the parent already has.
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
-        "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
+        "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch
         # fan-out (N children) returns N summaries at once, which can exceed
@@ -1786,7 +1920,7 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
-        "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
+        "max_concurrent_children": 10,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
                                        # fall back to synchronous execution. Floor of 1, no ceiling.
@@ -1826,6 +1960,24 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+    },
+
+
+    # Loops — /loop recurring in-session wakeups (Claude Code parity).
+    # A loop re-runs a prompt (or slash command) on a cadence inside the
+    # live session. Fixed-interval mode fires on the user's clock;
+    # self-paced mode (no interval given) starts at the floor and backs
+    # off exponentially while the agent's replies stop changing.
+    "loops": {
+        # Smallest fixed interval accepted (seconds). Tighter cadences are
+        # raised to this floor — each tick is a full agent turn.
+        "min_interval_seconds": 30,
+        # Backstop tick budget: the loop auto-pauses after this many
+        # wakeups unless the user set --times. 0 = unlimited.
+        "max_ticks": 100,
+        # Self-paced cadence bounds (seconds).
+        "self_paced_floor_seconds": 60,
+        "self_paced_ceiling_seconds": 900,
     },
 
     # Mixture of Agents — named presets used by /moa. A preset is an execution
@@ -1870,6 +2022,16 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Project-local skill discovery: when a session starts inside a git
+        # checkout, ``<root>/.hermes/skills/`` and ``<root>/.agents/skills/``
+        # are sourced as the highest-precedence skill tier — but ONLY when the
+        # project root is listed in trusted_project_dirs below. Trust a repo
+        # with ``hermes skills trust`` (run from inside it). Set to false to
+        # disable discovery entirely (no scan, no untrusted-skills notice).
+        "project_discovery": True,
+        # Absolute paths of project roots whose repo-local skills may load.
+        # Managed by ``hermes skills trust`` / ``hermes skills untrust``.
+        "trusted_project_dirs": [],
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
@@ -1895,6 +2057,18 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Advisory NVIDIA SkillEvaluator Tier 1 scan on hub installs
+        # (`hermes skills install`). Runs ALONGSIDE the built-in skills
+        # guard (which stays the enforcement layer) and only when the
+        # optional `skillevaluator` binary is on PATH:
+        #   uv tool install --python 3.13 \
+        #     "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
+        # Findings are informational — shown with file/line before the
+        # install confirmation, never blocking. Secrets-class findings
+        # (private keys, tokens, credentialed connection strings) are
+        # highlighted in red. On by default because it is a no-op
+        # without the binary installed.
+        "tier1_advisory": True,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
         # background self-improvement review fork.
@@ -1907,6 +2081,14 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Per-mutation audit ledger (tracker #79686 P3). Every skill mutation
+        # — curator, agent, or user — appends one JSONL entry to
+        # ~/.hermes/skills/.curator_ledger.jsonl with before/after file
+        # hashes; file contents are stored content-addressed (deduped) under
+        # ~/.hermes/.curator_backups/blobs/. Enables `hermes curator ledger`
+        # and single-mutation `hermes curator rollback <entry-id>`.
+        # Telemetry, never a gate: ledger failures cannot block a mutation.
+        "ledger": True,
     },
 
     # Curator — background skill maintenance.
@@ -1949,6 +2131,11 @@ DEFAULT_CONFIG = {
         # genuine non-use (never a mass-prune on the first run). Set to false
         # to keep all bundled built-ins permanently.
         "prune_builtins": True,
+        # TTL purge of skills/.archive/. 0 (default) = never purge — archived
+        # skills are kept forever. When > 0, `hermes curator purge` deletes
+        # archived skills older than this many days (explicit command only,
+        # never automatic; every purge is recorded in the audit ledger).
+        "archive_ttl_days": 0,
         # Pre-run backup: before every real curator pass (dry-run is
         # skipped), snapshot ~/.hermes/skills/ into
         # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
@@ -2116,6 +2303,16 @@ DEFAULT_CONFIG = {
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
     #
+    # single_query_mode — what to do when a single-query (-q) session hits a
+    # dangerous command. -q runs export HERMES_INTERACTIVE=1 (for interactive
+    # sudo prompts) but have NO user waiting to answer approval prompts — an
+    # unanswered prompt just waits the full timeout then fails closed, so the
+    # agent is forced to work around the block (often via execute_code). This
+    # setting makes that intent explicit:
+    #   deny    — block the command and let the agent find another way (default,
+    #             safe; mirrors cron_mode deny)
+    #   approve — auto-approve all dangerous commands in single-query mode
+    #
     # timeout — seconds to wait for the user's approve/deny before failing
     # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
     # Messaging approvals arrive as a push notification the user may not see
@@ -2125,6 +2322,7 @@ DEFAULT_CONFIG = {
         "mode": "smart",
         "timeout": 300,
         "cron_mode": "deny",
+        "single_query_mode": "deny",
         # Operator-customizable policy text for smart approvals. When
         # non-empty, this is appended to the smart-approval guardian's
         # SYSTEM prompt (trusted channel) as additional rules — e.g.
@@ -2163,8 +2361,9 @@ DEFAULT_CONFIG = {
         # through tools.slash_confirm — native yes/no buttons on Telegram,
         # Discord, and Slack; text fallback elsewhere.  Users click "Always
         # Approve" to silence the prompt permanently; that flips this key to
-        # false.  TUI has its own modal overlay (HERMES_TUI_NO_CONFIRM=1 to
-        # opt out there).
+        # false.  TUI also honors this setting for its /clear, /new, and /reset
+        # modal; HERMES_TUI_NO_CONFIRM=1 force-skips that modal regardless of
+        # the configured value.
         "destructive_slash_confirm": True,
     },
 
@@ -2212,6 +2411,10 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Persisted acknowledgement for unattended model overrides whose tier
+        # lets the vendor train on prompts/completions. The startup guard still
+        # prints the full warning on every run and never bypasses cost guards.
+        "allow_data_training_tiers_noninteractive": False,
         # Human approval presentation transport. "builtin" preserves the
         # current CLI/TUI/gateway/ACP surfaces. A plugin transport is used only
         # when named explicitly here. Transport timeout/error/invalid response
@@ -2255,6 +2458,14 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Allow cron-spawned agents to use the cronjob toolset (create/edit/
+        # remove scheduled jobs from within a cron run — the "cron-librarian"
+        # pattern). Off by default: the cronjob toolset is policy-denied in
+        # cron context to prevent unattended scheduling loops. Jobs created
+        # this way are user-owned in the same flat jobs table as every other
+        # job. Interactive toolsets (messaging/clarify) stay denied in cron
+        # context regardless of this setting.
+        "allow_agent_scheduling": False,
         # Pre-dispatch configuration validation (T1-26): before constructing
         # any agent machinery for a job, verify the provider API key resolves
         # (unless a fallback chain is configured), attached skills are ready
@@ -2338,12 +2549,23 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Timeout (seconds) for a no-agent cron script. Also overridable via
+        # HERMES_CRON_SCRIPT_TIMEOUT. Keep this in sync with
+        # cron.scheduler._DEFAULT_SCRIPT_TIMEOUT so config set recognizes the
+        # same setting the scheduler reads.
+        "script_timeout_seconds": 3600,
         # Timeout (seconds) for SessionDB() init inside cron jobs.
         # SessionDB opens/migrates state.db synchronously and has no timeout
         # of its own against a wedged sqlite3.connect. An unbounded hang here
         # wedges the job's dispatch guard forever. Also overridable via
         # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
         "session_db_timeout_seconds": 10,
+        # Timeout (seconds) for each media attachment send during cron
+        # delivery via a live gateway adapter. Large attachments (long TTS
+        # audio, big exports) can exceed the old fixed 30s window. Also
+        # overridable via HERMES_CRON_MEDIA_SEND_TIMEOUT env var. Keep in
+        # sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
+        "media_send_timeout_seconds": 300,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
@@ -2393,6 +2615,19 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Global concurrency cap (#33488): when set to a positive int, the
+        # HOST never has more than N tasks in 'running' at once — counted
+        # across every active board and across both the ready and review
+        # dispatch lanes (workers are OS processes sharing one machine's
+        # memory, so the cap bounds the machine, not each board; OOF-30).
+        # Unset (None) means
+        # "derive from system memory" (OOF-30/OOF-77): the dispatcher caps
+        # concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] —
+        # e.g. 2 workers on a 1 GiB VM. On hosts where total memory can't
+        # be read (macOS/Windows), unset falls back to no cap. Set an
+        # explicit value to override the derived default in either
+        # direction.
+        "max_in_progress": None,
         # Per-profile concurrency cap (#21582). When set to a positive int,
         # no single profile can have more than N workers running at once,
         # even if the global max_in_progress / max_spawn caps would allow
@@ -2423,6 +2658,14 @@ DEFAULT_CONFIG = {
         # to the TTL/crash/stale recovery paths. Set false to keep orphans
         # frozen for manual forensics.
         "reconcile_orphans": True,
+        # Notify subscriptions survive a task reaching ``done`` (completion
+        # is reversible — controllers reopen done work for review
+        # corrections), and are normally removed on archive. On boards that
+        # never archive, the notifier GC purges subscriptions for tasks
+        # that have been ``done`` with no new activity for this many days,
+        # so stale rows don't accumulate and get scanned on every notifier
+        # tick forever. Set 0 to disable the sweep.
+        "done_sub_retention_days": 30,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -2516,6 +2759,62 @@ DEFAULT_CONFIG = {
         #     openrouter:
         #       url: https://example.com/my-curation.json
         "providers": {},
+    },
+
+    # Per-model metadata overrides — manually declare context_window,
+    # max_output_tokens, capabilities, or model family for any
+    # provider+model. Recognized fields: context_window,
+    # max_output_tokens, supports_tools, supports_vision,
+    # supports_reasoning, model_family.
+    #
+    # Semantics:
+    #   1. Explicit (model_overrides.<provider>.<model_id>): wins over
+    #      models.dev, OpenRouter, and hardcoded defaults for the fields
+    #      it sets. NOTE: an explicit model.context_length (global) and a
+    #      custom_providers per-model context_length are user settings at
+    #      other layers and are consulted in the resolution chain order
+    #      documented in agent/model_metadata.py.
+    #   2. Fill-gap defaults (model_overrides.<provider>._default and
+    #      model_overrides._default): apply ONLY to models the catalog
+    #      does not know. They never displace catalog data for known
+    #      models, so a _default cannot accidentally clamp every model
+    #      of a provider.
+    #
+    # An unknown model id (not in models.dev) starts from safe defaults
+    # (200K context, tools on, vision/reasoning off) and the override
+    # patches the fields it sets — overriding a model the catalog
+    # doesn't know yet is the supported self-unblock path (#84482,
+    # #8731).
+    #
+    # Provider keys accept the Hermes provider id (as used elsewhere in
+    # this file) or the models.dev provider id; model ids match
+    # case-insensitively.
+    #
+    # Example:
+    #   model_overrides:
+    #     upstage:
+    #       solar-pro4:
+    #         context_window: 524288
+    #       syn-pro:
+    #         context_window: 65536
+    #     custom:my-local-vllm:
+    #       my-llava-model:
+    #         context_window: 8192
+    #         supports_vision: true
+    #         supports_reasoning: false
+    #         supports_tools: true
+    #     _default:            # fill-gap only: models not in the catalog
+    #       context_window: 128000
+    "model_overrides": {},
+
+    # models.dev registry — provider/model metadata (context windows,
+    # capabilities, pricing, modalities).  The agent fetches this on startup
+    # and serves from cache; a background daemon refreshes stale data.
+    # Override ``url`` to point at a mirror (e.g. a self-hosted copy behind
+    # a corporate proxy).  ETag conditional GET ensures refreshes are
+    # cheap (304 = no download).
+    "models_dev": {
+        "url": "",  # empty = default https://models.dev/api.json
     },
 
     # Network settings — workarounds for connectivity issues.
@@ -2930,6 +3229,15 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # When `hermes update` finds the source checkout parked on a feature
+        # branch (left behind by tooling or a manual checkout), switch back
+        # to the update target automatically — but only when the branch is
+        # clean and every commit on it is already merged into the target.
+        # When it is not safe, the code update is SKIPPED with a loud
+        # warning instead of pretending success (2026-08-17 incident:
+        # "✓ Code updated!" printed while the checkout stayed days behind
+        # main on a stale branch). Set false to never auto-switch.
+        "auto_switch_parked_branch": True,
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example
@@ -3144,6 +3452,33 @@ DEFAULT_CONFIG = {
         #   True  = always disable the overlay
         #   False = always enable the overlay
         "no_overlay": None,
+        # cua-driver permission mode for each Hermes computer-use runtime.
+        #   standard (default) — cua-driver's own approval boundary. Protected
+        #     operations (e.g. attaching to an existing signed-in browser
+        #     profile) fail closed unless grant_existing_profile is enabled
+        #     below.
+        #   bounded — repeatable automation under a user-reviewed session
+        #     capability manifest (set capability_manifest below). No runtime
+        #     prompts; anything outside the manifest fails closed inside
+        #     cua-driver.
+        # `unrestricted` is intentionally NOT accepted here: it stays bound to
+        # the explicit per-session YOLO toggle so a config line can never
+        # silently bypass approvals.
+        "permission_mode": "standard",
+        # Absolute or ~ path to the reviewed cua-driver capability
+        # manifest used when permission_mode is "bounded". Hermes passes the
+        # canonical --capability-manifest and --approve-capability-manifest
+        # flags when it launches the runtime. See
+        # https://cua.ai/docs/reference/cua-driver/permission-modes
+        "capability_manifest": "",
+        # Pre-authorize existing-profile browser attachment in standard mode
+        # (cua-driver's trusted-launcher `--grant existing-profile`). When
+        # true, the agent can attach to your already-running, signed-in
+        # Chrome/Edge window — exposing that profile's live pages, cookies,
+        # and storage to the browser protocol — without a per-use prompt.
+        # Leave false to keep existing-profile attachment failing closed;
+        # isolated driver-owned profiles work either way.
+        "grant_existing_profile": False,
     },
 
     # =========================================================================
@@ -3280,7 +3615,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 34,
+    "_config_version": 38,
 }
 
 # Optional environment variables that enhance functionality
@@ -3588,6 +3923,14 @@ OPTIONAL_ENV_VARS = {
         "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
         "prompt": "OpenCode Zen API key",
         "url": "https://opencode.ai/auth",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "COMMANDCODE_API_KEY": {
+        "description": "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)",
+        "prompt": "CommandCode API key",
+        "url": "https://commandcode.ai/studio/",
         "password": True,
         "category": "provider",
         "advanced": True,

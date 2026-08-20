@@ -17,11 +17,14 @@ Core invariant these tests pin:
 
 import os
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
 import tools.file_tools as ft
 import tools.terminal_tool as terminal_tool
+from tools.environments.definitions import BackendCapabilities, FilesystemSemantics
+from tools.environments.registry import terminal_backend_registry
 
 
 @pytest.fixture
@@ -310,3 +313,27 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
     # The decoy (backend cwd) was left untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
+
+
+def test_v4a_rewrites_paths_for_plugin_host_filesystem(monkeypatch, tmp_path):
+    """Host-path routing follows the selected definition, not env class identity."""
+    definition = SimpleNamespace(
+        capabilities=BackendCapabilities(filesystem_semantics=FilesystemSemantics.HOST)
+    )
+    monkeypatch.setattr(ft, "_terminal_env_type_for_task", lambda _task_id: "host_plugin")
+    monkeypatch.setattr(
+        terminal_backend_registry,
+        "get",
+        lambda name: definition if name == "host_plugin" else None,
+    )
+    file_ops = SimpleNamespace(env=object())
+    resolved = str((tmp_path / "target.py").resolve())
+
+    rewritten = ft._rewrite_v4a_patch_paths_for_host(
+        "*** Begin Patch\n*** Update File: target.py\n*** End Patch",
+        {"target.py": resolved},
+        file_ops,
+        task_id="plugin-task",
+    )
+
+    assert f"*** Update File: {resolved}" in rewritten

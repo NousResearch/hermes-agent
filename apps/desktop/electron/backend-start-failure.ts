@@ -70,3 +70,32 @@ export interface RemoteReauthFailureContext {
 export function shouldLatchRemoteReauthFailure(context: RemoteReauthFailureContext): boolean {
   return context.attemptedRemote && context.isReauth
 }
+
+export interface RemoteBootRetryContext {
+  /** True when the boot that just failed was dialing a REMOTE (or cloud/SSH) backend. */
+  attemptedRemote: boolean
+  /**
+   * True when the failure was a CONFIRMED auth rejection (401/403), which can
+   * never self-heal without the user signing in again.
+   */
+  isReauth: boolean
+}
+
+/**
+ * Whether a failed primary-backend boot is a TRANSIENT remote failure the
+ * renderer may retry automatically (bounded, with backoff).
+ *
+ * This closes the self-heal gap of issue #82679: a dropped SSH/HTTP remote
+ * connection surfaces at the next boot as a transient transport failure
+ * ("Could not verify the existing SSH backend", ERR_CONNECTION_RESET, mint
+ * timeouts). Those never latch (see shouldLatchBackendStartFailure), but
+ * nothing ever RE-ATTEMPTED the boot either — the renderer's reconnect loop
+ * only arms after a completed boot, so the app sat on "Desktop boot failed"
+ * until the user manually re-entered the same connection details (which just
+ * forced a fresh bootstrap). A missing capability differs from a transient
+ * failure: confirmed reauth rejections and local failures stay out of the
+ * retry path; everything else remote is connectivity and should retry.
+ */
+export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): boolean {
+  return context.attemptedRemote && !context.isReauth
+}

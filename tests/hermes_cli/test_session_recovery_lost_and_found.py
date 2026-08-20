@@ -324,10 +324,14 @@ def _make_synthetic_lost_and_found(
         ]
     finally:
         schema.close()
-    assert len(sessions_columns) == 54
+    # Width is derived from the live schema so ordinary column additions
+    # don't break this test (it pinned 54, then 55, then 56 in one week).
+    # The floor guards against accidentally reading an empty/old schema.
+    current_width = len(sessions_columns)
+    assert current_width >= 55
     assert len(usage_columns) == 18
 
-    max_fields = 54
+    max_fields = current_width
     conn = sqlite3.connect(str(path), isolation_level=None)
     try:
         cells = ", ".join(f"c{i}" for i in range(max_fields))
@@ -354,8 +358,8 @@ def _make_synthetic_lost_and_found(
             }
             return [base.get(column) for column in sessions_columns[:ncols]]
 
-        # Current 54-column layout and historical 52-column layout.
-        insert(54, 1, session_row("20260101_010101_aaa001", 54))
+        # Current layout (dynamic width) and historical 52-column layout.
+        insert(max_fields, 1, session_row("20260101_010101_aaa001", max_fields))
         insert(52, 2, session_row("20260202_020202_bbb002", 52))
         # 14-column legacy layout: identity + a plausible epoch timestamp.
         legacy = ["20250303_030303_ccc003", "cli", 1_741_000_000.0] + [None] * 11
@@ -407,7 +411,7 @@ def _make_synthetic_lost_and_found(
 
         # Junk that must NOT be classified into canonical tables.
         insert(3, 300, ["random", "noise", 42])
-        insert(54, 301, ["not-a-session-id", "cli"] + [None] * 52)
+        insert(max_fields, 301, ["not-a-session-id", "cli"] + [None] * (max_fields - 2))
         insert(23, 302, [None, "sess-x", "not-a-role", "junk"])
     finally:
         conn.close()
@@ -428,7 +432,7 @@ def test_classify_lost_and_found_row_sentinels() -> None:
     )
     assert (
         classify_lost_and_found_row(
-            54, ("20260101_010101_aaa001", "cli") + (None,) * 52
+            55, ("20260101_010101_aaa001", "cli") + (None,) * 53
         )
         == "sessions"
     )
@@ -453,7 +457,7 @@ def test_classify_lost_and_found_row_sentinels() -> None:
     # Junk shapes.
     assert classify_lost_and_found_row(3, ("random", "noise", 42)) is None
     assert (
-        classify_lost_and_found_row(54, ("not-a-session-id", "cli") + (None,) * 52)
+        classify_lost_and_found_row(55, ("not-a-session-id", "cli") + (None,) * 53)
         is None
     )
     assert (

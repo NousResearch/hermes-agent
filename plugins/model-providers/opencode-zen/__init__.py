@@ -11,8 +11,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import ProviderProfile
+
+# Attribution headers sent on every OpenCode request. Same values we send
+# to OpenRouter, Vercel AI Gateway, and Fireworks. Going through
+# profile.default_headers means they survive model switches and credential
+# rotation. Without them OpenCode only sees the OpenAI SDK's generic
+# "OpenAI/Python x.y.z" User-Agent and can't tell the traffic is Hermes Agent.
+_ATTRIBUTION_HEADERS = {
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+    "X-Title": "Hermes Agent",
+    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+}
 
 
 def _flat_model_name(model: str | None) -> str:
@@ -63,8 +75,8 @@ class OpenCodeGoProfile(ProviderProfile):
 
         if _is_glm_5_2_model(model):
             # GLM-5.2 on OpenCode Go uses its native OpenAI-compatible
-            # reasoning_effort knob, which has exactly two enabled levels:
-            # high and max. Map Hermes' richer scale onto those; leave the
+            # reasoning_effort knob (high/max — declared in
+            # agent.reasoning_effort, shared with the zai profile); leave the
             # server default alone when reasoning is disabled or unset.
             if not isinstance(reasoning_config, dict):
                 return extra_body, top_level
@@ -73,7 +85,16 @@ class OpenCodeGoProfile(ProviderProfile):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if not effort or effort == "none":
                 return extra_body, top_level
-            top_level["reasoning_effort"] = "max" if effort in {"xhigh", "max", "ultra"} else "high"
+            from agent.reasoning_effort import (
+                GLM52_EFFORTS,
+                GLM52_OVERRIDES,
+                clamp_effort,
+            )
+
+            clamped = clamp_effort(effort, GLM52_EFFORTS, GLM52_OVERRIDES)
+            top_level["reasoning_effort"] = (
+                clamped if clamped in GLM52_EFFORTS else "high"
+            )
             return extra_body, top_level
 
         if _is_kimi_k2_model(model):
@@ -90,10 +111,12 @@ class OpenCodeGoProfile(ProviderProfile):
                 return extra_body, top_level
 
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max", "ultra"}:
-                top_level["reasoning_effort"] = "high"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
+            if effort and effort != "none":
+                from agent.reasoning_effort import KIMI_K2_EFFORTS, clamp_effort
+
+                clamped = clamp_effort(effort, KIMI_K2_EFFORTS)
+                if clamped in KIMI_K2_EFFORTS:
+                    top_level["reasoning_effort"] = clamped
 
             # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
             # only send extra_body["thinking"] when no reasoning_effort is set.
@@ -114,10 +137,18 @@ class OpenCodeGoProfile(ProviderProfile):
 
         if isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max", "ultra"}:
-                top_level["reasoning_effort"] = "max"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
+            if effort and effort != "none":
+                from agent.reasoning_effort import (
+                    DEEPSEEK_V4_EFFORTS,
+                    DEEPSEEK_V4_OVERRIDES,
+                    clamp_effort,
+                )
+
+                clamped = clamp_effort(
+                    effort, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES
+                )
+                if clamped in DEEPSEEK_V4_EFFORTS:
+                    top_level["reasoning_effort"] = clamped
 
         # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
         # only send extra_body["thinking"] when no reasoning_effort is set.
@@ -132,6 +163,7 @@ opencode_zen = ProviderProfile(
     aliases=("opencode", "opencode_zen", "zen"),
     env_vars=("OPENCODE_ZEN_API_KEY",),
     base_url="https://opencode.ai/zen/v1",
+    default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
 )
 
@@ -140,6 +172,7 @@ opencode_go = OpenCodeGoProfile(
     aliases=("opencode_go", "go", "opencode-go-sub"),
     env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1",
+    default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
 )
 

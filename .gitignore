@@ -91,6 +91,10 @@ apps/desktop/dist/
 apps/desktop/src/**/*.js
 apps/desktop/src/**/*.js.map
 apps/desktop/src/**/*.d.ts
+# EXCEPT bundled plain-ESM plugin entries (adopted SDK-consumer plugins,
+# e.g. hermes-bots): plugin.js IS the source, not tsc output. No .tsx
+# sibling exists, so the stale-shadow hazard above cannot apply.
+!apps/desktop/src/plugins/*/plugin.js
 !apps/desktop/src/global.d.ts
 !apps/desktop/src/vite-env.d.ts
 apps/shared/src/**/*.js

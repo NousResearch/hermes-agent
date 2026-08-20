@@ -265,6 +265,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
         ): Promise<void> => {
           if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
+            // `/goal clear|pause|resume|status` can come back as a TYPED exec
+            // dispatch (command.dispatch routing) instead of the plain-output
+            // shape handled below. This branch used to render and return
+            // without touching the goal store, so "✓ Goal cleared." printed
+            // while the stale "Goal paused" card kept showing until the chat
+            // was reopened (#80348). Mirror the output into the store exactly
+            // like the plain-output path does.
+            if (name === 'goal' && dispatch.output) {
+              applyGoalStatusText(sessionId, dispatch.output)
+            }
+
             renderSlashOutput(dispatch.output ?? '(no output)')
 
             return

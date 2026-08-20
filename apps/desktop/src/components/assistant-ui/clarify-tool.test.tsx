@@ -9,7 +9,7 @@ import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $activeSessionId } from '@/store/session'
 
-import { ClarifyTool, readClarifyResult } from './clarify-tool'
+import { ClarifyTool, readClarifyBatchResult, readClarifyResult } from './clarify-tool'
 
 // The live pending card only renders while its message is running. Force that so
 // keyboard-navigation tests can exercise ClarifyToolPending directly.
@@ -71,13 +71,14 @@ function liveClarifyProps(choices = ['staging', 'production']): ToolCallMessageP
   }
 }
 
-function renderLiveClarify() {
+function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = {}) {
   const request = vi.fn().mockResolvedValue({ ok: true })
 
   $activeSessionId.set('session-1')
   $gateway.set({ request } as never)
   setClarifyRequest({
     choices: ['staging', 'production'],
+    multiSelect,
     question: 'Which deployment target?',
     requestId: 'request-1',
     sessionId: 'session-1'
@@ -86,6 +87,57 @@ function renderLiveClarify() {
 
   return request
 }
+
+describe('ClarifyTool choice selection', () => {
+  it('selects independently, deselects and submits multi-select choices as a JSON array', async () => {
+    const request = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+
+    fireEvent.click(staging)
+    fireEvent.click(production)
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(staging)
+    expect(staging.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(staging)
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: JSON.stringify(['production', 'staging']),
+        request_id: 'request-1'
+      })
+    })
+  })
+
+  it('keeps single-select replacement and plain-string submission', async () => {
+    const request = renderLiveClarify()
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+
+    fireEvent.click(staging)
+    fireEvent.click(production)
+
+    expect(staging.getAttribute('aria-pressed')).toBe('false')
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'production',
+        request_id: 'request-1'
+      })
+    })
+  })
+})
 
 describe('readClarifyResult', () => {
   it('reads question + user_response from the tool JSON payload', () => {
@@ -271,6 +323,26 @@ describe('ClarifyTool keyboard navigation', () => {
     })
   })
 
+  it('stages a highlighted multi-select choice with Enter and submits it with Continue', async () => {
+    const request = renderLiveClarify({ multiSelect: true })
+    const production = screen.getByRole('button', { name: /production/ })
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+    expect(request).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: JSON.stringify(['production']),
+        request_id: 'request-1'
+      })
+    })
+  })
+
   it('focuses Other when its number is pressed and leaves typing keys alone', () => {
     renderLiveClarify()
 
@@ -305,6 +377,7 @@ describe('ClarifyTool recommended option', () => {
     $gateway.set({ request } as never)
     setClarifyRequest({
       choices: ['staging (Recommended)', 'production'],
+      multiSelect: false,
       question: 'Which deployment target?',
       requestId: 'request-1',
       sessionId: 'session-1'
@@ -348,6 +421,7 @@ describe('ClarifyTool pending marker', () => {
     $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
     setClarifyRequest({
       choices: null,
+      multiSelect: false,
       question: 'Anything else?',
       requestId: 'request-1',
       sessionId: 'session-1'
@@ -372,5 +446,188 @@ describe('ClarifyTool pending marker', () => {
 
     // No shortcuts → nothing to protect → composer type-to-focus stays live.
     expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+  })
+})
+
+// ─── Batch (multi-question) clarify ─────────────────────────────────────────
+
+function batchArgs(): { questions: { question: string; choices?: string[] }[] } {
+  return {
+    questions: [{ choices: ['red', 'blue'], question: 'Color?' }, { question: 'Name?' }]
+  }
+}
+
+function liveBatchProps(): ToolCallMessagePartProps {
+  const args = batchArgs()
+
+  return {
+    addResult: vi.fn(),
+    args,
+    argsText: JSON.stringify(args),
+    isError: false,
+    respondToApproval: vi.fn(),
+    result: undefined,
+    resume: vi.fn(),
+    status: { type: 'running' },
+    toolCallId: 'clarify-batch',
+    toolName: 'clarify',
+    type: 'tool-call'
+  }
+}
+
+function renderLiveBatch(lockedAnswers?: Record<string, string>) {
+  const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+
+  $activeSessionId.set('session-1')
+  $gateway.set({ request } as never)
+  setClarifyRequest({
+    choices: null,
+    lockedAnswers,
+    multiSelect: false,
+    question: '',
+    questions: [
+      { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+      { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+    ],
+    requestId: 'request-batch',
+    sessionId: 'session-1'
+  })
+  renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+  return request
+}
+
+describe('readClarifyBatchResult', () => {
+  it('parses responses with string and list answers plus timed_out', () => {
+    const parsed = readClarifyBatchResult(
+      JSON.stringify({
+        responses: [
+          { question: 'Color?', user_response: 'red' },
+          { question: 'Tools?', user_response: ['a', 'b'] },
+          { question: 'Name?', user_response: '' }
+        ],
+        timed_out: true
+      })
+    )
+
+    expect(parsed.timedOut).toBe(true)
+    expect(parsed.responses).toHaveLength(3)
+    expect(parsed.responses[1]?.answer).toEqual(['a', 'b'])
+    expect(parsed.responses[2]?.answer).toBe('')
+  })
+
+  it('returns empty responses for single-question payloads', () => {
+    expect(readClarifyBatchResult({ question: 'Q?', user_response: 'a' }).responses).toEqual([])
+  })
+})
+
+describe('ClarifyTool batch card', () => {
+  it('renders every question at once', () => {
+    renderLiveBatch()
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
+  })
+
+  it('stages locally and keeps the single confirm disabled until all answered', async () => {
+    const request = renderLiveBatch()
+    const confirm = screen.getByRole('button', { name: /Confirm and continue/ })
+
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
+
+    // Staging a pick sends NOTHING to the server.
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+    expect(request).not.toHaveBeenCalled()
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    expect(screen.getByText('2 of 2 answered')).toBeTruthy()
+    expect(request).not.toHaveBeenCalled()
+    expect((confirm as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('confirm sends every per-question lock in order and completes the batch', async () => {
+    const request = renderLiveBatch()
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
+      answer: 'packet',
+      question_id: 'q1',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('a staged answer stays editable before confirm', async () => {
+    const request = renderLiveBatch()
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.click(screen.getByRole('button', { name: /blue/ }))
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    // The re-pick won: blue, not red.
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
+      answer: 'blue',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('pre-stages replayed locked answers from a reconnect', () => {
+    renderLiveBatch({ q0: 'red' })
+
+    // The replayed answer counts as staged: one question left to answer.
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+  })
+
+  it('Skip cancels the whole batch without a question_id', async () => {
+    const request = renderLiveBatch()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: '',
+        request_id: 'request-batch'
+      })
+    })
+  })
+
+  it('renders the settled batch with all questions and answers', () => {
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          batchArgs(),
+          JSON.stringify({
+            responses: [
+              { choices_offered: ['red', 'blue'], question: 'Color?', user_response: 'red' },
+              { choices_offered: null, question: 'Name?', user_response: '' }
+            ]
+          }),
+          'clarify-batch-settled'
+        )}
+      />
+    )
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('red')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+    expect(screen.getByText('Skipped')).toBeTruthy()
   })
 })

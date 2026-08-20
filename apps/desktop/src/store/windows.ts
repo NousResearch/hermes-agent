@@ -83,6 +83,18 @@ export function isWatchWindow(): boolean {
 // keystroke into N prompts, and a HUD is the last place to paint onboarding.
 export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow()
 
+// A full peer window renders the ordinary app shell against the backend that
+// Electron already has running. It is not an auxiliary/specialized renderer,
+// but it must not replay the primary window's app-launch source restoration
+// after boot and silently re-home itself to another registered gateway.
+export function isPeerInstanceWindow(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
+  try {
+    return new URLSearchParams(search).get('peer') === '1'
+  } catch {
+    return false
+  }
+}
+
 // The profile a helper window (the HUD) was asked to boot against, carried in
 // the query string by the main process (see hudUrl). The HUD is a full app
 // renderer that otherwise adopts the PRIMARY backend's profile — wrong the
@@ -108,6 +120,13 @@ export function canOpenSessionWindow(): boolean {
 // True when the shell can open a full peer app window (⌘⇧N / "New Window").
 export function canOpenNewWindow(): boolean {
   return typeof window !== 'undefined' && typeof window.hermesDesktop?.openWindow === 'function'
+}
+
+// True when the shell can hand a session to the user's own terminal emulator.
+// Desktop-only, and a REMOTE connection is excluded by the caller: the terminal
+// we'd open is on this machine, but the session lives on the remote host.
+export function canOpenSessionInTerminal(): boolean {
+  return typeof window !== 'undefined' && typeof window.hermesDesktop?.openSessionInTerminal === 'function'
 }
 
 type WindowOpenResult = { ok: boolean; error?: string } | undefined
@@ -148,4 +167,21 @@ export async function openNewWindow(): Promise<void> {
   }
 
   await runWindowOpen(() => window.hermesDesktop.openWindow(), 'Could not open a new window')
+}
+
+// Resume a session in the user's own terminal emulator, running the TUI there.
+// `cwd` starts the shell in the session's workspace; `profile` pins the runtime
+// to the profile that owns the session. No-ops gracefully outside Electron.
+export async function openSessionInTerminal(
+  sessionId: string,
+  opts?: { cwd?: string; profile?: string }
+): Promise<void> {
+  if (!sessionId || !canOpenSessionInTerminal()) {
+    return
+  }
+
+  await runWindowOpen(
+    () => window.hermesDesktop.openSessionInTerminal(sessionId, opts),
+    'Could not open chat in a terminal'
+  )
 }

@@ -87,24 +87,22 @@ class KimiProfile(ProviderProfile):
 
         # Enabled: prefer an explicit effort; only fall back to extra_body
         # thinking when no recognized effort is requested.
-        # K3 accepts low/high/max (default high). Map Hermes' wider effort
-        # vocabulary onto K3's set:
-        #   low, minimal       → low
-        #   medium, high        → high
-        #   xhigh, max, ultra   → max
-        # ref: https://www.kimi.com/code/docs/en/kimi-code/models.html
-        _K3_EFFORT_MAP = {
-            "minimal": "low",
-            "low": "low",
-            "medium": "high",
-            "high": "high",
-            "xhigh": "max",
-            "max": "max",
-            "ultra": "max",
-        }
+        # K3's vocabulary (low/high/max, default high) and its documented
+        # rounding (medium→high, xhigh→max) are declared in
+        # agent.reasoning_effort — shared with the chat-completions
+        # transport's Kimi path so both stay in sync.
+        from agent.reasoning_effort import (
+            KIMI_K3_EFFORTS,
+            KIMI_K3_OVERRIDES,
+            clamp_effort,
+        )
+
         effort = (reasoning_config.get("effort") or "").strip().lower()
-        k3_effort = _K3_EFFORT_MAP.get(effort)
-        if k3_effort:
+        if effort and effort != "none":
+            k3_effort = clamp_effort(effort, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES)
+        else:
+            k3_effort = None
+        if k3_effort in KIMI_K3_EFFORTS:
             top_level["reasoning_effort"] = k3_effort
         else:
             extra_body["thinking"] = {"type": "enabled"}

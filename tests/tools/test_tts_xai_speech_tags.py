@@ -134,7 +134,7 @@ def test_generate_xai_tts_uses_oauth_pinned_base_url(tmp_path, monkeypatch):
     monkeypatch.setenv("XAI_BASE_URL", "https://attacker.example/v1")
     monkeypatch.setattr(
         "tools.xai_http.resolve_xai_http_credentials",
-        lambda: {
+        lambda **_kwargs: {
             "provider": "xai-oauth",
             "api_key": "oauth-bearer-token",
             "base_url": "https://api.x.ai/v1",
@@ -156,6 +156,65 @@ def test_generate_xai_tts_uses_oauth_pinned_base_url(tmp_path, monkeypatch):
 
     assert captured["url"] == "https://api.x.ai/v1/tts"
     assert captured["headers"]["Authorization"] == "Bearer oauth-bearer-token"
+
+
+def test_generate_xai_tts_prefers_explicit_api_key_over_oauth(tmp_path, monkeypatch):
+    """TTS requires API billing even when chat OAuth is configured (#87045).
+
+    Adapted from PR #87081 (@enwaiax): the precedence now lives in the shared
+    resolver behind ``prefer_api_key=True`` instead of an inline early return,
+    so the key is read via ``resolve_provider_secret`` and the base URL
+    override goes through the same *.x.ai origin validation as OAuth.
+    """
+    captured = {}
+
+    class FakeResponse:
+        content = b"audio"
+
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, headers, json, timeout, stream=False):
+        captured["url"] = url
+        captured["headers"] = headers
+        return FakeResponse()
+
+    from types import SimpleNamespace
+
+    entry = SimpleNamespace(
+        access_token="oauth-token",
+        runtime_api_key=None,
+        runtime_base_url=None,
+        base_url="https://api.x.ai/v1",
+    )
+
+    class _FakePool:
+        def select(self):
+            return entry
+
+        def try_refresh_matching(self, _hint):
+            return entry
+
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider_id: _FakePool() if provider_id == "xai-oauth" else None,
+    )
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "tools.xai_http.get_env_value",
+        lambda name, default=None: {
+            "XAI_API_KEY": "paid-api-key",
+            "XAI_BASE_URL": "https://staging.x.ai/v1/",
+        }.get(name, default),
+    )
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "hello", str(tmp_path / "out.mp3"), {"xai": {"auto_speech_tags": False}}
+    )
+
+    assert captured["headers"]["Authorization"] == "Bearer paid-api-key"
+    assert captured["url"] == "https://staging.x.ai/v1/tts"
 
 
 def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():

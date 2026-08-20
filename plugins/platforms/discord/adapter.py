@@ -266,6 +266,46 @@ async def _wait_for_ready_or_bot_exit(
                 await ready_task
 
 
+def _needs_server_members_intent(
+    allowed_user_ids: set[str] | list[str] | None,
+    allowed_role_ids: set[str] | list[str] | None,
+) -> bool:
+    """Return True when Hermes must request Discord's Server Members intent.
+
+    Message Content is always requested. Server Members is only needed when the
+    allowlist contains usernames (not pure numeric IDs / ``*``) or when role
+    allowlists require member role lookups.
+    """
+    entries = allowed_user_ids or ()
+    if any(entry != "*" and not str(entry).isdigit() for entry in entries):
+        return True
+    return bool(allowed_role_ids)
+
+
+def _format_privileged_intents_guidance(*, needs_members: bool) -> str:
+    """Actionable fix text when Discord rejects privileged Gateway Intents."""
+    lines = [
+        "Discord rejected the connection because privileged Gateway Intents "
+        "are not enabled for this bot in the Developer Portal.",
+        "Hermes is requesting:",
+        "  - Message Content Intent (required to read message text)",
+    ]
+    if needs_members:
+        lines.append(
+            "  - Server Members Intent (required for username allowlists "
+            "and/or DISCORD_ALLOWED_ROLES)"
+        )
+    lines.extend(
+        [
+            "Fix: https://discord.com/developers/applications → your application "
+            "→ Bot → Privileged Gateway Intents → enable the intent(s) listed "
+            "above → Save Changes, then restart the gateway.",
+            "Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
     """Return discord.py's bundled Windows opus DLL path when present."""
     if sys.platform != "win32":
@@ -1003,6 +1043,12 @@ class DiscordAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    # Safety ceiling on split deliveries (#86581): a degenerate turn can
+    # produce tens of thousands of characters — without a cap the adapter
+    # posts every 2000-char chunk back-to-back and floods the channel (the
+    # incident delivered 60,698 chars as 31 messages).  Chunks beyond the
+    # cap are replaced by a short notice.
+    MAX_SPLIT_MESSAGES = 8
 
     # Auto-disconnect from voice channel after this many seconds of inactivity.
     # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
@@ -1286,18 +1332,16 @@ class DiscordAdapter(BasePlatformAdapter):
             # that aren't enabled in the Discord Developer Portal can prevent the
             # bot from coming online at all, so avoid requesting members intent
             # unless it is actually necessary.
+            # ``"*"`` is the open-mode wildcard (honored in _is_allowed_user), not
+            # a username to resolve — requesting Members for it would silently
+            # fail bots that never enabled Members Intent in the Developer Portal.
             intents = Intents.default()
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
-            intents.members = (
-                # ``"*"`` is the open-mode wildcard (honored in _is_allowed_user),
-                # not a username to resolve, so it must not pull in the privileged
-                # Server Members intent — exactly the migrate-from-OpenClaw path
-                # the wildcard fix targets would otherwise silently fail to come
-                # online when Members Intent isn't enabled in the Developer Portal.
-                any(entry != "*" and not entry.isdigit() for entry in self._allowed_user_ids)
-                or bool(self._allowed_role_ids)  # Need members intent for role lookup
+            intents.members = _needs_server_members_intent(
+                self._allowed_user_ids,
+                self._allowed_role_ids,
             )
             intents.voice_states = True
 
@@ -1461,8 +1505,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._set_fatal_error(code, message, retryable=retryable)
             return False
 
-    @staticmethod
-    def _classify_connect_exception(error: Exception) -> tuple:
+    def _classify_connect_exception(self, error: Exception) -> tuple:
         """Map a Discord startup exception to ``(code, message, retryable)``.
 
         Type-based only — never match on message text. Unknown exception
@@ -1492,14 +1535,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 False,
             )
         if _is("PrivilegedIntentsRequired"):
-            return (
-                "discord_intents_required",
-                "Discord privileged intents are not enabled for this bot: "
-                f"{error}. Enable 'Message Content Intent' (and any other "
-                "required privileged intents) for this application in the "
-                "Discord Developer Portal → Bot → Privileged Gateway Intents.",
-                False,
+            # Name the exact intents Hermes requested (#79430): Message
+            # Content always; Server Members only when username/role
+            # allowlists actually need member lookups.
+            guidance = _format_privileged_intents_guidance(
+                needs_members=_needs_server_members_intent(
+                    getattr(self, "_allowed_user_ids", None),
+                    getattr(self, "_allowed_role_ids", None),
+                )
             )
+            return ("discord_intents_required", guidance, False)
         return ("discord_connect_error", f"Discord startup failed: {error}", True)
 
     def _discord_message_admission(
@@ -3358,6 +3403,29 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("Could not build reply-to reference: %s", e)
             return None
 
+    def _cap_split_chunks(self, chunks: List[str]) -> List[str]:
+        """Cap the number of chunks sent for one logical response (#86581).
+
+        A degenerate turn can produce tens of thousands of characters; the
+        #86581 incident delivered 60,698 chars as 31 back-to-back Discord
+        messages.  When ``chunks`` exceeds ``MAX_SPLIT_MESSAGES``, keep the
+        first ``N-1`` chunks and replace the rest with a short notice so the
+        user sees a clear signal instead of a flood.  The full response
+        remains available in the gateway session history / logs.
+        """
+        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
+            return chunks
+        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
+        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
+        notice = (
+            f"\n\n⚠️ **Response truncated** — this reply exceeded the "
+            f"delivery limit ({self.MAX_SPLIT_MESSAGES} messages). "
+            f"{dropped_chars} characters were not delivered; the full "
+            f"response is in the session logs."
+        )
+        kept.append(notice)
+        return kept
+
     async def send(
         self,
         chat_id: str,
@@ -3436,7 +3504,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self._cap_split_chunks(
+                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            )
 
             message_ids = []
             # Build the reference from ids — no fetch_message round trip.
@@ -3526,7 +3596,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self._cap_split_chunks(
+            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
 
         thread_name = _derive_forum_thread_name(content)
 
@@ -3793,7 +3865,9 @@ class DiscordAdapter(BasePlatformAdapter):
         returns ``success=False`` (a real adapter problem, not overflow).
         """
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self._cap_split_chunks(
+            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
         if len(chunks) <= 1:
             # Defensive: caller's pre-flight should guarantee >1 chunk, but if
             # not, just edit normally.
@@ -8490,7 +8564,7 @@ class DiscordAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
+            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -9220,12 +9294,12 @@ def _define_discord_view_classes() -> None:
 
         async def _expensive_warning_for(self, model_id: str):
             try:
-                from hermes_cli.model_cost_guard import expensive_model_warning
+                from hermes_cli.model_selection_guards import combined_selection_warning
 
                 # Pricing lookup can hit models.dev / a /models endpoint on a
                 # cache miss — keep it off the event loop.
                 return await asyncio.to_thread(
-                    expensive_model_warning,
+                    combined_selection_warning,
                     model_id,
                     provider=self._selected_provider,
                 )
@@ -9324,7 +9398,7 @@ def _define_discord_view_classes() -> None:
                 self._build_expensive_confirm(model_id)
                 await interaction.response.edit_message(
                     embed=discord.Embed(
-                        title="⚠ Expensive Model Warning",
+                        title=f"⚠ {warning.title}",
                         description=warning.message,
                         color=discord.Color.red(),
                     ),
@@ -10188,6 +10262,13 @@ def interactive_setup() -> None:
             return
 
     print_info("Create a bot at https://discord.com/developers/applications")
+    print_info("On Bot → Privileged Gateway Intents, enable:")
+    print_info("  - Message Content Intent (required — without it Discord rejects the connection)")
+    print_info("  - Server Members Intent (required if you use usernames or role allowlists)")
+    print_info("Save Changes in the Developer Portal before starting the gateway.")
+    print_info(
+        "Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord"
+    )
     token = prompt("Discord bot token", password=True)
     if not token:
         return

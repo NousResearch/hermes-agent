@@ -193,7 +193,12 @@ export function AutoField({
     <div className="grid gap-1.5">
       <Label className="text-sm">{label}</Label>
       <FieldHint schema={schema} schemaKey={schemaKey} />
-      <Input value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
+      <Input
+        type={schema.type === "secret" ? "password" : undefined}
+        autoComplete={schema.type === "secret" ? "new-password" : undefined}
+        value={String(value ?? "")}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   );
 }

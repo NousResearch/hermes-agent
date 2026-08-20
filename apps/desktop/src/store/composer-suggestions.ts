@@ -67,8 +67,31 @@ export const $composerSuggestionsBySession = atom<Record<string, ComposerSuggest
 
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
+// Everything the pill actually paints. Compared field-by-field rather than by
+// key alone: a provider rebuilds its suggestion objects on every sample, so
+// key equality is true constantly, and treating that as "no change" pins the
+// FIRST object forever — the strip then paints a stale tip and, worse, calls a
+// stale `invoke` closure. Comparing the rendered copy keeps the cheap bail-out
+// for the common case (same draft, same match) while letting a genuinely
+// changed offer through.
+const RENDERED: readonly (keyof ComposerSuggestion)[] = [
+  'brand',
+  'doneLabel',
+  'doneTip',
+  'icon',
+  'label',
+  'tip',
+  'workingLabel',
+  'workingTip'
+]
+
 const sameSuggestions = (a: readonly ComposerSuggestion[], b: readonly ComposerSuggestion[]) =>
-  a.length === b.length && a.every((x, i) => suggestionKey(x) === suggestionKey(b[i]!))
+  a.length === b.length &&
+  a.every((x, i) => {
+    const y = b[i]!
+
+    return suggestionKey(x) === suggestionKey(y) && RENDERED.every(field => x[field] === y[field])
+  })
 
 function write(sessionId: string | null | undefined, suggestions: ComposerSuggestion[]): void {
   const key = keyFor(sessionId)
@@ -123,7 +146,11 @@ const eventOfferings = new Map<string, Map<string, ComposerSuggestion[]>>()
 /** Offer suggestions from an event provider (session state, tool results,
  *  connection events…). Replaces that provider's previous offerings for the
  *  session; providers withdraw by offering []. */
-export function offerSuggestions(sessionId: string | null | undefined, provider: string, suggestions: ComposerSuggestion[]): void {
+export function offerSuggestions(
+  sessionId: string | null | undefined,
+  provider: string,
+  suggestions: ComposerSuggestion[]
+): void {
   const key = keyFor(sessionId)
   let providers = eventOfferings.get(key)
 
@@ -144,6 +171,50 @@ export function offerSuggestions(sessionId: string | null | undefined, provider:
 // Last draft-provider results per session, merged with event offerings.
 const draftOfferings = new Map<string, ComposerSuggestion[]>()
 
+// ---------------------------------------------------------------------------
+// Declined ledger (VS Code's hardest-won recommendation lesson: never keep
+// re-firing at someone who has seen the offer and not taken it)
+// ---------------------------------------------------------------------------
+
+// Times a suggestion key was WITHDRAWN without ever being invoked, per
+// session. A pill the user watched appear and let die N times is a declined
+// offer — stop making it for the rest of the session. Session-scoped and
+// in-memory on purpose: a fresh session is a fresh chance, and acting on a
+// pill clears its count.
+const IGNORED_LIMIT = 3
+const ignoredCounts = new Map<string, Map<string, number>>()
+const shown = new Map<string, Set<string>>()
+
+/** The pill strip marks a suggestion invoked so its withdrawal isn't
+ *  miscounted as the user ignoring it. */
+export function markSuggestionInvoked(sessionId: string | null | undefined, key: string): void {
+  ignoredCounts.get(keyFor(sessionId))?.delete(key)
+  shown.get(keyFor(sessionId))?.delete(key)
+}
+
+const quieted = (sessionKey: string, key: string): boolean =>
+  (ignoredCounts.get(sessionKey)?.get(key) ?? 0) >= IGNORED_LIMIT
+
+// Suggestions visible in the last publish that vanish uninvoked get a strike.
+function recordWithdrawals(sessionKey: string, next: readonly ComposerSuggestion[]): void {
+  const previous = shown.get(sessionKey)
+
+  if (previous) {
+    const surviving = new Set(next.map(suggestionKey))
+
+    for (const key of previous) {
+      if (!surviving.has(key)) {
+        const counts = ignoredCounts.get(sessionKey) ?? new Map<string, number>()
+
+        counts.set(key, (counts.get(key) ?? 0) + 1)
+        ignoredCounts.set(sessionKey, counts)
+      }
+    }
+  }
+
+  shown.set(sessionKey, new Set(next.map(suggestionKey)))
+}
+
 /** Event offerings first (they carry session/tool state, stronger signal
  *  than draft keywords), then draft matches, capped. */
 function publish(sessionId: string | null): void {
@@ -156,7 +227,7 @@ function publish(sessionId: string | null): void {
   for (const suggestion of [...event, ...draft]) {
     const k = suggestionKey(suggestion)
 
-    if (!seen.has(k)) {
+    if (!seen.has(k) && !quieted(key, k)) {
       seen.add(k)
       merged.push(suggestion)
     }
@@ -166,6 +237,7 @@ function publish(sessionId: string | null): void {
     }
   }
 
+  recordWithdrawals(key, merged)
   write(sessionId, merged)
 }
 

@@ -11,6 +11,7 @@ handler are thin wrappers that parse args and delegate.
 """
 
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -94,6 +95,41 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     return ""
 
 
+def _print_tier1_advisory(skill_dir, console) -> None:
+    """Print the advisory SkillEvaluator Tier 1 report, if available.
+
+    Never raises and never blocks the install: scanner missing, disabled
+    via ``skills.tier1_advisory: false``, or erroring all degrade to
+    silence. Secrets-class findings render red, the rest yellow.
+    """
+    try:
+        from tools.skillevaluator_scan import (
+            format_tier1_report, run_tier1_scan, tier1_advisory_enabled,
+        )
+        if not tier1_advisory_enabled():
+            return
+        report = run_tier1_scan(Path(skill_dir))
+        if not report.available:
+            return
+        text = format_tier1_report(report)
+        if not report.findings:
+            console.print(f"[dim]{text}[/]")
+            return
+        style = "red" if report.secrets_findings else "yellow"
+        console.print(Panel(
+            text,
+            title="SkillEvaluator Tier 1 (advisory)",
+            border_style=style,
+        ))
+        if report.secrets_findings:
+            console.print(
+                "[bold red]Possible credentials detected above.[/] "
+                "Review the flagged lines before using this skill.\n"
+            )
+    except Exception as exc:  # advisory only — never break an install
+        logging.getLogger(__name__).debug("Tier 1 advisory scan skipped: %s", exc)
+
+
 def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
     lines: list[str] = []
     if not extra:
@@ -123,33 +159,39 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
 
 
 def _resolve_source_meta_and_bundle(identifier: str, sources):
-    """Resolve metadata and bundle for a specific identifier."""
-    meta = None
-    bundle = None
-    matched_source = None
+    """Resolve metadata and bundle from a single source adapter.
+
+    Meta and bundle must come from the same adapter. Keeping catalog
+    metadata from skills.sh while taking a ClawHub zip of a same-named
+    skill is how ``hermes skills inspect owner/repo/skills/foo`` showed
+    the requested identifier and the wrong SKILL.md.
+    """
+    first_meta = None
+    first_meta_source = None
 
     for src in sources:
-        if meta is None:
-            try:
-                meta = src.inspect(identifier)
-                if meta:
-                    matched_source = src
-            except Exception:
-                meta = None
+        meta = None
+        bundle = None
+        try:
+            meta = src.inspect(identifier)
+        except Exception:
+            meta = None
         try:
             bundle = src.fetch(identifier)
         except Exception:
             bundle = None
         if bundle:
-            matched_source = src
             if meta is None:
                 try:
                     meta = src.inspect(identifier)
                 except Exception:
                     meta = None
-            break
+            return meta, bundle, src
+        if first_meta is None and meta:
+            first_meta = meta
+            first_meta_source = src
 
-    return meta, bundle, matched_source
+    return first_meta, None, first_meta_source
 
 
 def _derive_category_from_install_path(install_path: str) -> str:
@@ -210,8 +252,10 @@ def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[
         f"[bold]Enter a skill name{default_hint}:[/] "
         f"[dim](lowercase letters, digits, hyphens, underscores; starts with a letter)[/]"
     )
+    from hermes_cli.cli_output import line_input
+
     try:
-        answer = input("Name: ").strip()
+        answer = line_input("Name: ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
     if not answer and default:
@@ -235,8 +279,10 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
         c.print(
             "[bold]Category[/] [dim](optional — press Enter to install flat at ~/.hermes/skills/<name>/)[/]"
         )
+    from hermes_cli.cli_output import line_input
+
     try:
-        answer = input("Category: ").strip()
+        answer = line_input("Category: ").strip()
     except (EOFError, KeyboardInterrupt):
         return ""
     if not answer:
@@ -688,6 +734,12 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          f"{len(result.findings)}_findings")
         return
 
+    # Advisory SkillEvaluator Tier 1 scan (optional second opinion).
+    # Warn-and-continue by design: PII-class findings are informational
+    # (known false-positive classes upstream), and the existing install
+    # confirmation below is where the user decides. Never blocks.
+    _print_tier1_advisory(q_path, c)
+
     if extra_metadata:
         metadata_lines = _format_extra_metadata_lines(extra_metadata)
         if metadata_lines:
@@ -737,7 +789,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          bundle.trust_level, "invalid_path", str(exc))
         return
     from tools.skills_hub import SKILLS_DIR
-    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
+    c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
     # Blueprint detection: if the installed skill declares a
@@ -1052,9 +1104,21 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
     c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
 
 
-def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Update hub-installed skills with upstream changes."""
-    from tools.skills_hub import HubLockFile, check_for_skill_updates
+def do_update(name: Optional[str] = None, console: Optional[Console] = None,
+              force: bool = False) -> None:
+    """Update hub-installed skills with upstream changes.
+
+    Skills whose on-disk content no longer matches the hash recorded at
+    install time have been edited locally; updating them would silently
+    destroy the user's work (``do_install(force=True)`` rmtree-replaces the
+    directory). Those are skipped by default and only overwritten when
+    ``force=True``. Mirrors the user-modified protection bundled skills
+    already get from ``hermes update`` (ported from
+    paperclipai/paperclip#10978's explicit-merge-mode rule: destructive
+    replacement must be an explicit caller choice, never a rerun default).
+    """
+    from tools.skills_hub import SKILLS_DIR, HubLockFile, check_for_skill_updates
+    from tools.skills_guard import content_hash
 
     c = console or _console
     lock = HubLockFile()
@@ -1063,9 +1127,25 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
         c.print("[dim]No updates available.[/]\n")
         return
 
+    skipped_local: list[str] = []
     for entry in updates:
         installed = lock.get_installed(entry["name"])
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
+        if installed and not force:
+            recorded_hash = installed.get("content_hash", "")
+            skill_path = SKILLS_DIR / installed.get("install_path", "")
+            if recorded_hash and skill_path.is_dir():
+                try:
+                    disk_hash = content_hash(skill_path)
+                except OSError:
+                    disk_hash = recorded_hash
+                if disk_hash != recorded_hash:
+                    skipped_local.append(entry["name"])
+                    c.print(
+                        f"[yellow]Skipping:[/] {entry['name']} — you have local edits "
+                        "(update would overwrite them)."
+                    )
+                    continue
         c.print(f"[bold]Updating:[/] {entry['name']}")
         # Pin the update to the source registry recorded in the lockfile.
         # Without this, a bare (slash-less) identifier such as "reddit" falls
@@ -1082,7 +1162,15 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
             source_id=entry.get("source", "") or None,
         )
 
-    c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
+    updated_count = len(updates) - len(skipped_local)
+    if updated_count:
+        c.print(f"[bold green]Updated {updated_count} skill(s).[/]\n")
+    if skipped_local:
+        c.print(
+            f"[dim]{len(skipped_local)} skill(s) kept your local edits: "
+            f"{', '.join(sorted(skipped_local))}.[/]"
+        )
+        c.print("[dim]Overwrite with: hermes skills update <name> --force[/]\n")
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
@@ -1745,12 +1833,13 @@ def skills_command(args) -> None:
     elif action == "check":
         do_check(name=getattr(args, "name", None))
     elif action == "update":
-        do_update(name=getattr(args, "name", None))
+        do_update(name=getattr(args, "name", None),
+                  force=getattr(args, "force", False))
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
     elif action == "uninstall":
-        do_uninstall(args.name)
+        do_uninstall(args.name, skip_confirm=getattr(args, "yes", False))
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
@@ -1929,8 +2018,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_check(name=name, console=c)
 
     elif action == "update":
-        name = args[0] if args else None
-        do_update(name=name, console=c)
+        force = "--force" in args
+        pos = [a for a in args if not a.startswith("--")]
+        name = pos[0] if pos else None
+        do_update(name=name, console=c, force=force)
 
     elif action == "audit":
         name = args[0] if args and not args[0].startswith("--") else None

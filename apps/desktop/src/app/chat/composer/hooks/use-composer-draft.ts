@@ -1,6 +1,10 @@
 // Register the built-in draft providers with the suggestion bus (side-effect
-// import — the bus itself is provider-agnostic).
+// import — the bus itself is provider-agnostic). The repair provider is
+// event-driven and registers through the gateway stream instead.
+import '@/store/suggestion-providers/cron'
+import '@/store/suggestion-providers/github'
 import '@/store/suggestion-providers/mcp'
+import '@/store/suggestion-providers/skill'
 
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -159,6 +163,16 @@ export function useComposerDraft({
         return
       }
 
+      // 'prefix' puts the value at the START of the draft — slash commands
+      // (the skill-suggestion pill) only route when they lead the message.
+      if (mode === 'prefix') {
+        const rest = draftRef.current.trimStart()
+
+        paintDraft(`${value} ${rest}`.trimEnd())
+
+        return
+      }
+
       const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
       const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
 
@@ -242,7 +256,8 @@ export function useComposerDraft({
     draftRef.current = ''
 
     if (editorRef.current) {
-      editorRef.current.replaceChildren()
+      renderComposerContents(editorRef.current, '')
+      placeCaretEnd(editorRef.current)
     }
   }, [setComposerText])
 

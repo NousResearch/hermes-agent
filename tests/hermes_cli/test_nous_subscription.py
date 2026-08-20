@@ -1,5 +1,8 @@
 """Tests for Nous subscription feature detection."""
 
+import shutil
+import sys
+
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
 
@@ -147,9 +150,8 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
 
 
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
-    """apply_nous_managed_defaults must write video_gen.provider and
-    video_gen.use_gateway when a Nous subscriber selects video_gen
-    without a direct FAL_KEY."""
+    """apply_nous_managed_defaults must store the managed 'nous' selection
+    when a Nous subscriber selects video_gen without a direct FAL_KEY."""
     monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
     monkeypatch.delenv("FAL_KEY", raising=False)
     monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
@@ -164,8 +166,8 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
     )
 
     assert "video_gen" in changed
-    assert config["video_gen"]["provider"] == "fal"
-    assert config["video_gen"]["use_gateway"] is True
+    assert config["video_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["video_gen"]
 
 
 # ---------------------------------------------------------------------------
@@ -207,19 +209,118 @@ def _stt_features_stub(*, account_info):
 
 
 
-def test_has_agent_browser_resolves_via_hermes_managed_node_path(monkeypatch, tmp_path):
-    """The managed-Node rung: a runnable agent-browser under the Hermes Node
-    dir must count even when it's absent from the probe process's PATH (the
-    Windows installer shape — install succeeded, GUI still said needs setup)."""
-    import shutil as _shutil
+def _block_legacy_agent_browser_checks(monkeypatch):
+    """Make the legacy checks (PATH lookup + local node_modules/.bin) find nothing."""
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *args, **kwargs: (
+            None if cmd == "agent-browser" else real_which(cmd, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr("hermes_constants.agent_browser_runnable", lambda path: False)
 
+
+def test_has_agent_browser_true_for_npx_only_resolution(monkeypatch):
+    """No PATH binary and no runnable node_modules copy, but the browser_tool
+    cascade resolves the npx fallback: browser capability is available."""
+    _block_legacy_agent_browser_checks(monkeypatch)
+    import tools.browser_tool as browser_tool
+
+    calls = []
+
+    def fake_find_agent_browser(*, validate=True):
+        calls.append({"validate": validate})
+        return "npx agent-browser"
+
+    monkeypatch.setattr(browser_tool, "_find_agent_browser", fake_find_agent_browser)
+    monkeypatch.setattr(
+        browser_tool, "_requires_real_termux_browser_install", lambda cmd: False
+    )
+
+    assert ns._has_agent_browser() is True
+    # A readiness probe must resolve without spawning the daemon.
+    assert calls and all(call["validate"] is False for call in calls)
+
+
+def test_has_agent_browser_false_for_termux_local_bare_npx(monkeypatch):
+    """On Termux in local mode the bare npx fallback is not a usable install."""
+    _block_legacy_agent_browser_checks(monkeypatch)
+    import tools.browser_tool as browser_tool
+
+    monkeypatch.setattr(
+        browser_tool,
+        "_find_agent_browser",
+        lambda *, validate=True: "npx agent-browser",
+    )
+    monkeypatch.setattr(
+        browser_tool,
+        "_requires_real_termux_browser_install",
+        lambda cmd: cmd.strip() == "npx agent-browser",
+    )
+
+    assert ns._has_agent_browser() is False
+
+
+def test_has_agent_browser_false_when_nothing_resolvable(monkeypatch):
+    _block_legacy_agent_browser_checks(monkeypatch)
+    import tools.browser_tool as browser_tool
+
+    def raise_not_found(*, validate=True):
+        raise FileNotFoundError("agent-browser CLI not found")
+
+    monkeypatch.setattr(browser_tool, "_find_agent_browser", raise_not_found)
+
+    assert ns._has_agent_browser() is False
+
+
+def test_has_agent_browser_import_failure_falls_back_to_path_check(monkeypatch):
+    """If tools.browser_tool cannot be imported, the old PATH + node_modules
+    check must still answer (prior behaviour), not crash."""
+    monkeypatch.setitem(sys.modules, "tools.browser_tool", None)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *args, **kwargs: (
+            "/fake/bin/agent-browser"
+            if cmd == "agent-browser"
+            else real_which(cmd, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_constants.agent_browser_runnable",
+        lambda path: path == "/fake/bin/agent-browser",
+    )
+
+    assert ns._has_agent_browser() is True
+
+
+def test_has_agent_browser_import_failure_falls_back_to_hermes_managed_node_path(
+    monkeypatch, tmp_path
+):
+    """If tools.browser_tool cannot be imported, the managed-Node rung must
+    still find a runnable agent-browser under the Hermes Node dir even when
+    it's absent from the probe process's PATH — the Windows installer shape
+    where install succeeded but the GUI still said needs setup."""
+    monkeypatch.setitem(sys.modules, "tools.browser_tool", None)
     managed_dir = tmp_path / "node"
     managed_dir.mkdir()
     managed_bin = managed_dir / "agent-browser"
     managed_bin.write_text("#!/bin/sh\nexit 0\n")
     managed_bin.chmod(0o755)
 
-    monkeypatch.setattr(_shutil, "which", lambda cmd, path=None: str(managed_bin) if path else None)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *args, **kwargs: (
+            None
+            if cmd == "agent-browser" and not kwargs.get("path")
+            else real_which(cmd, *args, **kwargs)
+        ),
+    )
     monkeypatch.setattr(
         "hermes_constants.with_hermes_node_path", lambda: {"PATH": str(managed_dir)}
     )
@@ -231,3 +332,8 @@ def test_has_agent_browser_resolves_via_hermes_managed_node_path(monkeypatch, tm
     assert ns._has_agent_browser() is True
 
 
+def test_has_agent_browser_import_failure_and_no_binary_is_false(monkeypatch):
+    monkeypatch.setitem(sys.modules, "tools.browser_tool", None)
+    _block_legacy_agent_browser_checks(monkeypatch)
+
+    assert ns._has_agent_browser() is False

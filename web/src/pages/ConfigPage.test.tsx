@@ -141,6 +141,48 @@ describe("ConfigPage profile scope", () => {
     expect(apiMocks.getSchema).toHaveBeenCalledTimes(2);
     expect(apiMocks.getDefaults).toHaveBeenCalledTimes(2);
     expect(apiMocks.getConfigRaw).toHaveBeenCalledTimes(2);
+    expect(apiMocks.getSchema).toHaveBeenNthCalledWith(1, "one");
+    expect(apiMocks.getSchema).toHaveBeenNthCalledWith(2, "two");
+  });
+
+  it("shows only the selected backend fields and masks secret values", async () => {
+    apiMocks.getConfig.mockResolvedValue({
+      terminal: {
+        backend: "plugin_a",
+        backends: {
+          plugin_a: { token: "a-secret" },
+          plugin_b: { token: "b-secret" },
+        },
+      },
+    });
+    apiMocks.getSchema.mockResolvedValue({
+      fields: {
+        "terminal.backend": {
+          type: "select",
+          category: "terminal",
+          options: ["plugin_a", "plugin_b"],
+        },
+        "terminal.backends.plugin_a.token": {
+          type: "secret",
+          category: "terminal",
+          terminal_backend: "plugin_a",
+        },
+        "terminal.backends.plugin_b.token": {
+          type: "secret",
+          category: "terminal",
+          terminal_backend: "plugin_b",
+        },
+      },
+      category_order: ["terminal"],
+    });
+    apiMocks.getDefaults.mockResolvedValue({});
+    apiMocks.getConfigRaw.mockResolvedValue({ yaml: "", path: "" });
+    apiMocks.getStatus.mockResolvedValue(statusResult(""));
+
+    await act(async () => root.render(<ConfigPage />));
+
+    expect(container.querySelector('input[type="password"][value="a-secret"]')).not.toBeNull();
+    expect(container.querySelector('input[value="b-secret"]')).toBeNull();
   });
 
   it("disables YAML saving until the switched profile raw config loads", async () => {

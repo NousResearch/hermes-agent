@@ -7,6 +7,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import tools.self_repo_guard as self_repo_guard
+from tools.environments.definitions import (
+    BackendCapabilities,
+    ExecutionLocation,
+    FilesystemSemantics,
+)
+from tools.environments.registry import terminal_backend_registry
 
 
 def _make_env_config(**overrides):
@@ -32,10 +38,12 @@ def repo(tmp_path):
     return root.resolve()
 
 
-def _run(command, config, monkeypatch, repo_root, session_cwds=None, **kwargs):
+def _run(command, config, monkeypatch, repo_root, session_cwds=None,
+         guard_on=True, **kwargs):
     from tools.terminal_tool import terminal_tool
 
     monkeypatch.setattr(self_repo_guard, "get_running_source_root", lambda: repo_root)
+    monkeypatch.setattr(self_repo_guard, "guard_active", lambda: guard_on)
     mock_env = MagicMock()
     mock_env.execute.return_value = {"output": "ok", "returncode": 0}
     mock_env.cwd = config["cwd"]
@@ -78,6 +86,24 @@ class TestSelfRepoGuardWiring:
         assert result["status"] == "blocked"
         env.execute.assert_not_called()
 
+    def test_plugin_host_backend_cannot_bypass(self, repo, monkeypatch):
+        definition = MagicMock()
+        definition.capabilities = BackendCapabilities(
+            execution_location=ExecutionLocation.LOCAL,
+            filesystem_semantics=FilesystemSemantics.HOST,
+        )
+        monkeypatch.setattr(
+            terminal_backend_registry,
+            "get",
+            lambda name: definition if name == "host_plugin" else None,
+        )
+        config = _make_env_config(env_type="host_plugin", cwd=str(repo))
+
+        result, env = _run("git checkout main", config, monkeypatch, repo)
+
+        assert result["status"] == "blocked"
+        env.execute.assert_not_called()
+
     def test_workdir_targeting_repo_is_blocked(self, repo, monkeypatch, tmp_path):
         config = _make_env_config(cwd=str(tmp_path))
         result, env = _run("git pull", config, monkeypatch, repo, workdir=str(repo))
@@ -116,3 +142,19 @@ class TestSelfRepoGuardWiring:
         result, env = _run("git checkout main", config, monkeypatch, None)
         assert result.get("status") != "blocked"
         env.execute.assert_called_once()
+
+    def test_guard_inactive_passes_through(self, repo, monkeypatch):
+        """POSIX (guard_active() False): mutations in the source repo run."""
+        config = _make_env_config(cwd=str(repo))
+        result, env = _run(
+            "git reset --hard origin/main", config, monkeypatch, repo,
+            guard_on=False,
+        )
+        assert result.get("status") != "blocked"
+        env.execute.assert_called_once()
+
+    def test_guard_active_matches_platform(self):
+        """guard_active() is True exactly on Windows."""
+        import os
+
+        assert self_repo_guard.guard_active() == (os.name == "nt")

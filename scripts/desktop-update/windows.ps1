@@ -83,6 +83,8 @@ $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
 $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
 $script:Ui = $null
+$script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
+$script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
@@ -93,15 +95,16 @@ function Write-HandoffLog([string]$Message) {
 # ── The shim: repo-owned HTML in a chromeless Edge app window ──────────────
 # The window is a veneer, not a participant: the update runs identically with
 # or without it (Edge missing/failed degrades to the WinForms card below,
-# then log-only). It streams nothing and knows nothing — it polls /progress
-# for one of two events, `done` or `error`, and reacts. The loopback listener
+# then log-only). It never consumes child output; it polls /progress for the
+# current hand-off stage or a terminal event and reacts. The loopback listener
 # is not a web server in any meaningful sense; it exists because file:// pages
 # cannot receive events from a detached process. Salvaged from the web-shell
 # spike (Co-authored-by: teknium1), reshaped to the quiet update-surface
 # contract (#75895/#83634): loader, one title, one line, no dashboard.
 $script:UiState = [hashtable]::Synchronized(@{
-    status  = "running"      # running | done | error
-    message = ""
+    status     = "running"      # running | done | manual | error
+    message    = $script:UiStage
+    clock      = $script:UiStopwatch
 })
 $script:UiServer = $null     # @{ Listener; Runspace; PowerShell; Port; EdgeProc }
 
@@ -158,9 +161,11 @@ function Start-UiServer([string]$HtmlPath) {
                     # Drain headers so the client doesn't see a reset mid-send.
                     while ($true) { $h = $reader.ReadLine(); if ($null -eq $h -or $h -eq "") { break } }
                     if ($request -match "^GET /progress") {
+                        $elapsed = [Math]::Floor($State.clock.Elapsed.TotalSeconds)
                         $snapshot = @{
-                            status  = $State.status
-                            message = $State.message
+                            status          = $State.status
+                            message         = $State.message
+                            elapsed_seconds = $elapsed
                         } | ConvertTo-Json -Compress
                         Send-Response $stream "200 OK" "application/json; charset=utf-8" ([System.Text.Encoding]::UTF8.GetBytes($snapshot))
                     } elseif ($request -match "^GET / ") {
@@ -210,9 +215,36 @@ function Publish-UiEvent([string]$Status, [string]$Message) {
     if ($script:UiServer) { Start-Sleep -Milliseconds 900 }
 }
 
+function Get-UiElapsedText {
+    $elapsed = [Math]::Floor($script:UiStopwatch.Elapsed.TotalSeconds)
+    if ($elapsed -lt 60) { return "${elapsed}s elapsed" }
+    $minutes = [Math]::Floor($elapsed / 60)
+    $seconds = $elapsed % 60
+    return "${minutes}m ${seconds}s elapsed"
+}
+
+function Get-UiProgressLine {
+    return "$script:UiStage`r`n$(Get-UiElapsedText)"
+}
+
+function Publish-UiProgress([string]$Message) {
+    # Stages come from the orchestrator's own control flow. Child stdout and
+    # stderr remain asynchronously drained in Invoke-HermesStep and are never
+    # read or parsed for UI updates.
+    $script:UiStage = $Message
+    $script:UiState.message = $Message
+    $script:UiState.status = "running"
+    if ($script:Ui) {
+        try {
+            $script:Ui.Sub.Text = Get-UiProgressLine
+            [System.Windows.Forms.Application]::DoEvents()
+        } catch {}
+    }
+}
+
 # ── Fallback card (no Edge / no HTML): same shape in WinForms ──────────────
-# Matches the shim pixel-for-pixel in spirit -- loader, one title, one static
-# line, OS light/dark -- so degrading is invisible to the user.
+# Matches the shim pixel-for-pixel in spirit -- loader, one title, one live
+# stage/elapsed line, OS light/dark -- so degrading is invisible to the user.
 function Get-AppsUseLightTheme {
     try {
         $v = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name AppsUseLightTheme -ErrorAction Stop
@@ -291,7 +323,7 @@ function Show-ProgressWindow {
         $title.TextAlign = "MiddleCenter"
         $title.SetBounds(16, 156, 248, 28)
         $sub = New-Object System.Windows.Forms.Label
-        $sub.Text = "Hermes will open once done."
+        $sub.Text = Get-UiProgressLine
         $sub.Font = New-Object System.Drawing.Font("Segoe UI", 9)
         $sub.ForeColor = $mute
         $sub.TextAlign = "TopCenter"
@@ -309,7 +341,16 @@ function Show-ProgressWindow {
             if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
         } catch {}
         [System.Windows.Forms.Application]::DoEvents()
-        $script:Ui = [pscustomobject]@{ Form = $form; Bar = $bar; Title = $title; Sub = $sub }
+        $script:Ui = [pscustomobject]@{ Form = $form; Bar = $bar; Title = $title; Sub = $sub; Timer = $null }
+        $timer = New-Object System.Windows.Forms.Timer
+        $timer.Interval = 1000
+        $timer.Add_Tick({
+            if ($script:Ui -and $script:Ui.Sub) {
+                $script:Ui.Sub.Text = Get-UiProgressLine
+            }
+        })
+        $script:Ui.Timer = $timer
+        $timer.Start()
     } catch {
         # Headless session / WinForms unavailable: degrade to log-only.
         $script:Ui = $null
@@ -331,6 +372,7 @@ function Show-ErrorFinale([string]$Message) {
     if (-not $script:Ui) { return }
     try {
         $ui = $script:Ui
+        if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
         $ui.Title.Text = "Failed to update"
         $ui.Sub.Text = "Run `"hermes debug share`" in a terminal to send a report."
@@ -372,6 +414,7 @@ function Show-ManualFinale([string]$Message) {
     if (-not $script:Ui) { return }
     try {
         $ui = $script:Ui
+        if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
         $ui.Title.Text = "Update complete"
         $ui.Sub.Text = $Message
@@ -404,7 +447,13 @@ function Close-ProgressWindow {
         Stop-UiServer
     }
     if ($script:Ui) {
-        try { $script:Ui.Form.Close() } catch {}
+        try {
+            if ($script:Ui.Timer) {
+                $script:Ui.Timer.Stop()
+                $script:Ui.Timer.Dispose()
+            }
+            $script:Ui.Form.Close()
+        } catch {}
         $script:Ui = $null
     }
 }
@@ -421,7 +470,7 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
             manual     = $ManualAction
             message    = $Message
             branch     = $Branch
-            finished_at = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
+            finished_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         } | ConvertTo-Json -Compress
         [System.IO.File]::WriteAllText($ResultPath, $obj)
     } catch {}
@@ -447,7 +496,19 @@ function Start-DesktopRelaunch {
     # the pid exists, or the fallback spawn returned a live process). The
     # finally block downgrades the on-screen/on-disk outcome when it didn't
     # — the sibling truth contract to posix.sh's launch acceptance.
-    if (-not ($RelaunchExe -and (Test-Path -LiteralPath $RelaunchExe))) { return $false }
+    if (-not $RelaunchExe) { return $false }
+    # electron-builder replaces win-unpacked in place. After a successful
+    # update it can remove the old Hermes.exe before writing the replacement,
+    # so a one-shot existence check races the rebuild and strands the user.
+    $relaunchDeadline = (Get-Date).AddSeconds(120)
+    while (-not (Test-Path -LiteralPath $RelaunchExe)) {
+        if ((Get-Date) -ge $relaunchDeadline) {
+            Write-HandoffLog "WARNING: desktop relaunch executable did not reappear within 120s: $RelaunchExe"
+            return $false
+        }
+        Start-Sleep -Milliseconds 500
+        if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+    }
     Write-HandoffLog "relaunching desktop: $RelaunchExe"
     # DO NOT spawn Hermes.exe as our child: Electron/Chromium calls
     # AttachConsole(ATTACH_PARENT_PROCESS) at boot, so a Desktop launched
@@ -523,8 +584,8 @@ function Start-DesktopRelaunch {
 }
 
 function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
-    # The window shows nothing live, so no line-pump: both pipes drain
-    # asynchronously (no deadlock however chatty the child) while a small
+    # The window does not stream child output, so no line-pump: both pipes
+    # drain asynchronously (no deadlock however chatty the child) while a small
     # DoEvents loop keeps the marquee animating through long silent
     # stretches (pip installs) -- the old EndOfStream pump blocked on quiet
     # children and froze it. Full output still lands in the hand-off log
@@ -594,6 +655,7 @@ if ($SelfTestUi) {
     Write-HandoffLog "SELF-TEST: shim simulation (no update will run)"
     $hold = 6
     if ($env:HERMES_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:HERMES_SELFTEST_HOLD_SECONDS }
+    Publish-UiProgress "Testing quiet update"
     Start-Sleep -Seconds $hold
     if ($env:HERMES_SELFTEST_FAIL) {
         Show-ErrorFinale "self-test error state"
@@ -611,7 +673,7 @@ try {
 
     # -- 0. Claim the update marker with OUR pid ---------------------------
     try {
-        $epoch = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
+        $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
         # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
         [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$epoch`n")
@@ -621,6 +683,7 @@ try {
     }
 
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
+    Publish-UiProgress "Waiting for Hermes to close"
     if ($DesktopPid -gt 0) {
         $deadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $deadline) {
@@ -641,6 +704,7 @@ try {
     }
 
     # -- 2. Wait for the venv shim to unlock (FAIL CLOSED) ------------------
+    Publish-UiProgress "Preparing Hermes files"
     $shim = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
     if (Test-Path -LiteralPath $shim) {
         $unlocked = $false
@@ -672,23 +736,57 @@ try {
     # is unlocked; the venv-python holder guard (orphan reap included) stays
     # active. Our marker claim is adopted by the child via update_lock.py's
     # process-ancestry rule.
-    $hermesExe = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
-    if (-not (Test-Path -LiteralPath $hermesExe)) {
+    #
+    # DRIVE THE UPDATE THROUGH venv\Scripts\python.exe, NOT venv\Scripts\hermes.exe.
+    # `uv pip install -e .` has to replace the console-script shims, so
+    # _quarantine_running_hermes_exe must first rename the running hermes.exe
+    # out of the way. On Windows that rename fails whenever ANY child process
+    # spawned from that hermes.exe is still alive: a child inherits a handle on
+    # the parent image, and the resulting sharing violation is indistinguishable
+    # from a user leaving a second Hermes window open. It is the inherited
+    # handle, not the trampoline itself, that pins the file -- killing the child
+    # makes the same rename succeed immediately, and the shim flavour (uv
+    # trampoline vs distlib launcher) makes no difference.
+    #
+    # The updater reliably spawns such children itself (npx cache warm, memory
+    # provider refresh -- hindsight-api runs as a daemon with --idle-timeout
+    # 300 and outlives the step that started it), so this is a race, not a
+    # deterministic failure: the same hand-off succeeds on one run and dies on
+    # the next. Step 2's preflight cannot catch it, because the shim genuinely
+    # IS unlocked at that moment.
+    #
+    # When the rename loses that race there is no recovery: `uv pip install -e .`
+    # exits 2 and the ZIP fallback repeats the identical sequence, so the desktop
+    # build stage is never reached and apps/desktop/release is left missing -- an
+    # install whose Start Menu shortcut points at a Hermes.exe that no longer
+    # exists. (A reboot-deferred rename was the old last resort here; it needed
+    # elevation a Desktop-driven update does not have, and freed nothing for the
+    # install already in flight.)
+    #
+    # Running the same code as `python.exe -m hermes_cli.main update` puts the
+    # inherited handles on python.exe, which uv never has to replace.
+    #
+    # posix.sh is deliberately left alone: unlinking a running executable is
+    # legal there, so the equivalent call is harmless.
+    $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $pythonExe)) {
         $finalCode = 3
-        $finalMsg = "Update aborted: $hermesExe is missing. The install needs repair (run the Hermes installer or `hermes doctor`)."
+        $finalMsg = "Update aborted: $pythonExe is missing. The install needs repair (run the Hermes installer or `hermes doctor`)."
         Write-HandoffLog $finalMsg
         exit $finalCode
     }
-    $updateArgs = @("update", "--yes", "--gateway", "--force", "--branch", $Branch)
-    Write-HandoffLog ("running: hermes " + ($updateArgs -join " "))
-    $res = Invoke-HermesStep $hermesExe $updateArgs "update"
+    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    Write-HandoffLog ("running: python " + ($updateArgs -join " "))
+    Publish-UiProgress "Updating code and dependencies"
+    $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
     if ($res.Code -ne 0 -and $res.Code -ne 2) {
         # One retry for the update-boundary class (fresh code on disk, stale
         # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
         Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
-        $res = Invoke-HermesStep $hermesExe $updateArgs "update"
+        Publish-UiProgress "Retrying update"
+        $res = Invoke-HermesStep $pythonExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
     }
 
@@ -700,7 +798,8 @@ try {
     $desktopBuildFailed = $false
     if ($res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
         Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
-        $rebuild = Invoke-HermesStep $hermesExe @("desktop", "--force-build", "--build-only") "rebuild"
+        Publish-UiProgress "Rebuilding Desktop"
+        $rebuild = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "desktop", "--force-build", "--build-only") "rebuild"
         Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
         if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
     }
@@ -731,6 +830,7 @@ try {
         Close-ProgressWindow
         [void](Start-DesktopRelaunch)
     } else {
+        Publish-UiProgress "Opening Hermes"
         $cameBack = Start-DesktopRelaunch
         if (-not $cameBack -and $RelaunchExe) {
             # Launch was due and did not verifiably land: truthful result

@@ -39,13 +39,18 @@ def adapter():
 
 
 class _SpyProvider:
-    """Records fire_due calls; stands in for the resolved provider."""
+    """Records durable admission and claimed dispatch calls."""
 
     def __init__(self):
+        self.claimed = []
         self.fired = []
 
-    def fire_due(self, job_id, *, adapters=None, loop=None):
-        self.fired.append(job_id)
+    def claim_fire(self, job_id):
+        self.claimed.append(job_id)
+        return {"id": job_id, "execution_id": f"exec-{job_id}"}
+
+    def fire_claimed(self, job, *, adapters=None, loop=None):
+        self.fired.append(job["id"])
         return True
 
 
@@ -58,7 +63,10 @@ async def test_valid_fire_reservation_blocks_drain_before_body_and_task(adapter,
     release_fire = threading.Event()
 
     class BlockingProvider:
-        def fire_due(self, job_id, *, adapters=None, loop=None):
+        def claim_fire(self, job_id):
+            return {"id": job_id, "execution_id": "exec-1"}
+
+        def fire_claimed(self, job, *, adapters=None, loop=None):
             fired.set()
             release_fire.wait(timeout=2)
             return True
@@ -102,6 +110,78 @@ async def test_valid_fire_reservation_blocks_drain_before_body_and_task(adapter,
                 await asyncio.sleep(0.01)
 
     assert adapter.active_agent_work_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_admission_failure_is_retryable_and_never_dispatches(adapter, monkeypatch):
+    class FailingProvider(_SpyProvider):
+        def claim_fire(self, job_id):
+            raise OSError("ledger unavailable")
+
+    provider = FailingProvider()
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer good"},
+            json={"job_id": "abc123"},
+        )
+
+    assert response.status == 503
+    assert provider.fired == []
+    assert adapter.active_agent_work_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_accepted_response_waits_for_durable_admission(adapter, monkeypatch):
+    claim_started = threading.Event()
+    release_claim = threading.Event()
+
+    class BlockingAdmissionProvider(_SpyProvider):
+        def claim_fire(self, job_id):
+            claim_started.set()
+            release_claim.wait(timeout=2)
+            return super().claim_fire(job_id)
+
+    provider = BlockingAdmissionProvider()
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        request_task = asyncio.create_task(
+            cli.post(
+                "/api/cron/fire",
+                headers={"Authorization": "Bearer good"},
+                json={"job_id": "abc123"},
+            )
+        )
+        assert await asyncio.to_thread(claim_started.wait, 2)
+        await asyncio.sleep(0)
+        assert not request_task.done()
+
+        release_claim.set()
+        response = await request_task
+        # The 202 guarantees durable ADMISSION only — the fire itself runs as
+        # tracked background work, so wait for it to actually land (fast
+        # locally, but CI scheduling can lose this race).
+        for _ in range(200):
+            if provider.fired:
+                break
+            await asyncio.sleep(0.01)
+
+    assert response.status == 202
+    assert provider.claimed == ["abc123"]
+    assert provider.fired == ["abc123"]
 
 
 @pytest.mark.asyncio

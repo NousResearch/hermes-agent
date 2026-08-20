@@ -49,6 +49,7 @@ jobs:
       uv_lock: ${{ steps.classify.outputs.uv_lock }}
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
       installer: ${{ steps.classify.outputs.installer }}
+      rust: ${{ steps.classify.outputs.rust }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
@@ -104,6 +105,14 @@ jobs:
     # Windows-only, and only for PRs that touch install.ps1 or its tests.
     if: needs.detect.outputs.installer == 'true'
     uses: ./.github/workflows/installer-tests.yml
+
+  rust-tests:
+    name: Rust tests
+    needs: detect
+    # Only for PRs that touch a Rust crate. `.rs` is under apps/, so these
+    # changes used to run the TypeScript matrix and nothing that compiles them.
+    if: needs.detect.outputs.rust == 'true'
+    uses: ./.github/workflows/rust-tests.yml
 
   e2e-desktop:
     name: Desktop E2E
@@ -213,6 +222,7 @@ jobs:
       - lint
       - js-tests
       - installer-tests
+      - rust-tests
       - e2e-desktop
       - docs-site
       - history-check

@@ -207,13 +207,23 @@ class SessionManager:
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
+    def create_session(
+        self,
+        cwd: str = ".",
+        model: str | None = None,
+        requested_provider: str | None = None,
+    ) -> SessionState:
         """Create a new session with a unique ID and a fresh AIAgent."""
         import threading
 
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
+        agent = self._make_agent(
+            session_id=session_id,
+            cwd=cwd,
+            model=model,
+            requested_provider=requested_provider,
+        )
         state = SessionState(
             session_id=session_id,
             agent=agent,
@@ -354,13 +364,31 @@ class SessionManager:
         results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)
         return results
 
-    def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
+    def update_cwd(
+        self,
+        session_id: str,
+        cwd: str,
+        model: str | None = None,
+        requested_provider: str | None = None,
+        base_url: str | None = None,
+        api_mode: str | None = None,
+    ) -> Optional[SessionState]:
         """Update the working directory for a session and its tool overrides."""
         cwd = _translate_acp_cwd(cwd)
         state = self.get_session(session_id)  # checks DB too
         if state is None:
             return None
         state.cwd = cwd
+        if model is not None:
+            state.agent = self._make_agent(
+                session_id=session_id,
+                cwd=cwd,
+                model=model,
+                requested_provider=requested_provider,
+                base_url=base_url,
+                api_mode=api_mode,
+            )
+            state.model = getattr(state.agent, "model", model) or model
         _register_task_cwd(session_id, cwd)
         self._persist(state)
         return state

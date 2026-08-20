@@ -368,6 +368,10 @@ class TestListAndFork:
 
 
 class TestSessionConfiguration:
+    def test_session_model_param_accepts_acp_spellings(self):
+        assert HermesACPAgent._requested_session_model({"modelId": "gpt-5.4"}) == "gpt-5.4"
+        assert HermesACPAgent._requested_session_model({"model_id": "gpt-5.4"}) == "gpt-5.4"
+        assert HermesACPAgent._requested_session_model({"model": "gpt-5.4"}) == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):
@@ -391,6 +395,104 @@ class TestSessionConfiguration:
 
         assert mode_result == {}
         assert config_result["configOptions"] == []
+
+    @pytest.mark.asyncio
+    async def test_new_session_applies_requested_model_id(self, tmp_path, monkeypatch):
+        runtime_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            runtime_calls.append(requested)
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            resp = await acp_agent.new_session(
+                cwd="/tmp",
+                modelId="anthropic:claude-sonnet-4-6",
+            )
+
+        state = acp_agent.session_manager.get_session(resp.session_id)
+        assert state.model == "claude-sonnet-4-6"
+        assert state.agent.provider == "anthropic"
+        assert state.agent.base_url == "https://anthropic.example/v1"
+        assert resp.models.current_model_id == "anthropic:claude-sonnet-4-6"
+        assert runtime_calls[-1] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_load_session_applies_requested_model_id(self, tmp_path, monkeypatch):
+        runtime_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            runtime_calls.append(requested)
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            new_resp = await acp_agent.new_session(cwd="/tmp")
+            load_resp = await acp_agent.load_session(
+                cwd="/workspace",
+                session_id=new_resp.session_id,
+                modelId="anthropic:claude-sonnet-4-6",
+            )
+
+        state = acp_agent.session_manager.get_session(new_resp.session_id)
+        assert isinstance(load_resp, LoadSessionResponse)
+        assert state.cwd == "/workspace"
+        assert state.model == "claude-sonnet-4-6"
+        assert state.agent.provider == "anthropic"
+        assert state.agent.base_url == "https://anthropic.example/v1"
+        assert load_resp.models.current_model_id == "anthropic:claude-sonnet-4-6"
+        assert runtime_calls[-1] == "anthropic"
 
 
 

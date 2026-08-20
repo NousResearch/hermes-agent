@@ -172,25 +172,26 @@ class TestKeylessCalls:
 
 
 class TestProviderRouting:
-    def test_parallel_keyless_path_when_no_key(self):
+    def test_parallel_keyless_path_when_no_key(self, monkeypatch):
+        # Pin parallel so the ring deterministically starts there.
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == "parallel")
         provider = ParallelWebSearchProvider()
-        with patch.object(
-            keyless_mcp, "parallel_search_keyless",
-            return_value={"success": True, "data": {"web": []}},
-        ) as keyless:
+        with patch.dict(
+            keyless_mcp._KEYLESS_SEARCHERS,
+            {"parallel": lambda q, l: {"success": True, "data": {"web": []}}},
+        ):
             out = provider.search("q", limit=3)
         assert out["success"] is True
-        keyless.assert_called_once_with("q", 3)
 
-    def test_exa_keyless_path_when_no_key(self):
+    def test_exa_keyless_path_when_no_key(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == "exa")
         provider = ExaWebSearchProvider()
-        with patch.object(
-            keyless_mcp, "exa_search_keyless",
-            return_value={"success": True, "data": {"web": []}},
-        ) as keyless:
+        with patch.dict(
+            keyless_mcp._KEYLESS_SEARCHERS,
+            {"exa": lambda q, l: {"success": True, "data": {"web": []}}},
+        ):
             out = provider.search("q", limit=3)
         assert out["success"] is True
-        keyless.assert_called_once_with("q", 3)
 
     def test_parallel_keyed_path_skips_keyless(self, monkeypatch):
         monkeypatch.setattr(
@@ -258,15 +259,15 @@ class TestProviderRouting:
         assert keyless_mcp.provider_tier("tavily") == "auto"    # unset → auto
 
     @pytest.mark.asyncio
-    async def test_parallel_keyless_extract(self):
+    async def test_parallel_keyless_extract(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == "parallel")
         provider = ParallelWebSearchProvider()
-        with patch.object(
-            keyless_mcp, "parallel_extract_keyless",
-            return_value=[{"url": "https://a", "title": "", "content": "c"}],
-        ) as keyless:
+        with patch.dict(
+            keyless_mcp._KEYLESS_EXTRACTORS,
+            {"parallel": lambda urls: [{"url": "https://a", "title": "", "content": "c"}]},
+        ):
             out = await provider.extract(["https://a"])
         assert out[0]["content"] == "c"
-        keyless.assert_called_once_with(["https://a"])
 
 
 # ---------------------------------------------------------------------------
@@ -279,23 +280,28 @@ class TestResolutionOrder:
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
         provider = registry.get_active_search_provider()
         assert provider is not None
-        # 50/50 split: either keyless vendor is valid; it must match the
-        # process-stable preference order.
-        assert provider.name == registry._keyless_preference()[0]
-        assert provider.name in ("exa", "parallel")
-
-    def test_keyless_split_is_process_stable_and_covers_both(self, fresh_registry, monkeypatch):
-        monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
-        # Stable within a process: repeated resolution never flip-flops.
-        first = registry.get_active_search_provider().name
-        assert all(
-            registry.get_active_search_provider().name == first for _ in range(5)
+        # Ring: resolution picks the first REGISTERED vendor in ring order
+        # (only exa/parallel are registered in this fixture).
+        expected = next(
+            v for v in registry._keyless_preference() if v in ("exa", "parallel")
         )
-        # Both split outcomes route correctly (simulate the two parities).
-        monkeypatch.setattr(keyless_mcp, "_SESSION_ID", "0" * 32)  # even
-        assert registry._keyless_preference() == ("exa", "parallel")
-        monkeypatch.setattr(keyless_mcp, "_SESSION_ID", "1" * 32)  # odd
-        assert registry._keyless_preference() == ("parallel", "exa")
+        assert provider.name == expected
+
+    def test_keyless_ring_rotates_and_covers_all_vendors(self, fresh_registry, monkeypatch):
+        monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
+        # The ring order always contains all five vendors, starting at the
+        # current cursor and wrapping.
+        order = registry._keyless_preference()
+        assert sorted(order) == sorted(keyless_mcp._KEYLESS_RING)
+        # Unpinned dispatch rotates: consecutive _ring_order calls start at
+        # successive vendors (round-robin cursor advances per request).
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda name: False)
+        starts = [keyless_mcp._ring_order("exa")[0] for _ in range(len(keyless_mcp._KEYLESS_RING))]
+        assert sorted(starts) == sorted(keyless_mcp._KEYLESS_RING)  # full cycle
+        # Pinned dispatch starts at the pinned vendor every time.
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda name: name == "tavily")
+        assert keyless_mcp._ring_order("tavily")[0] == "tavily"
+        assert keyless_mcp._ring_order("tavily")[0] == "tavily"
 
     def test_registry_keyless_disabled_returns_none(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
@@ -322,7 +328,10 @@ class TestResolutionOrder:
         )
         monkeypatch.setattr(web_tools, "_list_registered_web_providers", list)
         from agent.web_search_registry import _keyless_preference
-        assert web_tools._get_backend() == _keyless_preference()[0]
+        expected = next(
+            v for v in _keyless_preference() if v in ("exa", "parallel")
+        )
+        assert web_tools._get_backend() == expected
 
     def test_get_backend_key_beats_keyless(self, monkeypatch):
         monkeypatch.setattr(
@@ -414,3 +423,123 @@ class TestPickerTierRows:
         cfg_auto = {"web": {"backend": "parallel"}}
         assert _web_tier_matches(free_row, cfg_auto) is True
         assert _web_tier_matches(paid_row, cfg_auto) is False
+
+
+# ---------------------------------------------------------------------------
+# Cross-vendor keyless failover
+# ---------------------------------------------------------------------------
+
+
+class TestKeylessFailover:
+    def _ok(self, vendor):
+        return {"success": True, "data": {"web": [{"url": f"https://{vendor}.example"}]}}
+
+    def _throttled(self, vendor):
+        return {"success": False, "error": f"Keyless {vendor} search failed: free MCP rate limit."}
+
+    def _pin(self, monkeypatch, name):
+        """Pin *name* so the ring starts there deterministically."""
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == name)
+
+    def test_search_fails_over_on_rate_limit(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "exa", lambda q, l: self._throttled("Exa"))
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "parallel", lambda q, l: self._ok("parallel"))
+        out = keyless_mcp.search_with_failover("exa", "q", 3)
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "parallel"
+
+    def test_search_no_failover_on_non_throttle_error(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "exa",
+            lambda q, l: {"success": False, "error": "Unrecognized MCP response shape"},
+        )
+        called = []
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "parallel",
+            lambda q, l: called.append(1) or self._ok("parallel"),
+        )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is False
+        assert not called  # peer never tried
+
+    def test_search_all_throttled_reports_ring(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        for vendor in keyless_mcp._KEYLESS_RING:
+            monkeypatch.setitem(
+                keyless_mcp._KEYLESS_SEARCHERS, vendor,
+                lambda q, l, v=vendor: self._throttled(v),
+            )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is False
+        assert "all keyless vendors throttled" in out["error"]
+
+    def test_search_walks_ring_past_multiple_throttles(self, monkeypatch):
+        # exa -> parallel -> tavily all throttled; firecrawl serves.
+        self._pin(monkeypatch, "exa")
+        for vendor in ("exa", "parallel", "tavily"):
+            monkeypatch.setitem(
+                keyless_mcp._KEYLESS_SEARCHERS, vendor,
+                lambda q, l, v=vendor: self._throttled(v),
+            )
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "firecrawl",
+            lambda q, l: self._ok("firecrawl"),
+        )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "firecrawl"
+
+    def test_failover_respects_peer_paid_pin(self, monkeypatch):
+        # Every vendor except exa throttles; exa is pinned paid so its free
+        # endpoint must never be used.
+        monkeypatch.setattr(
+            keyless_mcp, "provider_tier",
+            lambda name: "paid" if name == "exa" else "auto",
+        )
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == "parallel")
+        called = []
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "exa",
+            lambda q, l: called.append(1) or self._ok("exa"),
+        )
+        for vendor in ("parallel", "tavily", "firecrawl", "keenable"):
+            monkeypatch.setitem(
+                keyless_mcp._KEYLESS_SEARCHERS, vendor,
+                lambda q, l, v=vendor: self._throttled(v),
+            )
+        out = keyless_mcp.search_with_failover("parallel", "q")
+        assert out["success"] is False
+        assert not called  # exa pinned paid: its free tier is opted out
+
+    def test_extract_fails_over_when_all_urls_throttled(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        throttled = [
+            {"url": "https://a", "title": "", "content": "", "error": "rate limit hit"},
+            {"url": "https://b", "title": "", "content": "", "error": "429 too many requests"},
+        ]
+        good = [
+            {"url": "https://a", "title": "A", "content": "x"},
+            {"url": "https://b", "title": "B", "content": "y"},
+        ]
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "exa", lambda urls: throttled)
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "parallel", lambda urls: good)
+        out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
+        assert out == good
+
+    def test_extract_partial_failure_stays_on_primary(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        partial = [
+            {"url": "https://a", "title": "A", "content": "x"},
+            {"url": "https://b", "title": "", "content": "", "error": "rate limit"},
+        ]
+        called = []
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "exa", lambda urls: partial)
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_EXTRACTORS, "parallel",
+            lambda urls: called.append(1) or [],
+        )
+        out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
+        assert out == partial
+        assert not called

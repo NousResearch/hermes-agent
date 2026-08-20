@@ -492,17 +492,20 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
-        # Keyless free-tier fallback: with NO web backend configured or keyed,
-        # web_search/web_extract fall back to Parallel's / Exa's public
-        # anonymous MCP endpoints (rate-limited free tiers). Never pre-empts
-        # a configured or keyed backend. Set false to disable entirely.
+        # Keyless free-tier ring: with NO web backend configured or keyed,
+        # web_search/web_extract rotate round-robin across five vendors'
+        # public free tiers (exa, parallel, tavily, firecrawl, keenable),
+        # failing over to the next ring vendor on rate limits. Never
+        # pre-empts a configured or keyed backend. Set false to disable.
         "keyless_fallback": True,
-        # Per-provider tier selection for providers with both a keyless free
-        # endpoint and a keyed paid SDK path (exa, parallel). Set by the
-        # `hermes tools` picker's "Free (keyless)" / "Paid (API key)" rows.
+        # Per-provider tier selection for ring vendors with both a keyless
+        # free endpoint and a keyed paid path (exa, parallel, tavily,
+        # firecrawl, keenable). Set by the `hermes tools` picker's
+        # "Free (keyless)" / "Paid (API key)" rows.
         #   free  — always use the anonymous free endpoint (even with a key)
-        #   paid  — always use the keyed SDK path (missing key = error)
-        #   unset — auto: keyed when the API key is present, else keyless
+        #   paid  — always use the keyed path (missing key = error; vendor
+        #           is also excluded from the keyless ring)
+        #   unset — auto: keyed when the API key is present, else the ring
         "provider_tier": {},
     },
 
@@ -4117,9 +4120,17 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "TAVILY_API_KEY": {
-        "description": "Tavily API key for AI-native web search and extract",
+        "description": "Tavily API key for AI-native web search and extract (optional — keyless works without it)",
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
+    "KEENABLE_API_KEY": {
+        "description": "Keenable API key for fast independent-index web search and page fetch (optional — keyless free tier works without it)",
+        "prompt": "Keenable API key",
+        "url": "https://keenable.ai",
         "tools": ["web_search", "web_extract"],
         "password": True,
         "category": "tool",

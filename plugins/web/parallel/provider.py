@@ -198,14 +198,14 @@ class ParallelWebSearchProvider(WebSearchProvider):
 
             from agent.web_search_provider import get_provider_env
 
-            from plugins.web.keyless_mcp import parallel_search_keyless, use_keyless
+            from plugins.web.keyless_mcp import search_with_failover, use_keyless
 
             if use_keyless("parallel", get_provider_env("PARALLEL_API_KEY")):
                 # Keyless free tier — public MCP endpoint, no SDK needed.
                 logger.info(
                     "Parallel keyless search: '%s' (limit=%d)", query, limit
                 )
-                return parallel_search_keyless(query, limit)
+                return search_with_failover("parallel", query, limit)
 
             mode = _resolve_search_mode()
             logger.info(
@@ -262,7 +262,7 @@ class ParallelWebSearchProvider(WebSearchProvider):
 
             from agent.web_search_provider import get_provider_env
 
-            from plugins.web.keyless_mcp import parallel_extract_keyless, use_keyless
+            from plugins.web.keyless_mcp import extract_with_failover, use_keyless
 
             if use_keyless("parallel", get_provider_env("PARALLEL_API_KEY")):
                 # Keyless free tier — blocking HTTP, so hop off the loop.
@@ -270,7 +270,7 @@ class ParallelWebSearchProvider(WebSearchProvider):
 
                 logger.info("Parallel keyless extract: %d URL(s)", len(urls))
                 return await asyncio.to_thread(
-                    parallel_extract_keyless, list(urls)
+                    extract_with_failover, "parallel", list(urls)
                 )
 
             logger.info("Parallel extract: %d URL(s)", len(urls))

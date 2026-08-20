@@ -446,6 +446,7 @@ def get_nous_subscription_features(
     # Per-capability overrides: if set, they determine which backend is active for
     # search/extract independently of web.backend.
     web_search_backend = str(web_cfg.get("search_backend") or "").strip().lower()
+    web_extract_backend = str(web_cfg.get("extract_backend") or "").strip().lower()
     tts_provider = str(tts_cfg.get("provider") or "edge").strip().lower()
     # STT default is "local" (faster-whisper) per DEFAULT_CONFIG, which
     # requires `pip install faster-whisper`. For Nous subscribers we'd
@@ -505,6 +506,9 @@ def get_nous_subscription_features(
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
+    # Keyless Tavily is opt-in: selecting it in `hermes tools` / setup writes
+    # web.backend (or a per-capability override) without requiring a key.
+    tavily_selected = "tavily" in {web_backend, web_search_backend, web_extract_backend}
     direct_searxng = bool(get_env_value("SEARXNG_URL"))
     direct_fal = fal_key_is_configured()
     direct_fal_video = direct_fal  # same FAL_KEY; separate var so use_gateway is independent
@@ -537,6 +541,7 @@ def get_nous_subscription_features(
         direct_exa = False
         direct_parallel = False
         direct_tavily = False
+        tavily_selected = False
     if image_use_gateway:
         direct_fal = False
     if video_use_gateway:
@@ -624,6 +629,8 @@ def get_nous_subscription_features(
         # different browser choice wins over the env var.
         direct_camofox = False
 
+
+    tavily_ready = direct_tavily or tavily_selected
     web_managed = web_backend == "firecrawl" and managed_web_available and not direct_firecrawl
     web_active = bool(
         web_tool_enabled
@@ -632,7 +639,7 @@ def get_nous_subscription_features(
             or (web_backend == "exa" and direct_exa)
             or (web_backend == "firecrawl" and direct_firecrawl)
             or (web_backend == "parallel" and direct_parallel)
-            or (web_backend == "tavily" and direct_tavily)
+            or (web_backend == "tavily" and tavily_ready)
             or (web_backend == "searxng" and direct_searxng)
             # Per-capability overrides: search_backend or extract_backend may be set
             # without web.backend (using the new split config from #20061)
@@ -640,11 +647,17 @@ def get_nous_subscription_features(
             or (web_search_backend == "exa" and direct_exa)
             or (web_search_backend == "firecrawl" and direct_firecrawl)
             or (web_search_backend == "parallel" and direct_parallel)
-            or (web_search_backend == "tavily" and direct_tavily)
+            or (web_search_backend == "tavily" and tavily_ready)
+            or (web_extract_backend == "tavily" and tavily_ready)
         )
     )
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng
+        managed_web_available
+        or direct_exa
+        or direct_firecrawl
+        or direct_parallel
+        or tavily_ready
+        or direct_searxng
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal
@@ -754,8 +767,8 @@ def get_nous_subscription_features(
             managed_by_nous=web_managed,
             direct_override=web_active and not web_managed,
             toolset_enabled=web_tool_enabled,
-            current_provider=web_backend or web_search_backend or "",
-            explicit_configured=bool(web_backend or web_search_backend),
+            current_provider=web_backend or web_search_backend or web_extract_backend or "",
+            explicit_configured=bool(web_backend or web_search_backend or web_extract_backend),
         ),
         "image_gen": NousFeatureState(
             key="image_gen",

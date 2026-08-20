@@ -143,14 +143,14 @@ class ExaWebSearchProvider(WebSearchProvider):
 
             from agent.web_search_provider import get_provider_env
 
-            from plugins.web.keyless_mcp import exa_search_keyless, use_keyless
+            from plugins.web.keyless_mcp import search_with_failover, use_keyless
 
             if use_keyless("exa", get_provider_env("EXA_API_KEY")):
                 # Keyless free tier — public MCP endpoint, no SDK needed.
                 logger.info(
                     "Exa keyless search: '%s' (limit=%d)", query, limit
                 )
-                return exa_search_keyless(query, limit)
+                return search_with_failover("exa", query, limit)
 
             logger.info("Exa search: '%s' (limit=%d)", query, limit)
             response = _get_exa_client().search(
@@ -198,12 +198,12 @@ class ExaWebSearchProvider(WebSearchProvider):
 
             from agent.web_search_provider import get_provider_env
 
-            from plugins.web.keyless_mcp import exa_extract_keyless, use_keyless
+            from plugins.web.keyless_mcp import extract_with_failover, use_keyless
 
             if use_keyless("exa", get_provider_env("EXA_API_KEY")):
                 # Keyless free tier — public MCP endpoint, no SDK needed.
                 logger.info("Exa keyless extract: %d URL(s)", len(urls))
-                return exa_extract_keyless(list(urls))
+                return extract_with_failover("exa", list(urls))
 
             logger.info("Exa extract: %d URL(s)", len(urls))
             response = _get_exa_client().get_contents(urls, text=True)

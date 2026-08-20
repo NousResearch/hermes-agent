@@ -201,6 +201,28 @@ def agent_with_memory_tool():
         return a
 
 
+@pytest.fixture()
+def agent_with_tool_search():
+    """Agent whose valid_tool_names includes 'tool_search'."""
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search", "tool_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        a = AIAgent(
+            api_key="test-k...7890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        a.client = MagicMock()
+        return a
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
@@ -950,6 +972,17 @@ class TestBuildSystemPrompt:
         assert USER_PROFILE_GUIDANCE in prompt
 
 
+    def test_tool_search_guidance_when_tool_loaded(self, agent_with_tool_search):
+        from agent.prompt_builder import TOOL_SEARCH_GUIDANCE
+
+        prompt = agent_with_tool_search._build_system_prompt()
+        assert TOOL_SEARCH_GUIDANCE in prompt
+
+    def test_no_tool_search_guidance_without_tool(self, agent):
+        from agent.prompt_builder import TOOL_SEARCH_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert TOOL_SEARCH_GUIDANCE not in prompt
 
     def test_datetime_is_date_only_not_minute_precision(self, agent):
         """Timestamp must be date-only (no HH:MM) so the system prompt

@@ -525,11 +525,23 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key, fallback_label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
+        # Derive the label from limit_window_seconds when available (OpenAI may
+        # return a single primary_window whose duration is the weekly cap).
+        limit_seconds = window.get("limit_window_seconds")
+        if isinstance(limit_seconds, (int, float)) and limit_seconds > 0:
+            if limit_seconds >= 604800:  # 7 days
+                label = "Weekly"
+            elif limit_seconds >= 18000:  # 5 hours
+                label = "Session"
+            else:
+                label = fallback_label
+        else:
+            label = fallback_label
         windows.append(
             AccountUsageWindow(
                 label=label,

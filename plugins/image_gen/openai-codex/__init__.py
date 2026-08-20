@@ -2,8 +2,7 @@
 
 Identical model catalog and tier semantics to the ``openai`` image-gen plugin
 (``gpt-image-2`` at low/medium/high quality), but routes the request through
-the Codex Responses API ``image_generation`` tool instead of the
-``images.generate`` REST endpoint. This lets users who are already
+Codex's dedicated Images generation/edit endpoints. This lets users who are already
 authenticated with Codex/ChatGPT generate images without configuring a
 separate ``OPENAI_API_KEY``.
 
@@ -15,7 +14,7 @@ Selection precedence for the tier (first hit wins):
 4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
 
 Output is saved as PNG under ``$HERMES_HOME/cache/images/``. Source images for
-image-to-image/editing are sent as Responses ``input_image`` content parts.
+image-to-image/editing are sent as Images API data URLs.
 """
 
 from __future__ import annotations
@@ -24,8 +23,10 @@ import base64
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -40,21 +41,99 @@ from agent.image_gen_provider import (
 logger = logging.getLogger(__name__)
 
 
-# NOTE: do NOT reintroduce an "account capability" classifier keyed on
-# ``Tool choice 'image_generation' not found in 'tools' parameter``. That HTTP
-# 400 is a *request-shape* rejection (the Codex backend resolves tool_choice as
-# a function-tool name and never recognizes hosted-tool entries) — it is
-# emitted for every account, including accounts where image generation works.
-# A previous version of this file translated that 400 into "Image generation is
-# not enabled for the current Codex account. Switch the image provider to
-# OpenAI API key, FAL, or xAI.", which reported a universal bug in our own
-# payload as the user's entitlement problem and sent people away from a
-# provider that was never actually tried. The request-shape bug is fixed by
-# omitting tool_choice (see ``_build_responses_payload``); any remaining HTTP
-# error must surface verbatim so it stays diagnosable. See issues #19505,
-# #49008 and #31335.
+# HTTP errors from Codex must surface verbatim. Do not classify a wire-level
+# request rejection as an account entitlement problem; see #19505 and #49008.
 
 _MAX_ERROR_BODY_CHARS = 500
+_MAX_DIAGNOSTIC_STRING_CHARS = 160
+_MAX_DIAGNOSTIC_ITEMS = 8
+_MAX_DIAGNOSTIC_DEPTH = 3
+_SENSITIVE_DIAGNOSTIC_KEYS = frozenset({
+    "api_key",
+    "authorization",
+    "b64_json",
+    "cookie",
+    "credential",
+    "image",
+    "image_url",
+    "images",
+    "password",
+    "refresh_token",
+    "secret",
+    "token",
+})
+
+
+def _sanitize_diagnostic_text(value: str) -> str:
+    """Redact common credential/image encodings from diagnostic text."""
+    text = re.sub(
+        r"(?i)data:image/[a-z0-9.+-]+;base64,[a-z0-9+/=_-]+",
+        "[redacted image data]",
+        value,
+    )
+    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
+    text = re.sub(r"\b(?:sk|sess)-[a-zA-Z0-9_-]{8,}\b", "[redacted credential]", text)
+    text = re.sub(
+        r"\beyJ[a-zA-Z0-9_-]{10,}(?:\.[a-zA-Z0-9_-]+){1,2}\b",
+        "[redacted credential]",
+        text,
+    )
+    text = re.sub(
+        r"(?<![a-zA-Z0-9+/=_-])[a-zA-Z0-9+/=_-]{64,}"
+        r"(?![a-zA-Z0-9+/=_-])",
+        "[redacted blob]",
+        text,
+    )
+    return text[:_MAX_DIAGNOSTIC_STRING_CHARS]
+
+
+def _sanitize_diagnostic_value(value: Any, *, depth: int = 0) -> Any:
+    """Return a bounded JSON-compatible value safe for error diagnostics."""
+    if depth >= _MAX_DIAGNOSTIC_DEPTH:
+        return f"<{type(value).__name__}>"
+    if isinstance(value, dict):
+        sanitized: Dict[str, Any] = {}
+        for index, (key, child) in enumerate(value.items()):
+            if index >= _MAX_DIAGNOSTIC_ITEMS:
+                break
+            safe_key = _sanitize_diagnostic_text(str(key))
+            key_lc = safe_key.lower()
+            if any(marker in key_lc for marker in _SENSITIVE_DIAGNOSTIC_KEYS):
+                sanitized[safe_key] = "[redacted]"
+            else:
+                sanitized[safe_key] = _sanitize_diagnostic_value(child, depth=depth + 1)
+        if len(value) > _MAX_DIAGNOSTIC_ITEMS:
+            sanitized["..."] = f"<{len(value) - _MAX_DIAGNOSTIC_ITEMS} more keys>"
+        return sanitized
+    if isinstance(value, list):
+        sanitized_items = [
+            _sanitize_diagnostic_value(item, depth=depth + 1)
+            for item in value[:_MAX_DIAGNOSTIC_ITEMS]
+        ]
+        if len(value) > _MAX_DIAGNOSTIC_ITEMS:
+            sanitized_items.append(f"<{len(value) - _MAX_DIAGNOSTIC_ITEMS} more items>")
+        return sanitized_items
+    if isinstance(value, str):
+        return _sanitize_diagnostic_text(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return f"<{type(value).__name__}>"
+
+
+def _summarize_diagnostic_body(body: str) -> str:
+    """Return a bounded, sanitized excerpt of an unexpected response body."""
+    text = body or ""
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        summary = _sanitize_diagnostic_text(text)
+    else:
+        summary = json.dumps(
+            _sanitize_diagnostic_value(payload),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+    return summary[:_MAX_ERROR_BODY_CHARS]
 
 
 def _summarize_error_body(body: str) -> str:
@@ -76,7 +155,6 @@ def _summarize_error_body(body: str) -> str:
     except (TypeError, ValueError):
         pass
     return text[:_MAX_ERROR_BODY_CHARS]
-
 
 
 # ---------------------------------------------------------------------------
@@ -114,25 +192,15 @@ _SIZES = {
     "portrait": "1024x1536",
 }
 
-# Codex Responses surface used for the request. The chat model itself is only
-# the host that calls the ``image_generation`` tool; the actual image work is
-# done by ``API_MODEL``.
-_CODEX_CHAT_MODEL = "gpt-5.5"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
-_CODEX_INSTRUCTIONS = (
-    "You are an assistant that must fulfill image generation and image editing "
-    "requests by using the image_generation tool when provided."
-)
 
-_MAX_REFERENCE_IMAGES = 16
+_MAX_INPUT_IMAGES = 5
 _MAX_INPUT_IMAGE_BYTES = 25 * 1024 * 1024
-# gpt-image-2's Responses ``input_image`` accepts raster formats only. The
+# gpt-image-2's Images edit endpoint accepts raster formats only. The
 # shared magic-byte sniffer also recognizes SVG/TIFF/ICO, which the API
 # rejects server-side — gate to this allowlist so unsupported inputs fail
 # locally with a clear error instead of an opaque HTTP 400.
-_ACCEPTED_INPUT_MIME = frozenset(
-    {"image/png", "image/jpeg", "image/gif", "image/webp"}
-)
+_ACCEPTED_INPUT_MIME = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
 
 # ---------------------------------------------------------------------------
@@ -216,13 +284,15 @@ def _sniff_image_mime(raw: bytes) -> Optional[str]:
 
 
 def _data_url_to_input_image_url(value: str) -> str:
-    """Validate and canonicalize a data:image URL for Responses input_image."""
+    """Validate and canonicalize a data:image URL for a Codex image edit."""
     if "," not in value:
         raise ValueError("Image data URL is missing a comma separator")
     header, data = value.split(",", 1)
     header_lc = header.lower()
     if not header_lc.startswith("data:image/") or ";base64" not in header_lc:
-        raise ValueError("Only base64 data:image URLs are supported as Codex image inputs")
+        raise ValueError(
+            "Only base64 data:image URLs are supported as Codex image inputs"
+        )
     raw = base64.b64decode(data, validate=True)
     if len(raw) > _MAX_INPUT_IMAGE_BYTES:
         raise ValueError("Image data URL exceeds 25MB cap")
@@ -263,7 +333,7 @@ def _local_image_to_data_url(value: str) -> str:
 
 
 def _to_input_image_part(value: str) -> Dict[str, str]:
-    """Convert a URL/data URL/local path into a Responses input_image part."""
+    """Convert a URL/data URL/local path into an Images API input part."""
     candidate = (value or "").strip()
     if not candidate:
         raise ValueError("Blank image input")
@@ -281,126 +351,50 @@ def _normalize_input_images(
     image_url: Optional[str],
     reference_image_urls: Optional[List[str]],
 ) -> List[Dict[str, str]]:
-    """Collect primary + reference images as ordered Responses content parts."""
+    """Collect primary + reference images as ordered Images API inputs."""
     values: List[str] = []
     if isinstance(image_url, str) and image_url.strip():
         values.append(image_url.strip())
-    for ref in (normalize_reference_images(reference_image_urls) or []):
+    for ref in normalize_reference_images(reference_image_urls) or []:
         values.append(ref)
-    values = values[:_MAX_REFERENCE_IMAGES]
+    if len(values) > _MAX_INPUT_IMAGES:
+        raise ValueError("Codex image edits accept at most 5 total images")
     return [_to_input_image_part(value) for value in values]
 
 
-def _build_responses_payload(
+def _build_images_payload(
     *,
     prompt: str,
     size: str,
     quality: str,
     input_images: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
-    """Build the Codex Responses request body for an image_generation call."""
-    content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
-    if input_images:
-        content.extend(input_images)
-    return {
-        "model": _CODEX_CHAT_MODEL,
-        "store": False,
-        "instructions": _CODEX_INSTRUCTIONS,
-        "input": [{
-            "type": "message",
-            "role": "user",
-            "content": content,
-        }],
-        "tools": [{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
-        # No ``tool_choice`` is sent: the chatgpt.com/backend-api/codex backend
-        # rejects every shape we have for forcing the hosted ``image_generation``
-        # tool. ``{"type": "allowed_tools", "mode": "required", "tools": [{"type":
-        # "image_generation"}]}`` (and the simpler ``{"type": "image_generation"}``
-        # form) both 400 with ``Tool choice 'image_generation' not found in 'tools'
-        # parameter`` — the backend looks up tool_choice as a *function* name and
-        # never recognizes hosted-tool entries. Letting the host model decide is
-        # the only shape Codex currently accepts; the ``instructions`` above are
-        # what nudge it toward the tool. See issue #19505.
-        "stream": True,
+    """Build a Codex Images generation or edit request body."""
+    payload: Dict[str, Any] = {
+        "prompt": prompt,
+        "background": "opaque",
+        "model": API_MODEL,
+        "n": 1,
+        "quality": quality,
+        "size": size,
     }
-
-
-def _extract_image_b64(value: Any) -> Optional[str]:
-    """Return the newest image b64 embedded in a Responses event payload."""
-    found: Optional[str] = None
-    if isinstance(value, dict):
-        if value.get("type") == "image_generation_call":
-            result = value.get("result")
-            if isinstance(result, str) and result:
-                found = result
-        partial = value.get("partial_image_b64")
-        if isinstance(partial, str) and partial:
-            found = partial
-        for child in value.values():
-            nested = _extract_image_b64(child)
-            if nested:
-                found = nested
-    elif isinstance(value, list):
-        for child in value:
-            nested = _extract_image_b64(child)
-            if nested:
-                found = nested
-    return found
-
-
-def _iter_sse_json(response: Any):
-    """Yield JSON payloads from an SSE response without OpenAI SDK parsing.
-
-    The ChatGPT/Codex backend can emit image-generation events newer than the
-    pinned Python SDK understands. Parsing raw SSE keeps this provider tolerant
-    of those event-shape changes.
-    """
-    event_name: Optional[str] = None
-    data_lines: List[str] = []
-
-    def flush():
-        nonlocal event_name, data_lines
-        if not data_lines:
-            event_name = None
-            return None
-        raw = "\n".join(data_lines).strip()
-        event = event_name
-        event_name = None
-        data_lines = []
-        if not raw or raw == "[DONE]":
-            return None
-        payload = json.loads(raw)
-        if isinstance(payload, dict) and event and "type" not in payload:
-            payload["type"] = event
-        return payload
-
-    for line in response.iter_lines():
-        if isinstance(line, bytes):
-            line = line.decode("utf-8", errors="replace")
-        line = str(line)
-        if line == "":
-            payload = flush()
-            if payload is not None:
-                yield payload
-            continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:"):].strip()
-        elif line.startswith("data:"):
-            data_lines.append(line[len("data:"):].lstrip())
-
-    payload = flush()
-    if payload is not None:
-        yield payload
+    if input_images:
+        images: List[Dict[str, str]] = []
+        for index, part in enumerate(input_images):
+            if not isinstance(part, dict) or part.get("type") != "input_image":
+                raise ValueError(
+                    f"Malformed Codex image input at index {index}: "
+                    "expected an input_image object"
+                )
+            image_url = part.get("image_url")
+            if not isinstance(image_url, str) or not image_url.strip():
+                raise ValueError(
+                    f"Malformed Codex image input at index {index}: "
+                    "expected a non-empty string image_url"
+                )
+            images.append({"image_url": image_url})
+        payload["images"] = images
+    return payload
 
 
 def _collect_image_b64(
@@ -411,17 +405,18 @@ def _collect_image_b64(
     quality: str,
     input_images: Optional[List[Dict[str, str]]] = None,
 ) -> Optional[str]:
-    """Stream a Codex Responses image_generation call and return the b64 image."""
+    """Call the dedicated Codex Images endpoint and return its b64 image."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
 
     headers = _codex_cloudflare_headers(token)
     headers.update({
-        "Accept": "text/event-stream",
+        "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "x-codex-image-turn-id": str(uuid4()),
     })
-    payload = _build_responses_payload(
+    payload = _build_images_payload(
         prompt=prompt,
         size=size,
         quality=quality,
@@ -429,22 +424,44 @@ def _collect_image_b64(
     )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
-    image_b64: Optional[str] = None
+    endpoint = "edits" if input_images else "generations"
     with httpx.Client(timeout=timeout, headers=headers) as http:
-        with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                exc.response.read()
-                raise RuntimeError(
-                    f"Codex Responses API returned HTTP {exc.response.status_code}: "
-                    f"{_summarize_error_body(exc.response.text)}"
-                ) from exc
-            for event in _iter_sse_json(response):
-                found = _extract_image_b64(event)
-                if found:
-                    image_b64 = found
+        response = http.post(f"{_CODEX_BASE_URL}/images/{endpoint}", json=payload)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f"Codex Images API returned HTTP {exc.response.status_code}: "
+                f"{_summarize_error_body(exc.response.text)}"
+            ) from exc
+        try:
+            result = response.json()
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "Codex Images API returned invalid JSON: "
+                f"{_summarize_diagnostic_body(response.text)}"
+            ) from exc
 
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            "Codex Images API returned unexpected response: "
+            f"{_summarize_diagnostic_body(response.text)}"
+        )
+    data = result.get("data")
+    if not isinstance(data, list):
+        raise RuntimeError(
+            "Codex Images API returned unexpected response: "
+            f"{_summarize_diagnostic_body(response.text)}"
+        )
+    if not data:
+        return None
+    first = data[0]
+    image_b64 = first.get("b64_json") if isinstance(first, dict) else None
+    if not isinstance(image_b64, str) or not image_b64:
+        raise RuntimeError(
+            "Codex Images API returned unexpected response: "
+            f"{_summarize_diagnostic_body(response.text)}"
+        )
     return image_b64
 
 
@@ -501,11 +518,17 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         }
 
     def capabilities(self) -> Dict[str, Any]:
-        # The Codex Responses image_generation tool accepts source/reference
-        # images as `input_image` message content parts. Keep this capability
+        # The Codex Images edit endpoint accepts source/reference images as
+        # data URLs. Keep this capability
         # honest so the dynamic `image_generate` schema encourages identity-
         # preserving edits instead of unrelated text-to-image redraws.
-        return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES}
+        return {
+            "modalities": ["text", "image"],
+            # The tool schema has no separate total-input capability. Reserve
+            # one slot for the primary ``image_url``; calls without a primary
+            # image can still pass five items, enforced below at runtime.
+            "max_reference_images": _MAX_INPUT_IMAGES - 1,
+        }
 
     def generate(
         self,
@@ -598,7 +621,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         if not b64:
             return error_response(
-                error="Codex response contained no image_generation_call result",
+                error="Codex Images response contained no image data",
                 error_type="empty_response",
                 provider="openai-codex",
                 model=tier_id,
@@ -625,7 +648,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             aspect_ratio=aspect,
             provider="openai-codex",
             modality="image" if input_images else "text",
-            extra={"size": size, "quality": meta["quality"], "input_image_count": len(input_images)},
+            extra={
+                "size": size,
+                "quality": meta["quality"],
+                "input_image_count": len(input_images),
+            },
         )
 
 

@@ -4,7 +4,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $sessions, $unreadFinishedSessionIds, setSessions } from './session'
-import { $delegatingSessionIds, $sessionDotStateById, hasLiveTurn, showsRunningArc } from './session-dot-state'
+import { $delegatingSessionIds, $sessionDotStateById, hasLiveTurn, showsRunningArc, unreadSessionCount } from './session-dot-state'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $unreadWriteGuard } from './session-unread-remote'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
@@ -146,5 +146,22 @@ describe('persisted unread (backend watermark)', () => {
     setSessions([storedRow('s1')])
 
     expect($sessionDotStateById.get()['s1'] ?? 'idle').not.toBe('unread')
+  })
+})
+
+describe('unreadSessionCount', () => {
+  it('counts listed unread rows and skips archived', () => {
+    expect(
+      unreadSessionCount({ a: 'unread', b: 'working', c: 'unread' }, [
+        { id: 'a' },
+        { id: 'b' },
+        { archived: true, id: 'c' },
+        { id: 'missing' }
+      ])
+    ).toBe(1)
+  })
+
+  it('does not count alias keys that are not listed rows', () => {
+    expect(unreadSessionCount({ tip: 'unread', root: 'unread' }, [{ id: 'tip' }])).toBe(1)
   })
 })

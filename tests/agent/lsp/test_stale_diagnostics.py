@@ -17,6 +17,7 @@ The contract under test:
 - A slow-but-eventually-correct server ("slow_push") is waited on,
   honouring the configured ``lsp.wait_timeout``.
 """
+
 from __future__ import annotations
 
 import os
@@ -46,10 +47,6 @@ def _client(workspace: Path, script: str, **env_extra: str) -> LSPClient:
     )
 
 
-
-
-
-
 @pytest.mark.asyncio
 async def test_slow_push_is_waited_for(tmp_path: Path):
     """A server that re-checks slowly (but within budget) gets waited on,
@@ -61,18 +58,20 @@ async def test_slow_push_is_waited_for(tmp_path: Path):
     await client.start()
     try:
         v0 = await client.open_file(str(f), language_id="python")
-        assert await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
+        assert await client.wait_for_diagnostics(
+            str(f), v0, mode="document", timeout=2.0
+        )
         assert len(client.diagnostics_for(str(f), fresh_only=True)) == 1
 
         f.write_text("good code\n")
         v1 = await client.open_file(str(f), language_id="python")
-        fresh = await client.wait_for_diagnostics(str(f), v1, mode="document", timeout=5.0)
+        fresh = await client.wait_for_diagnostics(
+            str(f), v1, mode="document", timeout=5.0
+        )
         assert fresh is True, "slow push within budget must satisfy the wait"
         assert client.diagnostics_for(str(f), fresh_only=True) == []
     finally:
         await client.shutdown()
-
-
 
 
 @pytest.mark.asyncio

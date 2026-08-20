@@ -28,11 +28,18 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
 - ``"reject_then_unversioned_push"`` — publishes a versioned result on
   didOpen, then after didChange rejects the pull request first and sends a
   delayed unversioned push.  Exercises the real reader-loop race.
+- ``"stale_then_corrected_unversioned_push"`` — publishes a stale unversioned
+  result 10ms after didChange and corrects it around 250ms after didChange.
+  Pull diagnostics are rejected, matching a push-only TypeScript server.
+- ``"versioned_then_stale_corrected_unversioned_push"`` — after didChange,
+  publishes a fresh versioned result, a stale unversioned result 50ms later,
+  and a corrected unversioned result another 250ms later.
 
 The script writes JSON-RPC framed messages to stdout and reads from
 stdin.  No third-party dependencies — uses only stdlib so it runs
 under whatever Python the test process picks up.
 """
+
 from __future__ import annotations
 
 import json
@@ -77,19 +84,20 @@ def main():
         if "id" in msg and msg.get("method") == "initialize":
             if script == "slow":
                 time.sleep(1.0)
-            write_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": msg["id"],
-                    "result": {
-                        "capabilities": {
-                            "textDocumentSync": 1,  # Full
-                            "diagnosticProvider": {"interFileDependencies": False, "workspaceDiagnostics": False},
+            write_message({
+                "jsonrpc": "2.0",
+                "id": msg["id"],
+                "result": {
+                    "capabilities": {
+                        "textDocumentSync": 1,  # Full
+                        "diagnosticProvider": {
+                            "interFileDependencies": False,
+                            "workspaceDiagnostics": False,
                         },
-                        "serverInfo": {"name": "mock-lsp", "version": "0.1"},
                     },
-                }
-            )
+                    "serverInfo": {"name": "mock-lsp", "version": "0.1"},
+                },
+            })
             if script == "crash":
                 return 0
             continue
@@ -125,26 +133,30 @@ def main():
                 # Ghost scenario: publish an error for the ORIGINAL
                 # content, then never publish again after edits.
                 if not is_change:
-                    write_message(
-                        {
-                            "jsonrpc": "2.0",
-                            "method": "textDocument/publishDiagnostics",
-                            "params": {"uri": uri, "version": version, "diagnostics": error_diag},
-                        }
-                    )
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {
+                            "uri": uri,
+                            "version": version,
+                            "diagnostics": error_diag,
+                        },
+                    })
                 continue
             if script == "slow_push":
                 diagnostics = error_diag
                 if is_change:
                     time.sleep(float(os.environ.get("MOCK_LSP_PUSH_DELAY", "1.0")))
                     diagnostics = []
-                write_message(
-                    {
-                        "jsonrpc": "2.0",
-                        "method": "textDocument/publishDiagnostics",
-                        "params": {"uri": uri, "version": version, "diagnostics": diagnostics},
-                    }
-                )
+                write_message({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/publishDiagnostics",
+                    "params": {
+                        "uri": uri,
+                        "version": version,
+                        "diagnostics": diagnostics,
+                    },
+                })
                 continue
             if script == "reject_then_unversioned_push":
                 if is_change:
@@ -157,74 +169,130 @@ def main():
                     ]
                     pending_push = (uri, delayed_diag)
                 else:
-                    write_message(
-                        {
-                            "jsonrpc": "2.0",
-                            "method": "textDocument/publishDiagnostics",
-                            "params": {
-                                "uri": uri,
-                                "version": version,
-                                "diagnostics": error_diag,
-                            },
-                        }
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {
+                            "uri": uri,
+                            "version": version,
+                            "diagnostics": error_diag,
+                        },
+                    })
+                continue
+            if script == "stale_then_corrected_unversioned_push":
+                if is_change:
+                    time.sleep(float(os.environ.get("MOCK_LSP_STALE_DELAY", "0.01")))
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {"uri": uri, "diagnostics": error_diag},
+                    })
+                    time.sleep(
+                        float(os.environ.get("MOCK_LSP_CORRECTION_DELAY", "0.24"))
                     )
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {"uri": uri, "diagnostics": []},
+                    })
+                else:
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {
+                            "uri": uri,
+                            "version": version,
+                            "diagnostics": error_diag,
+                        },
+                    })
+                continue
+            if script == "versioned_then_stale_corrected_unversioned_push":
+                if is_change:
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {
+                            "uri": uri,
+                            "version": version,
+                            "diagnostics": [],
+                        },
+                    })
+                    time.sleep(float(os.environ.get("MOCK_LSP_STALE_DELAY", "0.05")))
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {"uri": uri, "diagnostics": error_diag},
+                    })
+                    time.sleep(
+                        float(os.environ.get("MOCK_LSP_CORRECTION_DELAY", "0.25"))
+                    )
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {"uri": uri, "diagnostics": []},
+                    })
+                else:
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {
+                            "uri": uri,
+                            "version": version,
+                            "diagnostics": error_diag,
+                        },
+                    })
                 continue
             diagnostics = []
             if script == "errors":
                 diagnostics = error_diag
-            write_message(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "textDocument/publishDiagnostics",
-                    "params": {
-                        "uri": uri,
-                        "version": version,
-                        "diagnostics": diagnostics,
-                    },
-                }
-            )
+            write_message({
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": uri,
+                    "version": version,
+                    "diagnostics": diagnostics,
+                },
+            })
             continue
 
         if msg.get("method") == "textDocument/diagnostic":
             if script == "reject_then_unversioned_push":
-                write_message(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": msg["id"],
-                        "error": {"code": -32601, "message": "method not found"},
-                    }
-                )
+                write_message({
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "error": {"code": -32601, "message": "method not found"},
+                })
                 if pending_push is not None:
                     uri, diagnostics = pending_push
                     pending_push = None
                     time.sleep(float(os.environ.get("MOCK_LSP_PUSH_DELAY", "0.05")))
-                    write_message(
-                        {
-                            "jsonrpc": "2.0",
-                            "method": "textDocument/publishDiagnostics",
-                            "params": {"uri": uri, "diagnostics": diagnostics},
-                        }
-                    )
+                    write_message({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {"uri": uri, "diagnostics": diagnostics},
+                    })
                 continue
-            if script in {"stale", "slow_push"}:
+            if script in {
+                "stale",
+                "slow_push",
+                "stale_then_corrected_unversioned_push",
+                "versioned_then_stale_corrected_unversioned_push",
+            }:
                 # These scripts model push-only servers so the ghost
                 # can't be papered over by the pull channel.
-                write_message(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": msg["id"],
-                        "error": {"code": -32601, "message": "method not found"},
-                    }
-                )
-                continue
-            # Pull endpoint — return empty.
-            write_message(
-                {
+                write_message({
                     "jsonrpc": "2.0",
                     "id": msg["id"],
-                    "result": {"kind": "full", "items": []},
-                }
-            )
+                    "error": {"code": -32601, "message": "method not found"},
+                })
+                continue
+            # Pull endpoint — return empty.
+            write_message({
+                "jsonrpc": "2.0",
+                "id": msg["id"],
+                "result": {"kind": "full", "items": []},
+            })
             continue
 
         if msg.get("method") == "textDocument/didSave":
@@ -239,13 +307,14 @@ def main():
 
         # Unknown request: respond with method-not-found.
         if "id" in msg:
-            write_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": msg["id"],
-                    "error": {"code": -32601, "message": f"method not found: {msg.get('method')}"},
-                }
-            )
+            write_message({
+                "jsonrpc": "2.0",
+                "id": msg["id"],
+                "error": {
+                    "code": -32601,
+                    "message": f"method not found: {msg.get('method')}",
+                },
+            })
 
 
 if __name__ == "__main__":

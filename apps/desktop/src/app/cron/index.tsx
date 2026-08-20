@@ -719,7 +719,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
           ) : (
             // No selection and no search — "Try a broader search query" here
             // just confused people staring at an empty panel with zero jobs.
-            <PanelEmpty description={c.emptyDescNew} icon="watch" title={jobs.length === 0 ? c.emptyTitleNew : undefined} />
+            <PanelEmpty
+              description={c.emptyDescNew}
+              icon="watch"
+              title={jobs.length === 0 ? c.emptyTitleNew : undefined}
+            />
           )}
         </PanelBody>
       )}

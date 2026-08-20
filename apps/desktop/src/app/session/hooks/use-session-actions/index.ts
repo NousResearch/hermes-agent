@@ -1728,12 +1728,11 @@ export function useSessionActions({
       // (archived rows are excluded from $sessions by design). Resolve from
       // both so deleting from the Archived filter evicts the row instead of
       // leaving a ghost that resumes into a dead id (infinite spinner).
-      const removedFromMain = $sessions
-        .get()
-        .find(session => sessionMatchesStoredId(session, storedSessionId))
+      const removedFromMain = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
       const removed =
-        removedFromMain ??
-        $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+        removedFromMain ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
       const wasSelected = selectedStoredSessionId === storedSessionId
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
@@ -1745,9 +1744,7 @@ export function useSessionActions({
       const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
 
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-      $archivedSessions.set(
-        previousArchived.filter(session => !sessionMatchesStoredId(session, storedSessionId))
-      )
+      $archivedSessions.set(previousArchived.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
       // row in lockstep. Pin the tombstone against the projects.tree prune while

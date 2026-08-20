@@ -940,12 +940,12 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     # an arbitrary absolute path that skill_view() refuses to load.
     for root in trusted_roots:
         try:
-            return str(identifier_path.relative_to(root))
+            return identifier_path.relative_to(root).as_posix()
         except ValueError:
             continue
 
     try:
-        return str(identifier_path.resolve().relative_to(primary_root.resolve()))
+        return identifier_path.resolve().relative_to(primary_root.resolve()).as_posix()
     except Exception:
         logger.debug(
             "Skill identifier %r is an absolute path outside trusted skills "

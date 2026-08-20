@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { modelSearchText } from '@/lib/model-search-text'
-import { currentPickerSelection } from '@/lib/model-status-label'
+import { currentPickerSelection, displayModelName } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
@@ -230,7 +230,7 @@ function ModelResults({
                   value={`${provider.slug}:${model}`}
                 >
                   <span className="min-w-0 flex-1 truncate">
-                    <HighlightMatches query={search} text={model} />
+                    <HighlightMatches query={search} text={displayModelName(model)} />
                   </span>
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>

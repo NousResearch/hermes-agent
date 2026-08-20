@@ -12,8 +12,27 @@ describe('model-status-label', () => {
   })
 
   it('strips trailing date-pin snapshots from the display name', () => {
-    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
-    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
+    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5')
+    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
+  })
+
+  // Providers that expose dash-separated ids (Kenari) must still render the
+  // canonical dotted, title-cased name — `gemini-3-6-flash` is "Gemini 3.6
+  // Flash", not "Gemini 3 6 flash".
+  it('restores dotted versions and title case for dash-separated ids', () => {
+    expect(displayModelName('gemini-3-6-flash')).toBe('Gemini 3.6 Flash')
+    expect(displayModelName('gemini-2-5-flash')).toBe('Gemini 2.5 Flash')
+    expect(displayModelName('qwen3-7-plus')).toBe('Qwen3.7 Plus')
+    expect(displayModelName('claude-opus-4-8')).toBe('Opus 4.8')
+    expect(displayModelName('gpt-5-5')).toBe('GPT-5.5')
+    expect(displayModelName('grok-4-5')).toBe('Grok 4.5')
+  })
+
+  // A trailing parameter size is not a minor version: the dash before it must
+  // survive as a space so `llama-3-70b` never collapses to "Llama 3.70b".
+  it('keeps parameter-size suffixes out of the version number', () => {
+    expect(displayModelName('llama-3-70b')).toBe('Llama 3 70b')
+    expect(displayModelName('qwen-2-72b')).toBe('Qwen 2 72b')
   })
 
   it('maps reasoning effort to compact labels', () => {

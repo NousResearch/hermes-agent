@@ -1659,7 +1659,22 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             cmd = cmd[:77] + "..."
         exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
         exit_code = exit_match.group(1) if exit_match else "?"
-        return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+        # Preserve a short head of real stdout so the model can still
+        # diagnose failures when the command exits 0 but prints errors
+        # (e.g. ``curl`` returning HTTP 422 with exit 0).  #82814
+        stdout_head = ""
+        try:
+            _parsed = json.loads(content) if content else {}
+            if isinstance(_parsed, dict):
+                _out = _parsed.get("output", "")
+                if isinstance(_out, str) and _out.strip():
+                    stdout_head = _out.strip()[:160]
+                    if len(_out.strip()) > 160:
+                        stdout_head += "..."
+        except Exception:
+            pass
+        _extra = f" | stdout: {stdout_head}" if stdout_head else ""
+        return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output{_extra}"
 
     if tool_name == "read_file":
         path = args.get("path", "?")

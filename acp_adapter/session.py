@@ -632,6 +632,7 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        effective_model = model or default_model
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
@@ -641,11 +642,27 @@ class SessionManager:
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),
-            "model": model or default_model,
+            "model": effective_model,
         }
 
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            requested_for_runtime = requested_provider or config_provider
+            if str(requested_for_runtime or "").strip().lower() == "custom":
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                requested_for_runtime = (
+                    canonical_custom_identity(
+                        base_url=base_url,
+                        model=effective_model,
+                        config_provider=config_provider,
+                    )
+                    or requested_for_runtime
+                )
+            runtime = resolve_runtime_provider(
+                requested=requested_for_runtime,
+                explicit_base_url=base_url,
+                target_model=effective_model or None,
+            )
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),

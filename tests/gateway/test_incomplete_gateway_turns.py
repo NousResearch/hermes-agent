@@ -148,7 +148,12 @@ async def test_incomplete_codex_turn_stays_out_of_slack_transcript(monkeypatch, 
         for call in runner.session_store.append_to_transcript.call_args_list
     ]
     assert transcript_roles == ["session_meta", "user"]
-    assert runner.session_store.append_to_transcript.call_args_list[1].args[1]["content"] == "hello"
+    user_content = runner.session_store.append_to_transcript.call_args_list[1].args[1][
+        "content"
+    ]
+    assert "triggering message id: `m-1`" in user_content
+    assert "thread id: `171717`" in user_content
+    assert user_content.endswith("hello")
     assert adapter.processing_hooks == [
         ("start", "m-1"),
         ("complete", "m-1", ProcessingOutcome.SUCCESS),

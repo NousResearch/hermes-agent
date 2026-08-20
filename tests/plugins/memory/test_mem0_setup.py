@@ -13,6 +13,7 @@ from plugins.memory.mem0._setup import (
     _write_env,
     _prompt_api_key,
     post_setup,
+    _ollama_has_model,
     _check_qdrant_path,
     _check_ollama,
     _check_pgvector,
@@ -230,4 +231,58 @@ class TestConnectivityChecks:
         ok, msg = _check_qdrant_path(str(tmp_path / "qdrant"))
         assert ok is True
 
+
+    def test_ollama_has_model_bounds_tags_response_read(self, monkeypatch):
+        import plugins.memory.mem0._setup as setup_mod
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                captured["closed"] = True
+                return False
+
+            def read(self, size=-1):
+                captured["size"] = size
+                data = captured.get("body") or json.dumps(
+                    {"models": [{"name": "llama3:latest"}]}
+                ).encode()
+                return data if size < 0 else data[:size]
+
+        monkeypatch.setattr(
+            setup_mod.urllib.request,
+            "urlopen",
+            lambda req, timeout=None: _Resp(),
+        )
+
+        assert _ollama_has_model("http://localhost:11434", "llama3:latest") is True
+        assert captured["size"] == setup_mod._OLLAMA_TAGS_RESPONSE_BODY_MAX_BYTES + 1
+        captured.update(body=b"[]", closed=False)
+        assert _ollama_has_model("http://localhost:11434", "llama3:latest") is False
+        assert captured["closed"] is True
+
+    def test_ollama_has_model_rejects_oversized_tags_response(self, monkeypatch):
+        import plugins.memory.mem0._setup as setup_mod
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                return b"x" * size
+
+        monkeypatch.setattr(setup_mod, "_OLLAMA_TAGS_RESPONSE_BODY_MAX_BYTES", 8)
+        monkeypatch.setattr(
+            setup_mod.urllib.request,
+            "urlopen",
+            lambda req, timeout=None: _Resp(),
+        )
+
+        assert _ollama_has_model("http://localhost:11434", "llama3:latest") is False
 

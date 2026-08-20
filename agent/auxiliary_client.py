@@ -1535,11 +1535,28 @@ class _CodexCompletionsAdapter:
         # that configure reasoning via auxiliary.<task>.extra_body get the
         # same behavior as the main agent's Codex transport.
         extra_body = kwargs.get("extra_body") or {}
-        if isinstance(extra_body, dict):
-            reasoning_cfg = extra_body.get("reasoning")
-            if isinstance(reasoning_cfg, dict):
+        reasoning_cfg = extra_body.get("reasoning") if isinstance(extra_body, dict) else None
+        if not isinstance(reasoning_cfg, dict):
+            # Fall back to a top-level reasoning_effort string — the wire
+            # shape the custom-provider profile emits — and then to the
+            # private normalized config dict, so MoA per-slot reasoning
+            # survives the codex_responses translation exactly like it does
+            # on the chat-completions path (custom profile → top-level
+            # reasoning_effort, which the Codex adapter previously dropped).
+            _top_effort = kwargs.get("reasoning_effort")
+            if _top_effort:
+                _eff = str(_top_effort).strip().lower()
+                if _eff in ("none", "false", "disabled"):
+                    reasoning_cfg = {"enabled": False}
+                else:
+                    reasoning_cfg = {"enabled": True, "effort": _eff}
+            else:
+                _rc = kwargs.get("_reasoning_config")
+                if isinstance(_rc, dict):
+                    reasoning_cfg = _rc
+        if isinstance(reasoning_cfg, dict):
                 if reasoning_cfg.get("enabled") is False:
-                    # Reasoning explicitly disabled — do not set reasoning
+                # Reasoning explicitly disabled — do not set reasoning
                     # or include.  The Codex backend still thinks by
                     # default, but we honor the caller's intent where the
                     # API allows it.
@@ -2065,6 +2082,21 @@ class _AnthropicCompletionsAdapter:
                 _rc = _eb.get("reasoning")
                 if isinstance(_rc, dict):
                     _reasoning_cfg = _rc
+        if _reasoning_cfg is None:
+            # Fall back to the top-level reasoning_effort string the
+            # custom-provider profile emits. A custom provider with
+            # api_mode=anthropic_messages but a base_url without an
+            # /anthropic marker (e.g. a relay's plain /v1) misses the
+            # _reasoning_config injection in _build_call_kwargs, and the
+            # profile's top-level reasoning_effort would otherwise be
+            # dropped here. Mirrors the _CodexCompletionsAdapter fallback.
+            _top_effort = kwargs.get("reasoning_effort")
+            if _top_effort:
+                _eff = str(_top_effort).strip().lower()
+                if _eff in ("none", "false", "disabled"):
+                    _reasoning_cfg = {"enabled": False}
+                else:
+                    _reasoning_cfg = {"enabled": True, "effort": _eff}
 
         anthropic_kwargs = build_anthropic_kwargs(
             model=model,

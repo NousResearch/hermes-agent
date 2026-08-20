@@ -300,18 +300,6 @@ def _add_nous_oauth_credential(args, provider: str) -> None:
     _persist(creds, "Saved")
 
 
-def _unsuppress_provider_sources(provider: str) -> None:
-    """Clear ALL suppressions for this provider — re-adding a credential is a strong signal the
-    user wants auth re-enabled. Covers env:* (shell-exported vars), gh_cli (copilot), claude_code,
-    qwen-cli, device_code (codex), etc. — one consistent re-engagement pattern."""
-    try:
-        suppressed = auth_mod._load_auth_store().get("suppressed_sources", {})
-        for src in list(suppressed.get(provider, []) or []):
-            auth_mod.unsuppress_credential_source(provider, src)
-    except Exception:
-        pass
-
-
 def _add_api_key_credential(args, provider: str, pool) -> None:
     token = ((getattr(args, "api_key", None) or "").strip()
              or masked_secret_prompt("Paste your API key: ").strip())
@@ -346,8 +334,26 @@ def auth_add_command(args) -> None:
         requested_type = AUTH_TYPE_OAUTH if oauth_default else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
-    if not is_custom:
-        _unsuppress_provider_sources(provider)
+
+    # Clear every suppression this scope can write for the provider — re-adding a
+    # credential is a strong signal the user wants auth re-enabled.  This covers
+    # env:* (shell-exported vars), gh_cli (copilot), claude_code, qwen-cli,
+    # device_code (codex), etc.  One consistent re-engagement pattern.
+    # Matches the Codex device_code re-link pattern that predates this.
+    if not provider.startswith(CUSTOM_POOL_PREFIX):
+        try:
+            from hermes_cli.auth import lift_provider_suppressions
+
+            still_suppressed = lift_provider_suppressions(provider)
+            if still_suppressed:
+                print(
+                    f"Note: {provider} stays suppressed at the global root for "
+                    f"{', '.join(sorted(still_suppressed))} — a profile cannot lift a "
+                    f"marker it does not own.  Re-run outside the profile to seed "
+                    f"from those sources."
+                )
+        except Exception:
+            pass
 
     if requested_type == AUTH_TYPE_API_KEY:
         _add_api_key_credential(args, provider, pool)

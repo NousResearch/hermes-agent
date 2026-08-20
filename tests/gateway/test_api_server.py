@@ -1352,6 +1352,51 @@ class TestResponsesEndpoint:
 
 
     @pytest.mark.asyncio
+    async def test_failed_response_returns_502_error_envelope(self, adapter):
+        """A failed agent run returns an OpenAI error envelope."""
+        mock_result = {
+            "final_response": "API call failed after 3 retries: Connection error.",
+            "completed": False,
+            "failed": True,
+            "error": "Connection error.",
+            "failure_reason": "timeout",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Reply with only the word hello.",
+                        "stream": False,
+                        "store": False,
+                    },
+                )
+
+            assert resp.status == 502
+            data = await resp.json()
+            assert data["error"]["code"] == "agent_incomplete"
+            assert "connection error" in data["error"]["message"].lower()
+            assert data["error"]["hermes"]["completed"] is False
+            assert data["error"]["hermes"]["partial"] is False
+            assert data["error"]["hermes"]["failed"] is True
+            assert resp.headers.get("X-Hermes-Completed") == "false"
+            assert resp.headers.get("X-Hermes-Partial") == "false"
+
+
+    @pytest.mark.asyncio
     async def test_previous_response_id_stores_compressed_transcript_directly(self, adapter):
         """After compression, stored history is the compressed transcript, not prior + compressed."""
         prior_history = [

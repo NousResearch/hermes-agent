@@ -248,6 +248,20 @@ These are intentionally *not* persisted as part of the cached system prompt:
 
 This separation keeps the stable prefix stable for caching.
 
+## Builder-declared cache boundaries for skills and cron
+
+Skill invocations and skill-backed cron jobs combine a large static scaffold (activation note, expanded skill body, and fixed instruction marker) with a small per-run instruction or event payload. Treating that whole user message as one cache block would invalidate the scaffold every time the payload changes.
+
+The builders therefore declare the exact byte boundary instead of asking the request layer to rediscover it from delimiters:
+
+1. `agent.skill_commands.append_user_instruction()` appends the volatile instruction and returns the stable prefix.
+2. The skill or cron builder registers that prefix through `agent.prompt_cache_boundary.register_stable_prefix()` only if it is still a proper byte-prefix of the final message. If an injection scan rewrites the assembled bytes, registration is skipped and caching safely falls back to the whole-message policy.
+3. For a native Anthropic request, `agent.prompt_caching` emits two text parts: the stable scaffold carries the cache marker and the volatile tail does not. The canonical session message remains a plain string, so persistence and provider failover are unchanged.
+
+The registry is process-local and limited to 32 LRU entries. When it holds multiple entries, it evicts the oldest prefixes until their combined size is roughly four million characters; the newest prefix is always kept, so one unusually large scaffold can exceed that soft character budget. A miss, restart, or eviction is safe: Hermes sends the original unsplit message. In a long interactive session the split shape is used only while the invocation remains among the cache plan's recent endpoints; when it rotates out, the provider may ingest that prefix once more. Fresh webhook and cron invocations keep the skill turn at the newest endpoint and retain the intended cache hit.
+
+When adding another builder with the same `static scaffold + volatile instruction` shape, reuse `append_user_instruction()` and register only after all sanitizing transforms. Do not parse the instruction marker back out of arbitrary skill or event text: the same bytes may legitimately appear inside untrusted payloads.
+
 ## Memory snapshots
 
 Local memory and user profile data are captured in the system prompt's **volatile tier**. Mid-session writes update disk state but do not mutate the already-built cached system prompt until a rebuild path runs (new session, or explicit invalidation/rebuild flow such as compression-triggered rebuild).

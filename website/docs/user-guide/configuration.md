@@ -938,6 +938,22 @@ automatically requeue the message because doing so without durable ordering and
 idempotency could process it twice. Non-positive values use the 1800-second
 default.
 
+## Gateway Restart-Loop Breaker
+
+When a gateway restarts with interrupted sessions, it normally resumes them automatically. A session that repeatedly crashes or requests another restart can otherwise create an endless supervisor loop. The restart-loop breaker persists those restart-interrupted boots and stops **automatic replay** after the configured threshold; the gateway itself still starts, accepts new messages, and leaves the interrupted session available for a later real user message.
+
+```yaml
+gateway:
+  restart_loop_guard:
+    max_restarts: 3       # 0 disables the breaker
+    window_seconds: 60    # also acts as the minimum chain gap
+    max_gap_seconds: 300  # largest gap that still belongs to one crash cycle
+```
+
+Boots count as one loop while every consecutive gap is at most `max(window_seconds, max_gap_seconds)`. This catches both fast supervisor respawns and slower cycles such as a liveness watchdog killing a wedged gateway every few minutes. A longer quiet period starts a fresh chain, so occasional operator restarts do not accumulate forever.
+
+When the breaker trips, the gateway log contains `Restart-loop breaker TRIPPED` and the persisted chain is in `~/.hermes/gateway/restart_loop.json` (under the active `HERMES_HOME`). First diagnose the session or restart source rather than raising the limits. If the state is a confirmed false positive and the gateway is otherwise healthy, stop the gateway, remove that state file, and start it again.
+
 ## Session Stall Watchdog
 
 The gateway runs a notify-only stall watchdog (`agent.session_stall_timeout`, default `300` seconds, `0` = disabled). When a busy session has a **pending inbound follow-up** and the agent's shared activity clock has been idle for at least this long, the gateway logs a WARNING and sends the user a one-shot notification:

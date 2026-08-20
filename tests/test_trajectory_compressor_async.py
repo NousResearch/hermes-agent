@@ -199,3 +199,44 @@ async def test_generate_summary_async_public_moonshot_cn_kimi_k2_5_omits_tempera
 
     assert result.startswith("[CONTEXT SUMMARY]:")
     assert "temperature" not in async_client.chat.completions.create.call_args.kwargs
+
+
+class TestTrustRemoteCodeWarning:
+    """trajectory_compressor.py — trust_remote_code security warning."""
+
+    def test_warning_logged_when_trust_remote_code_true(self):
+        """_init_tokenizer should log a warning when trust_remote_code=True."""
+        from trajectory_compressor import CompressionConfig, TrajectoryCompressor
+
+        config = CompressionConfig(trust_remote_code=True)
+        compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+        compressor.config = config
+        compressor.logger = MagicMock()
+
+        mock_tokenizer_cls = MagicMock()
+        with patch.dict("sys.modules", {"transformers": MagicMock(
+            AutoTokenizer=mock_tokenizer_cls
+        )}):
+            compressor._init_tokenizer()
+
+        compressor.logger.warning.assert_called_once()
+        call_args = compressor.logger.warning.call_args
+        assert "trust_remote_code" in call_args[0][0]
+        assert config.tokenizer_name in call_args[0][1]
+
+    def test_no_warning_when_trust_remote_code_false(self):
+        """_init_tokenizer should NOT log a warning when trust_remote_code=False."""
+        from trajectory_compressor import CompressionConfig, TrajectoryCompressor
+
+        config = CompressionConfig(trust_remote_code=False)
+        compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+        compressor.config = config
+        compressor.logger = MagicMock()
+
+        mock_tokenizer_cls = MagicMock()
+        with patch.dict("sys.modules", {"transformers": MagicMock(
+            AutoTokenizer=mock_tokenizer_cls
+        )}):
+            compressor._init_tokenizer()
+
+        compressor.logger.warning.assert_not_called()

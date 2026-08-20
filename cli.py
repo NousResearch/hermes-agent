@@ -1438,6 +1438,7 @@ def _flush_one_shot_session_store(cli) -> None:
 
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
+    agent = getattr(cli, "agent", None)
     try:
         # Durable flush FIRST: memory-provider shutdown inside _run_cleanup
         # can issue aux-LLM calls, and nothing after it may fail in a way
@@ -1447,15 +1448,22 @@ def _finalize_single_query(cli) -> None:
         except Exception:
             logger.debug("one-shot session store flush failed", exc_info=True)
         _notify_single_query_session_finalize(cli)
-        agent = getattr(cli, "agent", None)
-        if agent is not None and hasattr(agent, "close"):
-            try:
-                agent.close()
-            except Exception:
-                logging.debug("single-query agent close failed", exc_info=True)
-        _run_cleanup(notify_session_finalize=False)
     finally:
-        cli._release_active_session()
+        # Session ownership must be finalized even when the notification hook
+        # fails. Helper agents that handed ownership forward opt out explicitly.
+        if agent is not None and getattr(agent, "_end_session_on_close", True):
+            close = getattr(agent, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logging.warning(
+                        "single-query agent close failed", exc_info=True
+                    )
+        try:
+            _run_cleanup(notify_session_finalize=False)
+        finally:
+            cli._release_active_session()
 
 
 def _reset_terminal_input_modes_on_exit() -> None:

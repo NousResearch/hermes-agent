@@ -36,7 +36,11 @@ def test_finalize_single_query_releases_session_when_cleanup_fails(monkeypatch):
 
 def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch):
     calls = []
-    fake_agent = SimpleNamespace(session_id="agent-session", platform="cli")
+    fake_agent = SimpleNamespace(
+        session_id="agent-session",
+        platform="cli",
+        close=lambda: calls.append("close"),
+    )
     fake_cli = SimpleNamespace(
         agent=fake_agent,
         session_id="cli-session",
@@ -52,7 +56,7 @@ def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch
 
     cli._finalize_single_query(fake_cli)
 
-    assert calls == ["finalize", "cleanup", "release"]
+    assert calls == ["finalize", "close", "cleanup", "release"]
 
 
 
@@ -242,3 +246,57 @@ def test_finalize_single_query_closes_agent_and_ends_session(monkeypatch):
     assert calls.index("agent.close") < calls.index("cleanup")
     assert ended == [("single-query-session", "agent_close")]
     assert calls[-1] == "release"
+
+
+def test_finalize_single_query_warns_when_agent_close_fails(monkeypatch, caplog):
+    calls = []
+
+    def close():
+        calls.append("close")
+        raise RuntimeError("close failed")
+
+    fake_cli = SimpleNamespace(
+        agent=SimpleNamespace(
+            session_id="single-query-session",
+            platform="cli",
+            close=close,
+        ),
+        _release_active_session=lambda: calls.append("release"),
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "_notify_single_query_session_finalize",
+        lambda _cli: calls.append("finalize"),
+    )
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **kwargs: calls.append("cleanup"))
+
+    with caplog.at_level("WARNING"):
+        cli._finalize_single_query(fake_cli)
+
+    assert calls == ["finalize", "close", "cleanup", "release"]
+    assert "single-query agent close failed" in caplog.text
+
+
+def test_finalize_single_query_skips_forwarded_agent(monkeypatch):
+    calls = []
+    fake_cli = SimpleNamespace(
+        agent=SimpleNamespace(
+            session_id="forwarded-session",
+            platform="cli",
+            _end_session_on_close=False,
+            close=lambda: calls.append("close"),
+        ),
+        _release_active_session=lambda: calls.append("release"),
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "_notify_single_query_session_finalize",
+        lambda _cli: calls.append("finalize"),
+    )
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **kwargs: calls.append("cleanup"))
+
+    cli._finalize_single_query(fake_cli)
+
+    assert calls == ["finalize", "cleanup", "release"]

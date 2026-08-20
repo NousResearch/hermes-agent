@@ -55,7 +55,7 @@ def annotate_preview_tool(
     if verb in ("add", "remove") and not (ref or selector):
         return tool_error(
             f"{verb} needs a ref from drive_preview action='elements' "
-            "(e.g. '@e5') or a CSS selector."
+            "(e.g. 'btn-sign-in') or a CSS selector."
         )
 
     payload = {
@@ -95,7 +95,7 @@ ANNOTATE_PREVIEW_SCHEMA = {
         "this is how you point at something. Use it to show the user what you "
         "found ('here are the three cheapest'), flag what you are about to "
         "change before you change it, or keep your place while you work "
-        "elsewhere on the page. Address elements by the same '@e5' refs "
+        "elsewhere on the page. Address elements by the same refs "
         "drive_preview action='elements' hands back. action='add' outlines an "
         "element and gives it an optional short label; 'hold' freezes the WHOLE "
         "visible field at once — every element the page offers, outlined and "
@@ -120,7 +120,7 @@ ANNOTATE_PREVIEW_SCHEMA = {
             },
             "ref": {
                 "type": "string",
-                "description": "Element reference from drive_preview action='elements' (e.g. '@e5').",
+                "description": "Element reference from drive_preview action='elements' (e.g. 'btn-sign-in').",
             },
             "selector": {
                 "type": "string",

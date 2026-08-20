@@ -20,14 +20,46 @@ export interface PreviewElement {
   disabled?: boolean
   /** Human-readable label (aria-label, text, placeholder, value …). */
   label: string
-  /** Stable-for-this-snapshot handle: '@e1', '@e2', … */
+  /** Durable handle for as long as this page is open: 'btn-sign-in'. Legible on
+   *  purpose — see the ref-minting note in `actInPage`. */
   ref: string
   /** Explicit ARIA role, else the tag name. */
   role: string
-  /** CSS selector that resolves back to this node, for re-finding it later. */
-  selector: string
+  /** The element's `#id` or `[data-testid]`, when it has one. Absent otherwise
+   *  — address the element by its `ref`. */
+  selector?: string
   /** Current value of a form control, truncated. */
   value?: string
+}
+
+/** An element that is still itself but no longer reads the same.
+ *
+ *  Only the fields that actually moved are present. Role and selector are
+ *  absent by construction rather than by omission: a change in either would
+ *  mean this is a different element, which the re-bind ladder would have
+ *  refused to match in the first place. */
+export interface PreviewElementChange {
+  /** Present only when the control's availability flipped. */
+  disabled?: boolean
+  label?: string
+  ref: string
+  value?: string
+}
+
+/** What changed on the page since the last look. Sent instead of the whole
+ *  inventory once the agent has a baseline for the page — see `survey`. */
+export interface PreviewActDelta {
+  /** Elements seen for the first time, in full. */
+  added?: PreviewElement[]
+  /** Same handle, new label/value/disabled state — and nothing else. */
+  changed?: PreviewElementChange[]
+  /** Handles that are gone from the page. */
+  removed?: string[]
+  /** Handles whose element was destroyed and recreated by a re-render. The
+   *  handle still works; nothing about them needs re-reading. */
+  rebound?: string[]
+  /** How many handles were on the page and untouched. */
+  same?: number
 }
 
 /** A normalized action. `kind` is the verb; the rest is per-verb payload. */
@@ -53,6 +85,8 @@ export interface PreviewActAction {
   /** locate: also give the target keyboard focus, for a key press that must not
    *  be preceded by a click (which would activate the control instead). */
   focus?: boolean
+  /** elements: answer with the whole inventory rather than a delta. */
+  full?: boolean
   /** Cap on the returned inventory. */
   max?: number
   ref?: string
@@ -66,6 +100,11 @@ export interface PreviewActAction {
 export interface PreviewActResult {
   /** What the action landed on, for the agent's own log. */
   acted?: string
+  /** What moved since the last look. Present INSTEAD of `elements` once the
+   *  agent holds a baseline for this page. */
+  delta?: PreviewActDelta
+  /** The full inventory. Sent on the first look at a page, and again whenever
+   *  the page changed too much for a delta to be the cheaper answer. */
   elements?: PreviewElement[]
   error?: string
   note?: string
@@ -79,17 +118,45 @@ export interface PreviewActResult {
   url?: string
 }
 
-/** Where the surface keeps the last snapshot between actions (a window global
- *  in the preview page), so '@e5' still means something on the next call. */
+/** One element the agent has a handle on, remembered across actions. */
+export interface PreviewActBinding {
+  el: Element
+  /** What it read as last time. Kept field by field rather than as one hash so
+   *  a change can be reported as only the part that moved. */
+  label: string
+  /** The accessible name at mint time, for re-finding this element after a
+   *  re-render destroys and recreates its node. */
+  name: string
+  /** Whether the control was unavailable last time. */
+  off: boolean
+  /** Nearest-landmark path plus position among same-role siblings. */
+  path: string
+  ref: string
+  role: string
+  /** `id` / `name` / `data-testid` / `aria-label`, if the page provides one.
+   *  The strongest re-bind signal there is, and the only one a rewrite of the
+   *  surrounding markup cannot disturb. */
+  stable: string
+  value: string
+}
+
+/** Where the surface keeps what it knows between actions (a window global in
+ *  the preview page), so a handle still means something on the next call. */
 export interface PreviewActHolder {
   /** Target of the action in flight, for the watch overlay to draw onto. */
   aimed?: Element | null
+  /** Every handle minted on this page, live or not yet retired. */
+  book?: PreviewActBinding[]
+  /** Next disambiguating suffix per ref stem, so two "Edit" buttons become
+   *  `btn-edit` and `btn-edit-1`. Never rewound: a retired handle's name is
+   *  not handed to a different element later in the same page. */
+  coined?: Record<string, number>
   /** The on-screen subset, for the overlay to outline. Diverges from `nodes` in
    *  both directions: it drops what is below the fold, and it is not capped at
    *  the inventory's size. */
   field?: Element[]
   nodes?: Element[]
-  /** URL the snapshot was taken on; a navigation invalidates every ref. */
+  /** URL the snapshot was taken on; a navigation retires every handle. */
   url?: string
 }
 
@@ -102,6 +169,11 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
   // told about. Far higher, because an extra mark costs one rect read where an
   // extra inventory row costs tokens on every single call.
   const maxMarks = 600
+  // How alike a remembered element and a fresh one have to be before the
+  // handle moves across. Below it we mint a new handle instead: a re-render
+  // costing the agent a re-read is a cheap mistake, and a handle silently
+  // pointing at the wrong button is not.
+  const rebindBar = 0.6
   const win = doc.defaultView
   const here = doc.location ? doc.location.href : ''
 
@@ -141,8 +213,107 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
     return ''
   }
 
-  /** Identity-first selector, positional fallback — the caller re-finds nodes
-   *  with this once the refs have gone stale. */
+  /** The strongest identity signal the page offers, if it offers one. Nothing a
+   *  re-render does to the surrounding markup disturbs these. */
+  const stableOf = (el: Element): string =>
+    el.id ||
+    el.getAttribute('data-testid') ||
+    el.getAttribute('name') ||
+    el.getAttribute('aria-label') ||
+    ''
+
+  /** Handle stems by role, so a handle says what it is before it says which
+   *  one. Anything unrecognised is `el`. */
+  const stemOf = (role: string): string => {
+    if (role === 'button' || role === 'summary') {
+      return 'btn'
+    }
+
+    if (role === 'a' || role === 'link') {
+      return 'lnk'
+    }
+
+    if (role === 'input:search' || role === 'searchbox') {
+      return 'srch'
+    }
+
+    if (role === 'input:checkbox' || role === 'checkbox') {
+      return 'chk'
+    }
+
+    if (role === 'input:radio' || role === 'radio') {
+      return 'rdo'
+    }
+
+    if (role === 'select' || role === 'combobox') {
+      return 'sel'
+    }
+
+    if (role === 'textarea') {
+      return 'txt'
+    }
+
+    if (role === 'switch') {
+      return 'sw'
+    }
+
+    if (role === 'tab' || role === 'menuitem' || role === 'option') {
+      return role === 'menuitem' ? 'mi' : role === 'option' ? 'opt' : 'tab'
+    }
+
+    // Every `input:*` that isn't one of the special cases above, plus the ARIA
+    // textbox. A date picker and an email field are both places text goes.
+    return role.indexOf('input') === 0 || role === 'textbox' ? 'inp' : 'el'
+  }
+
+  /** Lowercase, hyphenated, and short enough to read at a glance. */
+  const slug = (name: string): string => {
+    let out = ''
+    let dash = false
+
+    for (let i = 0; i < name.length && out.length < 24; i++) {
+      const ch = name[i]
+
+      if (/[a-zA-Z0-9]/.test(ch)) {
+        out += ch.toLowerCase()
+        dash = false
+      } else if (!dash && out) {
+        out += '-'
+        dash = true
+      }
+    }
+
+    return out.replace(/-+$/, '')
+  }
+
+  /** Where the element sits, coarsely: the nearest landmark plus its position
+   *  among same-role elements inside it. Deliberately NOT the CSS selector
+   *  below — a wrapper div appearing anywhere in the chain changes that string
+   *  completely, which is exactly the churn a re-bind has to see through. */
+  const anchorOf = (el: Element): string => {
+    const near = el.closest(
+      'main,nav,header,footer,aside,[role="main"],[role="navigation"],[role="banner"],' +
+        '[role="contentinfo"],[role="complementary"],[role="search"],form[aria-label],section[aria-label]'
+    )
+
+    if (!near) {
+      return 'root'
+    }
+
+    const named = near.getAttribute('aria-label') || ''
+
+    return near.tagName.toLowerCase() + (named ? '#' + slug(named) : '')
+  }
+
+  /** The element's own selector, when the page gives it one worth having.
+   *
+   *  Deliberately identity-only. This used to fall back to a chain of up to
+   *  eight `:nth-child` rungs, and on a real app shell that column was 74% of
+   *  the entire inventory — the single biggest thing the agent was paying for.
+   *  It bought nothing: nothing downstream reads it, a positional chain is
+   *  wrong the moment a sibling appears, and re-finding a node is what the
+   *  durable ref now does properly. An `#id` is short, stable, and the one
+   *  case where naming the node is genuinely useful to the model. */
   const selectorFor = (el: Element): string => {
     if (el.id) {
       return '#' + cssEscape(el.id)
@@ -150,28 +321,7 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
 
     const testId = el.getAttribute('data-testid')
 
-    if (testId) {
-      return '[data-testid="' + cssEscape(testId) + '"]'
-    }
-
-    const path: string[] = []
-    let node: Element | null = el
-
-    while (node && node !== doc.body && path.length < 8) {
-      if (node.id) {
-        path.unshift('#' + cssEscape(node.id))
-
-        break
-      }
-
-      const parent: Element | null = node.parentElement
-      const index = parent ? Array.prototype.indexOf.call(parent.children, node) : -1
-
-      path.unshift(node.tagName.toLowerCase() + (index >= 0 ? ':nth-child(' + (index + 1) + ')' : ''))
-      node = parent
-    }
-
-    return path.join(' > ')
+    return testId ? '[data-testid="' + cssEscape(testId) + '"]' : ''
   }
 
   /** On screen right now, and worth drawing a box around. The field is strictly
@@ -267,6 +417,7 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
     // function after the scroll.
     const midX = rect.left + rect.width / 2
     const midY = rect.top + rect.height / 2
+
     const under = (doc as Document & { elementFromPoint?: (x: number, y: number) => Element | null })
       .elementFromPoint
 
@@ -302,7 +453,9 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
     return ''
   }
 
-  const collect = (max: number): PreviewElement[] => {
+  /** Walk the page and hand back what is interactable, in document order. The
+   *  handles are assigned afterwards, by `survey`. */
+  const sight = (max: number) => {
     const nodes: Element[] = []
     const field: Element[] = []
     const elements: PreviewElement[] = []
@@ -342,15 +495,25 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
 
       // A control with neither a label nor a value is not addressable in prose
       // — the agent could not tell it apart from its unlabelled neighbours.
+      // It is also the one case a durable handle cannot be minted for, since
+      // there would be nothing to name it after and nothing to re-find it by,
+      // so dropping it here keeps every handle we DO mint anchorable.
       if (!label && !value) {
         continue
       }
 
       const entry: PreviewElement = {
         label,
-        ref: '@e' + (elements.length + 1),
-        role,
-        selector: selectorFor(el)
+        // Filled in by `survey`, which is what knows whether this element
+        // already has a handle.
+        ref: '',
+        role
+      }
+
+      const selector = selectorFor(el)
+
+      if (selector) {
+        entry.selector = selector
       }
 
       if ((el as HTMLInputElement).disabled) {
@@ -367,12 +530,284 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
 
     holder.nodes = nodes
     holder.field = field
-    holder.url = here
 
-    return elements
+    return { elements, nodes }
   }
 
-  /** Resolve the action's target: a ref from the last snapshot, else a selector. */
+  /** What moved on an element that kept its handle, or nothing if it held
+   *  still. Field by field, so a status line ticking over costs the agent one
+   *  short line instead of a re-run of everything already known about it. */
+  const shifted = (was: PreviewActBinding, entry: PreviewElement): PreviewElementChange | null => {
+    const off = !!entry.disabled
+    const value = entry.value || ''
+
+    if (was.label === entry.label && was.value === value && was.off === off) {
+      return null
+    }
+
+    const moved: PreviewElementChange = { ref: was.ref }
+
+    if (was.label !== entry.label) {
+      moved.label = entry.label
+    }
+
+    if (was.value !== value) {
+      moved.value = value
+    }
+
+    if (was.off !== off) {
+      moved.disabled = off
+    }
+
+    return moved
+  }
+
+  /** Do two labels share at least half their words? Tolerates the count badge
+   *  and the copy edit — "Inbox" against "Inbox (3)". */
+  const alike = (a: string, b: string): boolean => {
+    if (!a || !b) {
+      return false
+    }
+
+    const one = a.toLowerCase().split(/\s+/).filter(Boolean)
+    const two = b.toLowerCase().split(/\s+/).filter(Boolean)
+    const both = one.filter(word => two.indexOf(word) !== -1).length
+    const all = one.length + two.filter(word => one.indexOf(word) === -1).length
+
+    return all > 0 && both / all >= 0.5
+  }
+
+  /** How strongly a remembered element matches one just observed, 0 to 1.
+   *
+   *  Ported from anchortree's re-bind ladder (Apache-2.0), minus its geometry
+   *  rung: a centroid is only ever worth 0.1 there, it never reaches the 0.6
+   *  bar on its own, and carrying coordinates through the book to buy a
+   *  tie-break is not worth the measurement. */
+  const affinity = (was: PreviewActBinding, now: PreviewActBinding): number => {
+    // A button is not a link, however alike the rest of it reads.
+    if (was.role !== now.role) {
+      return 0
+    }
+
+    // Two elements that BOTH carry a stable attribute and disagree are the page
+    // telling us outright that they are different things.
+    if (was.stable && now.stable) {
+      return was.stable === now.stable ? 1 : 0
+    }
+
+    let score = 0
+
+    if (was.name && was.name === now.name) {
+      score += 0.6
+    } else if (alike(was.name, now.name)) {
+      score += 0.4
+    }
+
+    if (was.path && was.path === now.path) {
+      score += 0.3
+    }
+
+    return score
+  }
+
+  /** Mint a handle. Legible on purpose: the agent reads `btn-sign-in` in a
+   *  three-line delta on turn nine and knows what it is, where `@e42` would
+   *  send it back to an inventory twenty thousand tokens ago. Suffixes are
+   *  never rewound, so a retired handle's name is not later handed to a
+   *  different element on the same page. */
+  const coin = (role: string, name: string): string => {
+    const coined = holder.coined || (holder.coined = {})
+    const named = slug(name)
+    const stem = stemOf(role) + (named ? '-' + named : '')
+    const nth = coined[stem] || 0
+
+    coined[stem] = nth + 1
+
+    return nth ? stem + '-' + nth : stem
+  }
+
+  /** Look at the page and say what is there — or, once there is something to
+   *  compare against, only what moved.
+   *
+   *  Re-sending the whole inventory every action is what took a ten-step
+   *  session from 45k to 85k tokens of context: the page barely changes between
+   *  a scroll and a click, and the agent was being charged for a fresh copy of
+   *  it each time. */
+  const survey = (max: number): PreviewActResult => {
+    // A navigation is a different page. Every handle on the old one is retired
+    // rather than rebound onto whatever now sits in the same place.
+    const fresh = holder.url !== here
+
+    if (fresh) {
+      holder.book = []
+      holder.coined = {}
+    }
+
+    const book = holder.book || (holder.book = [])
+    const seen = sight(max)
+    const claimed: Record<string, boolean> = {}
+    const kept: PreviewActBinding[] = []
+    const added: PreviewElement[] = []
+    const changed: PreviewElementChange[] = []
+    const rebound: string[] = []
+    const known = new Map<Element, PreviewActBinding>()
+    const waiting: number[] = []
+    let same = 0
+
+    for (const bound of book) {
+      known.set(bound.el, bound)
+    }
+
+    // Pass one: the element object itself is still the one we remember. Free,
+    // and it is what happens on a scroll, a hover, and most clicks.
+    for (let i = 0; i < seen.elements.length; i++) {
+      const entry = seen.elements[i]
+      const bound = known.get(seen.nodes[i])
+
+      if (!bound) {
+        waiting.push(i)
+
+        continue
+      }
+
+      const moved = shifted(bound, entry)
+
+      entry.ref = bound.ref
+      claimed[bound.ref] = true
+      kept.push(bound)
+
+      if (!moved) {
+        same++
+        continue
+      }
+
+      bound.label = entry.label
+      bound.name = entry.label || entry.value || ''
+      bound.off = !!entry.disabled
+      bound.value = entry.value || ''
+      changed.push(moved)
+    }
+
+    // Pass two: whatever is left either replaced something (a framework threw
+    // the node away and built a new one) or is genuinely new. The pool is only
+    // the handles whose element is GONE, which is both the correct candidate
+    // set and a small one.
+    const pool = book.filter(bound => !claimed[bound.ref] && !doc.contains(bound.el))
+
+    for (const i of waiting) {
+      const entry = seen.elements[i]
+      const el = seen.nodes[i]
+
+      const now: PreviewActBinding = {
+        el,
+        label: entry.label,
+        name: entry.label || entry.value || '',
+        off: !!entry.disabled,
+        path: anchorOf(el),
+        ref: '',
+        role: entry.role,
+        stable: stableOf(el),
+        value: entry.value || ''
+      }
+
+      let best: PreviewActBinding | undefined
+      let score = 0
+
+      for (const bound of pool) {
+        if (claimed[bound.ref]) {
+          continue
+        }
+
+        const rung = affinity(bound, now)
+
+        // Strictly better, so a tie goes to whichever candidate the page put
+        // first and the same page twice re-binds the same way.
+        if (rung >= rebindBar && rung > score) {
+          best = bound
+          score = rung
+        }
+      }
+
+      if (best) {
+        // Same handle, new node. Reported as one word rather than a removal
+        // and an addition, because from the agent's side nothing happened —
+        // its handle still works and it has nothing to re-read.
+        entry.ref = best.ref
+        best.el = el
+        best.label = now.label
+        best.name = now.name
+        best.off = now.off
+        best.path = now.path
+        best.stable = now.stable
+        best.value = now.value
+        claimed[best.ref] = true
+        kept.push(best)
+        rebound.push(best.ref)
+
+        continue
+      }
+
+      now.ref = coin(entry.role, now.name)
+      entry.ref = now.ref
+      claimed[now.ref] = true
+      kept.push(now)
+      added.push(entry)
+    }
+
+    // A handle nobody claimed is gone ONLY if its element really left. One that
+    // is still on the page but fell past `max` keeps working and is simply not
+    // mentioned — saying "removed" about something the agent can still click
+    // would be worse than saying nothing.
+    const removed: string[] = []
+
+    for (const bound of book) {
+      if (claimed[bound.ref]) {
+        continue
+      }
+
+      if (doc.contains(bound.el) && visible(bound.el)) {
+        kept.push(bound)
+
+        continue
+      }
+
+      removed.push(bound.ref)
+    }
+
+    holder.book = kept
+    holder.url = here
+
+    // The delta has to actually be cheaper. When half the page is new there is
+    // nothing to reuse, and a delta is then just the inventory with extra
+    // framing around it.
+    const churn = added.length + changed.length
+
+    if (fresh || action.full || churn * 2 >= seen.elements.length) {
+      return { elements: seen.elements, success: true }
+    }
+
+    const delta: PreviewActDelta = { same }
+
+    if (added.length) {
+      delta.added = added
+    }
+
+    if (changed.length) {
+      delta.changed = changed
+    }
+
+    if (removed.length) {
+      delta.removed = removed
+    }
+
+    if (rebound.length) {
+      delta.rebound = rebound
+    }
+
+    return { delta, success: true }
+  }
+
+  /** Resolve the action's target: a handle from the book, else a selector. */
   const resolve = (): { el?: Element; error?: string } => {
     const ref = (action.ref || '').trim()
 
@@ -381,18 +816,17 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
         return { error: 'The page navigated since the last snapshot, so ' + ref + ' no longer points anywhere. Call elements again.' }
       }
 
-      const index = Number(ref.replace(/^@e/, '')) - 1
-      const el = holder.nodes && holder.nodes[index]
+      const bound = (holder.book || []).filter(entry => entry.ref === ref)[0]
 
-      if (!el) {
+      if (!bound) {
         return { error: 'Unknown element ' + ref + '. Call elements to get current refs.' }
       }
 
-      if (!doc.contains(el)) {
+      if (!doc.contains(bound.el)) {
         return { error: ref + ' has been removed from the page since the last snapshot. Call elements again.' }
       }
 
-      return { el }
+      return { el: bound.el }
     }
 
     const selector = (action.selector || '').trim()
@@ -434,12 +868,12 @@ export function actInPage(doc: Document, holder: PreviewActHolder, action: Previ
   }
 
   if (action.kind === 'elements') {
-    const elements = collect(Math.max(1, Math.min(action.max || maxElements, maxElements)))
+    const looked = survey(Math.max(1, Math.min(action.max || maxElements, maxElements)))
+    const empty = !looked.delta && !(looked.elements || []).length
 
     return answer({
-      elements,
-      note: elements.length ? undefined : 'No interactive elements found — the page may still be loading.',
-      success: true
+      ...looked,
+      note: empty ? 'No interactive elements found — the page may still be loading.' : undefined
     })
   }
 

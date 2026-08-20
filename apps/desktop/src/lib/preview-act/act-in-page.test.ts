@@ -28,13 +28,20 @@ function inventory(holder: PreviewActHolder) {
   return actInPage(document, holder, { kind: 'elements' })
 }
 
+/** Take the inventory and hand back the handle for the first thing on the page.
+ *  Tests address elements the way the agent does — by asking what they are
+ *  called — rather than predicting what the engine will name them. */
+function firstRef(holder: PreviewActHolder) {
+  return inventory(holder).elements![0].ref
+}
+
 beforeEach(() => {
   vi.restoreAllMocks()
   layOutTheDocument()
   Element.prototype.scrollIntoView = vi.fn()
   // jsdom has no hit-testing at all, so the engine skips the occlusion check
   // here by default. Tests that stand one in must not leak it into the next.
-  delete (document as Document & { elementFromPoint?: unknown }).elementFromPoint
+  delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint
 })
 
 describe('self-containment', () => {
@@ -51,18 +58,22 @@ describe('self-containment', () => {
     const injected = new Function('return (' + actInPage.toString() + ')')() as typeof actInPage
     const holder: PreviewActHolder = {}
 
-    expect(injected(document, holder, { kind: 'elements' }).elements?.[0].label).toBe('Save')
+    const [save] = injected(document, holder, { kind: 'elements' }).elements!
+
+    expect(save.label).toBe('Save')
 
     const clicked = vi.fn()
     document.getElementById('save')!.addEventListener('click', clicked)
 
-    expect(injected(document, holder, { kind: 'click', ref: '@e1' }).success).toBe(true)
+    expect(injected(document, holder, { kind: 'click', ref: save.ref }).success).toBe(true)
     expect(clicked).toHaveBeenCalledOnce()
   })
 })
 
 describe('elements', () => {
-  it('numbers the interactive nodes with browser_*-style refs', () => {
+  // The handle says what the thing is and which one it is, so a delta line the
+  // agent reads ten turns later needs no lookup to make sense of.
+  it('names the interactive nodes after their role and label', () => {
     const holder = page(`
       <button id="save">Save</button>
       <a href="/help">Help</a>
@@ -74,10 +85,41 @@ describe('elements', () => {
 
     expect(result.success).toBe(true)
     expect(result.elements?.map(e => [e.ref, e.label])).toEqual([
-      ['@e1', 'Save'],
-      ['@e2', 'Help'],
-      ['@e3', 'Your name']
+      ['btn-save', 'Save'],
+      ['lnk-help', 'Help'],
+      ['inp-your-name', 'Your name']
     ])
+  })
+
+  it('tells two elements with the same name apart', () => {
+    const holder = page(`
+      <button>Edit</button>
+      <button>Edit</button>
+      <button>Edit</button>
+    `)
+
+    expect(inventory(holder).elements?.map(e => e.ref)).toEqual(['btn-edit', 'btn-edit-1', 'btn-edit-2'])
+  })
+
+  // Handing a retired name to a different element would silently redirect a
+  // handle the agent is still holding. The two ids here also disagree, which is
+  // the page saying outright that these are different buttons — so this must
+  // not re-bind despite the identical label.
+  it('never reissues the name of an element that went away', () => {
+    const holder = page(`
+      <div id="host"><button id="a">Edit</button></div>
+      <a href="/help">Help</a>
+      <a href="/terms">Terms</a>
+    `)
+
+    expect(firstRef(holder)).toBe('btn-edit')
+
+    document.getElementById('host')!.innerHTML = '<button id="b">Edit</button>'
+
+    const again = inventory(holder)
+
+    expect(again.delta?.removed).toEqual(['btn-edit'])
+    expect(again.delta?.added?.map(e => e.ref)).toEqual(['btn-edit-1'])
   })
 
   it('reports role, current value, and disabled state', () => {
@@ -146,6 +188,7 @@ describe('elements', () => {
       <button style="left: 100px">Accept cookies</button>
       <button id="real" style="left: 300px">Search</button>
     `)
+
     const wall = document.createElement('div')
     document.body.append(wall)
 
@@ -179,35 +222,276 @@ describe('elements', () => {
     expect(holder.field).toEqual([document.getElementById('named'), document.getElementById('mystery')])
   })
 
-  it('prefers an identity selector so the agent can re-find the node later', () => {
+  // The positional `:nth-child` chain this used to fall back to was 74% of a
+  // real page's inventory and nothing read it. An identity selector is short
+  // and stable, so it stays; everything else addresses by ref.
+  it('carries an identity selector only, and omits it when there is none', () => {
     const holder = page(`
       <div><button data-testid="submit">Send</button></div>
+      <div><button id="cancel">Cancel</button></div>
       <div><button>Plain</button></div>
     `)
 
-    const [byTestId, positional] = inventory(holder).elements!
+    const [byTestId, byId, plain] = inventory(holder).elements!
 
     expect(byTestId.selector).toBe('[data-testid="submit"]')
-    expect(document.querySelector(positional.selector)).toBe(document.querySelectorAll('button')[1])
+    expect(byId.selector).toBe('#cancel')
+    expect(plain.selector).toBeUndefined()
+    expect(plain.ref).toBe('btn-plain')
   })
 
   it('honours the cap', () => {
     const holder = page(Array.from({ length: 10 }, (_, i) => `<button>B${i}</button>`).join(''))
 
     expect(inventory(holder).elements).toHaveLength(10)
-    expect(actInPage(document, holder, { kind: 'elements', max: 3 }).elements).toHaveLength(3)
+    expect(actInPage(document, holder, { full: true, kind: 'elements', max: 3 }).elements).toHaveLength(3)
+  })
+})
+
+// Re-sending the whole inventory after every click is what made a ten-step
+// session cost several times what it needed to: the page barely moves between
+// steps and the agent was charged for a fresh copy of it each time.
+describe('delta', () => {
+  it('gives the full inventory the first time it looks at a page', () => {
+    const holder = page('<button>Save</button>')
+    const first = inventory(holder)
+
+    expect(first.elements).toHaveLength(1)
+    expect(first.delta).toBeUndefined()
+  })
+
+  it('reports only what moved on every look after that', () => {
+    const holder = page(`
+      <div id="host">
+        <button id="save">Save</button>
+        <button id="undo">Undo</button>
+        <button id="redo">Redo</button>
+      </div>
+    `)
+
+    inventory(holder)
+
+    document.getElementById('host')!.insertAdjacentHTML('beforeend', '<button id="quit">Quit</button>')
+
+    const next = inventory(holder)
+
+    expect(next.elements).toBeUndefined()
+    expect(next.delta?.added?.map(e => e.ref)).toEqual(['btn-quit'])
+    expect(next.delta?.same).toBe(3)
+  })
+
+  it('says nothing about a page that did not move', () => {
+    const holder = page('<button id="save">Save</button>')
+    inventory(holder)
+
+    const still = inventory(holder)
+
+    expect(still.delta).toEqual({ same: 1 })
+  })
+
+  it('reports a relabelled control as changed, keeping its handle', () => {
+    const holder = page(`
+      <button id="cart">Add to cart</button>
+      <a href="/help">Help</a>
+      <a href="/terms">Terms</a>
+    `)
+
+    const ref = firstRef(holder)
+
+    document.getElementById('cart')!.textContent = 'Added'
+
+    const next = inventory(holder)
+
+    expect(next.delta?.changed?.map(e => [e.ref, e.label])).toEqual([[ref, 'Added']])
+    expect(actInPage(document, holder, { kind: 'click', ref }).success).toBe(true)
+  })
+
+  // `changed` fires on nearly every step of a long task, so it is the one part
+  // of the payload whose cost compounds. It carries the moved field and the
+  // handle, and nothing the agent already knows.
+  it('reports only the field that moved, not the whole element', () => {
+    const holder = page(`
+      <input id="q" aria-label="Search" />
+      <a href="/help">Help</a>
+      <a href="/terms">Terms</a>
+    `)
+    inventory(holder)
+    ;(document.getElementById('q') as HTMLInputElement).value = 'shoes'
+
+    const [moved] = inventory(holder).delta!.changed!
+
+    expect(moved).toEqual({ ref: 'inp-search', value: 'shoes' })
+  })
+
+  it('reports a control becoming available on its own', () => {
+    const holder = page(`
+      <button id="go" disabled>Continue</button>
+      <a href="/help">Help</a>
+      <a href="/terms">Terms</a>
+    `)
+    inventory(holder)
+    ;(document.getElementById('go') as HTMLButtonElement).disabled = false
+
+    expect(inventory(holder).delta?.changed).toEqual([{ disabled: false, ref: 'btn-continue' }])
+  })
+
+  it('falls back to the whole inventory when most of the page is new', () => {
+    const holder = page('<div id="host"><button id="save">Save</button></div>')
+    inventory(holder)
+
+    document.getElementById('host')!.innerHTML = '<a href="/a">A</a><a href="/b">B</a><a href="/c">C</a>'
+
+    const next = inventory(holder)
+
+    expect(next.delta).toBeUndefined()
+    expect(next.elements?.map(e => e.ref)).toEqual(['lnk-a', 'lnk-b', 'lnk-c'])
+  })
+
+  // An element that slid past the cap is still clickable, so calling it removed
+  // would be a lie the agent acts on.
+  it('does not report an element as removed just because it fell past the cap', () => {
+    const holder = page(Array.from({ length: 4 }, (_, i) => `<button>B${i}</button>`).join(''))
+    inventory(holder)
+
+    const capped = actInPage(document, holder, { kind: 'elements', max: 2 })
+
+    expect(capped.delta?.removed).toBeUndefined()
+    expect(actInPage(document, holder, { kind: 'click', ref: 'btn-b3' }).success).toBe(true)
+  })
+
+  // The contract the whole delta exists for. Not a fixed byte count — that
+  // would break on any wording change — but the relationship between the two
+  // payloads, which is what has to hold.
+  it('costs a fraction of the inventory on a page that mostly held still', () => {
+    const holder = page(`
+      <nav>${Array.from({ length: 8 }, (_, i) => `<a href="/n${i}">Section ${i}</a>`).join('')}</nav>
+      <main>
+        ${Array.from({ length: 24 }, (_, i) => `<button id="row-${i}">Row action ${i}</button>`).join('')}
+        <input id="q" placeholder="Search everything" />
+        <div id="host"></div>
+      </main>
+    `)
+
+    const baseline = JSON.stringify(inventory(holder).elements)
+
+    document.getElementById('host')!.innerHTML = '<button id="toast">Dismiss</button>'
+    document.getElementById('row-3')!.textContent = 'Row action 3 (done)'
+
+    const next = inventory(holder)
+
+    expect(next.delta?.same).toBe(32)
+    // Measured at roughly 15x on this fixture; the bar is set well below that
+    // so a wording change does not fail the build, but a regression to
+    // re-sending the page would.
+    expect(JSON.stringify(next.delta).length * 5).toBeLessThan(baseline.length)
+  })
+
+  it('retires every handle when the page navigates', () => {
+    const holder = page('<button id="save">Save</button>')
+    inventory(holder)
+    holder.url = 'https://elsewhere.example/other'
+
+    const landed = inventory(holder)
+
+    expect(landed.delta).toBeUndefined()
+    expect(landed.elements?.map(e => e.ref)).toEqual(['btn-save'])
+  })
+})
+
+// The headline case. A framework re-render destroys the node and builds a new
+// one; the agent's handle has to survive that, and it has to hear about it in
+// one word rather than as a removal it must react to plus an addition it must
+// re-read.
+describe('rebind', () => {
+  /** A page with a stable nav around the part that re-renders, so the re-bind
+   *  has to pick its candidate rather than being handed the only one going. */
+  function app(inner: string) {
+    return page(`
+      <nav><a href="/">Home</a><a href="/docs">Docs</a><a href="/pricing">Pricing</a></nav>
+      <main id="host">${inner}</main>
+    `)
+  }
+
+  function rerender(inner: string) {
+    document.getElementById('host')!.innerHTML = inner
+  }
+
+  it('keeps the handle when a re-render replaces the node', () => {
+    const holder = app('<button>Sign in</button>')
+    const ref = inventory(holder).elements!.find(e => e.label === 'Sign in')!.ref
+    const before = document.querySelector('button')
+
+    rerender('<span><button>Sign in</button></span>')
+
+    const next = inventory(holder)
+
+    expect(document.querySelector('button')).not.toBe(before)
+    expect(next.delta?.rebound).toEqual([ref])
+    expect(next.delta?.added).toBeUndefined()
+    expect(next.delta?.removed).toBeUndefined()
+    expect(actInPage(document, holder, { kind: 'click', ref }).success).toBe(true)
+  })
+
+  it('follows a label through a count badge appearing on it', () => {
+    const holder = app('<a href="/in">Inbox</a>')
+    const ref = inventory(holder).elements!.find(e => e.label === 'Inbox')!.ref
+
+    rerender('<div><a href="/in">Inbox (3)</a></div>')
+
+    expect(inventory(holder).delta?.rebound).toEqual([ref])
+  })
+
+  it('will not move a handle across roles', () => {
+    const holder = app('<button>Continue</button>')
+    inventory(holder)
+
+    rerender('<a href="/next">Continue</a>')
+
+    const next = inventory(holder)
+
+    expect(next.delta?.rebound).toBeUndefined()
+    expect(next.delta?.removed).toEqual(['btn-continue'])
+    expect(next.delta?.added?.map(e => e.ref)).toEqual(['lnk-continue'])
+  })
+
+  // Two unrelated buttons trading places must not trade handles with them.
+  it('mints a new handle rather than guess between unrelated candidates', () => {
+    const holder = app('<button>Delete account</button>')
+    inventory(holder)
+
+    rerender('<button>Upload photo</button>')
+
+    const next = inventory(holder)
+
+    expect(next.delta?.rebound).toBeUndefined()
+    expect(next.delta?.removed).toEqual(['btn-delete-account'])
+    expect(next.delta?.added?.map(e => e.ref)).toEqual(['btn-upload-photo'])
+  })
+
+  // Both carry an id and the ids disagree, which is the page saying outright
+  // that these are two different controls however alike they read.
+  it('will not move a handle between elements the page marks as distinct', () => {
+    const holder = app('<button id="save-draft">Save</button>')
+    inventory(holder)
+
+    rerender('<button id="save-final">Save</button>')
+
+    const next = inventory(holder)
+
+    expect(next.delta?.rebound).toBeUndefined()
+    expect(next.delta?.removed).toEqual(['btn-save'])
   })
 })
 
 describe('click', () => {
   it('activates the element a ref points at', () => {
     const holder = page('<button id="save">Save</button>')
-    inventory(holder)
+    const ref = firstRef(holder)
 
     const clicked = vi.fn()
     document.getElementById('save')!.addEventListener('click', clicked)
 
-    const result = actInPage(document, holder, { kind: 'click', ref: '@e1' })
+    const result = actInPage(document, holder, { kind: 'click', ref })
 
     expect(result.success).toBe(true)
     expect(result.acted).toContain('Save')
@@ -216,7 +500,7 @@ describe('click', () => {
 
   it('replays the pointer/mouse sequence frameworks bind to', () => {
     const holder = page('<button id="save">Save</button>')
-    inventory(holder)
+    const ref = firstRef(holder)
 
     const seen: string[] = []
 
@@ -224,7 +508,7 @@ describe('click', () => {
       document.getElementById('save')!.addEventListener(type, () => seen.push(type))
     }
 
-    actInPage(document, holder, { kind: 'click', ref: '@e1' })
+    actInPage(document, holder, { kind: 'click', ref })
 
     expect(seen).toContain('mousedown')
     expect(seen).toContain('mouseup')
@@ -242,9 +526,7 @@ describe('click', () => {
 
   it('refuses a disabled control instead of silently doing nothing', () => {
     const holder = page('<button id="save" disabled>Save</button>')
-    inventory(holder)
-
-    const result = actInPage(document, holder, { kind: 'click', ref: '@e1' })
+    const result = actInPage(document, holder, { kind: 'click', ref: firstRef(holder) })
 
     expect(result.success).toBe(false)
     expect(result.error).toContain('disabled')
@@ -252,18 +534,17 @@ describe('click', () => {
 
   it('reports the live url so a navigation is visible to the agent', () => {
     const holder = page('<button id="save">Save</button>')
-    inventory(holder)
 
-    expect(actInPage(document, holder, { kind: 'click', ref: '@e1' }).url).toBe(document.location.href)
+    expect(actInPage(document, holder, { kind: 'click', ref: firstRef(holder) }).url).toBe(document.location.href)
   })
 })
 
 describe('stale refs', () => {
-  it('names an unknown ref rather than clicking whatever sits at that index', () => {
+  it('names an unknown ref rather than acting on whatever is nearby', () => {
     const holder = page('<button>Only</button>')
     inventory(holder)
 
-    const result = actInPage(document, holder, { kind: 'click', ref: '@e9' })
+    const result = actInPage(document, holder, { kind: 'click', ref: 'btn-imaginary' })
 
     expect(result.success).toBe(false)
     expect(result.error).toContain('elements')
@@ -271,18 +552,18 @@ describe('stale refs', () => {
 
   it('catches a node that was removed after the snapshot', () => {
     const holder = page('<button id="save">Save</button>')
-    inventory(holder)
+    const ref = firstRef(holder)
     document.getElementById('save')!.remove()
 
-    expect(actInPage(document, holder, { kind: 'click', ref: '@e1' }).error).toContain('removed')
+    expect(actInPage(document, holder, { kind: 'click', ref }).error).toContain('removed')
   })
 
   it('invalidates every ref when the page navigated under them', () => {
     const holder = page('<button>Save</button>')
-    inventory(holder)
+    const ref = firstRef(holder)
     holder.url = 'https://elsewhere.example/other'
 
-    expect(actInPage(document, holder, { kind: 'click', ref: '@e1' }).error).toContain('navigated')
+    expect(actInPage(document, holder, { kind: 'click', ref }).error).toContain('navigated')
   })
 
   it('asks for a target when given neither', () => {
@@ -297,14 +578,14 @@ describe('stale refs', () => {
 describe('type', () => {
   it('enters text and fires the events a controlled input listens for', () => {
     const holder = page('<input id="who" placeholder="Your name" />')
-    inventory(holder)
+    const ref = firstRef(holder)
 
     const input = document.getElementById('who') as HTMLInputElement
     const events: string[] = []
     input.addEventListener('input', () => events.push('input'))
     input.addEventListener('change', () => events.push('change'))
 
-    const result = actInPage(document, holder, { kind: 'type', ref: '@e1', text: 'Brooklyn' })
+    const result = actInPage(document, holder, { kind: 'type', ref, text: 'Brooklyn' })
 
     expect(result.success).toBe(true)
     expect(input.value).toBe('Brooklyn')
@@ -313,7 +594,7 @@ describe('type', () => {
 
   it('bypasses the own-property shadow React installs on tracked inputs', () => {
     const holder = page('<input id="who" placeholder="Your name" />')
-    inventory(holder)
+    const ref = firstRef(holder)
 
     // React defines its own `value` accessor on the node to track what it last
     // wrote, and ignores an input event that agrees with it. Writing through
@@ -330,7 +611,7 @@ describe('type', () => {
       }
     })
 
-    actInPage(document, holder, { kind: 'type', ref: '@e1', text: 'Brooklyn' })
+    actInPage(document, holder, { kind: 'type', ref, text: 'Brooklyn' })
 
     expect(shadowWrites).toEqual([])
     expect(nativeValue.get!.call(input)).toBe('Brooklyn')
@@ -338,21 +619,20 @@ describe('type', () => {
 
   it('writes into a contenteditable host', () => {
     const holder = page('<div id="editor" contenteditable="true" aria-label="Body"></div>')
-    inventory(holder)
 
-    actInPage(document, holder, { kind: 'type', ref: '@e1', text: 'hello' })
+    actInPage(document, holder, { kind: 'type', ref: firstRef(holder), text: 'hello' })
 
     expect(document.getElementById('editor')!.textContent).toBe('hello')
   })
 
   it('submits the owning form when asked', () => {
     const holder = page('<form id="f"><input id="q" placeholder="Search" /></form>')
-    inventory(holder)
+    const ref = firstRef(holder)
 
     const form = document.getElementById('f') as HTMLFormElement
     form.requestSubmit = vi.fn()
 
-    const result = actInPage(document, holder, { kind: 'type', ref: '@e1', submit: true, text: 'cats' })
+    const result = actInPage(document, holder, { kind: 'type', ref, submit: true, text: 'cats' })
 
     expect(form.requestSubmit).toHaveBeenCalledOnce()
     expect(result.acted).toContain('submitted')
@@ -360,29 +640,29 @@ describe('type', () => {
 
   it('refuses a target that has no text to type into', () => {
     const holder = page('<button id="b">Press</button>')
-    inventory(holder)
 
-    expect(actInPage(document, holder, { kind: 'type', ref: '@e1', text: 'x' }).error).toContain('not a text field')
+    expect(actInPage(document, holder, { kind: 'type', ref: firstRef(holder), text: 'x' }).error).toContain(
+      'not a text field'
+    )
   })
 })
 
 describe('press', () => {
   it('sends the key to the target', () => {
     const holder = page('<input id="q" placeholder="Search" />')
-    inventory(holder)
+    const ref = firstRef(holder)
 
     const keys: string[] = []
     document.getElementById('q')!.addEventListener('keydown', e => keys.push((e as KeyboardEvent).key))
 
-    expect(actInPage(document, holder, { key: 'Enter', kind: 'press', ref: '@e1' }).success).toBe(true)
+    expect(actInPage(document, holder, { key: 'Enter', kind: 'press', ref }).success).toBe(true)
     expect(keys).toEqual(['Enter'])
   })
 
   it('needs a key', () => {
     const holder = page('<input id="q" placeholder="Search" />')
-    inventory(holder)
 
-    expect(actInPage(document, holder, { kind: 'press', ref: '@e1' }).error).toContain('key')
+    expect(actInPage(document, holder, { kind: 'press', ref: firstRef(holder) }).error).toContain('key')
   })
 })
 
@@ -426,13 +706,13 @@ describe('scroll', () => {
 
   it('scrolls a ref’d container instead of the page', () => {
     const holder = page('<div id="list" aria-label="Results" tabindex="0" style="overflow: auto"></div>')
-    inventory(holder)
+    const ref = firstRef(holder)
 
     const list = document.getElementById('list') as HTMLElement
     list.scrollBy = vi.fn()
     const pageScroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
 
-    const result = actInPage(document, holder, { amount: 200, kind: 'scroll', ref: '@e1' })
+    const result = actInPage(document, holder, { amount: 200, kind: 'scroll', ref })
 
     expect(list.scrollBy).toHaveBeenCalledWith({ behavior: 'smooth', top: 200 })
     expect(pageScroll).not.toHaveBeenCalled()

@@ -8,10 +8,11 @@
  *
  *   - `executeJavaScript` injects the engine SOURCE (see
  *     lib/preview-act/act-in-page.ts's self-containment contract) to RESOLVE
- *     and READ — turn '@e5' into a node, measure it, inventory the page. It is
- *     parked on a window global alongside the ref holder so refs survive
- *     between calls, and it vanishes with the page, so a navigation drops the
- *     refs and the engine reports that instead of clicking the wrong node.
+ *     and READ — turn 'btn-sign-in' into a node, measure it, inventory the
+ *     page. It is parked on a window global alongside the book of handles so
+ *     they survive between calls, and it vanishes with the page, so a
+ *     navigation retires them and the engine reports that instead of acting on
+ *     the wrong node.
  *   - `sendInputEvent` (preview-drive.ts) does the ACTING, as real Chromium
  *     input. Script can only dispatch synthetic events, which the page can tell
  *     apart and which never move the browser's own hover or focus target.
@@ -192,7 +193,8 @@ ${preamble()}
   var found = act({ kind: 'elements' });
   if (!found.success) { return JSON.stringify(found); }
   watch('hold');
-  return JSON.stringify({ acted: 'held the field', elements: found.elements, title: found.title, url: found.url, success: true });
+  found.acted = 'held the field';
+  return JSON.stringify(found);
 })()`
 }
 
@@ -204,7 +206,8 @@ ${preamble()}
   var found = act({ kind: 'elements' });
   if (!found.success) { return JSON.stringify(found); }
   watch('strobe');
-  return JSON.stringify({ acted: 'strobed the field', elements: found.elements, title: found.title, url: found.url, success: true });
+  found.acted = 'strobed the field';
+  return JSON.stringify(found);
 })()`
 }
 
@@ -272,7 +275,10 @@ ${preamble()}
     try {
       var after = act({ kind: 'elements' });
       watch('sweep');
+      // One or the other, never both: a re-read answers with the whole
+      // inventory only when it is the first look at this page.
       result.elements = after.elements;
+      result.delta = after.delta;
       result.url = after.url;
       result.title = after.title;
     } catch (err) {

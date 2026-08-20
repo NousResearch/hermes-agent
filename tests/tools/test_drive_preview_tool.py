@@ -73,13 +73,24 @@ def test_payload_forwards_only_what_was_given():
     seen = {}
     ap.drive_preview_tool(
         action="type",
-        ref="@e5",
+        ref="inp-password",
         text="hunter2",
         submit=True,
         callback=lambda p: seen.update(p) or json.dumps({"success": True}),
     )
 
-    assert seen == {"action": "type", "ref": "@e5", "text": "hunter2", "submit": True}
+    assert seen == {"action": "type", "ref": "inp-password", "text": "hunter2", "submit": True}
+
+
+def test_full_asks_the_renderer_for_a_whole_inventory():
+    seen = {}
+    ap.drive_preview_tool(
+        action="elements",
+        full=True,
+        callback=lambda p: seen.update(p) or json.dumps({"success": True}),
+    )
+
+    assert seen == {"action": "elements", "full": True}
 
 
 def test_numeric_arguments_are_validated():

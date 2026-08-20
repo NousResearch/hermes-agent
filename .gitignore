@@ -36,6 +36,7 @@ data/
 !hermes_cli/data/
 !hermes_cli/data/plugin_index.json
 .pytest_cache/
+.deepeval/
 test_durations.json
 .pytest-cache/
 tmp/

@@ -3103,9 +3103,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
             if final_response:
                 summary_call_outcome = "success"
+# A successful iteration-limit summary IS the turn's final
+                # answer: tag it as a terminal assistant message so the
+                # persisted row carries finish_reason='stop' (without this the
+                # DB row ends up finish_reason=NULL and surfaces look like an
+                # unfinished/interim bubble in desktop).
                 append_message(
                     messages,
-                    {"role": "assistant", "content": final_response},
+                    {"role": "assistant", "content": final_response, "finish_reason": "stop"},
                 )
             else:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
@@ -3168,9 +3173,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
                 if final_response:
                     summary_call_outcome = "success"
+# Same terminal-finish_reason tagging as the primary
+                    # summary path (see above): the retry summary is also the
+                    # turn's final answer.
                     append_message(
                         messages,
-                        {"role": "assistant", "content": final_response},
+                        {"role": "assistant", "content": final_response, "finish_reason": "stop"},
                     )
                 else:
                     final_response = "I reached the iteration limit and couldn't generate a summary."

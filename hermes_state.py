@@ -10010,6 +10010,68 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         f"Compression lease for {session_id!r} lost before "
                         "commit; refusing to publish a stale compaction"
                     )
+            # Compression-loop dedup probe. Repeated compression passes
+            # (preflight + post-response + next-turn preflight) re-insert
+            # near-identical rebuilt tails under the same session id. Without
+            # a guard the archived (active=0, compacted=1) layer accumulates
+            # duplicate copies of the same (role, content, timestamp) rows —
+            # ballooning the DB and polluting FTS search. Skip rows whose key
+            # matches a row archived within the last 60s (compression-loop
+            # duplicates share the same timestamp; a genuine user re-send is
+            # spaced minutes apart). Rows without a usable timestamp are never
+            # deduped (conservative).
+            _dedup_window = time.time() - 60
+            _archived_keys = set()
+            try:
+                _cur = conn.execute(
+                    "SELECT role, content, timestamp FROM messages "
+                    "WHERE session_id = ? AND active = 0 AND compacted = 1 "
+                    "AND timestamp >= ?",
+                    (session_id, _dedup_window),
+                )
+                for _r in _cur.fetchall():
+                    _archived_keys.add((_r[0], _r[1], _r[2]))
+            except Exception:
+                _archived_keys = set()
+            _to_insert = compacted_messages
+            if _archived_keys:
+                _filtered = []
+                for _m in compacted_messages:
+                    _ts = _m.get("timestamp")
+                    if _ts is None:
+                        _filtered.append(_m)
+                        continue
+                    try:
+                        _fts = (
+                            float(_ts.timestamp())
+                            if hasattr(_ts, "timestamp")
+                            else float(_ts)
+                        )
+                    except (TypeError, ValueError):
+                        _filtered.append(_m)
+                        continue
+                    _key = (
+                        _m.get("role", "unknown"),
+                        self._encode_content(_m.get("content")),
+                        _fts,
+                    )
+                    if _key in _archived_keys:
+                        continue
+                    _filtered.append(_m)
+                if not _filtered:
+                    # Every rebuilt row was already archived within the
+                    # window: this compression pass is a pure re-insert of
+                    # the same tail (e.g. a repeated preflight pass that made
+                    # no progress). Skip the archive+insert entirely so the
+                    # archived layer never accumulates duplicates and the live
+                    # set stays untouched.
+                    _count = conn.execute(
+                        "SELECT COUNT(*) FROM messages "
+                        "WHERE session_id = ? AND active = 1",
+                        (session_id,),
+                    ).fetchone()[0]
+                    return _count
+                _to_insert = _filtered
 
             patched_model_config = None
             if model_config_patch is not None:
@@ -10055,7 +10117,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (session_id,),
             )
             inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, compacted_messages
+                conn, session_id, _to_insert
             )
 
             if tail_ids:

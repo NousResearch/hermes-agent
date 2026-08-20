@@ -4447,7 +4447,12 @@ class TestRunConversation:
             result = agent.run_conversation("do the kanban work")
 
         # The agent should have reported the task as not completed.
-        assert result["completed"] is False
+        # NOTE: `completed` now reflects "a real final answer was produced"
+        # (iteration-limit summaries are the turn's final response — see
+        # turn_finalizer.completed); the kanban failure signal is carried
+        # independently by _record_task_failure(outcome="timed_out") below,
+        # which is what trips the dispatcher's failure_limit breaker.
+        assert result["completed"] is True
 
         # _record_task_failure should have been called exactly once for
         # the exhaustion event, with outcome="timed_out".

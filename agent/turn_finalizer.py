@@ -224,12 +224,42 @@ def finalize_turn(
 
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
+    # A max-iterations fallback that still produced a real final answer (the
+    # summary call succeeded) is a completed turn for persistence and event
+    # purposes: the user saw an actual final response, so downstream surfaces
+    # must treat it as finished (terminal finish_reason, no resume_pending,
+    # no "incomplete" client state). Only a fallback with NO response
+    # (failed/interrupted, or the empty placeholder string) stays False.
+    #
+    # Exception: budget exhaustion while a verification gate is holding the
+    # composed answer (#61631 / #65919 §7). That path also exits with
+    # max_iterations_reached + a non-empty final_response, but the turn is
+    # intentionally NOT completed — resume must re-enter verification, and
+    # the composed report must survive without being treated as a finished
+    # summary. Detect via the pending-verification handoff and/or the
+    # assistant finish_reason stamped by the verification stop-loop.
+    _tail_finish = ""
+    for _m in reversed(messages or []):
+        if isinstance(_m, dict) and _m.get("role") == "assistant":
+            _tail_finish = str(_m.get("finish_reason") or "").lower()
+            break
+    _verification_held = bool(_pending_verification_response) or _tail_finish in {
+        "verification_required",
+        "verify_hook_continue",
+    }
+    iteration_limit_with_response = (
+        str(_turn_exit_reason).startswith("max_iterations_reached(")
+        and final_response is not None
+        and str(final_response).strip() != ""
+        and not _verification_held
+    )
     completed = (
         final_response is not None
         and not failed
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
+            or iteration_limit_with_response
         )
     )
 

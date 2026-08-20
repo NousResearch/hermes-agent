@@ -269,6 +269,46 @@ class TestStartRun:
 class TestRunStatus:
 
     @pytest.mark.asyncio
+    async def test_status_replays_sanitized_lifecycle_and_tool_events(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _run(user_message=None, conversation_history=None, task_id=None):
+                    callback = mock_create.call_args.kwargs["tool_progress_callback"]
+                    callback("reasoning.available", preview="Inspect the failing route")
+                    callback("tool.started", tool_name="terminal", preview="pytest -q")
+                    callback("tool.completed", tool_name="terminal", duration=0.25, is_error=False)
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _run
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert [event["event"] for event in status["events"]] == [
+                    "run.started",
+                    "reasoning.available",
+                    "tool.started",
+                    "tool.completed",
+                    "run.completed",
+                ]
+                assert status["events"][1]["text"] == "Inspect the failing route"
+                assert status["events"][2]["preview"] == "pytest -q"
+                assert "done" == status["output"]
+
+    @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

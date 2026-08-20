@@ -1432,6 +1432,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Bounded replay buffer for external UIs that cannot hold an SSE
+        # connection open continuously (for example a Cloudflare Worker).
+        self._run_events: Dict[str, List[Dict[str, Any]]] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -6577,6 +6580,13 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    def _record_run_event(self, run_id: str, event: Dict[str, Any]) -> None:
+        """Retain a bounded, sanitized event timeline for polling UIs."""
+        events = self._run_events.setdefault(run_id, [])
+        events.append(dict(event))
+        if len(events) > 500:
+            del events[:-500]
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -6586,10 +6596,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 last_event=event.get("event"),
             )
             q = self._run_streams.get(run_id)
-            if q is None:
-                return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                def _record_and_stream() -> None:
+                    self._record_run_event(run_id, event)
+                    if q is not None:
+                        q.put_nowait(event)
+
+                loop.call_soon_threadsafe(_record_and_stream)
             except Exception:
                 pass
 
@@ -6617,7 +6630,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "event": "reasoning.available",
                     "run_id": run_id,
                     "timestamp": ts,
-                    "text": preview or "",
+                    "text": redact_sensitive_text(str(preview or ""), force=True),
                 })
             elif event_type in {"subagent.start", "subagent.complete"}:
                 event = {
@@ -6776,7 +6789,9 @@ class APIServerAdapter(BasePlatformAdapter):
         event_cb = self._make_run_event_callback(run_id, loop)
 
         def _put_event_if_active(event: Optional[Dict]) -> None:
-            """Enqueue only while this run still owns live transport state."""
+            """Record events and enqueue them while live transport still exists."""
+            if event is not None:
+                self._record_run_event(run_id, event)
             if self._run_streams.get(run_id) is q:
                 q.put_nowait(event)
 
@@ -6803,6 +6818,13 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             model=body.get("model", self._model_name),
         )
+        _put_event_if_active({
+            "event": "run.started",
+            "run_id": run_id,
+            "timestamp": created_at,
+            "session_id": session_id,
+            "model": body.get("model", self._model_name),
+        })
 
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
@@ -6862,7 +6884,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="approval.request",
                     )
                     try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
+                        def _record_approval() -> None:
+                            self._record_run_event(run_id, event)
+                            q.put_nowait(event)
+
+                        loop.call_soon_threadsafe(_record_approval)
                     except Exception:
                         pass
 
@@ -7099,7 +7125,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
-        return web.json_response(status)
+        return web.json_response({
+            **status,
+            "events": list(self._run_events.get(run_id, [])),
+        })
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -7224,13 +7253,15 @@ class APIServerAdapter(BasePlatformAdapter):
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
-                q.put_nowait({
+                event = {
                     "event": "approval.responded",
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "choice": choice,
                     "resolved": resolved,
-                })
+                }
+                self._record_run_event(run_id, event)
+                q.put_nowait(event)
             except Exception:
                 pass
 
@@ -7380,6 +7411,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ]
         for run_id in stale_statuses:
             self._run_statuses.pop(run_id, None)
+            self._run_events.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

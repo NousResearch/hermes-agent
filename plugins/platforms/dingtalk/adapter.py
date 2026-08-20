@@ -188,6 +188,8 @@ def ensure_dingtalk_deps() -> bool:
     """
     global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
     global HTTPX_AVAILABLE, httpx
+    global CARD_SDK_AVAILABLE, dingtalk_card_client, dingtalk_card_models
+    global dingtalk_robot_client, dingtalk_robot_models, open_api_models, tea_util_models
     if DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE:
         return True
     try:
@@ -209,6 +211,34 @@ def ensure_dingtalk_deps() -> bool:
     httpx = _httpx
     DINGTALK_STREAM_AVAILABLE = True
     HTTPX_AVAILABLE = True
+    # The card SDK (alibabacloud-dingtalk) ships in the same lazy-install
+    # bundle (see tools/lazy_deps.py ``platform.dingtalk``). Rebind it here so
+    # AI Cards / emotion reactions / media download aren't left silently
+    # disabled after a successful install. Mirror the top-level try block's
+    # broad-Exception guard: an import-time cryptography skew can raise a
+    # non-ImportError (#41112), and a card-SDK failure must not veto the base
+    # dingtalk-stream rebind above.
+    try:
+        from alibabacloud_dingtalk.card_1_0 import (
+            client as _card_client,
+            models as _card_models,
+        )
+        from alibabacloud_dingtalk.robot_1_0 import (
+            client as _robot_client,
+            models as _robot_models,
+        )
+        from alibabacloud_tea_openapi import models as _open_api_models
+        from alibabacloud_tea_util import models as _tea_util_models
+    except Exception:
+        pass
+    else:
+        dingtalk_card_client = _card_client
+        dingtalk_card_models = _card_models
+        dingtalk_robot_client = _robot_client
+        dingtalk_robot_models = _robot_models
+        open_api_models = _open_api_models
+        tea_util_models = _tea_util_models
+        CARD_SDK_AVAILABLE = True
     return True
 
 

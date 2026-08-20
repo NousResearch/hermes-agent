@@ -2117,6 +2117,42 @@ class APIServerAdapter(BasePlatformAdapter):
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
 
+    def _parse_session_id_header(
+        self, request: "web.Request"
+    ) -> tuple[Optional[str], Optional["web.Response"]]:
+        """Extract and validate an authenticated session-continuity header."""
+        raw = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if not raw:
+            return None, None
+
+        if not self._api_key:
+            logger.warning(
+                "Session continuation via X-Hermes-Session-Id rejected: "
+                "no API key configured. Set API_SERVER_KEY to enable "
+                "session continuity."
+            )
+            return None, web.json_response(
+                _openai_error(
+                    "Session continuation requires API key authentication. "
+                    "Configure API_SERVER_KEY to enable this feature."
+                ),
+                status=403,
+            )
+
+        from gateway.session import _is_path_unsafe
+
+        if re.search(r'[\r\n\x00]', raw) or _is_path_unsafe(raw):
+            return None, web.json_response(
+                {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                status=400,
+            )
+        if len(raw) > self._MAX_SESSION_HEADER_LEN:
+            return None, web.json_response(
+                {"error": {"message": "Session ID too long", "type": "invalid_request_error"}},
+                status=400,
+            )
+        return raw, None
+
     def _parse_session_key_header(
         self, request: "web.Request"
     ) -> tuple[Optional[str], Optional["web.Response"]]:
@@ -4235,37 +4271,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # only allowed when the API key is configured and the request is
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        provided_session_id, session_id_err = self._parse_session_id_header(request)
+        if session_id_err is not None:
+            return session_id_err
         if provided_session_id:
-            if not self._api_key:
-                logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity."
-                )
-                return web.json_response(
-                    _openai_error(
-                        "Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature."
-                    ),
-                    status=403,
-                )
-            # Sanitize: reject control characters that could enable header
-            # injection, and path-traversal-shaped IDs that would escape the
-            # sessions directory when interpolated into on-disk artifact
-            # filenames (session snapshots, request dumps). Mirrors the native
-            # gateway's entry-boundary guard (gateway.session._is_path_unsafe).
-            from gateway.session import _is_path_unsafe
-            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
-                return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
-                    status=400,
-                )
-            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
-                return web.json_response(
-                    {"error": {"message": "Session ID too long", "type": "invalid_request_error"}},
-                    status=400,
-                )
             session_id = provided_session_id
             try:
                 db = await self._ensure_session_db_async()
@@ -6677,6 +6686,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        provided_session_id, session_id_err = self._parse_session_id_header(request)
+        if session_id_err is not None:
+            return session_id_err
 
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
@@ -6744,7 +6756,25 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
-        session_id = body.get("session_id") or stored_session_id
+        if provided_session_id:
+            try:
+                db = await self._ensure_session_db_async()
+                conversation_history = (
+                    await asyncio.to_thread(
+                        db.get_messages_as_conversation, provided_session_id
+                    )
+                    if db is not None
+                    else []
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load session history for %s: %s",
+                    provided_session_id,
+                    exc,
+                )
+                conversation_history = []
+
+        session_id = provided_session_id or body.get("session_id") or stored_session_id
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(
@@ -7077,9 +7107,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-        response_headers = (
-            {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
-        )
+        response_headers = {"X-Hermes-Session-Id": session_id}
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(
             {"run_id": run_id, "status": "started"},
             status=202,

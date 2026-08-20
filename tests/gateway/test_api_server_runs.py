@@ -148,6 +148,61 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
+    async def test_session_header_continues_persisted_session(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        db_history = [
+            {"role": "user", "content": "Remember 41"},
+            {"role": "assistant", "content": "I will remember 41"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = db_history
+        auth_adapter._session_db = mock_db
+        captured = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                    captured["history"] = conversation_history
+                    return {"final_response": "41"}
+
+                mock_agent.run_conversation.side_effect = _capture_run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Id": "existing-runs-session",
+                    },
+                    json={"input": "What is my number?"},
+                )
+                assert resp.status == 202
+                assert resp.headers["X-Hermes-Session-Id"] == "existing-runs-session"
+                data = await resp.json()
+
+                for _ in range(40):
+                    status_resp = await cli.get(
+                        f"/v1/runs/{data['run_id']}",
+                        headers={"Authorization": "Bearer sk-secret"},
+                    )
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert status["session_id"] == "existing-runs-session"
+        assert captured["history"] == db_history
+        assert mock_create.call_args.kwargs["session_id"] == "existing-runs-session"
+        mock_db.get_messages_as_conversation.assert_called_once_with(
+            "existing-runs-session"
+        )
+
+    @pytest.mark.asyncio
     async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
         """/v1/runs must bind the raw session id as the api_server chat_id
         (like every other agent-entry route does via _run_agent): the async

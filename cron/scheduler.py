@@ -2821,7 +2821,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             )
             in_channel_surface = False
 
-        if in_channel_surface and mirror_this_target and live_adapter_ready:
+        if in_channel_surface and origin_target and live_adapter_ready:
             # Force flat delivery (D2): the continuable-channel target must
             # ignore any inherited origin/target thread_id, or the flat
             # continuable session seeded below (thread_id=None, via
@@ -2830,6 +2830,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # reads `thread_id` and would otherwise route into the origin
             # thread instead of flat into the channel.
             #
+            # Gated on `origin_target`, NOT `mirror_this_target`: the seed
+            # below fires on origin-match alone (in_channel is the
+            # continuation surface, independent of the attach_to_session /
+            # mirror opt-in), so the flatten must use the SAME gate — with
+            # the default knobs off, a mirror-gated flatten kept delivering
+            # into the origin thread while the flat session got seeded,
+            # leaving the brief and its continuation surface in different
+            # places.
             # Gated on `live_adapter_ready` (adapter present AND a running loop)
             # so the clear fires ONLY on the live-send path that actually seeds
             # the flat session — the SAME condition as the live-send block

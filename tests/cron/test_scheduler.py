@@ -2468,6 +2468,44 @@ class TestCronContinuableSurfaceInChannel:
         # session key includes it on per-user-isolated chats.
         assert seed_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
 
+    def test_in_channel_flattens_thread_without_attach_to_session(self):
+        """REGRESSION: the thread-id-clearing gate was `mirror_this_target`
+        while the seed below had been decoupled to origin-match alone. With
+        the default knobs off (attach_to_session=False, cron.mirror_delivery
+        unset) and an origin carrying a REAL thread_id, the brief still
+        delivered INTO the origin thread while the flat (thread_id=None)
+        session got seeded — brief and continuation surface in different
+        places. The flatten must use the same gate as the seed: origin_target.
+        Asserts on the routed DeliveryTarget, not just that the seed ran."""
+        captured = {}
+
+        class _SpyRouter:
+            def __init__(self, *a, **k):
+                pass
+
+            async def _deliver_to_platform(self, target, text, metadata):
+                captured["target"] = target
+                return {"success": True, "message_id": "msg_1"}
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        origin_with_thread = {
+            "platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN",
+            # Genuine origin thread (job created from inside a thread).
+            "thread_id": "1787188000.000100",
+        }
+        with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
+             patch("cron.scheduler._seed_cron_channel_session", return_value=True) as seed_mock:
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False, origin=origin_with_thread,
+            )
+        seed_mock.assert_called_once()
+        assert captured["target"].thread_id is None, (
+            "in_channel delivery routed into the origin thread "
+            f"({captured['target'].thread_id}) — the flat seeded session "
+            "does not match where the brief actually landed"
+        )
+
     def test_seed_mirrors_into_exact_created_session_on_populated_chat(self):
         """REGRESSION (live, Alice 2026-08-19 19:17): 'in_channel seed did NOT
         land'. The seed created the flat session row, then mirror_to_session

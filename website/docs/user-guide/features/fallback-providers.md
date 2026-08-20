@@ -339,6 +339,7 @@ auxiliary:
         model: google/gemini-3-flash-preview
       - provider: nous
         model: anthropic/claude-sonnet-4
+    fallback_to_main: false  # stop after the explicit terminal fallback
 
   compression:
     provider: openrouter
@@ -348,7 +349,7 @@ auxiliary:
         timeout: 240            # optional — this candidate's own deadline (seconds)
 ```
 
-You do **not** need to configure `fallback_chain` to get fallback — the main-agent safety net runs regardless. Use it only when you specifically want a different order than the default.
+You do **not** need to configure `fallback_chain` to get fallback — the main-agent safety net runs by default. Use a chain when you specifically want a different order. If its final entry is an intentional terminal route, set `fallback_to_main: false` on that auxiliary task; after the chain is exhausted Hermes then raises the original failure instead of silently spending tokens on the main model.
 
 Each `fallback_chain` entry may also declare its own `timeout` (seconds). Without it, a fallback candidate inherits the task-level timeout — which may be tuned for the primary provider. Declaring a per-entry `timeout` lets a slower-but-reliable fallback (e.g. a large-context summarizer) get the budget it actually needs instead of dying on the primary's clock.
 

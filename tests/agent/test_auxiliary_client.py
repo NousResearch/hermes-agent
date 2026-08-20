@@ -1796,6 +1796,133 @@ class TestAuxiliaryFallbackLayering:
         # Main agent fallback should NOT be needed when chain succeeds
         mock_main.assert_not_called()
 
+    def test_configured_chain_walks_capacity_failures_until_success(self, monkeypatch):
+        """429/timeout candidates must not stop a configured multi-hop chain."""
+        primary = MagicMock()
+        primary.base_url = "https://api.mistral.ai/v1"
+        primary_error = Exception("Rate limit exceeded")
+        primary_error.status_code = 429
+        primary.chat.completions.create.side_effect = primary_error
+
+        rate_limited = MagicMock()
+        rate_limited.base_url = "https://api.groq.com/openai/v1"
+        rate_error = Exception("Too many requests")
+        rate_error.status_code = 429
+        rate_limited.chat.completions.create.side_effect = rate_error
+
+        class CandidateTimeout(Exception):
+            pass
+
+        timed_out = MagicMock()
+        timed_out.base_url = "https://integrate.api.nvidia.com/v1"
+        timed_out.chat.completions.create.side_effect = CandidateTimeout("timed out")
+
+        luna = MagicMock()
+        luna.base_url = "https://chatgpt.com/backend-api/codex"
+        luna.chat.completions.create.return_value = _DummyResponse("served-by-luna")
+
+        entries = [
+            {"provider": "groq", "model": "small", "base_url": rate_limited.base_url},
+            {"provider": "nvidia", "model": "medium", "base_url": timed_out.base_url},
+            {"provider": "openai-codex", "model": "gpt-luna", "base_url": luna.base_url},
+        ]
+        clients = {"small": rate_limited, "medium": timed_out, "gpt-luna": luna}
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary, "mistral-small")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("mistral", "mistral-small", None, None, None)), \
+             patch("agent.auxiliary_client._get_auxiliary_task_config",
+                   return_value={"fallback_chain": entries, "fallback_to_main": False}), \
+             patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=lambda entry: (clients[entry["model"]], entry["model"])), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "title"}],
+            )
+
+        assert result.choices[0].message.content == "served-by-luna"
+        assert rate_limited.chat.completions.create.call_count == 1
+        assert timed_out.chat.completions.create.call_count == 1
+        assert luna.chat.completions.create.call_count == 1
+        mock_main.assert_not_called()
+
+    def test_fallback_to_main_false_prevents_hidden_main_model_call(self, monkeypatch):
+        """An explicit terminal chain may fail closed instead of spending main-model tokens."""
+        primary = MagicMock()
+        primary_error = Exception("Rate limit exceeded")
+        primary_error.status_code = 429
+        primary.chat.completions.create.side_effect = primary_error
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary, "mistral-small")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("mistral", "mistral-small", None, None, None)), \
+             patch("agent.auxiliary_client._get_auxiliary_task_config",
+                   return_value={"fallback_chain": [], "fallback_to_main": False}), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+            with pytest.raises(Exception, match="Rate limit exceeded"):
+                call_llm(
+                    task="title_generation",
+                    messages=[{"role": "user", "content": "title"}],
+                )
+
+        mock_main.assert_not_called()
+
+    def test_async_configured_chain_walks_to_terminal_candidate(self, monkeypatch):
+        """The asynchronous auxiliary path preserves the same chain contract."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from agent.auxiliary_client import async_call_llm
+
+        primary = MagicMock()
+        primary.base_url = "https://api.mistral.ai/v1"
+        primary_error = Exception("Rate limit exceeded")
+        primary_error.status_code = 429
+        primary.chat.completions.create = AsyncMock(side_effect=primary_error)
+
+        failed = MagicMock()
+        failed.base_url = "https://integrate.api.nvidia.com/v1"
+        fallback_error = Exception("Too many requests")
+        fallback_error.status_code = 429
+        failed.chat.completions.create = AsyncMock(side_effect=fallback_error)
+
+        luna = MagicMock()
+        luna.base_url = "https://chatgpt.com/backend-api/codex"
+        luna.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("async-luna")
+        )
+        entries = [
+            {"provider": "nvidia", "model": "nano", "base_url": failed.base_url},
+            {"provider": "openai-codex", "model": "gpt-luna", "base_url": luna.base_url},
+        ]
+        clients = {"nano": failed, "gpt-luna": luna}
+
+        async def scenario():
+            with patch("agent.auxiliary_client._get_cached_client",
+                       return_value=(primary, "mistral-small")), \
+                 patch("agent.auxiliary_client._resolve_task_provider_model",
+                       return_value=("mistral", "mistral-small", None, None, None)), \
+                 patch("agent.auxiliary_client._get_auxiliary_task_config",
+                       return_value={"fallback_chain": entries, "fallback_to_main": False}), \
+                 patch("agent.auxiliary_client._resolve_fallback_entry",
+                       side_effect=lambda entry: (clients[entry["model"]], entry["model"])), \
+                 patch("agent.auxiliary_client._to_async_client",
+                       side_effect=lambda client, model, **_kw: (client, model)), \
+                 patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+                result = await async_call_llm(
+                    task="title_generation",
+                    messages=[{"role": "user", "content": "title"}],
+                )
+            mock_main.assert_not_called()
+            return result
+
+        result = asyncio.run(scenario())
+        assert result.choices[0].message.content == "async-luna"
+        assert failed.chat.completions.create.await_count == 1
+        assert luna.chat.completions.create.await_count == 1
+
 
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""

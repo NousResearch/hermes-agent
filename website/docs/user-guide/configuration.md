@@ -1385,9 +1385,10 @@ auxiliary:
         model: deepseek/deepseek-chat
       - provider: openrouter
         model: google/gemini-2.5-flash
+    fallback_to_main: false  # optional: stop after the configured chain
 ```
 
-When the primary auxiliary provider (`openrouter` / `openai/gpt-4o-mini`) returns a rate-limit, connection timeout, or payment-required error, Hermes walks the `fallback_chain` in order. It skips entries whose provider matches the already-failed provider, and tries each remaining entry until one succeeds or the chain is exhausted. If all fallbacks fail, Hermes falls back to the main agent model as a final safety net.
+When the primary auxiliary provider (`openrouter` / `openai/gpt-4o-mini`) returns a rate-limit, connection timeout, or payment-required error, Hermes walks the `fallback_chain` in order. It skips entries whose provider matches the already-failed provider, and tries each remaining entry until one succeeds or the chain is exhausted. If all fallbacks fail, Hermes falls back to the main agent model as a final safety net by default. Set `fallback_to_main: false` on the task when the last configured entry is your deliberate terminal fallback and an unplanned main-model call would be too expensive or violate routing policy.
 
 Each entry supports the same three knobs as any auxiliary task config:
 

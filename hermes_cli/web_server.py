@@ -5237,6 +5237,8 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     existing TTS provider chain (Edge / OpenAI / ElevenLabs / etc.)
     configured in ``~/.hermes/config.yaml`` under ``tts.``.
     """
+    _log.info("speak: data-URL fallback path profile=%r chars=%d",
+              profile, len((payload.text or "").strip()))
     text = (payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
@@ -5353,12 +5355,18 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                chunked API — the client uses the POST endpoint instead.
     """
     if not _ws_auth_ok(ws):
+        _log.warning("speak-stream: WS rejected (auth) client=%s",
+                     getattr(getattr(ws, "client", None), "host", "?"))
         await ws.close(code=4401)
         return
     if not _ws_request_is_allowed(ws):
+        _log.warning("speak-stream: WS rejected (not allowed) client=%s",
+                     getattr(getattr(ws, "client", None), "host", "?"))
         await ws.close(code=4403)
         return
     await ws.accept()
+    _log.debug("speak-stream: WS accepted client=%s",
+               getattr(getattr(ws, "client", None), "host", "?"))
 
     # Profile via query param, like /api/pty and /api/console: the provider
     # chain + API keys must resolve from the requesting profile's config, not
@@ -5384,6 +5392,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         _log.exception("speak-stream provider resolution failed")
         streamer, cap = None, 0
     if streamer is None:
+        _log.warning("speak-stream: no chunked streamer for profile=%r -> telling client to FALLBACK",
+                     profile)
         with contextlib.suppress(Exception):
             await ws.send_json({"type": "fallback"})
             await ws.close()
@@ -5468,17 +5478,29 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         text_q.put(None)  # unblock the producer
 
     pump = asyncio.ensure_future(_pump_client())
+    _sent_bytes = 0
+    _sent_frames = 0
     try:
         while True:
             chunk = await chunks.get()
             if chunk is None:
                 break
             await ws.send_bytes(chunk)
+            _sent_bytes += len(chunk)
+            _sent_frames += 1
         if not stop.is_set():
             await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
+        # One line per spoken reply. Cheap, and it is the only place that
+        # distinguishes "the backend never produced audio" from "the client
+        # never played what it was sent" — the two look identical from the UI,
+        # and without it a silent-playback report is unfalsifiable.
+        _log.info("speak-stream: sent %d frames / %d bytes (%.2fs audio) barged_in=%s",
+                  _sent_frames, _sent_bytes,
+                  _sent_bytes / 2 / max(1, getattr(streamer, "sample_rate", 24000)),
+                  stop.is_set())
         stop.set()
         text_q.put(None)
         pump.cancel()

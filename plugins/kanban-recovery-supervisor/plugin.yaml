@@ -1,0 +1,7 @@
+name: kanban-recovery-supervisor
+version: 1.0.0
+description: "Opt-in, bounded recovery-task supervisor for durable Kanban block events."
+author: "NousResearch"
+kind: standalone
+provides_hooks:
+  - kanban_task_blocked

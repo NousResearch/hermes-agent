@@ -1,6 +1,6 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
-import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
@@ -998,28 +998,7 @@ export function TextInput({
     return () => setInputSelection(null)
   }, [cur, focus, selected])
 
-  useEffect(
-    () => () => {
-      if (keyBurstTimer.current) {
-        clearTimeout(keyBurstTimer.current)
-      }
-
-      if (parentChangeTimer.current) {
-        clearTimeout(parentChangeTimer.current)
-      }
-
-      if (localRenderTimer.current) {
-        clearTimeout(localRenderTimer.current)
-      }
-
-      if (inkRepaintResetTimer.current) {
-        clearTimeout(inkRepaintResetTimer.current)
-      }
-    },
-    []
-  )
-
-  const flushParentChange = () => {
+  const flushParentChange = useCallback(() => {
     if (parentChangeTimer.current) {
       clearTimeout(parentChangeTimer.current)
       parentChangeTimer.current = null
@@ -1032,7 +1011,30 @@ export function TextInput({
       self.current = true
       cbChange.current(next)
     }
-  }
+  }, [])
+
+  useEffect(
+    () => () => {
+      if (keyBurstTimer.current) {
+        clearTimeout(keyBurstTimer.current)
+        keyBurstTimer.current = null
+      }
+
+      // Prompt overlays can unmount the composer before the fast-echo parent
+      // sync fires; flush now so the user's draft survives the handoff.
+      flushParentChange()
+
+      if (localRenderTimer.current) {
+        clearTimeout(localRenderTimer.current)
+        localRenderTimer.current = null
+      }
+
+      if (inkRepaintResetTimer.current) {
+        clearTimeout(inkRepaintResetTimer.current)
+      }
+    },
+    [flushParentChange]
+  )
 
   const scheduleParentChange = (next: string) => {
     pendingParentValue.current = next

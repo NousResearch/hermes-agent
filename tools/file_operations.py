@@ -1623,14 +1623,19 @@ class ShellFileOperations(FileOperations):
         # indistinguishable, from inside the model, from a broken tool —
         # it re-reads, widens the window, tries another path. Name the
         # dead end and its recovery instead.
-        if file_size == 0:
+        # Both guards require an empty page from the real read. The wc
+        # figures are advisory: file_size falls back to 0 when the probe
+        # output is unparseable, and wc -l undercounts a file whose last
+        # line has no trailing newline. Trusting them alone would refuse
+        # content the read already produced and state a false fact.
+        if file_size == 0 and not read_output:
             return ReadResult(
                 content="",
                 total_lines=0,
                 file_size=0,
                 hint="File is empty (0 bytes).",
             )
-        if offset > total_lines > 0:
+        if offset > total_lines > 0 and not read_output:
             return ReadResult(
                 content="",
                 total_lines=total_lines,

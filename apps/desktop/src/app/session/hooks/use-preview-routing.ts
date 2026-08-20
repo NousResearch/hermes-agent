@@ -102,7 +102,10 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
 
               openPreview(trimmedLabel ? { ...reached, label: trimmedLabel } : reached, 'tool-result')
             }
-          )
+          ).catch(() => {
+            // normalizeOrLocalPreviewTarget rejected (network error or unsupported scheme)
+            // leave the preview pane as-is
+          })
         }
 
         return
@@ -143,7 +146,10 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
 
             closePreviewMatching(...candidates)
           }
-        )
+        ).catch(() => {
+          // normalizeOrLocalPreviewTarget rejected — fall back to closing by the raw target string
+          closePreviewMatching(target)
+        })
 
         return
       }

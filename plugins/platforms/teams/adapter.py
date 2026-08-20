@@ -28,6 +28,7 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
@@ -1214,6 +1215,34 @@ class TeamsAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
+
+    # Bot Framework renders Teams activity text as markdown by default — the
+    # standalone cron sender (``_standalone_send`` above) even sets
+    # ``"textFormat": "markdown"`` explicitly — and markdown collapses a
+    # single ``\n`` between two lines into one run-on line (blank-line-
+    # separated paragraphs survive). ``_LONE_NEWLINE`` matches a run of
+    # exactly one newline (lookaround excludes it from ``\n\n+`` runs) so
+    # ``format_message`` can promote it to a paragraph break; ``_FENCED_BLOCK``
+    # carves out fenced code blocks so newlines inside them are left alone.
+    _LONE_NEWLINE = re.compile(r"(?<!\n)\n(?!\n)")
+    _FENCED_BLOCK = re.compile(r"(```[\s\S]*?```)")
+
+    def format_message(self, content: str) -> str:
+        """Promote lone newlines to blank lines so Teams renders them as breaks.
+
+        Without this, prose sent through ``send()`` reads as fused sentences
+        ("...unread.The inbox was...") because the Bot Framework service
+        applies markdown rendering by default and markdown swallows single
+        ``\\n``. Existing blank-line runs and fenced code block interiors are
+        left untouched.
+        """
+        if not content:
+            return content
+        segments = self._FENCED_BLOCK.split(content)
+        return "".join(
+            segment if segment.startswith("```") else self._LONE_NEWLINE.sub("\n\n", segment)
+            for segment in segments
+        )
 
     async def send(
         self,

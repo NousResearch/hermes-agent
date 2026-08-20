@@ -385,6 +385,77 @@ class TestTeamsSend:
         assert result.message_id == "msg-123"
         mock_app.send.assert_awaited_once_with("conv-id", "Hello")
 
+    @pytest.mark.anyio
+    async def test_send_passes_formatted_text_to_app(self):
+        """send() must hand app.send() the format_message()-transformed text,
+        not the raw content, so lone newlines survive Bot Framework's
+        markdown rendering."""
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        mock_result = MagicMock()
+        mock_result.id = "msg-123"
+        mock_app = MagicMock()
+        mock_app.send = AsyncMock(return_value=mock_result)
+        adapter._app = mock_app
+
+        raw = "75 messages arrived in the past week, and none are currently unread.\nThe inbox was busiest on Tuesday."
+        result = await adapter.send("conv-id", raw)
+
+        assert result.success is True
+        mock_app.send.assert_awaited_once_with("conv-id", adapter.format_message(raw))
+        sent_text = mock_app.send.await_args.args[1]
+        assert "unread.\n\nThe inbox" in sent_text
+
+
+# ---------------------------------------------------------------------------
+# Tests: format_message (Teams markdown lone-newline collapse workaround)
+# ---------------------------------------------------------------------------
+
+class TestTeamsFormatMessage:
+
+    def _adapter(self):
+        return TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+
+    def test_lone_newline_is_doubled(self):
+        adapter = self._adapter()
+        result = adapter.format_message("First sentence.\nSecond sentence.")
+        assert result == "First sentence.\n\nSecond sentence."
+
+    def test_existing_blank_line_is_unchanged(self):
+        adapter = self._adapter()
+        content = "First paragraph.\n\nSecond paragraph."
+        assert adapter.format_message(content) == content
+
+    def test_multiple_lone_newlines_all_doubled(self):
+        adapter = self._adapter()
+        content = "One\nTwo\nThree"
+        assert adapter.format_message(content) == "One\n\nTwo\n\nThree"
+
+    def test_fenced_code_block_interior_preserved(self):
+        adapter = self._adapter()
+        content = "Before.\n```\nline one\nline two\n```\nAfter."
+        result = adapter.format_message(content)
+        assert result == "Before.\n\n```\nline one\nline two\n```\n\nAfter."
+
+    def test_empty_content_unchanged(self):
+        adapter = self._adapter()
+        assert adapter.format_message("") == ""
+
+    def test_content_with_no_newline_unchanged(self):
+        adapter = self._adapter()
+        assert adapter.format_message("Hello") == "Hello"
+
+    def test_run_of_three_newlines_is_unchanged(self):
+        # Every newline in "\n\n\n" is adjacent to another newline, so none
+        # qualify as "lone" — a run that already contains a blank line is
+        # left alone rather than growing further.
+        adapter = self._adapter()
+        content = "A\n\n\nB"
+        assert adapter.format_message(content) == content
+
 
 def _make_summary_payload():
     return TeamsMeetingSummaryPayload(

@@ -509,6 +509,30 @@ def report_startup_progress(expected_s: float, phase: str = "") -> None:
     _with_armed_handle("lease", "Failed to report startup progress", expected_s, phase)
 
 
+def report_startup_progress(expected_s: float, phase: str = "") -> None:
+    """Declare a phase-owned progress lease on the armed startup watchdog.
+
+    Call from startup phases about to perform legitimately long synchronous
+    work — most importantly ``state.db`` schema migrations and corruption
+    repair/backup inside ``SessionDB.__init__`` — passing an honest worst
+    case for the work about to be done, and renew periodically for
+    multi-step phases. Unlike CPU-time inference, a lease is owned by the
+    startup path itself: it works for I/O-bound work that accrues ~zero CPU
+    and cannot be counterfeited by unrelated busy threads.
+
+    Per-call lease duration is clamped to ``_MAX_LEASE_S``; renewals prove
+    continued liveness. No-op when the watchdog is not armed; never raises —
+    safe to call unconditionally from application code.
+    """
+    try:
+        with _handle_lock:
+            handle = _handle
+        if handle is not None:
+            handle.lease(expected_s, phase)
+    except Exception:
+        logger.debug("Failed to report startup progress", exc_info=True)
+
+
 def _reset_for_tests() -> None:
     """Drop the module singleton (test isolation only)."""
     global _handle

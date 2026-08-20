@@ -99,6 +99,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**agentmail**](/docs/user-guide/skills/optional/email/email-agentmail) | Give the agent its own inbox: send and receive email. |
+| [**e2a**](/docs/user-guide/skills/optional/email/email-e2a) | Operate Hermes-owned email through a hosted MCP server. |
 
 ## finance
 

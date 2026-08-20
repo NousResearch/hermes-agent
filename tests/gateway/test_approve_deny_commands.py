@@ -156,6 +156,27 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    def test_request_id_mismatch_does_not_resolve_newer_approval(self):
+        """Stale buttons must not resolve a later approval in the same session."""
+        from tools.approval import (
+            resolve_gateway_approval,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-request-id"
+        old = _ApprovalEntry({"command": "old", "request_id": "old-id"})
+        current = _ApprovalEntry({"command": "current", "request_id": "current-id"})
+        _gateway_queues[session_key] = [current]
+
+        count = resolve_gateway_approval(session_key, "once", request_id=old.data["request_id"])
+        assert count == 0
+        assert not current.event.is_set()
+        assert _gateway_queues[session_key] == [current]
+
+        count = resolve_gateway_approval(session_key, "deny", request_id=current.data["request_id"])
+        assert count == 1
+        assert current.event.is_set()
+        assert current.result == "deny"
+
 
 # ------------------------------------------------------------------
 # /approve command

@@ -2073,6 +2073,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             approval_id = next(self._approval_counter)
+            request_id = str((metadata or {}).get("approval_request_id") or "")
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
                 return {
@@ -2121,6 +2122,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "request_id": request_id,
                 }
             return result
         except Exception as exc:
@@ -2921,7 +2923,12 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(state["session_key"], choice)
+            request_id = str(state.get("request_id") or "")
+            count = (
+                resolve_gateway_approval(state["session_key"], choice, request_id=request_id)
+                if request_id
+                else resolve_gateway_approval(state["session_key"], choice)
+            )
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,

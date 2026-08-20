@@ -6888,6 +6888,12 @@ class SlackAdapter(BasePlatformAdapter):
         )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
+            request_id = str((metadata or {}).get("approval_request_id") or "")
+            approval_value = (
+                json.dumps({"session_key": session_key, "request_id": request_id}, separators=(",", ":"))
+                if request_id
+                else session_key
+            )
 
             # Slack hard-caps a section block's text at 3000 chars; an
             # oversized block fails the whole send with ``invalid_blocks``
@@ -6909,7 +6915,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": {"type": "plain_text", "text": "Allow Once"},
                     "style": "primary",
                     "action_id": "hermes_approve_once",
-                    "value": session_key,
+                    "value": approval_value,
                 },
             ]
             if not smart_denied and allow_session:
@@ -6917,21 +6923,21 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Allow Session"},
                     "action_id": "hermes_approve_session",
-                    "value": session_key,
+                    "value": approval_value,
                 })
                 if allow_permanent:
                     actions.append({
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Always Allow"},
                         "action_id": "hermes_approve_always",
-                        "value": session_key,
+                        "value": approval_value,
                     })
             actions.append({
                 "type": "button",
                 "text": {"type": "plain_text", "text": "Deny"},
                 "style": "danger",
                 "action_id": "hermes_deny",
-                "value": session_key,
+                "value": approval_value,
             })
             blocks = [
                 {
@@ -7370,7 +7376,19 @@ class SlackAdapter(BasePlatformAdapter):
 
         team_id = self._event_team_id({}, body)
         action_id = action.get("action_id", "")
-        session_key = action.get("value", "")
+        approval_value = action.get("value", "")
+        request_id = ""
+        try:
+            approval_payload = json.loads(approval_value) if isinstance(approval_value, str) else {}
+        except Exception:
+            approval_payload = {}
+        if isinstance(approval_payload, dict):
+            session_key = str(approval_payload.get("session_key") or "")
+            request_id = str(approval_payload.get("request_id") or "")
+        else:
+            session_key = str(approval_value or "")
+        if not session_key:
+            session_key = str(approval_value or "")
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
@@ -7429,7 +7447,11 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             from tools.approval import resolve_gateway_approval
 
-            count = resolve_gateway_approval(session_key, choice)
+            count = (
+                resolve_gateway_approval(session_key, choice, request_id=request_id)
+                if request_id
+                else resolve_gateway_approval(session_key, choice)
+            )
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count,

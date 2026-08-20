@@ -519,8 +519,10 @@ class _MatrixApprovalPrompt:
         resolved: bool = False,
         requester_user_id: str | None = None,
         expires_at: float | None = None,
+        request_id: str = "",
     ):
         self.session_key = session_key
+        self.request_id = request_id
         self.chat_id = chat_id
         self.message_id = message_id
         self.resolved = resolved
@@ -2660,6 +2662,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
+        request_id = str((metadata or {}).get("approval_request_id") or "")
         scope_choices = ""
         if smart_denied:
             scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
@@ -2692,6 +2695,7 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=result.message_id,
             requester_user_id=requester_user_id,
             expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
+            request_id=request_id,
         )
         old_event = self._approval_prompt_by_session.get(session_key)
         if old_event:
@@ -4061,7 +4065,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 try:
                     from tools.approval import resolve_gateway_approval
 
-                    count = resolve_gateway_approval(prompt.session_key, choice)
+                    count = (
+                        resolve_gateway_approval(prompt.session_key, choice, request_id=prompt.request_id)
+                        if prompt.request_id
+                        else resolve_gateway_approval(prompt.session_key, choice)
+                    )
                     if count:
                         prompt.resolved = True
                         self._approval_prompts_by_event.pop(reacts_to, None)

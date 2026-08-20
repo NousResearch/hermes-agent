@@ -7523,6 +7523,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             view = ExecApprovalView(
                 session_key=session_key,
+                request_id=str((metadata or {}).get("approval_request_id") or ""),
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
                 require_admin=require_admin,
@@ -8790,7 +8791,8 @@ def _define_discord_view_classes() -> None:
         def __init__(
             self,
             session_key: str,
-            allowed_user_ids: set,
+            request_id: str = "",
+            allowed_user_ids: set = None,
             allowed_role_ids: Optional[set] = None,
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
@@ -8800,7 +8802,8 @@ def _define_discord_view_classes() -> None:
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
-            self.allowed_user_ids = allowed_user_ids
+            self.request_id = request_id
+            self.allowed_user_ids = allowed_user_ids or set()
             self.allowed_role_ids = allowed_role_ids or set()
             # Opt-in admin gate for exec approval (default off → user-scope,
             # the v0.16-restored behavior). When on, the clicker must be in
@@ -8873,7 +8876,11 @@ def _define_discord_view_classes() -> None:
             # must not claim "Approved" — the command was already denied.
             try:
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
+                count = (
+                    resolve_gateway_approval(self.session_key, choice, request_id=self.request_id)
+                    if self.request_id
+                    else resolve_gateway_approval(self.session_key, choice)
+                )
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, self.session_key, choice, interaction.user.display_name,

@@ -329,6 +329,20 @@ class TestBridgeDispatch:
         assert err is not None
 
 
+    def test_resolve_underlying_call_accepts_empty_arguments(self):
+        """Empty-string arguments (a model quirk for zero-required-param tools)
+        are normalised to an empty object before classification."""
+        from tools.tool_search import resolve_underlying_call
+        for raw in ("", "   "):
+            name, args, err = resolve_underlying_call({
+                "name": "unknown_xxx",
+                "arguments": raw,
+            })
+            # Classification still fails (unknown_xxx isn't deferrable), but
+            # the empty string must not produce a JSON parse error.
+            assert err is not None
+            assert "not valid JSON" not in (err or "")
+
     def test_resolve_underlying_call_rejects_recursion(self):
         """tool_call cannot invoke tool_call itself."""
         from tools.tool_search import resolve_underlying_call, TOOL_CALL_NAME

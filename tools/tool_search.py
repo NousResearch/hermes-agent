@@ -1048,10 +1048,13 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     if raw_args is None:
         raw_args = {}
     if isinstance(raw_args, str):
-        try:
-            raw_args = json.loads(raw_args)
-        except json.JSONDecodeError as e:
-            return None, {}, f"tool_call 'arguments' is not valid JSON: {e}"
+        if not raw_args.strip():
+            raw_args = {}
+        else:
+            try:
+                raw_args = json.loads(raw_args)
+            except json.JSONDecodeError as e:
+                return None, {}, f"tool_call 'arguments' is not valid JSON: {e}"
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
     if not is_deferrable_tool_name(name):

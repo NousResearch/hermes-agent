@@ -25,7 +25,18 @@ test('BotRow keys the highlight off the focused profile, not the socket home', (
   const row = source.slice(rowStart, rowStart + 2000)
 
   assert.match(row, /const focusedProfile = useValue\(\$focusedBotProfile\)/)
-  assert.match(row, /const isActive = !activeGroup && !bot\.remoteSource && bot\.name === focusedProfile/)
+  // While a chat owns the main workspace the ORIGINAL rule stands verbatim:
+  // the focused chat's owner is highlighted, never the socket home, and never
+  // a remote row (which has no focusable local chat).
+  assert.match(
+    row,
+    /botChatFocused\s*\n\s*\? !bot\.remoteSource && bot\.name === focusedProfile/,
+    'a focused chat still keys the highlight to its own profile'
+  )
+  // Only when NO chat owns the center does the source-qualified selection
+  // (the Bots home's owner) take over.
+  assert.match(row, /: selectedRosterKey === botRosterKey\(bot\)/)
+  assert.match(row, /const isActive =\s*\n\s*!activeGroup &&/)
 })
 
 test('BotRow keeps turn-busy (work mood) a socket fact', () => {

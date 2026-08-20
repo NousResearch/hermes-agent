@@ -179,6 +179,17 @@ test('ActiveNowStrip renders above the roster, is a live region, and is click-ac
   // The key rides as jsx()'s third argument so React keeps chip identity.
   assert.match(source, /botRosterKey\(bot\)\s*\)\s*\}\)\s*\]\s*\}\)\s*\}\s*\/\*\* Assign a bot to a group/s)
   assert.match(source, /jsx\(BotFace,\s*\{[\s\S]*?mood: 'work'/)
-    assert.match(source, /await prepareBotSource\(bot\)/)
-  assert.match(source, /bot\.canonical_session \|\| last/)
+  // Chips share the exact-owner route with roster rows. That route activates the
+  // owner source, then resolves the profile's canonical name registry; no
+  // renderer pointer or preview-derived session id participates.
+  assert.match(source, /onOpen: bot => void openRosterBot\(bot\)/)
+
+  const openStart = source.indexOf('async function openRosterBot(')
+  assert.ok(openStart >= 0)
+  const open = source.slice(openStart, openStart + 3200)
+
+  assert.match(open, /await prepareBotSource\(bot\)/)
+  assert.match(open, /await openBotCanonicalChat\(bot\.name\)/)
+  assert.doesNotMatch(open, /meta\?\.chat\b/)
+  assert.doesNotMatch(open, /preferred_session(?:_ids)?\b/)
 })

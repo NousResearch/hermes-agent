@@ -84,6 +84,11 @@ const blobatarSvg = typeof sdk === 'undefined' ? undefined : sdk.blobatarSvg
 const createBudgetedLoop = typeof sdk === 'undefined' ? undefined : sdk.createBudgetedLoop
 
 const ID = 'hermes-bots'
+/** Tree pane id of the Bots home workspace tab (openWorkspace prefixes
+ *  `plugin-workspace:`). Tab visibility — not session focus — is what says
+ *  who owns the CENTER once tabs exist; session focus only vetoes passive
+ *  opens and, on its rising edge, yields the center to the chat. */
+const BOTS_HOME_PANE_ID = `plugin-workspace:${ID}:home`
 const ROSTER_KEY = [ID, 'roster']
 const ROUTINES_KEY = [ID, 'routines']
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -191,6 +196,77 @@ const $lastJobs = atom([])
 /** Bot the Routines tile is scoped to. Follows the live gateway profile
  *  (the bot you're actually chatting with) and roster clicks. */
 const $selectedBot = atom('default')
+
+/** Source-qualified Bot Mode selection. Restoring it is presentation-only:
+ *  it never activates a gateway or creates a session. */
+const $selectedRosterKey = atom('')
+const $selectedRosterHydrated = atom(false)
+const $rosterHydrated = atom(false)
+/** Mirrors host.paneVisibility('hermes-bots:pane') — wired in register(). */
+const $botsPaneVisible = atom(false)
+/** An explicit open landed: {key, openedRegistryId}. This transient view
+ *  observation is empty only for the legacy newChat draft fallback. */
+const $openBotChat = atom(null)
+/** A session owns the main workspace. The roster highlight and the home /
+ *  Cronjobs lifecycles all key off this rather than reading host.state
+ *  conditionally from render. */
+const $botChatFocused = atom(false)
+
+let botsHomeClose = null
+let suppressBotsHomeReopen = false
+
+function saveSelectedRosterBot(bot) {
+  const key = botRosterKey(bot)
+
+  // $selectedBot is a BARE NAME consumed by the Routines tile and the
+  // /new guard. A remote row named like a local bot must not redirect
+  // either at its same-named local twin (#90149 exact-owner rule).
+  if (!bot?.remoteSource) {
+    $selectedBot.set(bot?.name || 'default')
+  }
+
+  $selectedRosterKey.set(key)
+
+  try {
+    Promise.resolve(pluginCtx?.storage?.set?.('selected-roster-bot-v1', key)).catch(() => undefined)
+  } catch {
+    /* storage unavailable — selection lasts for this window */
+  }
+}
+
+function clearSelectedRosterBot(bot) {
+  clearSelectedRosterKey(botRosterKey(bot))
+}
+
+/** Drop the persisted selection when it is exactly this key — the caller has
+ *  proven the owner is gone, not merely unreachable. An unreachable source
+ *  KEEPS its key so the selection reconciles when the gateway returns. */
+function clearSelectedRosterKey(key) {
+  if ($selectedRosterKey.get() !== key) {
+    return
+  }
+
+  $selectedRosterKey.set('')
+
+  try {
+    Promise.resolve(pluginCtx?.storage?.set?.('selected-roster-bot-v1', '')).catch(() => undefined)
+  } catch {
+    /* storage unavailable — selection is cleared for this window */
+  }
+}
+
+/** Split a roster key back into its owner parts. Profile names cannot contain
+ *  ':' (NAME_RE), so the first '::' is unambiguous. */
+function parseRosterKey(key) {
+  const raw = String(key || '')
+  const at = raw.indexOf('::')
+
+  if (at < 0) {
+    return { connectionId: '', name: '' }
+  }
+
+  return { connectionId: raw.slice(0, at), name: raw.slice(at + 2) }
+}
 
 /** Owner profile of the chat the user is LOOKING AT. Newer desktops expose
  *  `host.state.focusedSessionProfile` (the focused session row's stamped
@@ -1666,6 +1742,12 @@ async function deleteBot(bot) {
 
   if ($selectedBot.get() === bot.name) {
     $selectedBot.set('default')
+  }
+  clearSelectedRosterBot(bot)
+
+  if ($openBotChat.get()?.key === botRosterKey(bot)) {
+    $openBotChat.set(null)
+    syncBotsHomeWorkspace()
   }
 
   queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
@@ -4312,6 +4394,102 @@ async function prepareBotSource(bot) {
   // there is no per-source pointer to recover.
 }
 
+/** Select one exact roster owner, then open its named canonical chat only when
+ *  the current Desktop can route that owner without guessing. The workspace
+ *  remembers only this transient opened-view observation; it never stores or
+ *  resolves a canonical-chat id. */
+async function openRosterBot(bot) {
+  const generation = ++botOpenGeneration
+  const key = botRosterKey(bot)
+  const meta = botRosterMeta(bot, $botMeta.get())
+
+  haptic('tap')
+  saveSelectedRosterBot(bot)
+
+  if (bot.remoteSource) {
+    // Selection only. A remote bot must never be opened through whichever
+    // gateway happens to be live; remote mention delivery remains backend-owned.
+    $openBotChat.set(null)
+    $groupChatWorkspace.set(null)
+
+    if (botsHomeEnabled()) {
+      // This explicit gesture may front the owner home without activating its
+      // source. The underlying chat remains an untouched sibling surface.
+      openBotsHomeWorkspace(true)
+    } else {
+      host.notify?.({
+        kind: 'info',
+        title: displayName(bot, meta),
+        message: `Stay in this chat and message @${botHandle(bot.name, bot)} from a Bot Chat.`
+      })
+    }
+
+    return false
+  }
+
+  $groupChatWorkspace.set(null)
+
+  if ($botUnread.get()[key]) {
+    const next = { ...$botUnread.get() }
+    delete next[key]
+    $botUnread.set(next)
+  }
+
+  try {
+    // Activation selects this row's source only. Canonical identity is resolved
+    // after that by the owner profile's "Bot Chat" title registry.
+    await prepareBotSource(bot)
+  } catch (error) {
+    if (generation === botOpenGeneration) {
+      $openBotChat.set(null)
+      syncBotsHomeWorkspace()
+      host.notifyError?.(error, `Could not reach ${bot.connectionLabel || 'the gateway'}`)
+    }
+
+    return false
+  }
+
+  if (generation !== botOpenGeneration) {
+    return false
+  }
+
+  try {
+    const registryId = await openBotCanonicalChat(bot.name)
+
+    if (generation !== botOpenGeneration) {
+      return false
+    }
+
+    if (registryId) {
+      // This is not an identity preference: opening already completed through
+      // the name registry. Keep only enough ephemeral state to release the
+      // home if another tab later claims the center.
+      $openBotChat.set({ key, openedRegistryId: String(registryId) })
+      closeBotsHomeWorkspace()
+      return true
+    }
+  } catch (error) {
+    if (generation === botOpenGeneration) {
+      $openBotChat.set(null)
+      syncBotsHomeWorkspace()
+      host.notifyError?.(error, `Could not open ${displayName(bot, meta)}'s chat — try again`)
+    }
+
+    return false
+  }
+
+  $openBotChat.set({ key, openedRegistryId: '' })
+  closeBotsHomeWorkspace()
+
+  if (typeof host.newChat === 'function') {
+    host.newChat(bot.name)
+  } else {
+    host.navigate('/')
+  }
+
+  return true
+}
+
 function displayName(bot, meta) {
   if (meta?.title?.trim()) {
     return meta.title.trim()
@@ -6148,6 +6326,8 @@ function rosterActivityMatches(row, filter, now = Date.now()) {
 function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
   const activeProfile = useValue(host.state.profile)
   const focusedProfile = useValue($focusedBotProfile)
+  const selectedRosterKey = useValue($selectedRosterKey)
+  const botChatFocused = useValue($botChatFocused)
   const activeGroup = useValue($groupChatWorkspace)
   const allMeta = useValue($botMeta)
   const meta = botRosterMeta(bot, allMeta)
@@ -6161,7 +6341,16 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
   // old keying the wrong bot stayed highlighted while you read another's chat.
   // A selected group chat suppresses every bot-row highlight: the group row
   // owns the selection then (#88979).
-  const isActive = !activeGroup && !bot.remoteSource && bot.name === focusedProfile
+  // The highlight follows whoever owns the MAIN workspace. While a chat owns
+  // it, that chat's profile wins (a stale roster click must not key the
+  // highlight to a bot you are not reading). While the Bots home owns it, the
+  // source-qualified selection is the owner — and it is the only rule that
+  // can highlight a remote row, which has no focusable local chat.
+  const isActive =
+    !activeGroup &&
+    (botChatFocused
+      ? !bot.remoteSource && bot.name === focusedProfile
+      : selectedRosterKey === botRosterKey(bot))
   // Turn-busy is a SOCKET fact: only the gateway-home profile can be mid-turn.
   const isGatewayHome = !bot.remoteSource && bot.name === activeProfile
   const { shape, color, image } = botAppearance(bot.name, meta)
@@ -6226,70 +6415,9 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
     }
   }
 
-  const open = async () => {
-    const generation = ++botOpenGeneration
-    haptic('tap')
-    $groupChatWorkspace.set(null)
-    $selectedBot.set(bot.name)
-
-    if (bot.remoteSource) {
-      const handle = botHandle(bot.name, bot)
-      host.notify?.({
-        kind: 'info',
-        title: displayName(bot),
-        message: `Stay in this chat and @${handle} to message them. Gateway stays on this device.`
-      })
-      return
-    }
-
-    if (!bot.remoteSource && $botUnread.get()[bot.name]) {
-      const next = { ...$botUnread.get() }
-      delete next[bot.name]
-      $botUnread.set(next)
-    }
-
-    // Activate the owner first so every canonical-chat RPC lands on the
-    // backend that owns this bot's state database.
-    try {
-      await prepareBotSource(bot)
-    } catch (error) {
-      host.notifyError?.(error, `Could not reach ${bot.connectionLabel || 'the remote source'}`)
-
-      return
-    }
-
-    if (generation !== botOpenGeneration) {
-      return
-    }
-
-    try {
-      // Identity is the NAMED registry row (profile → session titled
-      // "Bot Chat"), resolved fresh on every click — preview identity and
-      // click identity agree because both describe that same row (#88200).
-      const id = await openBotCanonicalChat(bot.name)
-
-      if (generation === botOpenGeneration && id) {
-        return
-      }
-    } catch (error) {
-      if (generation === botOpenGeneration) {
-        host.notifyError?.(error, `Could not open ${displayName(bot, meta)}'s chat — try again`)
-      }
-
-      return
-    }
-
-    if (generation !== botOpenGeneration) {
-      return
-    }
-
-    if (typeof host.newChat === 'function') {
-      // Older gateway without profile-scoped session.create — plain draft.
-      host.newChat(bot.name)
-    } else {
-      host.navigate('/')
-    }
-  }
+// Rows and Active Now share the exact-owner open path; only that path may
+  // activate a source and resolve the canonical Bot Chat.
+  const open = () => void openRosterBot(bot)
 
   const row = jsxs('button', {
     type: 'button',
@@ -6465,7 +6593,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
             ? null
             : jsx(ContextMenuItem, {
                 onSelect: () => {
-                  $selectedBot.set(bot.name)
+                  saveSelectedRosterBot(bot)
 
                   if (typeof host.newChat === 'function') {
                     host.newChat(bot.name)
@@ -8130,7 +8258,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                               className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
                               children: taken
                                 ? 'That name is taken — pick another before configuring capabilities.'
-                                : 'Name the agent first — a draft profile is created when you open this tab (discarded if you cancel).'
+                                : 'Name the bot first — a draft profile is created when you open this tab (discarded if you cancel).'
                             })
                           : !createdForCaps
                             ? jsx('div', {
@@ -9655,7 +9783,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
                 })
               : jsx('div', {
                   className: 'px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)',
-                  children: query.trim() ? `No bots match “${query.trim()}”` : 'No bots yet — create agents first.'
+                  children: query.trim() ? `No bots match “${query.trim()}”` : 'No bots yet — create one first.'
                 })
           })
         }),
@@ -10893,6 +11021,389 @@ function closeGroupChatMainTab(group) {
   }
 }
 
+function selectedRosterBot(roster, key) {
+  return (Array.isArray(roster) ? roster : []).find(bot => botRosterKey(bot) === key) || null
+}
+
+/** A selected owner whose roster row is absent because its SOURCE is down —
+ *  not because the bot is gone. Identity comes from the key itself, so the
+ *  selection survives a relaunch with that gateway offline and reconciles
+ *  onto the live row (same key) when it returns, without duplicating it.
+ *
+ *  Returns null when the selection is provably invalid instead: a reachable
+ *  source that no longer lists the bot, or a source that left the registry
+ *  while other sources are live. Unknown (no sources yet) is NOT proof. */
+function ghostRosterOwner(key, sources) {
+  const { connectionId, name } = parseRosterKey(key)
+
+  if (!name) {
+    return null
+  }
+
+  const list = Array.isArray(sources) ? sources : []
+  const source = sourceByConnection(list).get(connectionId)
+
+  if (source ? source.reachable === true : list.length > 0) {
+    return null
+  }
+
+  return {
+    name,
+    connectionId,
+    ghost: true,
+    remoteSource: connectionId !== 'local',
+    connectionKind: source?.kind,
+    connectionLabel: source?.label,
+    sourceError: source?.error || null,
+    sourceMissing: false,
+    sourceReachable: false
+  }
+}
+
+/** Keep the persisted selection honest against the live roster and seat a
+ *  first selection when there is none. PRESENTATION ONLY: it never opens,
+ *  prepares, activates, or creates anything — an unreachable owner keeps its
+ *  selection rather than falling back onto some other gateway's bot. */
+function reconcileRosterSelection(roster, sources, metaByName) {
+  if (!$rosterHydrated.get() || !$selectedRosterHydrated.get()) {
+    return
+  }
+
+  const key = $selectedRosterKey.get()
+
+  if (key) {
+    if (selectedRosterBot(roster, key) || ghostRosterOwner(key, sources)) {
+      return
+    }
+
+    clearSelectedRosterKey(key)
+  }
+
+  const first = (Array.isArray(roster) ? roster : []).find(
+    bot => !isBotHidden(bot, metaByName) && botSourceStatus(annotateBotSource(bot, sources)).available
+  )
+
+  if (first) {
+    saveSelectedRosterBot(first)
+  }
+}
+
+function BotsHomeView() {
+  const roster = useValue($lastRoster)
+  const sources = useValue($lastSources)
+  const selectedKey = useValue($selectedRosterKey)
+  const rosterHydrated = useValue($rosterHydrated)
+  const selectionHydrated = useValue($selectedRosterHydrated)
+  const allMeta = useValue($botMeta)
+  const live = selectedRosterBot(roster, selectedKey)
+
+  if (!rosterHydrated || !selectionHydrated) {
+    return jsx('div', {
+      className: 'flex h-full items-center justify-center',
+      'aria-label': 'Loading bots',
+      children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
+    })
+  }
+
+  const ghost = live ? null : ghostRosterOwner(selectedKey, sources)
+  const bot = live ? annotateBotSource(live, sources) : ghost
+
+  if (!bot) {
+    return jsx('div', {
+      className: 'flex h-full items-center justify-center px-6',
+      children: jsx(EmptyState, {
+        icon: roster.length ? 'hubot' : 'add',
+        title: roster.length ? 'Choose a bot or group chat' : 'No bots yet',
+        description: roster.length ? 'Pick one from the Bots sidebar.' : 'Create your first bot from the Bots sidebar.'
+      })
+    })
+  }
+
+  const meta = botRosterMeta(bot, allMeta)
+  const status = botSourceStatus(bot)
+  const handle = botHandle(bot.name, bot)
+  const gateway = bot.connectionLabel || (bot.connectionId === 'local' ? 'This device' : 'Hermes gateway')
+  const gatewayKind = bot.connectionKind || (bot.connectionId === 'local' ? 'local' : 'remote')
+  const { shape, color, image } = botAppearance(bot.name, meta)
+  const photo = image && !isBackfilledFacePng(image) ? image : null
+  const description = String(meta?.description || bot.description || '').trim()
+  const unavailable = !status.available
+  const remoteCopy = async () => {
+    const mention = `@${handle}`
+
+    try {
+      await navigator.clipboard.writeText(mention)
+      host.notify?.({ kind: 'success', message: `${mention} copied` })
+    } catch {
+      host.notify?.({ kind: 'info', message: `Mention this bot with ${mention}` })
+    }
+  }
+  // Retry re-polls the roster on the bot's OWN source. It never activates or
+  // re-routes anything: if the gateway is back, its row reappears under the
+  // same key and this view reconciles onto it.
+  const retrySource = () => {
+    haptic('tap')
+    queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
+  }
+
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col bg-(--ui-bg-primary)',
+    children: [
+      jsxs('header', {
+        className:
+          'flex min-w-0 items-center gap-3 border-b border-(--ui-stroke-secondary) px-5 py-3.5',
+        children: [
+          jsx(BotFace, { shape, color, image: photo, size: 38, name: bot.name, mood: 'idle' }),
+          jsxs('div', {
+            className: 'min-w-0 flex-1',
+            children: [
+              jsx('h1', {
+                className: 'truncate text-sm font-semibold text-foreground',
+                children: displayName(bot, meta)
+              }),
+              jsxs('div', {
+                className: 'flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
+                children: [
+                  jsx('span', { children: 'Bot' }),
+                  jsx('span', { children: '·' }),
+                  jsx('span', { className: 'truncate font-mono', children: `@${handle}` })
+                ]
+              })
+            ]
+          }),
+          // Tip wraps ONE element (Radix asChild) — the screen-reader text
+          // rides inside the trigger, not beside it.
+          jsx(Tip, {
+            label: `${gateway} · ${gatewayKind} · ${status.label}`,
+            children: jsxs('div', {
+              className: 'flex max-w-[45%] items-center gap-1.5 text-xs text-(--ui-text-tertiary)',
+              children: [
+                jsx('span', { className: 'sr-only', children: `${gateway}, ${status.label}` }),
+                jsx(Codicon, { name: gatewayKindIcon(gatewayKind), className: 'shrink-0' }),
+                jsx('span', { className: 'min-w-0 truncate', children: gateway }),
+                jsx(Codicon, {
+                  name: unavailable ? (status.key === 'auth' ? 'key' : 'debug-disconnect') : 'pass-filled',
+                  className: cn(
+                    'shrink-0',
+                    unavailable ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-400'
+                  )
+                })
+              ]
+            })
+          })
+        ]
+      }),
+      jsx('main', {
+        className: 'flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 py-10',
+        children: jsxs('div', {
+          className: 'flex w-full max-w-2xl flex-col items-center text-center',
+          children: [
+            jsx(BotFace, { shape, color, image: photo, size: 76, name: bot.name, mood: 'idle' }),
+            jsx('h2', {
+              className: 'mt-5 text-xl font-semibold text-foreground',
+              children: displayName(bot, meta)
+            }),
+            description
+              ? jsx('p', {
+                  className: 'mt-2 max-w-xl text-sm leading-6 text-(--ui-text-tertiary)',
+                  children: description
+                })
+              : null,
+            jsx('p', {
+              className: cn(
+                'mt-4 max-w-lg text-xs leading-5',
+                unavailable ? 'text-amber-700 dark:text-amber-300' : 'text-(--ui-text-tertiary)'
+              ),
+              children: unavailable
+                ? `${gateway} is ${status.label.toLowerCase()}. This bot stays selected and its work keeps running on that gateway.`
+                : bot.remoteSource
+                  ? `This bot lives on ${gateway}. Mention @${handle} from a Bot Chat to send it a message.`
+                  : 'Open this bot’s continuous chat. Its background work keeps running when you switch away.'
+            }),
+            unavailable
+              ? jsx(Button, {
+                  variant: 'secondary',
+                  size: 'sm',
+                  className: 'mt-5',
+                  onClick: retrySource,
+                  children: 'Retry'
+                })
+              : bot.remoteSource
+                ? jsx(Button, {
+                    variant: 'secondary',
+                    size: 'sm',
+                    className: 'mt-5',
+                    onClick: () => void remoteCopy(),
+                    children: `Copy @${handle}`
+                  })
+                : jsx(Button, {
+                    variant: 'secondary',
+                    size: 'sm',
+                    className: 'mt-5',
+                    onClick: () => void openRosterBot(bot),
+                    children: 'Open chat'
+                  })
+          ]
+        })
+      })
+    ]
+  })
+}
+
+function closeBotsHomeWorkspace() {
+  if (typeof botsHomeClose !== 'function') {
+    return
+  }
+
+  const close = botsHomeClose
+  botsHomeClose = null
+  suppressBotsHomeReopen = true
+
+  try {
+    close()
+  } catch {
+    /* workspace already closed */
+  } finally {
+    suppressBotsHomeReopen = false
+  }
+}
+
+/** The Bot home needs BOTH the main-area door and pane visibility to behave.
+ *  Older shells keep their previous surfaces untouched (no home at all). */
+function botsHomeEnabled() {
+  return typeof host.openWorkspace === 'function' && typeof host.paneVisibility === 'function'
+}
+
+/** True when a session owns the main workspace. Prefers the focused STORED
+ *  session (tab focus moves without swapping the gateway socket); bare test
+ *  harnesses with neither atom drive $botChatFocused directly. */
+function sessionOwnsWorkspace() {
+  const focused = host.state?.focusedStoredSessionId?.get?.()
+
+  if (focused !== undefined) {
+    return Boolean(focused)
+  }
+
+  const active = host.state?.activeSessionId?.get?.()
+
+  return active === undefined ? $botChatFocused.get() : Boolean(active)
+}
+
+/** The home tab currently holds the center's active tab slot. */
+function botsHomeVisible() {
+  if (typeof host.paneVisibility !== 'function') {
+    return false
+  }
+
+  try {
+    return host.paneVisibility(BOTS_HOME_PANE_ID).get() === true
+  } catch {
+    return false
+  }
+}
+
+/** A real bot chat owns the center. Cronjobs are BOT-scoped, so this — not
+ *  mere Bot Mode visibility — is what may seat the Cronjobs tile: beside the
+ *  ownerless home or a group chat it would describe whichever profile the
+ *  socket happens to be homed on. While the home tab is fronted the chat is
+ *  a hidden sibling layer, so the focused session does NOT count. */
+function botChatOwnsWorkspace() {
+  return (
+    $botsPaneVisible.get() &&
+    !$groupChatWorkspace.get() &&
+    !botsHomeVisible() &&
+    Boolean($openBotChat.get() || sessionOwnsWorkspace())
+  )
+}
+
+/** May the home OPEN right now? `explicit` is a user gesture aimed at the
+ *  home itself (selecting a remote/unavailable owner): it overrides the
+ *  focused-session veto — the veto exists so PASSIVE events (boot, restore,
+ *  polls) never cover a chat the user left in the center. */
+function botsHomeMayOpen(explicit) {
+  return (
+    $botsPaneVisible.get() &&
+    !$groupChatWorkspace.get() &&
+    !$openBotChat.get() &&
+    (explicit || !sessionOwnsWorkspace())
+  )
+}
+
+function openBotsHomeWorkspace(explicit = false) {
+  if (!botsHomeEnabled() || !botsHomeMayOpen(explicit)) {
+    return
+  }
+
+  // Already open and fronted: nothing to do. Already open but backgrounded
+  // (a persisted layout can restore the tab behind the draft): re-open to
+  // re-front it. Never stack a second registration — a stale disposer would
+  // tear down the newer one. This cannot yank the center from a tab the
+  // user just chose: plugin events are sparse (sidebar/group/focus edges),
+  // and each of those either legitimately claims the center or cleared it.
+  if (botsHomeClose) {
+    if (botsHomeVisible()) {
+      return
+    }
+
+    closeBotsHomeWorkspace()
+  }
+
+  try {
+    botsHomeClose = host.openWorkspace(`${ID}:home`, {
+      title: 'Bots',
+      minWidth: '24rem',
+      render: () => jsx(BotsHomeView, {}),
+      // Closing the tab is a decision, not a glitch: drop the handle and
+      // leave the center alone. The home returns on the next real signal
+      // (Bots tab regains focus, a chat closes, a group is left).
+      onClose: () => {
+        if (!suppressBotsHomeReopen) {
+          botsHomeClose = null
+        }
+      }
+    })
+  } catch {
+    botsHomeClose = null
+  }
+}
+
+/** Passive reconcile. Opens the home only into an ownerless center; closes
+ *  it only when a surface with a REAL owner claims the center (bot chat,
+ *  group chat) or Bot Mode leaves the screen. The focused-session LEVEL
+ *  deliberately does not close an open home — the home may sit over a
+ *  focused-but-hidden chat after an explicit selection; the chat reclaims
+ *  the center on its focus EDGE (handleWorkspaceFocusChange). */
+function syncBotsHomeWorkspace() {
+  if (!$botsPaneVisible.get() || $groupChatWorkspace.get() || $openBotChat.get()) {
+    closeBotsHomeWorkspace()
+    return
+  }
+
+  openBotsHomeWorkspace()
+}
+
+/** An opened bot chat stops owning the center once focus leaves it (closed,
+ *  or another session took over). Without this the home could never come
+ *  back: $openBotChat would claim ownership for a chat nobody is reading.
+ *
+ *  The legacy newChat fallback has no stored id to compare — a draft with no
+ *  focused session is still that bot's draft, so it only yields once some
+ *  session actually takes focus. */
+function releaseStaleOpenBotChat(focusedStoredId) {
+  const open = $openBotChat.get()
+
+  if (!open) {
+    return
+  }
+
+  const focused = focusedStoredId === null || focusedStoredId === undefined ? '' : String(focusedStoredId)
+  const stale = open.openedRegistryId ? focused !== open.openedRegistryId : Boolean(focused)
+
+  if (stale) {
+    $openBotChat.set(null)
+  }
+}
+
 /** Main-window wrapper: seats the member roster reactively (live roster +
  *  bot meta + the room's stored cross-connection descriptors) so the room
  *  keeps working as members change while the tab is open. Also subscribes to
@@ -11328,6 +11839,15 @@ function BotsPane() {
     backfillMessagingProtocol(activeSourceRoster)
   }
 
+  // The roster has ANSWERED once data or a terminal error exists — that, not
+  // row count, is what lets the home stop showing its loading state (an empty
+  // answer is a real answer; a pending one must not flash "No bots").
+  if (data || error) {
+    $rosterHydrated.set(true)
+  }
+
+  reconcileRosterSelection(roster, sourceSnapshot, allMeta)
+
   const staleNotice = error && !live && roster.length
     ? 'Roster refresh failed — showing the last good list.' + (gatewayUp ? '' : ' Waiting for the gateway to reconnect…')
     : null
@@ -11508,65 +12028,9 @@ function BotsPane() {
         activeProfile,
         gatewayState,
         metaByName: allMeta,
-        onOpen: bot => {
-          const generation = ++botOpenGeneration
-          haptic('tap')
-          $selectedBot.set(bot.name)
-
-          if (bot.remoteSource) {
-            const handle = botHandle(bot.name, bot)
-            host.notify?.({
-              kind: 'info',
-              title: displayName(bot),
-              message: `Stay in this chat and @${handle} to message them. Gateway stays on this device.`
-            })
-            return
-          }
-
-          if ($botUnread.get()[bot.name]) {
-            const next = { ...$botUnread.get() }
-            delete next[bot.name]
-            $botUnread.set(next)
-          }
-
-          void (async () => {
-            try {
-              await prepareBotSource(bot)
-            } catch (error) {
-              host.notifyError?.(error, `Could not reach ${bot.connectionLabel || 'the remote source'}`)
-
-              return
-            }
-
-            if (generation !== botOpenGeneration) {
-              return
-            }
-
-            try {
-              const id = await openBotCanonicalChat(bot.name)
-
-              if (generation === botOpenGeneration && id) {
-                return
-              }
-            } catch (error) {
-              if (generation === botOpenGeneration) {
-                host.notifyError?.(error, `Could not open ${displayName(bot)}'s chat — try again`)
-              }
-
-              return
-            }
-
-            if (generation !== botOpenGeneration) {
-              return
-            }
-
-            if (typeof host.newChat === 'function') {
-              host.newChat(bot.name)
-            } else {
-              host.navigate('/')
-            }
-          })()
-        }
+        // Keep the Active Now strip and sidebar rows on the same exact-owner
+        // route: source activation first, then canonical name-registry open.
+        onOpen: bot => void openRosterBot(bot)
       }),
       showRosterTools
         ? jsx('div', {
@@ -12030,6 +12494,25 @@ export default {
       /* no storage — display preferences last for this window only */
     }
 
+    // The last selected bot, source-qualified. Restoring it is PRESENTATION
+    // ONLY: it paints the Bots home and the roster highlight, and never
+    // activates a gateway, opens a chat, or creates a session. The hydrated
+    // flag must flip on every settle path — the home holds a loading state
+    // until it does, and a storage quirk must not strand it there.
+    try {
+      Promise.resolve(ctx.storage?.get?.('selected-roster-bot-v1'))
+        .then(value => {
+          if (typeof value === 'string' && value.trim()) {
+            $selectedRosterKey.set(value.trim())
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => $selectedRosterHydrated.set(true))
+    } catch {
+      /* no storage — this window starts with no restored selection */
+      $selectedRosterHydrated.set(true)
+    }
+
     // Bot Mode sessions are always hidden now — the old "hide Bot Chats"
     // pref is gone (its stored key is simply ignored). The reconciliation
     // sweep below hides any rows born visible under the old pref.
@@ -12188,11 +12671,11 @@ export default {
 
     if (typeof host.paneVisibility === 'function') {
       // The contribution-scoped pane id (`register` prefixes `${ID}:`).
-      const $botsPaneVisible = host.paneVisibility(`${ID}:pane`)
+      const $sidebarVisible = host.paneVisibility(`${ID}:pane`)
       let unregisterRoutines = null
 
-      const syncRoutinesPane = visible => {
-        if (visible) {
+      const syncRoutinesPane = () => {
+        if (botChatOwnsWorkspace()) {
           unregisterRoutines ??= registerRoutinesPane()
         } else if (unregisterRoutines) {
           unregisterRoutines()
@@ -12200,13 +12683,67 @@ export default {
         }
       }
 
-      const stopRoutinesSync = $botsPaneVisible.listen(syncRoutinesPane)
-      syncRoutinesPane($botsPaneVisible.get())
+      // One recompute for both main-area surfaces: they answer the same
+      // question (who owns the center) from the same three signals.
+      const syncWorkspaceSurfaces = () => {
+        syncBotsHomeWorkspace()
+        syncRoutinesPane()
+      }
+
+      const stopSidebarSync = $sidebarVisible.listen(visible => {
+        $botsPaneVisible.set(Boolean(visible))
+        syncWorkspaceSurfaces()
+      })
+      const stopGroupSync = $groupChatWorkspace.listen(syncWorkspaceSurfaces)
+      // The home tab's visibility flips are the ONLY signal for two real
+      // transitions: layout hydration re-asserting a persisted active tab
+      // over the home after boot, and the user swapping between the home tab
+      // and a chat tab. React on the NEXT tick — the notification arrives
+      // mid-layout-mutation, and registering/unregistering panes from inside
+      // it would re-enter the tree store.
+      const scheduleSurfaceSync = () => {
+        try {
+          setTimeout(syncWorkspaceSurfaces, 0)
+        } catch {
+          syncWorkspaceSurfaces()
+        }
+      }
+      const stopHomeVisibleSync = host.paneVisibility(BOTS_HOME_PANE_ID).listen(scheduleSurfaceSync)
+      // Tab focus moves without swapping the gateway socket, so the focused
+      // STORED session is the truth about session focus; older shells fall
+      // back to the active session id. A RISING edge means a session just
+      // claimed the center (opened or refocused): the home yields then — and
+      // only then, so an explicitly selected owner can hold the center over
+      // a focused-but-hidden chat without the next poll snatching it back.
+      const focusStore = host.state.focusedStoredSessionId || host.state.activeSessionId
+      const stopFocusSync =
+        typeof focusStore?.listen === 'function'
+          ? focusStore.listen(id => {
+              $botChatFocused.set(Boolean(id))
+              releaseStaleOpenBotChat(id)
+
+              if (id) {
+                closeBotsHomeWorkspace()
+              }
+
+              syncWorkspaceSurfaces()
+            })
+          : null
+
+      $botsPaneVisible.set(Boolean($sidebarVisible.get()))
+      $botChatFocused.set(sessionOwnsWorkspace())
+      syncWorkspaceSurfaces()
 
       if (typeof ctx.onDispose === 'function') {
         // The registration disposer is already tracked by ctx.register; only
-        // the listener needs explicit teardown or it survives plugin disable.
-        ctx.onDispose(stopRoutinesSync)
+        // the listeners need explicit teardown or they survive plugin disable.
+        ctx.onDispose(() => {
+          stopSidebarSync()
+          stopGroupSync()
+          stopHomeVisibleSync()
+          stopFocusSync?.()
+          closeBotsHomeWorkspace()
+        })
       }
     } else {
       registerRoutinesPane()

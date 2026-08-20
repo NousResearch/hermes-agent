@@ -1,5 +1,4 @@
-"""
-Regression test for issue #86228.
+"""Regression tests for issue #86228.
 
 When SLACK_CLIENT_ID and SLACK_CLIENT_SECRET are both present in the
 environment (e.g. because the user configured the Slack MCP server),
@@ -9,17 +8,20 @@ OAuth install flow.  The auto-enabled ``FileInstallationStore`` is empty,
 so ``authorize()`` returns ``None`` for every inbound event and the event
 is silently dropped before any Hermes handler runs.
 
-The fix suppresses those two env vars for the duration of the ``AsyncApp``
-constructor call so slack_bolt stays in single-team bot-token mode.
+The adapter suppresses those two env vars for the duration of the
+``AsyncApp`` constructor call so slack_bolt stays in single-team bot-token
+mode.
 
 These tests verify:
-1. With the fix, ``AsyncApp`` constructed inside the adapter does NOT
-   activate multi-team OAuth even when both env vars are set.
-2. The env vars are restored after construction.
-3. A warning is logged when suppression fires.
+1. The real ``SlackAdapter.connect`` path constructs ``AsyncApp`` once with
+   both OAuth env vars absent, then restores them.
+2. Restoration also happens when the constructor raises.
+3. A partial environment is left untouched because slack_bolt requires both
+   names to activate its implicit OAuth mode.
 """
 
-import logging
+from __future__ import annotations
+
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -60,160 +62,200 @@ if not _REAL_SLACK:
         sys.modules.setdefault(name, mod)
     sys.modules.setdefault("aiohttp", MagicMock())
 
+import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Tests that exercise the real slack_bolt library
-# ---------------------------------------------------------------------------
+_slack_mod.SLACK_AVAILABLE = True
 
-@pytest.mark.skipif(not _REAL_SLACK, reason="requires real slack_bolt")
-class TestRealAsyncAppOAuthSuppression:
-    """Verify that slack_bolt's AsyncApp does not auto-enable OAuth when
-    env vars are suppressed during construction."""
-
-    def test_env_vars_present_without_suppression_activates_oauth(self):
-        """Baseline: without suppression, slack_bolt activates multi-team OAuth."""
-        from slack_bolt.app.async_app import AsyncApp
-        from slack_sdk.web.async_client import AsyncWebClient
-
-        fake_token = "xoxb-000000000000-000000000000-000000000000000000000000"
-        with patch.dict(os.environ, {
-            "SLACK_CLIENT_ID": "fake_id",
-            "SLACK_CLIENT_SECRET": "fake_secret",
-        }):
-            client = AsyncWebClient(token=fake_token)
-            app = AsyncApp(token=fake_token, client=client)
-            # Bug: OAuth flow is auto-enabled
-            assert app._async_oauth_flow is not None, (
-                "Expected OAuth flow to be auto-enabled when env vars are present "
-                "(this is the bug baseline)"
-            )
-            assert app._token is None, (
-                "Expected token to be nulled when OAuth is auto-enabled"
-            )
-
-    def test_env_vars_suppressed_keeps_single_team_mode(self):
-        """With suppression, slack_bolt stays in single-team bot-token mode."""
-        from slack_bolt.app.async_app import AsyncApp
-        from slack_sdk.web.async_client import AsyncWebClient
-
-        fake_token = "xoxb-000000000000-000000000000-000000000000000000000000"
-        saved = {}
-        for key in ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET"):
-            saved[key] = os.environ.pop(key, None)
-        os.environ["SLACK_CLIENT_ID"] = "fake_id"
-        os.environ["SLACK_CLIENT_SECRET"] = "fake_secret"
-
-        try:
-            client = AsyncWebClient(token=fake_token)
-            # Simulate the adapter's suppression logic
-            _slack_oauth_env = ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
-            _saved_env = {
-                k: os.environ.pop(k) for k in _slack_oauth_env if k in os.environ
-            }
-            try:
-                app = AsyncApp(token=fake_token, client=client)
-            finally:
-                os.environ.update(_saved_env)
-
-            # Fix: no OAuth flow, token preserved
-            assert app._async_oauth_flow is None, (
-                "OAuth flow should NOT be activated when env vars are suppressed"
-            )
-            assert app._token == fake_token, (
-                "Bot token should be preserved in single-team mode"
-            )
-        finally:
-            # Restore original env
-            for key in ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET"):
-                os.environ.pop(key, None)
-                if saved[key] is not None:
-                    os.environ[key] = saved[key]
-
-    def test_env_vars_restored_after_suppression(self):
-        """The suppression must restore env vars after construction."""
-        from slack_bolt.app.async_app import AsyncApp
-        from slack_sdk.web.async_client import AsyncWebClient
-
-        fake_token = "xoxb-000000000000-000000000000-000000000000000000000000"
-        with patch.dict(os.environ, {
-            "SLACK_CLIENT_ID": "test_client_id",
-            "SLACK_CLIENT_SECRET": "test_client_secret",
-        }):
-            client = AsyncWebClient(token=fake_token)
-            _slack_oauth_env = ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
-            _saved_env = {
-                k: os.environ.pop(k) for k in _slack_oauth_env if k in os.environ
-            }
-            try:
-                app = AsyncApp(token=fake_token, client=client)
-            finally:
-                os.environ.update(_saved_env)
-
-            assert os.environ.get("SLACK_CLIENT_ID") == "test_client_id"
-            assert os.environ.get("SLACK_CLIENT_SECRET") == "test_client_secret"
+from gateway.config import PlatformConfig  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Tests that verify the adapter's suppression logic (work with mocks too)
-# ---------------------------------------------------------------------------
+class _RecordingApp:
+    """Small Slack Bolt stand-in that supports all registrations in connect()."""
 
-class TestAdapterEnvSuppression:
-    """Verify the adapter's env-suppression logic around AsyncApp construction."""
+    def __init__(self, token, client=None, **_kwargs):
+        self.token = token
+        self.client = client
 
-    def test_suppression_logs_warning_when_env_vars_present(self, caplog):
-        """When SLACK_CLIENT_ID/SECRET are present, the adapter logs a warning."""
-        with patch.dict(os.environ, {
-            "SLACK_CLIENT_ID": "fake_id",
-            "SLACK_CLIENT_SECRET": "fake_secret",
-        }):
-            # Simulate the adapter's suppression block
-            _slack_oauth_env = ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
-            _saved_env = {
-                k: os.environ.pop(k) for k in _slack_oauth_env if k in os.environ
-            }
-            if _saved_env:
-                with caplog.at_level(logging.INFO, logger="root"):
-                    logging.getLogger("root").info(
-                        "[Slack] Suppressing %s during AsyncApp init to prevent "
-                        "inadvertent multi-team OAuth activation",
-                        ", ".join(sorted(_saved_env)),
-                    )
-            try:
-                pass  # AsyncApp would be constructed here
-            finally:
-                os.environ.update(_saved_env)
+    @staticmethod
+    def _decorator(_matcher):
+        def decorate(fn):
+            return fn
 
-            assert any("Suppressing" in r.message for r in caplog.records)
-            assert "SLACK_CLIENT_ID" in os.environ
-            assert "SLACK_CLIENT_SECRET" in os.environ
+        return decorate
 
-    def test_no_suppression_when_env_vars_absent(self):
-        """When env vars are absent, _saved_env is empty (no-op)."""
-        env_without_slack = {
-            k: v for k, v in os.environ.items()
-            if k not in ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
+    def event(self, matcher):
+        return self._decorator(matcher)
+
+    def command(self, matcher):
+        return self._decorator(matcher)
+
+    def action(self, matcher):
+        return self._decorator(matcher)
+
+
+class _FakeWebClient:
+    """Deterministic Slack SDK client for the adapter's auth bootstrap."""
+
+    def __init__(self, token, **_kwargs):
+        self.token = token
+        self.proxy = None
+
+    async def auth_test(self):
+        return {
+            "team_id": "T_FAKE",
+            "user_id": "U_BOT",
+            "user": "testbot",
+            "team": "FakeTeam",
         }
-        with patch.dict(os.environ, env_without_slack, clear=True):
-            _slack_oauth_env = ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
-            _saved_env = {
-                k: os.environ.pop(k) for k in _slack_oauth_env if k in os.environ
-            }
-            assert _saved_env == {}, "Should not suppress when env vars are absent"
 
-    def test_only_one_env_var_present_no_suppression(self):
-        """When only one of the two env vars is present, no suppression needed."""
-        env_with_one = {
-            k: v for k, v in os.environ.items()
-            if k not in ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
+
+async def _run_connect(
+    adapter,
+    app_factory,
+    env,
+    tmp_path,
+):
+    """Run the real adapter connect path with only external Slack I/O stubbed."""
+    app_constructor = MagicMock(side_effect=app_factory)
+    plugin_manager = MagicMock()
+    plugin_manager.get_slack_action_handlers.return_value = []
+
+    with (
+        patch.object(_slack_mod, "AsyncApp", app_constructor),
+        patch.object(_slack_mod, "AsyncWebClient", _FakeWebClient),
+        patch.object(_slack_mod, "_resolve_slack_proxy_url", return_value=None),
+        patch.object(_slack_mod, "get_secret", return_value="xapp-fake"),
+        patch("hermes_constants.get_hermes_home", return_value=tmp_path),
+        patch("hermes_cli.commands.slack_native_slashes", return_value=[]),
+        patch("hermes_cli.plugins.get_plugin_manager", return_value=plugin_manager),
+        patch.object(adapter, "_acquire_platform_lock", return_value=True),
+        patch.object(adapter, "_stop_socket_mode_handler", new=AsyncMock()),
+        patch.object(adapter, "_close_workspace_clients", new=AsyncMock()),
+        patch.object(adapter, "_start_socket_mode_handler"),
+        patch.object(adapter, "_ensure_socket_watchdog"),
+        patch.object(adapter, "_release_platform_lock"),
+        patch.dict(os.environ, env, clear=True),
+    ):
+        result = await adapter.connect()
+        restored_env = {
+            key: os.environ.get(key, _MISSING)
+            for key in ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
         }
-        env_with_one["SLACK_CLIENT_ID"] = "only_id"
-        with patch.dict(os.environ, env_with_one, clear=True):
-            _slack_oauth_env = ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
-            _saved_env = {
-                k: os.environ.pop(k) for k in _slack_oauth_env if k in os.environ
+
+    return result, app_constructor, restored_env
+
+
+_MISSING = object()
+
+
+@pytest.mark.asyncio
+async def test_connect_suppresses_oauth_env_and_restores_it(tmp_path, caplog):
+    """connect() must protect the real AsyncApp construction boundary."""
+    observed_env = []
+
+    def build_app(*, token, client, **_kwargs):
+        observed_env.append(
+            {
+                key: os.environ.get(key, _MISSING)
+                for key in ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
             }
-            # Only SLACK_CLIENT_ID is present — slack_bolt needs BOTH to auto-enable
-            assert "SLACK_CLIENT_ID" in _saved_env
-            assert "SLACK_CLIENT_SECRET" not in _saved_env
-            # Restore
-            os.environ.update(_saved_env)
+        )
+        return _RecordingApp(token, client)
+
+    adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+    with caplog.at_level("INFO", logger=_slack_mod.logger.name):
+        result, app_constructor, restored_env = await _run_connect(
+            adapter,
+            build_app,
+            {
+                "SLACK_APP_TOKEN": "xapp-fake",
+                "SLACK_CLIENT_ID": "client-id",
+                "SLACK_CLIENT_SECRET": "client-secret",
+            },
+            tmp_path,
+        )
+
+    assert result is True
+    app_constructor.assert_called_once()
+    assert observed_env == [
+        {"SLACK_CLIENT_ID": _MISSING, "SLACK_CLIENT_SECRET": _MISSING}
+    ]
+    assert restored_env == {
+        "SLACK_CLIENT_ID": "client-id",
+        "SLACK_CLIENT_SECRET": "client-secret",
+    }
+    assert "Suppressing SLACK_CLIENT_ID, SLACK_CLIENT_SECRET" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connect_restores_oauth_env_when_app_construction_fails(tmp_path):
+    """The process environment must survive an AsyncApp constructor error."""
+    observed_env = []
+
+    def fail_to_build_app(*, token, client, **_kwargs):
+        observed_env.append(
+            {
+                key: os.environ.get(key, _MISSING)
+                for key in ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
+            }
+        )
+        raise RuntimeError("constructor failed")
+
+    adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+    result, app_constructor, restored_env = await _run_connect(
+        adapter,
+        fail_to_build_app,
+        {
+            "SLACK_APP_TOKEN": "xapp-fake",
+            "SLACK_CLIENT_ID": "client-id",
+            "SLACK_CLIENT_SECRET": "client-secret",
+        },
+        tmp_path,
+    )
+
+    assert result is False
+    app_constructor.assert_called_once()
+    assert observed_env == [
+        {"SLACK_CLIENT_ID": _MISSING, "SLACK_CLIENT_SECRET": _MISSING}
+    ]
+    assert restored_env == {
+        "SLACK_CLIENT_ID": "client-id",
+        "SLACK_CLIENT_SECRET": "client-secret",
+    }
+
+
+@pytest.mark.asyncio
+async def test_connect_leaves_partial_oauth_env_untouched(tmp_path):
+    """Only one OAuth variable must not trigger the suppression guard."""
+    observed_env = []
+
+    def build_app(*, token, client, **_kwargs):
+        observed_env.append(
+            {
+                key: os.environ.get(key, _MISSING)
+                for key in ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
+            }
+        )
+        return _RecordingApp(token, client)
+
+    adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+    result, app_constructor, restored_env = await _run_connect(
+        adapter,
+        build_app,
+        {
+            "SLACK_APP_TOKEN": "xapp-fake",
+            "SLACK_CLIENT_ID": "only-client-id",
+        },
+        tmp_path,
+    )
+
+    assert result is True
+    app_constructor.assert_called_once()
+    assert observed_env == [
+        {"SLACK_CLIENT_ID": "only-client-id", "SLACK_CLIENT_SECRET": _MISSING}
+    ]
+    assert restored_env == {
+        "SLACK_CLIENT_ID": "only-client-id",
+        "SLACK_CLIENT_SECRET": _MISSING,
+    }

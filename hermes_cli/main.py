@@ -7818,6 +7818,7 @@ def _desktop_macos_relaunchable_fixup(
             )
             return False
         print("  → macOS desktop re-signed (legacy ad-hoc); safeStorage keychain item left untouched")
+        return True
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
     return False

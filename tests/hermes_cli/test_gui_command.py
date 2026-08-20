@@ -458,6 +458,10 @@ def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatc
 def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monkeypatch, capsys):
     """A failing stable sign must still leave a launchable (deep ad-hoc) bundle.
 
+    The stable signer raising routes into the legacy deep ad-hoc fallback;
+    with the fallback sign and strict verification succeeding, the fixup
+    reports ``True`` per its documented contract.
+
     ``macos_only``: the subject is ``codesign`` against a real ``.app`` bundle
     layout (``exe.parents[2]``), which only the macOS packaged tree produces.
     """
@@ -487,7 +491,7 @@ def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monk
 
     monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
 
-    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
     assert ["xattr", "-cr", str(app)] in calls
     assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
 
@@ -901,7 +905,7 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
 
     monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
 
-    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
     assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
     assert ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)] in calls
     assert not any("delete-generic-password" in c for c in calls)

@@ -164,6 +164,14 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             group="Session",
         ),
         ProviderField(
+            key="sessionAiPeerPrefix",
+            label="Session AI peer prefix",
+            kind=KIND_BOOL,
+            default="false",
+            description="Prefix session names with the AI peer. Keeps sessions disjoint when several AI peers share a workspace.",
+            group="Session",
+        ),
+        ProviderField(
             key="sessions",
             label="Session overrides",
             kind=KIND_JSON,

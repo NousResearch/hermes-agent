@@ -796,16 +796,16 @@ def cmd_setup(args) -> None:
 
     gw_platforms = _gateway_platforms()
     if gw_platforms is None:
-        print("\n  Gateway identity mapping routes platform users to memory peers.")
+        print("\n  Each gateway account (a Telegram user, a Discord user, ...)")
+        print("  resolves to a peer. Honcho builds one representation per peer.")
         run_mapping = _prompt(
             "Running the Hermes gateway (Telegram/Discord/etc.)? (y/N)",
             default="n",
         ).strip().lower() in {"y", "yes"}
     elif not gw_platforms:
-        print("\n  No gateway platforms connected — identity mapping only affects")
-        print("  gateway users, so this step doesn't apply here.")
+        print("\n  No gateway platforms connected — nothing to map.")
         run_mapping = _prompt(
-            "Configure gateway mapping anyway? (y/N)", default="n",
+            "Configure anyway? (y/N)", default="n",
         ).strip().lower() in {"y", "yes"}
     else:
         print(f"\n  Gateway platforms detected: {', '.join(gw_platforms)}")
@@ -813,17 +813,38 @@ def cmd_setup(args) -> None:
 
     if run_mapping:
         peer_target = hermes_host.get("peerName") or current_peer or "user"
-        default_choice = {"single": "1", "hybrid": "2", "multi": "3"}.get(current_shape, "3")
-        print("\n  How should gateway users map to memory peers?")
-        print("    [1] just me — every non-agent user collapses to your peer")
-        print("    [2] me + other people — keep mine pooled, others separate")
-        print("    [3] only other people — everyone gets their own peer")
+        ai_peer_label = hermes_host.get("aiPeer") or cfg.get("aiPeer") or "hermes"
+        # Fresh configs (no identity key anywhere) default to the common
+        # personal shape; configured ones default to their detected shape.
+        identity_configured = any(
+            k in hermes_host or k in cfg for k in _IDENTITY_MAPPING_KEYS
+        )
+        default_choice = (
+            {"single": "1", "hybrid": "2", "multi": "3"}[current_shape]
+            if identity_configured else "1"
+        )
+        print("\n  This step covers the HUMAN mapping only. Each account using the")
+        print("  gateway resolves to a peer — the entity Honcho reasons about over")
+        print(f"  time. This agent is already its own peer ('{ai_peer_label}'), and each")
+        print("  Hermes profile brings its own AI peer to the gateway.")
+        print("\n  How should accounts resolve?")
+        print("    [1] single peer — one person uses this agent; every account")
+        print(f"        resolves to '{peer_target}'. The common personal setup.")
+        print("        Never for a gateway serving other people — their memory")
+        print("        would merge into yours")
+        print("    [2] your peer + one per other account — your accounts are")
+        print(f"        aliased to '{peer_target}'; each other account gets its own")
+        print("        peer until you alias it. For a gateway you share")
+        print("    [3] one peer per account — no aliases; every account is its")
+        print("        own peer. For agents serving other people")
         print("    [s] skip (leave untouched)   [e] edit raw keys")
+        print(f"\n  Tip: alias your Telegram UID and your Discord ID to '{peer_target}' —")
+        print("  both accounts then resolve to one peer.")
         choice = _prompt("Choice", default=default_choice).strip().lower()
 
         if choice in {"2", "me+others", "both"}:
             pooled = _prompt(
-                "  Keep my own memory pooled across platforms? (Y/n)", default="y",
+                "  Resolve all YOUR accounts to one peer? (Y/n)", default="y",
             ).strip().lower()
             shape = "hybrid" if pooled in {"y", "yes", ""} else "multi"
         elif choice in {"1", "me", "just-me"}:
@@ -839,12 +860,12 @@ def cmd_setup(args) -> None:
         # pooled peerName history; steer the operator toward pooling instead.
         if current_pin and shape == "multi":
             print(
-                f"\n  ⚠ Un-pinning will orphan memory accumulated under peer\n"
-                f"    '{peer_target}'.  Existing gateway users resolve to fresh,\n"
-                f"    empty peers."
+                f"\n  ⚠ The peer '{peer_target}' already has a representation built\n"
+                f"    from your messages. One peer per account means your accounts\n"
+                f"    resolve to new peers with no history."
             )
             confirm = _prompt(
-                "  Pool my own memory instead (alias my IDs to peerName)? (Y/n)",
+                "  Keep your accounts resolving to '" + peer_target + "' instead? (Y/n)",
                 default="y",
             ).strip().lower()
             if confirm in {"y", "yes", ""}:
@@ -855,7 +876,7 @@ def cmd_setup(args) -> None:
         if shape == "single":
             _scrub_identity_mapping(hermes_host)
             hermes_host["pinUserPeer"] = True
-            print(f"  All non-agent gateway users route to '{peer_target}' (pin overrides aliases).")
+            print(f"  Every gateway account resolves to peer '{peer_target}'.")
             _echo_identity_mapping(hermes_host)
         elif shape == "multi":
             # Preserve operator-curated host-level aliases across multi → multi
@@ -874,7 +895,7 @@ def cmd_setup(args) -> None:
                 hermes_host, current_prefix, prefix_from_root,
                 "Runtime peer prefix (e.g. 'telegram_', blank for none)",
             )
-            print("  Each gateway user → own peer.")
+            print("  Each gateway account resolves to its own peer.")
             _echo_identity_mapping(hermes_host)
         elif shape == "hybrid":
             existing_aliases = dict(current_aliases) if isinstance(current_aliases, dict) else {}
@@ -887,7 +908,7 @@ def cmd_setup(args) -> None:
                 hermes_host, current_prefix, prefix_from_root,
                 "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)",
             )
-            print(f"  Your runtime IDs → '{peer_target}', others → own peer.")
+            print(f"  Your accounts resolve to '{peer_target}'; each other account to its own peer.")
             _echo_identity_mapping(hermes_host)
         elif shape == "raw":
             _configure_raw_identity_mapping(
@@ -897,6 +918,9 @@ def cmd_setup(args) -> None:
             _echo_identity_mapping(hermes_host)
         else:  # skip
             print("  Identity mapping left untouched.")
+
+        print("\n  For a gateway with many users and agents, run")
+        print("  'hermes honcho peers map' to map accounts interactively.")
 
     # --- 4. Observation mode ---
     current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")
@@ -1291,8 +1315,519 @@ def _cmd_status_all() -> None:
     print("\n  * active profile\n")
 
 
+def _state_db_path() -> Path:
+    """Return the state.db path for the targeted profile."""
+    if _profile_override and _profile_override not in {"default", "custom"}:
+        try:
+            from hermes_cli.profiles import get_profile_dir
+            return get_profile_dir(_profile_override) / "state.db"
+        except Exception:
+            pass
+    return get_hermes_home() / "state.db"
+
+
+def _seen_gateway_accounts(db_path: Path) -> list[dict]:
+    """Return gateway accounts recorded in state.db, most recent first.
+
+    The gateway stamps each session row with its routing peer (source,
+    user_id, display_name, origin_json), so grouping rows by
+    (source, user_id) enumerates every account the gateway has handled.
+    Bot authors are skipped.
+    """
+    if not db_path.exists():
+        return []
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return []
+    # profile_name marks which profile a multiplexing gateway routed the
+    # session to; older state.db files predate the column.
+    base_query = """SELECT source, user_id,
+                      MAX(COALESCE(display_name, '')),
+                      MAX(COALESCE(origin_json, '')),
+                      COUNT(*){profiles_col}
+                 FROM sessions
+                WHERE user_id IS NOT NULL AND user_id != ''
+                  AND session_key IS NOT NULL AND session_key != ''
+                GROUP BY source, user_id
+                ORDER BY MAX(COALESCE(started_at, 0)) DESC"""
+    try:
+        try:
+            rows = conn.execute(base_query.format(
+                profiles_col=",\n                      GROUP_CONCAT(DISTINCT COALESCE(profile_name, 'default'))",
+            )).fetchall()
+        except sqlite3.OperationalError:
+            rows = [r + (None,) for r in conn.execute(
+                base_query.format(profiles_col=""),
+            ).fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+    accounts = []
+    for source, user_id, display_name, origin_json, count, profiles in rows:
+        user_name = ""
+        user_id_alt = ""
+        is_bot = False
+        if origin_json:
+            try:
+                origin = json.loads(origin_json)
+                user_name = origin.get("user_name") or ""
+                user_id_alt = origin.get("user_id_alt") or ""
+                is_bot = bool(origin.get("is_bot"))
+            except Exception:
+                pass
+        if is_bot:
+            continue
+        accounts.append({
+            "platform": source or "?",
+            "user_id": str(user_id),
+            "user_id_alt": str(user_id_alt),
+            "label": user_name or display_name or "",
+            "sessions": count,
+            "profiles": sorted(profiles.split(",")) if profiles else [],
+        })
+    return accounts
+
+
+def _preview_peer_resolution(
+    user_id: str, *, pin: bool, aliases: dict, prefix: str, peer_name: str,
+    user_id_alt: str = "",
+) -> str:
+    """Mirror the runtime resolver ladder for display: pin → alias → prefix → raw."""
+    import re
+
+    def sanitize(s: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9_-]', '-', s)
+
+    if pin and peer_name:
+        return f"{sanitize(peer_name)} (pinned)"
+    # The runtime resolver checks the primary ID first, then the alt ID
+    # (Signal UUID, Feishu union_id) against the same alias map.
+    for rid in (user_id, user_id_alt):
+        alias = aliases.get(rid) if rid else None
+        if isinstance(alias, str) and alias.strip():
+            return sanitize(alias.strip())
+    if prefix:
+        return f"{sanitize(prefix + user_id)} (prefixed)"
+    return sanitize(user_id)
+
+
+# Workspaces holding thousands of peers (public bots) must not stall the CLI.
+_PEERS_MAP_FETCH_CAP = 200
+
+
+def _peers_map_client(workspace: str | None = None):
+    """Return (client, config) for the active host, or (None, None) offline.
+
+    ``workspace`` overrides the configured workspace for browse mode.
+    """
+    try:
+        from dataclasses import replace
+        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
+        hcfg = HonchoClientConfig.from_global_config(host=_host_key())
+        if not (hcfg.api_key or hcfg.base_url):
+            return None, None
+        if workspace and workspace != hcfg.workspace_id:
+            hcfg = replace(hcfg, workspace_id=workspace)
+        return get_honcho_client(hcfg), hcfg
+    except Exception:
+        return None, None
+
+
+def _api_workspace_peers(client) -> list[dict] | None:
+    """Fetch workspace peers (id + created date). None = API unavailable."""
+    if client is None:
+        return None
+    try:
+        peers: list[dict] = []
+        page = 1
+        while len(peers) < _PEERS_MAP_FETCH_CAP:
+            batch = list(client.peers(page=page, size=50))
+            if not batch:
+                break
+            for p in batch:
+                peers.append({
+                    "id": str(p.id),
+                    "created": str(getattr(p, "created_at", "") or "")[:10],
+                })
+            if len(batch) < 50:
+                break
+            page += 1
+        return peers
+    except Exception:
+        return None
+
+
+def _api_workspaces(client) -> list[str] | None:
+    """Workspace IDs this key can reach. None = API unavailable."""
+    if client is None:
+        return None
+    try:
+        return [str(w) for w in client.workspaces(size=50)]
+    except Exception:
+        return None
+
+
+def _api_peer_detail(client, peer_id: str) -> str:
+    """Short peek at a peer: its card, or a clear absence note."""
+    try:
+        card = client.peer(peer_id).get_card()
+        if card:
+            text = str(card).strip()
+            return text[:400] + ("…" if len(text) > 400 else "")
+        return "(no peer card yet)"
+    except Exception as e:
+        return f"(peer detail unavailable: {e})"
+
+
+def _sanitize_peer_id(s: str) -> str:
+    import re
+    return re.sub(r'[^a-zA-Z0-9_-]', '-', s)
+
+
+def _classify_workspace_peers(
+    peer_ids: list[str], cfg: dict, accounts: list[dict],
+    aliases: dict, prefix: str,
+) -> dict[str, str]:
+    """Label workspace peers from local config; 'unrecognized' when honest."""
+    labels: dict[str, str] = {}
+    active_host = _host_key()
+    root_peer = cfg.get("peerName") or ""
+
+    profile_rows = _all_profile_host_configs()
+    hermes_hosts = {hostk for _, hostk, _ in profile_rows}
+    for name, hostk, block in profile_rows:
+        pn = block.get("peerName") or root_peer
+        ai = block.get("aiPeer") or cfg.get("aiPeer") or hostk
+        if pn:
+            labels.setdefault(
+                _sanitize_peer_id(pn),
+                "your peer (peerName)" if hostk == active_host
+                else f"peerName of profile {name}",
+            )
+        who = "this profile" if hostk == active_host else f"profile {name}"
+        labels.setdefault(_sanitize_peer_id(ai), f"AI peer · {who}")
+
+    # Host blocks that are not Hermes profiles: other apps sharing the config.
+    for hostk, block in (cfg.get("hosts") or {}).items():
+        if hostk in hermes_hosts or not isinstance(block, dict):
+            continue
+        for key, kind in (("peerName", "peer"), ("aiPeer", "AI peer")):
+            val = block.get(key)
+            if isinstance(val, str) and val.strip():
+                labels.setdefault(
+                    _sanitize_peer_id(val.strip()), f"{kind} of app '{hostk}'")
+
+    for target in aliases.values():
+        if isinstance(target, str) and target.strip():
+            labels.setdefault(_sanitize_peer_id(target.strip()), "alias target")
+
+    for acct in accounts:
+        rid = acct["user_id"]
+        candidates = [_sanitize_peer_id(rid)]
+        if prefix:
+            candidates.append(_sanitize_peer_id(prefix + rid))
+        for candidate in candidates:
+            labels.setdefault(
+                candidate, f"runtime peer · {acct['platform']} {rid}")
+
+    out = {}
+    for pid in peer_ids:
+        label = labels.get(pid)
+        if label is None and pid.startswith("user-"):
+            label = "fallback peer (pre-identity traffic)"
+        out[pid] = label or "unrecognized"
+    return out
+
+
+def _sibling_resolutions(cfg: dict, acct: dict) -> dict[str, str]:
+    """Resolved peer per profile for one account (profile name → peer)."""
+    out = {}
+    for name, _hostk, block in _all_profile_host_configs():
+        pin, aliases, prefix, _, _ = _resolve_effective_identity_mapping(cfg, block)
+        pn = block.get("peerName") or cfg.get("peerName") or ""
+        out[name] = _preview_peer_resolution(
+            acct["user_id"], pin=pin, aliases=aliases, prefix=prefix,
+            peer_name=pn, user_id_alt=acct["user_id_alt"],
+        )
+    return out
+
+
+def _resolution_base(resolved: str) -> str:
+    """Strip display suffixes so the name can be checked against peer IDs."""
+    return resolved.removesuffix(" (pinned)").removesuffix(" (prefixed)")
+
+
+def _render_peers_map_view(
+    workspace: str, ws_peers: list[dict] | None, labels: dict,
+    accounts: list[dict], cfg: dict, *,
+    pin: bool, working: dict, prefix: str, peer_name: str,
+) -> None:
+    peer_id_set = {p["id"] for p in (ws_peers or [])}
+    if ws_peers is None:
+        print(f"\nWorkspace '{workspace}' — peers unavailable (offline or not configured)")
+        print("  Mapping still works; target peers are typed instead of picked.")
+    else:
+        print(f"\nWorkspace '{workspace}' — {len(ws_peers)} peers\n" + "─" * 62)
+        if not ws_peers:
+            print("  No peers here yet — peers appear after the first conversation.")
+            print("  Wrong workspace? 'w' lists the workspaces this key can see.")
+        for i, p in enumerate(ws_peers, 1):
+            print(f"  p{i:<4} {p['id']:<30} {labels.get(p['id'], '')}")
+        if len(ws_peers) >= _PEERS_MAP_FETCH_CAP:
+            print(f"  … listing capped at {_PEERS_MAP_FETCH_CAP} peers.")
+        recognized = any(
+            v.startswith(("your peer", "AI peer")) for v in labels.values()
+        )
+        if ws_peers and not recognized:
+            print(f"\n  None of these match your configured identity ('{peer_name or workspace}').")
+            print("  Wrong workspace? 'w' lists the workspaces this key can see.")
+
+    active_profile = _active_profile_name()
+    print(f"\nGateway accounts seen on this machine ({len(accounts)})\n" + "─" * 62)
+    if not accounts:
+        print("  None recorded yet. Accounts appear here after the gateway")
+        print("  handles a message from them. You can still map a runtime ID")
+        print("  by typing it at the prompt below.")
+        return
+    print(f"  {'#':<4} {'Platform':<10} {'Runtime ID':<22} {'Name':<14} {'Resolves to'}")
+    for idx, acct in enumerate(accounts, 1):
+        resolved = _preview_peer_resolution(
+            acct["user_id"], pin=pin, aliases=working,
+            prefix=prefix, peer_name=peer_name,
+            user_id_alt=acct["user_id_alt"],
+        )
+        marker = ""
+        if ws_peers is not None:
+            marker = " ✓" if _resolution_base(resolved) in peer_id_set else " ○ new"
+        siblings = _sibling_resolutions(cfg, acct)
+        mine = _resolution_base(resolved)
+        diverging = {
+            n: _resolution_base(v) for n, v in siblings.items()
+            if n != active_profile and _resolution_base(v) != mine
+        }
+        div = ""
+        if diverging:
+            div = "  ≠ " + ", ".join(f"{n}→{v}" for n, v in sorted(diverging.items()))
+        via = ""
+        profiles = acct.get("profiles") or []
+        if profiles and active_profile not in profiles:
+            via = f"  (traffic → {', '.join(profiles)})"
+        label = acct["label"][:13]
+        print(
+            f"  {idx:<4} {acct['platform']:<10} {acct['user_id']:<22} "
+            f"{label:<14} {resolved}{marker}{div}{via}"
+        )
+
+
+def _workspaces_flow(client, current_ws: str, cfg: dict, host: str):
+    """List reachable workspaces; browse one; optionally repoint the profile.
+
+    Returns (workspace, client, ws_peers) after a confirmed switch, else None.
+    """
+    ws_list = _api_workspaces(client)
+    if not ws_list:
+        print("  Workspace list unavailable (offline or not configured).")
+        return None
+    print(f"\n  Workspaces this key can see ({len(ws_list)}):")
+    for i, w in enumerate(ws_list, 1):
+        marker = "  ← current" if w == current_ws else ""
+        print(f"    {i:<4} {w}{marker}")
+    print("\n  Tip: for a full workspace browser, install honcho-cli")
+    print("  (uv tool install honcho-cli).")
+    sel = _prompt("Browse a workspace (number, blank to go back)", default="").strip()
+    if not (sel.isdigit() and 1 <= int(sel) <= len(ws_list)):
+        return None
+    target_ws = ws_list[int(sel) - 1]
+    b_client, _ = _peers_map_client(workspace=target_ws)
+    b_peers = _api_workspace_peers(b_client)
+    if b_peers is None:
+        print(f"  Could not list peers of '{target_ws}'.")
+        return None
+    print(f"\n  Workspace '{target_ws}' — {len(b_peers)} peers")
+    for p in b_peers[:30]:
+        print(f"    {p['id']}")
+    if len(b_peers) > 30:
+        print(f"    … and {len(b_peers) - 30} more")
+    if target_ws == current_ws:
+        return None
+    switch = _prompt(
+        f"Point this profile at '{target_ws}'? Existing memory stays in '{current_ws}'. (y/N)",
+        default="n",
+    ).strip().lower()
+    if switch not in {"y", "yes"}:
+        return None
+    cfg.setdefault("hosts", {}).setdefault(host, {})["workspace"] = target_ws
+    _write_config(cfg)
+    print(f"  workspace → '{target_ws}' (written to host block [{host}])")
+    return target_ws, b_client, b_peers
+
+
+def _save_alias_map(cfg: dict, host: str, working: dict, aliases_from_root: bool) -> None:
+    """Persist the edited alias map, asking for scope when it is shared."""
+    profiles = _all_profile_host_configs()
+    write_root = aliases_from_root
+    if aliases_from_root and len(profiles) > 1:
+        scope = _prompt(
+            "Apply to all profiles (root) or only this profile? (all/this)",
+            default="all",
+        ).strip().lower()
+        if scope in {"this", "t", "host", "only"}:
+            write_root = False
+            print(f"  This forks [{host}] from the shared root map — future root")
+            print("  edits no longer reach this profile.")
+
+    if write_root:
+        if working:
+            cfg["userPeerAliases"] = working
+        else:
+            cfg.pop("userPeerAliases", None)
+        target_desc = "root config (shared by all profiles)"
+        hermes_host = _host_block(cfg, host)
+        active_ws = hermes_host.get("workspace") or cfg.get("workspace") or host
+        other_ws: dict[str, list[str]] = {}
+        for name, hostk, block in profiles:
+            ws = block.get("workspace") or cfg.get("workspace") or hostk
+            if ws != active_ws:
+                other_ws.setdefault(ws, []).append(name)
+        for ws, names in sorted(other_ws.items()):
+            print(f"  ⚠ root aliases also apply in workspace '{ws}' (profile")
+            print(f"    {', '.join(names)}) — picked peers may not exist there.")
+    else:
+        block = cfg.setdefault("hosts", {}).setdefault(host, {})
+        if working:
+            block["userPeerAliases"] = working
+        else:
+            block.pop("userPeerAliases", None)
+        target_desc = f"host block [{host}]"
+
+    _write_config(cfg)
+    print(f"\n  userPeerAliases = {working if working else '{}'}")
+    print(f"  written to {target_desc} in {_local_config_path()}\n")
+
+
+def cmd_peers_map(args) -> None:
+    """Interactively map gateway accounts to Honcho user peers."""
+    cfg = _read_config()
+    host = _host_key()
+    hermes_host = _host_block(cfg, host)
+    (
+        pin, aliases, prefix, aliases_from_root, _prefix_from_root,
+    ) = _resolve_effective_identity_mapping(cfg, hermes_host)
+    peer_name = hermes_host.get("peerName") or cfg.get("peerName") or ""
+
+    if pin:
+        print("\n  pinUserPeer is on: every gateway account resolves to peer")
+        print(f"  '{peer_name or '(peerName not set)'}' and aliases have no effect.")
+        print("  Turn the pin off with 'hermes honcho setup' to use per-account peers.")
+        cont = _prompt("Edit aliases anyway? (y/N)", default="n").strip().lower()
+        if cont not in {"y", "yes"}:
+            print("  Nothing changed.\n")
+            return
+
+    accounts = _seen_gateway_accounts(_state_db_path())
+    working = dict(aliases) if isinstance(aliases, dict) else {}
+
+    client, client_cfg = _peers_map_client()
+    workspace = (
+        getattr(client_cfg, "workspace_id", None)
+        or hermes_host.get("workspace") or cfg.get("workspace") or host
+    )
+    ws_peers = _api_workspace_peers(client)
+    labels = _classify_workspace_peers(
+        [p["id"] for p in (ws_peers or [])], cfg, accounts, working, prefix,
+    )
+
+    _render_peers_map_view(
+        workspace, ws_peers, labels, accounts, cfg,
+        pin=pin, working=working, prefix=prefix, peer_name=peer_name,
+    )
+
+    print("\n  Map: account number or a runtime ID · pN inspects a peer ·")
+    print("  w lists workspaces · blank finishes.")
+    changed = False
+    while True:
+        sel = _prompt("Account (blank to finish)", default="").strip()
+        if not sel:
+            break
+        low = sel.lower()
+
+        if low == "w":
+            switched = _workspaces_flow(client, workspace, cfg, host)
+            if switched:
+                workspace, client, ws_peers = switched
+                labels = _classify_workspace_peers(
+                    [p["id"] for p in ws_peers], cfg, accounts, working, prefix,
+                )
+                _render_peers_map_view(
+                    workspace, ws_peers, labels, accounts, cfg,
+                    pin=pin, working=working, prefix=prefix, peer_name=peer_name,
+                )
+            continue
+
+        if low.startswith("p") and low[1:].isdigit() and ws_peers:
+            n = int(low[1:])
+            if 1 <= n <= len(ws_peers):
+                pid = ws_peers[n - 1]["id"]
+                print(f"\n  {pid} — {labels.get(pid, '')}")
+                print(f"  {_api_peer_detail(client, pid)}\n")
+            continue
+
+        if sel.isdigit() and 1 <= int(sel) <= len(accounts):
+            acct = accounts[int(sel) - 1]
+            rid = acct["user_id"]
+            label = f"{acct['platform']} {rid}" + (
+                f" ({acct['label']})" if acct["label"] else ""
+            )
+            prev_resolved = _resolution_base(_preview_peer_resolution(
+                rid, pin=pin, aliases=working, prefix=prefix,
+                peer_name=peer_name, user_id_alt=acct["user_id_alt"],
+            ))
+        else:
+            rid = sel
+            label = sel
+            prev_resolved = _resolution_base(_preview_peer_resolution(
+                rid, pin=pin, aliases=working, prefix=prefix, peer_name=peer_name,
+            ))
+
+        current = working.get(rid, "")
+        hint = " (pN from the peers table, a name, '-' clears)" if ws_peers else ""
+        entered = _prompt(f"Peer for {label}{hint}", default=current).strip()
+        if entered == "-":
+            if rid in working:
+                del working[rid]
+                changed = True
+                print(f"    cleared: {rid}")
+            continue
+        if entered.lower().startswith("p") and entered[1:].isdigit() and ws_peers:
+            n = int(entered[1:])
+            if 1 <= n <= len(ws_peers):
+                entered = ws_peers[n - 1]["id"]
+        if entered and entered != current:
+            working[rid] = entered
+            changed = True
+            peer_id_set = {p["id"] for p in (ws_peers or [])}
+            print(f"    {rid} → {entered} — future messages resolve to '{entered}'")
+            if ws_peers is not None and _sanitize_peer_id(entered) not in peer_id_set:
+                print(f"    '{entered}' is a new peer — created on first message.")
+            if prev_resolved in peer_id_set and prev_resolved != _sanitize_peer_id(entered):
+                print(f"    peer '{prev_resolved}' keeps its existing history.")
+
+    if not changed:
+        print("  Nothing changed.\n")
+        return
+    _save_alias_map(cfg, host, working, aliases_from_root)
+
+
 def cmd_peers(args) -> None:
     """Show peer identities across all profiles."""
+    if getattr(args, "peers_action", None) == "map":
+        cmd_peers_map(args)
+        return
+
     rows = _all_profile_host_configs()
     cfg = _read_config()
 
@@ -1901,7 +2436,13 @@ def register_cli(subparser) -> None:
         "--all", action="store_true", help="Show config overview across all profiles",
     )
 
-    subs.add_parser("peers", help="Show peer identities across all profiles")
+    peers_parser = subs.add_parser(
+        "peers", help="Show peer identities across all profiles ('peers map' to map gateway accounts)",
+    )
+    peers_parser.add_argument(
+        "peers_action", nargs="?", default=None, choices=("map",), metavar="map",
+        help="'map': interactively map gateway accounts to user peers",
+    )
     subs.add_parser("sessions", help="List known Honcho session mappings")
 
     map_parser = subs.add_parser(

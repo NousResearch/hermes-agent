@@ -2142,29 +2142,32 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     "schedule_display",
                     updated_schedule.get("display", updated.get("schedule_display")),
                 )
+                # Compute next_run and validate *before* the paused gate.
+                # A paused job whose schedule is updated to a past one-shot
+                # must be rejected here; otherwise it silently persists with
+                # next_run_at=None and becomes a ghost job that never fires.
+                # The resume path also rejects this case, but catching it at
+                # update time provides a clearer, earlier error.
+                updated_next_run = compute_next_run(updated_schedule)
+                if (
+                    updated_next_run is None
+                    and updated_schedule.get("kind") == "once"
+                ):
+                    run_at = updated_schedule.get("run_at") or updated_schedule
+                    logger.warning(
+                        "Rejecting one-shot cron job update '%s': run_at %s "
+                        "is outside the %ss grace window",
+                        updated.get("name", job_id),
+                        run_at,
+                        ONESHOT_GRACE_SECONDS,
+                    )
+                    raise ValueError(
+                        f"Requested one-shot time {run_at} is more than "
+                        f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
+                    )
+                # Only assign next_run_at if not paused; paused jobs
+                # recompute on resume.
                 if updated.get("state") != "paused":
-                    updated_next_run = compute_next_run(updated_schedule)
-                    # Same guard as create_job: an UPDATE that sets a one-shot
-                    # to a time >ONESHOT_GRACE_SECONDS in the past would store
-                    # next_run_at=None with state="scheduled", re-creating the
-                    # ghost job that never fires (#59395). Reject it here too so
-                    # the bug can't re-enter through the update door.
-                    if (
-                        updated_next_run is None
-                        and updated_schedule.get("kind") == "once"
-                    ):
-                        run_at = updated_schedule.get("run_at") or updated_schedule
-                        logger.warning(
-                            "Rejecting one-shot cron job update '%s': run_at %s "
-                            "is outside the %ss grace window",
-                            updated.get("name", job_id),
-                            run_at,
-                            ONESHOT_GRACE_SECONDS,
-                        )
-                        raise ValueError(
-                            f"Requested one-shot time {run_at} is more than "
-                            f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
-                        )
                     updated["next_run_at"] = updated_next_run
 
             if inference_fields_changed:

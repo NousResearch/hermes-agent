@@ -99,6 +99,14 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern."""
     if not text:
         return False
+    # NUL bytes are never part of a command token's meaning: bash executes
+    # the bytes around them, so `hermes gateway rest\x00art` is a real
+    # restart command that the matcher would otherwise miss. Stripping NULs
+    # can only splice tokens together, never apart, so scanning the
+    # stripped text is fail-closed (#77927). Whether a *file* is a compiled
+    # binary is decided upstream by magic numbers, never by NUL presence.
+    if "\x00" in text:
+        text = text.replace("\x00", "")
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     return bool(_GATEWAY_LIFECYCLE_PATTERN.search(normalized))
 
@@ -158,8 +166,12 @@ _PIPE_TO_INTERPRETER = re.compile(
 )
 
 # Executable-image magic numbers: ELF, PE/COFF, Mach-O (universal + thin,
-# both endiannesses). A referenced file starting with one of these is a
-# compiled binary, never a shell script — don't read or scan it at all.
+# both endiannesses), ar archives, gzip and zip streams. A referenced file
+# starting with one of these is a compiled binary or archive, never a shell
+# script — don't read or scan it at all. A shebang file always wins over
+# these (no magic prefix starts with `#`), and a NUL byte is deliberately
+# NOT a binary signal: bash executes NUL-bearing *text* just fine, so a
+# NUL-padded script must still be scanned (#77927).
 _BINARY_MAGIC_PREFIXES = (
     b"\x7fELF",
     b"MZ",
@@ -168,6 +180,9 @@ _BINARY_MAGIC_PREFIXES = (
     b"\xce\xfa\xed\xfe",
     b"\xfe\xed\xfa\xce",
     b"\xfe\xed\xfa\xcf",
+    b"!<arch>\n",
+    b"\x1f\x8b",
+    b"PK\x03\x04",
 )
 _BINARY_SNIFF_BYTES = 4096
 
@@ -224,6 +239,11 @@ def contains_launchctl_submit_command(command: str) -> bool:
     semantics; ``bootstrap`` loads an arbitrary plist), which is never safe to
     do from inside the gateway process.
     """
+    if "\x00" in command:
+        # Same fail-closed NUL handling as contains_gateway_lifecycle_command:
+        # `launchctl sub\x00mit ...` is a real submit command, and stripping
+        # NULs can only splice tokens together, never apart (#77927).
+        command = command.replace("\x00", "")
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
@@ -496,12 +516,15 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
                 return None, False
             return None, True
         # Sniff a small prefix first: files that are clearly compiled
-        # binaries (executable magic, or NUL bytes in the head) are never
-        # shell scripts, so skip them WITHOUT reading the rest — reading a
+        # binaries or archives (executable magic) are never shell
+        # scripts, so skip them WITHOUT reading the rest — reading a
         # megabyte of machine code just to discard it wastes the guard's
         # budget and (pre-#77703) fed decoded garbage into the recursion.
+        # A NUL byte in the head is NOT a binary signal: bash executes
+        # NUL-bearing *text* fine, so a NUL-padded script must still be
+        # read and scanned (#77927).
         data = os.read(descriptor, _BINARY_SNIFF_BYTES)
-        if data.startswith(_BINARY_MAGIC_PREFIXES) or b"\x00" in data:
+        if data.startswith(_BINARY_MAGIC_PREFIXES):
             return None, False
         # Read the remainder (bounded). Loop because os.read may return
         # short for non-regular-file-backed descriptors.
@@ -516,16 +539,20 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         return None, False
     finally:
         os.close(descriptor)
-    # A NUL byte in the first chunk means this is a binary (ELF/Mach-O/
-    # PE), not a shell script — scanning its decoded contents would
-    # tokenize machine code and feed junk paths into the recursion
-    # (including a `ValueError: embedded null byte` from Path.resolve,
-    # #76762). Treat it as "nothing to scan" rather than unsafe: a binary
-    # executed by the user is not a referenced *shell script*.
-    if b"\x00" in data:
-        return None, False
+    # Size check runs BEFORE NUL stripping: stripping shrinks the buffer,
+    # so a >1 MiB NUL-padded file stripped below the threshold would
+    # otherwise skip the fail-closed branch (#77927).
     if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
         return None, True
+    # NUL bytes mean this file is not clean UTF-8 text, but they do NOT
+    # prove it is a compiled binary (ELF/Mach-O/PE/... are excluded by
+    # magic above). A NUL-padded or NUL-spliced *text* script still
+    # executes under bash, so it must be scanned. Strip the NULs first:
+    # removal can only splice tokens together, never apart, so a
+    # lifecycle command hidden with embedded NULs (`hermes gateway
+    # rest\x00art`) fails closed (#77927).
+    if b"\x00" in data:
+        data = data.replace(b"\x00", b"")
     return data.decode("utf-8", errors="replace"), False
 
 
@@ -535,23 +562,28 @@ def _sanitize_remote_script_text(text: Optional[str]) -> tuple[Optional[str], bo
     The recursion boundary must not trust its callbacks: any backend (SSH,
     Modal, Daytona, or a future one) can hand back raw binary bytes decoded
     as text, or arbitrarily large output. Mirror
-    ``_read_referenced_script``'s semantics exactly — NUL bytes mean binary
-    (nothing to scan, checked first, #77703), oversized text fails closed
-    like an oversized local file (#76762) — so remote and local reads can
-    never diverge again. The size check re-encodes to compare *bytes*
-    (matching the local read and the ``head -c`` wire bound): a >1 MiB
-    multibyte file truncated at the byte cap decodes to fewer characters
-    than bytes, and a character-count check would scan the truncated text
-    instead of failing closed. Enforced here rather than inside each
-    callback so the guarantee holds for every callback, not just the ones
-    we hardened.
+    ``_read_referenced_script``'s semantics exactly — magic-number
+    prefixes mean binary (nothing to scan, checked first), NUL-bearing
+    *text* is scanned with the NULs stripped (#77927), oversized text
+    fails closed like an oversized local file (#76762) — so remote and
+    local reads can never diverge again. The size check re-encodes to
+    compare *bytes* (matching the local read and the ``head -c`` wire
+    bound): a >1 MiB multibyte file truncated at the byte cap decodes to
+    fewer characters than bytes, and a character-count check would scan
+    the truncated text instead of failing closed. Enforced here rather
+    than inside each callback so the guarantee holds for every callback,
+    not just the ones we hardened.
     """
     if not text:
         return None, False
-    if "\x00" in text:
+    encoded = text.encode("utf-8", errors="replace")
+    if encoded.startswith(_BINARY_MAGIC_PREFIXES):
         return None, False
-    if len(text.encode("utf-8", errors="replace")) > _MAX_REFERENCED_SCRIPT_BYTES:
+    # Size check BEFORE NUL stripping — see _read_referenced_script.
+    if len(encoded) > _MAX_REFERENCED_SCRIPT_BYTES:
         return None, True
+    if "\x00" in text:
+        text = text.replace("\x00", "")
     return text, False
 
 

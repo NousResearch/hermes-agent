@@ -111,6 +111,42 @@ async def test_process_message_background_adds_and_swaps_reactions(adapter):
 
 
 @pytest.mark.asyncio
+async def test_rejected_event_suppresses_final_reaction(adapter):
+    """A refused message (event.rejected) must not paint a success reaction.
+
+    Regression for #81440: the authz path returns None with no delivery, which
+    used to compute SUCCESS → ✅. The handler signals rejection via
+    event.rejected so the outcome is REJECTED and no terminal reaction is
+    added (the message visibly goes unhandled).
+    """
+    raw_message = SimpleNamespace(
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+
+    async def handler(event):
+        event.rejected = True
+        await asyncio.sleep(0)
+        return None
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter.send = AsyncMock(return_value=SendResult(success=False))
+    adapter._keep_typing = hold_typing
+
+    event = _make_event("7", raw_message)
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    # 👀 in-progress reaction is added and removed...
+    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
+    assert raw_message.remove_reaction.await_args_list[0].args == ("👀", adapter._client.user)
+    # ...but no terminal ✅ or ❌ reaction is ever added.
+    assert len(raw_message.add_reaction.await_args_list) == 1
+
+
+@pytest.mark.asyncio
 async def test_reactions_disabled_via_env(adapter, monkeypatch):
     """When DISCORD_REACTIONS=false, no reactions should be added."""
     monkeypatch.setenv("DISCORD_REACTIONS", "false")

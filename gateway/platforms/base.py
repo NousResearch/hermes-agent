@@ -2294,6 +2294,11 @@ class ProcessingOutcome(Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     CANCELLED = "cancelled"
+    # The message was deliberately refused before the handler ran (e.g. an
+    # authorization rejection). Unlike FAILURE it is not an error, and unlike
+    # SUCCESS the turn produced no agent work — reactions should be fully
+    # suppressed (no ✅, no ❌) so the message visibly goes unhandled (#81440).
+    REJECTED = "rejected"
 
 
 @dataclass
@@ -2371,6 +2376,12 @@ class MessageEvent:
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
+
+    # Set by gateway.run when the message is refused before the agent runs
+    # (e.g. an authorization rejection). _process_message_background reports
+    # ProcessingOutcome.REJECTED so reaction hooks suppress the final reaction
+    # instead of painting a refusal as success (#81440).
+    rejected: bool = False
 
     # Free-form per-event metadata.  Adapters may set platform-specific
     # signals here (e.g. WhatsApp sets ``whatsapp_from_owner=True`` when
@@ -6799,6 +6810,18 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            # A refused message (e.g. authorization rejection) is neither a
+            # success nor a failure — the handler deliberately produced no
+            # work. Report REJECTED so reaction hooks fully suppress the
+            # final reaction instead of painting the refusal as ✅ (#81440).
+            if getattr(event, "rejected", False):
+                processing_outcome = ProcessingOutcome.REJECTED
+            else:
+                processing_outcome = (
+                    ProcessingOutcome.SUCCESS
+                    if processing_ok
+                    else ProcessingOutcome.FAILURE
+                )
             # Clean up the per-turn streaming-TTS flag (#60671).
             self._streaming_tts_completed_turns.discard(
                 self._streaming_tts_turn_key(
@@ -6811,7 +6834,7 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+                processing_outcome,
             )
 
             # The active drain owns debounce state. If a queue-mode timer has

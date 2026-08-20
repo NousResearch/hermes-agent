@@ -16395,8 +16395,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # sender). Defer to _is_user_authorized so that path runs.
             if not self._is_user_authorized(source):
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
+                event.rejected = True
                 return None
         elif not self._is_user_authorized(source):
+            # Mark the refusal on the event so the processing-complete hook
+            # reports REJECTED (no ✅/❌ reaction) instead of painting the
+            # silent drop as a successful turn (#81440).
+            event.rejected = True
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if (

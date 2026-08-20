@@ -3372,6 +3372,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._add_reaction(message, "✅")
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
+            # REJECTED (e.g. authorization refusal): leave no terminal reaction
+            # so the message visibly goes unhandled instead of reading as a
+            # successful acknowledgment (#81440).
 
     @staticmethod
     def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":

@@ -187,6 +187,14 @@ class TestDiscordServerValidation:
         assert "user_id" in result["error"]
         assert "role_id" in result["error"]
 
+    def test_edit_message_requires_content(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="edit_message", channel_id="11", message_id="500",
+        ))
+        assert "error" in result
+        assert "content" in result["error"]
+
 
 # ---------------------------------------------------------------------------
 # Action: list_channels
@@ -276,6 +284,41 @@ class TestFetchMessages:
 
 
 # ---------------------------------------------------------------------------
+# Action: edit_message
+# ---------------------------------------------------------------------------
+
+class TestEditMessage:
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_message(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "500",
+            "content": "Updated announcement",
+            "edited_timestamp": "2026-08-02T00:01:00Z",
+        }
+
+        result = json.loads(discord_admin_handler(
+            action="edit_message",
+            channel_id="11",
+            message_id="500",
+            content="Updated announcement",
+        ))
+
+        assert result == {
+            "success": True,
+            "message_id": "500",
+            "content": "Updated announcement",
+            "edited_timestamp": "2026-08-02T00:01:00Z",
+        }
+        mock_req.assert_called_once_with(
+            "PATCH",
+            "/channels/11/messages/500",
+            "test-token",
+            body={"content": "Updated announcement"},
+        )
+
+
+# ---------------------------------------------------------------------------
 # Action: create_thread
 # ---------------------------------------------------------------------------
 
@@ -342,6 +385,28 @@ class TestRegistration:
         assert entry.toolset == "discord"
         assert entry.check_fn is not None
         assert entry.requires_env == ["DISCORD_BOT_TOKEN"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_admin_registry_forwards_edit_content(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"content": "Updated announcement"}
+
+        from tools.registry import registry
+        entry = registry._tools["discord_admin"]
+        result = json.loads(entry.handler({
+            "action": "edit_message",
+            "channel_id": "11",
+            "message_id": "500",
+            "content": "Updated announcement",
+        }))
+
+        assert result["content"] == "Updated announcement"
+        mock_req.assert_called_once_with(
+            "PATCH",
+            "/channels/11/messages/500",
+            "test-token",
+            body={"content": "Updated announcement"},
+        )
 
     def test_all_actions_covered(self):
         """Core + admin actions should cover all known actions."""
@@ -680,6 +745,13 @@ class TestRuntimeAllowlistEnforcement:
 # ---------------------------------------------------------------------------
 
 class Test403Enrichment:
+    def test_edit_message_hint_explains_authorship(self):
+        from tools.discord_tool import _enrich_403
+
+        assert "only edit messages it authored" in _enrich_403(
+            "edit_message", '{"message":"Missing Access"}',
+        )
+
     @patch("tools.discord_tool._discord_request")
     def test_403_in_runtime_is_enriched(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")

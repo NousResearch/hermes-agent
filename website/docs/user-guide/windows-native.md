@@ -23,7 +23,7 @@ Open **PowerShell** (or Windows Terminal) and run:
 iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
 ```
 
-No admin rights required. The installer goes to `%LOCALAPPDATA%\hermes\` and adds `hermes` to your **User PATH** — open a new terminal after it finishes.
+No admin rights required. The installer first attempts to install into the `HERMES_HOME` location. If `HERMES_HOME` is not set, then the installer uses the fallback location,  `%LOCALAPPDATA%\hermes\`, adds `hermes` to your **User PATH**, and finally, opens a new terminal on completion.
 
 **Installer options** (requires the scriptblock form to pass parameters):
 

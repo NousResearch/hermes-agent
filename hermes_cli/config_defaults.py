@@ -3256,7 +3256,8 @@ DEFAULT_CONFIG = {
     # Language Server Protocol — semantic diagnostics from real
     # language servers (pyright, gopls, rust-analyzer, etc.) wired
     # into the post-write lint check used by ``write_file`` and
-    # ``patch``.
+    # ``patch``. Disabled by default so Hermes never installs language
+    # server packages unless the user opts in.
     #
     # LSP is gated on git-workspace detection: when the agent's
     # cwd (or the file being edited) is inside a git worktree, LSP
@@ -3268,7 +3269,7 @@ DEFAULT_CONFIG = {
         # Master toggle.  Setting this to false disables the entire
         # subsystem — no servers spawn, no background event loop, no
         # cost.
-        "enabled": True,
+        "enabled": False,
 
         # Diagnostic-wait mode for the post-write check.
         # ``"document"`` waits up to ``wait_timeout`` seconds for the
@@ -3280,9 +3281,10 @@ DEFAULT_CONFIG = {
         # How to handle missing server binaries.
         # ``"auto"`` — try to install via npm/go/pip into
         #              ``<HERMES_HOME>/lsp/bin/`` on first use.
-        # ``"manual"`` — only use binaries already on PATH.
+        # ``"manual"`` — only use binaries already on PATH or in
+        #                  ``<HERMES_HOME>/lsp/bin/``.
         # ``"off"`` — alias for ``manual``.
-        "install_strategy": "auto",
+        "install_strategy": "manual",
 
         # Idle language servers are shut down automatically after this
         # many seconds with no file activity, then respawned on demand.

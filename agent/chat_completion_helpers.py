@@ -4499,7 +4499,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         base_final_message = None
 
         from agent import relay_llm
-        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+        from agent.anthropic_adapter import (
+            _client_base_url,
+            sanitize_anthropic_kwargs,
+        )
 
         accumulator = relay_llm.AnthropicStreamAccumulator()
 
@@ -4508,6 +4511,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             sanitize_anthropic_kwargs(
                 final_kwargs,
                 log_prefix=getattr(agent, "log_prefix", ""),
+                base_url=_client_base_url(request_client),
             )
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager

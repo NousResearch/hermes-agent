@@ -3118,7 +3118,85 @@ _RESPONSES_ONLY_KWARGS = frozenset(
 )
 
 
-def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
+# Keys that belong exclusively to the OpenAI *chat.completions* wire shape.
+# Unlike ``_RESPONSES_ONLY_KWARGS`` these do not raise locally: the SDK
+# forwards ``extra_body`` verbatim into the request body, so they reach
+# api.anthropic.com and come back as a hard, non-retryable::
+#
+#     400 invalid_request_error: <key>: Extra inputs are not permitted
+#
+# Callers legitimately pass these for OpenAI-wire providers (auxiliary tasks
+# reuse one call site across every provider — e.g. title generation asks for
+# ``response_format`` JSON-schema output), so the caller is not wrong; the
+# translation boundary is. Verified live against api.anthropic.com: every key
+# below returns the 400 above, as does any unrecognised vendor key.
+_OPENAI_ONLY_EXTRA_BODY_KEYS = frozenset(
+    {
+        "response_format",
+        "frequency_penalty",
+        "presence_penalty",
+        "logit_bias",
+        "logprobs",
+        "top_logprobs",
+        "n",
+        "seed",
+        "modalities",
+        "prediction",
+        "stream_options",
+        "max_completion_tokens",
+        "parallel_tool_calls",
+    }
+)
+
+
+def _strip_openai_only_extra_body(
+    api_kwargs: dict, *, base_url: Any = None, log_prefix: str = ""
+) -> None:
+    """Drop OpenAI-chat-only ``extra_body`` keys on native Anthropic calls.
+
+    Only applies to first-party ``api.anthropic.com``. Anthropic-compatible
+    gateways (Bedrock, Foundry, Kimi, DeepSeek, MiniMax, self-hosted proxies)
+    deliberately accept vendor-specific body fields, and several Hermes
+    features depend on that passthrough — stripping there would break them.
+    """
+    extra_body = api_kwargs.get("extra_body")
+    if not isinstance(extra_body, dict) or not extra_body:
+        return
+    if _is_third_party_anthropic_endpoint(
+        base_url if isinstance(base_url, str) else (str(base_url) if base_url else None)
+    ):
+        return
+    leaked = _OPENAI_ONLY_EXTRA_BODY_KEYS.intersection(extra_body)
+    if not leaked:
+        return
+    remaining = {k: v for k, v in extra_body.items() if k not in leaked}
+    if remaining:
+        api_kwargs["extra_body"] = remaining
+    else:
+        api_kwargs.pop("extra_body", None)
+    logger.debug(
+        "%sStripped OpenAI-only extra_body key(s) %s from a native Anthropic "
+        "Messages call; the API rejects them with 400 'Extra inputs are not "
+        "permitted'. Callers that share one code path across providers (e.g. "
+        "auxiliary title generation requesting response_format) are expected "
+        "to hit this and degrade to prose parsing.",
+        log_prefix,
+        sorted(leaked),
+    )
+
+
+def _client_base_url(client: Any) -> Optional[str]:
+    """Best-effort base_url for an Anthropic SDK client (never raises)."""
+    try:
+        value = getattr(client, "base_url", None)
+        return str(value) if value else None
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def sanitize_anthropic_kwargs(
+    api_kwargs: Any, *, log_prefix: str = "", base_url: Any = None
+) -> Any:
     """Drop Responses-API-only keys before an Anthropic Messages SDK call.
 
     Defensive boundary guard for #31673: under rare api_mode-flip races
@@ -3132,9 +3210,19 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
     Mutates ``api_kwargs`` in place and returns it. When a foreign key is
     present we log a WARNING so the underlying race stays visible in the
     wild instead of being silently papered over.
+
+    ``base_url`` enables the second guard: OpenAI-chat-only ``extra_body``
+    keys are stripped for first-party ``api.anthropic.com`` calls, which
+    reject them with a hard 400. Anthropic-compatible gateways keep their
+    passthrough. Omitting it means "direct Anthropic", matching
+    ``_is_third_party_anthropic_endpoint``'s own convention, so the default
+    call path is protected rather than exempt.
     """
     if not isinstance(api_kwargs, dict):
         return api_kwargs
+    _strip_openai_only_extra_body(
+        api_kwargs, base_url=base_url, log_prefix=log_prefix
+    )
     leaked = _RESPONSES_ONLY_KWARGS.intersection(api_kwargs)
     if leaked:
         for _key in leaked:
@@ -3194,7 +3282,9 @@ def create_anthropic_message(
     in particular. Only fires on the streaming path, which is the one the main
     turn loop takes.
     """
-    sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
+    sanitize_anthropic_kwargs(
+        api_kwargs, log_prefix=log_prefix, base_url=_client_base_url(client)
+    )
 
     messages_api = getattr(client, "messages", None)
     stream_fn = getattr(messages_api, "stream", None)
